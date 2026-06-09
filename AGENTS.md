@@ -39,29 +39,6 @@
 - 对不明确的实现细节，应选择与文档中测试可用版本范围一致的保守方案。
 - 若新增接口、数据表、领域对象或流程，应检查是否需要同步更新 `doc/` 文档。
 
-## 实现优先级
-
-测试可用版本优先覆盖：
-
-- 用户、租户、项目和 RBAC。
-- OIDC 登录、本地用户创建和本地账号密码登录。
-- 平台托管源码仓库管理。
-- 基于已有 `SourceRepository` 创建 `Application`。
-- BuildSpec 构建适配，当前测试可用版本支持 `java_springboot`、`java_tomcat` 和 `node_static`。
-- Jenkins 构建流水线创建、触发和日志查看。
-- `Release`、`Freight` 和 `Promotion` 交付流程。
-- `dev`、`test`、`staging`、`prod` 默认环境。
-- GitLab 部署清单仓库变更和 Argo CD GitOps 部署。
-- PaaS Agent 状态上报。
-
-当前测试可用版本暂不纳入：
-
-- 外部源码仓库直接作为运行源。
-- 一个 `Application` 表示多个可独立发布的微服务。
-- 用户直接访问 Jenkins UI、Argo CD UI 或部署清单仓库。
-- PaaS 控制面直连 Kubernetes API Server。
-- 自动跨集群故障迁移。
-
 ## 代码质量要求
 
 - 保持改动范围聚焦，避免无关重构。
