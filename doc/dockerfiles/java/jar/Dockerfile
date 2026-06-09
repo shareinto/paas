@@ -1,0 +1,14 @@
+ARG RUNTIME_BASE
+FROM ${RUNTIME_BASE}
+
+ARG ARTIFACT_DEPLOY_PATH=/app
+
+WORKDIR /app
+
+ENV JAVA_OPTS="" \
+    APP_ARGS=""
+
+RUN mkdir -p "${ARTIFACT_DEPLOY_PATH}"
+COPY app.jar ${ARTIFACT_DEPLOY_PATH}/app.jar
+
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar $APP_ARGS"]

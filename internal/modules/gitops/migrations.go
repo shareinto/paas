@@ -1,0 +1,88 @@
+package gitops
+
+import "github.com/shareinto/paas/internal/platform/database"
+
+var Migrations = []database.Migration{
+	{
+		Version: 202605301301,
+		Name:    "gitops_deployment_core",
+		Up: `
+CREATE TABLE deployment_templates (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL DEFAULT '',
+  project_id VARCHAR(64) NOT NULL DEFAULT '',
+  application_id VARCHAR(64) NOT NULL DEFAULT '',
+  name VARCHAR(128) NOT NULL,
+  scope VARCHAR(32) NOT NULL,
+  content MEDIUMTEXT NOT NULL,
+  current_version INT NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  KEY idx_deployment_templates_application (application_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE deployment_template_revisions (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  template_id VARCHAR(64) NOT NULL,
+  version INT NOT NULL,
+  content MEDIUMTEXT NOT NULL,
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_template_revision (template_id, version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE manifest_revisions (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  deployment_id VARCHAR(64) NOT NULL,
+  promotion_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  environment_id VARCHAR(64) NOT NULL,
+  template_revision_id VARCHAR(64) NOT NULL,
+  path VARCHAR(512) NOT NULL,
+  commit_sha VARCHAR(128) NOT NULL DEFAULT '',
+  merge_request_id VARCHAR(128) NOT NULL DEFAULT '',
+  change_type VARCHAR(32) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  KEY idx_manifest_revisions_promotion (promotion_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE deployments (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  environment_id VARCHAR(64) NOT NULL,
+  cluster_binding_id VARCHAR(64) NOT NULL,
+  promotion_id VARCHAR(64) NOT NULL,
+  freight_id VARCHAR(64) NOT NULL,
+  manifest_revision_id VARCHAR(64) NOT NULL,
+  image_repository VARCHAR(1024) NOT NULL,
+  image_tag VARCHAR(255) NOT NULL DEFAULT '',
+  image_digest VARCHAR(255) NOT NULL DEFAULT '',
+  status VARCHAR(32) NOT NULL,
+  message VARCHAR(1024) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  completed_at DATETIME(6) NULL,
+  KEY idx_deployments_application_created (application_id, created_at),
+  KEY idx_deployments_promotion (promotion_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE deployment_events (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  deployment_id VARCHAR(64) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  message VARCHAR(1024) NOT NULL DEFAULT '',
+  occurred_at DATETIME(6) NOT NULL,
+  KEY idx_deployment_events_deployment_time (deployment_id, occurred_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+		Down: `
+DROP TABLE IF EXISTS deployment_events;
+DROP TABLE IF EXISTS deployments;
+DROP TABLE IF EXISTS manifest_revisions;
+DROP TABLE IF EXISTS deployment_template_revisions;
+DROP TABLE IF EXISTS deployment_templates;
+`,
+	},
+}

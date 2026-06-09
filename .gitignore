@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*kubeconfig*
+coverage.out
+web/console/node_modules/
+web/console/dist/
+web/console/coverage/
+

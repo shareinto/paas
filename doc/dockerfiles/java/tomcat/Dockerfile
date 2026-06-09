@@ -1,0 +1,7 @@
+ARG RUNTIME_BASE
+FROM ${RUNTIME_BASE}
+
+ARG ARTIFACT_DEPLOY_PATH=/usr/local/tomcat/webapps
+
+RUN mkdir -p "${ARTIFACT_DEPLOY_PATH}"
+COPY app.war ${ARTIFACT_DEPLOY_PATH}/app.war

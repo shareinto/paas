@@ -1,0 +1,166 @@
+package build
+
+import "github.com/shareinto/paas/internal/platform/database"
+
+var Migrations = []database.Migration{
+	{
+		Version: 202605300601,
+		Name:    "build_core",
+		Up: `
+CREATE TABLE build_pipelines (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  name VARCHAR(64) NOT NULL DEFAULT '',
+  display_name VARCHAR(128) NOT NULL DEFAULT '',
+  description VARCHAR(1024) NOT NULL DEFAULT '',
+  provider VARCHAR(32) NOT NULL,
+  external_job_name VARCHAR(255) NOT NULL,
+  template_id VARCHAR(128) NOT NULL,
+  config_hash VARCHAR(64) NOT NULL DEFAULT '',
+  status VARCHAR(64) NOT NULL,
+  managed_by_platform TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  KEY idx_build_pipelines_application_status (application_id, status),
+  KEY idx_build_pipelines_project (tenant_id, project_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE build_runs (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  pipeline_id VARCHAR(64) NOT NULL,
+  pipeline_name VARCHAR(64) NOT NULL DEFAULT '',
+  pipeline_display_name VARCHAR(128) NOT NULL DEFAULT '',
+  application_id VARCHAR(64) NOT NULL,
+  source_repository_id VARCHAR(64) NOT NULL,
+  git_ref VARCHAR(128) NOT NULL,
+  commit_sha VARCHAR(128) NOT NULL DEFAULT '',
+  status VARCHAR(64) NOT NULL,
+  jenkins_queue_id VARCHAR(128) NOT NULL DEFAULT '',
+  jenkins_build_number BIGINT NOT NULL DEFAULT 0,
+  primary_artifact_id VARCHAR(64) NOT NULL DEFAULT '',
+  log_offset BIGINT NOT NULL DEFAULT 0,
+  error_message VARCHAR(1024) NOT NULL DEFAULT '',
+  requested_by VARCHAR(64) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  started_at DATETIME(6) NULL,
+  finished_at DATETIME(6) NULL,
+  KEY idx_build_runs_application_created (application_id, created_at),
+  KEY idx_build_runs_pipeline (pipeline_id),
+  CONSTRAINT fk_build_runs_pipeline FOREIGN KEY (pipeline_id) REFERENCES build_pipelines(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE build_run_sources (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  build_run_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  source_key VARCHAR(64) NOT NULL,
+  source_repository_id VARCHAR(64) NOT NULL,
+  git_ref VARCHAR(128) NOT NULL,
+  commit_sha VARCHAR(128) NOT NULL DEFAULT '',
+  source_path VARCHAR(512) NOT NULL,
+  is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_build_run_sources_key (build_run_id, source_key),
+  KEY idx_build_run_sources_run (build_run_id),
+  CONSTRAINT fk_build_run_sources_run FOREIGN KEY (build_run_id) REFERENCES build_runs(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE build_pipeline_sources (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  pipeline_id VARCHAR(64) NOT NULL,
+  source_key VARCHAR(64) NOT NULL,
+  display_name VARCHAR(128) NOT NULL DEFAULT '',
+  source_repository_id VARCHAR(64) NOT NULL,
+  build_environment_id VARCHAR(64) NOT NULL DEFAULT '',
+  source_path VARCHAR(512) NOT NULL,
+  build_spec JSON NOT NULL,
+  is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_build_pipeline_sources_key (pipeline_id, source_key),
+  KEY idx_build_pipeline_sources_pipeline (pipeline_id),
+  CONSTRAINT fk_build_pipeline_sources_pipeline FOREIGN KEY (pipeline_id) REFERENCES build_pipelines(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE build_artifacts (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  build_run_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  source_key VARCHAR(64) NOT NULL DEFAULT '',
+  type VARCHAR(32) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  uri VARCHAR(1024) NOT NULL,
+  digest VARCHAR(255) NOT NULL DEFAULT '',
+  is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  metadata JSON NULL,
+  created_at DATETIME(6) NOT NULL,
+  KEY idx_build_artifacts_run (build_run_id),
+  KEY idx_build_artifacts_application (application_id),
+  CONSTRAINT fk_build_artifacts_run FOREIGN KEY (build_run_id) REFERENCES build_runs(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+		Down: `
+DROP TABLE IF EXISTS build_artifacts;
+DROP TABLE IF EXISTS build_pipeline_sources;
+DROP TABLE IF EXISTS build_run_sources;
+DROP TABLE IF EXISTS build_runs;
+DROP TABLE IF EXISTS build_pipelines;
+`,
+	},
+	{
+		Version: 202606081430,
+		Name:    "build_logs_append_only",
+		Up: `
+CREATE TABLE build_logs (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  build_run_id VARCHAR(64) NOT NULL,
+  log_text LONGTEXT NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  KEY idx_build_logs_run_id (build_run_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+UPDATE repository_snapshots
+SET payload = JSON_REMOVE(payload, '$.Logs'),
+    updated_at = UTC_TIMESTAMP(6)
+WHERE module = 'build' AND JSON_CONTAINS_PATH(payload, 'one', '$.Logs');
+`,
+		Down: `DROP TABLE IF EXISTS build_logs;`,
+	},
+	{
+		Version: 202606081431,
+		Name:    "ensure_build_logs_longtext",
+		Up:      `ALTER TABLE build_logs MODIFY COLUMN log_text LONGTEXT NOT NULL;`,
+		Down:    `ALTER TABLE build_logs MODIFY COLUMN log_text TEXT NOT NULL;`,
+	},
+	{
+		Version: 202606081432,
+		Name:    "drop_build_logs_run_foreign_key",
+		Up: `
+SET @build_logs_fk_exists := (
+  SELECT COUNT(*)
+  FROM information_schema.TABLE_CONSTRAINTS
+  WHERE CONSTRAINT_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'build_logs'
+    AND CONSTRAINT_NAME = 'fk_build_logs_run'
+    AND CONSTRAINT_TYPE = 'FOREIGN KEY'
+);
+SET @build_logs_fk_ddl := IF(@build_logs_fk_exists > 0, 'ALTER TABLE build_logs DROP FOREIGN KEY fk_build_logs_run', 'SELECT 1');
+PREPARE build_logs_fk_stmt FROM @build_logs_fk_ddl;
+EXECUTE build_logs_fk_stmt;
+DEALLOCATE PREPARE build_logs_fk_stmt;
+`,
+		Down: `SELECT 1;`,
+	},
+}
