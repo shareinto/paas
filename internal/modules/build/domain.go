@@ -101,21 +101,22 @@ const (
 )
 
 type BuildPipeline struct {
-	ID                shared.ID           `json:"id"`
-	TenantID          shared.ID           `json:"tenant_id"`
-	ProjectID         shared.ID           `json:"project_id"`
-	ApplicationID     shared.ID           `json:"application_id"`
-	Name              string              `json:"name"`
-	DisplayName       string              `json:"display_name"`
-	Description       string              `json:"description"`
-	Provider          string              `json:"provider"`
-	ExternalJobName   string              `json:"external_job_name"`
-	TemplateID        string              `json:"template_id"`
-	ConfigHash        string              `json:"config_hash"`
-	Status            BuildPipelineStatus `json:"status"`
-	ManagedByPlatform bool                `json:"managed_by_platform"`
-	CreatedAt         time.Time           `json:"created_at"`
-	UpdatedAt         time.Time           `json:"updated_at"`
+	ID                  shared.ID               `json:"id"`
+	TenantID            shared.ID               `json:"tenant_id"`
+	ProjectID           shared.ID               `json:"project_id"`
+	ApplicationID       shared.ID               `json:"application_id"`
+	Name                string                  `json:"name"`
+	DisplayName         string                  `json:"display_name"`
+	Description         string                  `json:"description"`
+	Provider            string                  `json:"provider"`
+	ExternalJobName     string                  `json:"external_job_name"`
+	TemplateID          string                  `json:"template_id"`
+	ConfigHash          string                  `json:"config_hash"`
+	Status              BuildPipelineStatus     `json:"status"`
+	ManagedByPlatform   bool                    `json:"managed_by_platform"`
+	RuntimeEnvironments []RuntimeEnvironmentRef `json:"runtime_environments"`
+	CreatedAt           time.Time               `json:"created_at"`
+	UpdatedAt           time.Time               `json:"updated_at"`
 }
 
 type BuildPipelineSource struct {

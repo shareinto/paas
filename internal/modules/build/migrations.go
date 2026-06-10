@@ -110,6 +110,19 @@ CREATE TABLE build_run_sources (
   CONSTRAINT fk_build_run_sources_run FOREIGN KEY (build_run_id) REFERENCES build_runs(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE build_pipeline_runtime_environments (
+  pipeline_id VARCHAR(64) NOT NULL,
+  runtime_environment_id VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL DEFAULT '',
+  runtime_base_image VARCHAR(512) NOT NULL DEFAULT '',
+  artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
+  dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
+  position INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (pipeline_id, runtime_environment_id),
+  KEY idx_build_pipeline_runtime_environments_runtime (runtime_environment_id),
+  CONSTRAINT fk_build_pipeline_runtime_environments_pipeline FOREIGN KEY (pipeline_id) REFERENCES build_pipelines(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE build_pipeline_sources (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
   tenant_id VARCHAR(64) NOT NULL,
@@ -151,6 +164,7 @@ CREATE TABLE build_artifacts (
 `,
 		Down: `
 DROP TABLE IF EXISTS build_artifacts;
+DROP TABLE IF EXISTS build_pipeline_runtime_environments;
 DROP TABLE IF EXISTS build_pipeline_sources;
 DROP TABLE IF EXISTS build_run_sources;
 DROP TABLE IF EXISTS build_runs;
@@ -367,5 +381,42 @@ DEALLOCATE PREPARE build_pipeline_sources_build_environment_id_stmt;
 		Name:    "backfill_build_pipeline_identity_columns",
 		Up:      backfillBuildPipelineIdentityColumnsSQL,
 		Down:    `SELECT 1;`,
+	},
+	{
+		Version: 202606100102,
+		Name:    "build_pipeline_runtime_environment_tables",
+		Up: `
+CREATE TABLE IF NOT EXISTS build_pipeline_runtime_environments (
+  pipeline_id VARCHAR(64) NOT NULL,
+  runtime_environment_id VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL DEFAULT '',
+  runtime_base_image VARCHAR(512) NOT NULL DEFAULT '',
+  artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
+  dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
+  position INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (pipeline_id, runtime_environment_id),
+  KEY idx_build_pipeline_runtime_environments_runtime (runtime_environment_id),
+  CONSTRAINT fk_build_pipeline_runtime_environments_pipeline FOREIGN KEY (pipeline_id) REFERENCES build_pipelines(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+SET @application_runtime_environments_exists := (
+  SELECT COUNT(*) > 0
+  FROM information_schema.tables
+  WHERE table_schema = DATABASE()
+    AND table_name = 'application_runtime_environments'
+);
+SET @build_pipeline_runtime_backfill_sql := IF(@application_runtime_environments_exists,
+  'INSERT IGNORE INTO build_pipeline_runtime_environments (pipeline_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, position)
+   SELECT p.id, are.runtime_environment_id, are.name, are.runtime_base_image, are.artifact_deploy_path, are.dockerfile_path, are.position
+   FROM build_pipelines p
+   JOIN application_runtime_environments are ON are.application_id = p.application_id',
+  'SELECT 1');
+PREPARE build_pipeline_runtime_backfill_stmt FROM @build_pipeline_runtime_backfill_sql;
+EXECUTE build_pipeline_runtime_backfill_stmt;
+DEALLOCATE PREPARE build_pipeline_runtime_backfill_stmt;
+`,
+		Down: `
+DROP TABLE IF EXISTS build_pipeline_runtime_environments;
+`,
 	},
 }

@@ -314,6 +314,7 @@ func (r *MySQLRepository) GetPipeline(ctx context.Context, id shared.ID) (BuildP
 	if err != nil {
 		return BuildPipeline{}, database.NotFound(err, "build pipeline not found")
 	}
+	pipeline.RuntimeEnvironments, _ = r.listPipelineRuntimeEnvironments(ctx, pipeline.ID)
 	return pipeline, nil
 }
 
@@ -323,6 +324,7 @@ func (r *MySQLRepository) FindPipelineByApplication(ctx context.Context, applica
 	if err != nil {
 		return BuildPipeline{}, database.NotFound(err, "build pipeline not found")
 	}
+	pipeline.RuntimeEnvironments, _ = r.listPipelineRuntimeEnvironments(ctx, pipeline.ID)
 	return pipeline, nil
 }
 
@@ -332,11 +334,72 @@ func (r *MySQLRepository) FindPipelineByApplicationAndName(ctx context.Context, 
 	if err != nil {
 		return BuildPipeline{}, database.NotFound(err, "build pipeline not found")
 	}
+	pipeline.RuntimeEnvironments, _ = r.listPipelineRuntimeEnvironments(ctx, pipeline.ID)
 	return pipeline, nil
 }
 
 func (r *MySQLRepository) ListPipelinesByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[BuildPipeline], error) {
-	return listPage(ctx, r.db, page, "build_pipelines", buildPipelineSelect(), "application_id = ? AND status = ?", []any{applicationID, BuildPipelineStatusActive}, "created_at DESC, id DESC", scanBuildPipeline)
+	result, err := listPage(ctx, r.db, page, "build_pipelines", buildPipelineSelect(), "application_id = ? AND status = ?", []any{applicationID, BuildPipelineStatusActive}, "created_at DESC, id DESC", scanBuildPipeline)
+	if err != nil {
+		return result, err
+	}
+	for i := range result.Items {
+		result.Items[i].RuntimeEnvironments, _ = r.listPipelineRuntimeEnvironments(ctx, result.Items[i].ID)
+	}
+	return result, nil
+}
+
+func (r *MySQLRepository) ReplacePipelineRuntimeEnvironments(ctx context.Context, pipelineID shared.ID, runtimes []RuntimeEnvironmentRef) error {
+	if _, err := r.GetPipeline(ctx, pipelineID); err != nil {
+		return err
+	}
+	if len(runtimes) == 0 {
+		return shared.NewError(shared.CodeInvalidArgument, "runtime_environment_ids is required")
+	}
+	return r.withTx(ctx, func(txCtx context.Context) error {
+		exec := database.ExecutorFromContext(txCtx, r.db)
+		if _, err := exec.ExecContext(txCtx, "DELETE FROM build_pipeline_runtime_environments WHERE pipeline_id = ?", pipelineID); err != nil {
+			return database.WrapUnavailable(err, "replace build pipeline runtime environments failed")
+		}
+		for i, runtime := range runtimes {
+			if runtime.ID.IsZero() {
+				return shared.NewError(shared.CodeInvalidArgument, "runtime_environment_id is required")
+			}
+			if _, err := exec.ExecContext(txCtx, `
+INSERT INTO build_pipeline_runtime_environments (pipeline_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, position)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				pipelineID, runtime.ID, runtime.Name, runtime.RuntimeBaseImage, runtime.ArtifactDeployPath, runtime.DockerfilePath, i); err != nil {
+				return database.WrapUnavailable(err, "replace build pipeline runtime environments failed")
+			}
+		}
+		return nil
+	})
+}
+
+func (r *MySQLRepository) ListPipelineRuntimeEnvironments(ctx context.Context, pipelineID shared.ID) ([]RuntimeEnvironmentRef, error) {
+	if _, err := r.GetPipeline(ctx, pipelineID); err != nil {
+		return nil, err
+	}
+	return r.listPipelineRuntimeEnvironments(ctx, pipelineID)
+}
+
+func (r *MySQLRepository) listPipelineRuntimeEnvironments(ctx context.Context, pipelineID shared.ID) ([]RuntimeEnvironmentRef, error) {
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
+SELECT runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path
+FROM build_pipeline_runtime_environments WHERE pipeline_id = ? ORDER BY position ASC, runtime_environment_id ASC`, pipelineID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list build pipeline runtime environments failed")
+	}
+	defer rows.Close()
+	items := []RuntimeEnvironmentRef{}
+	for rows.Next() {
+		var runtime RuntimeEnvironmentRef
+		if err := rows.Scan(&runtime.ID, &runtime.Name, &runtime.RuntimeBaseImage, &runtime.ArtifactDeployPath, &runtime.DockerfilePath); err != nil {
+			return nil, database.WrapUnavailable(err, "scan build pipeline runtime environment failed")
+		}
+		items = append(items, runtime)
+	}
+	return items, rows.Err()
 }
 
 func (r *MySQLRepository) ReplacePipelineSources(ctx context.Context, pipelineID shared.ID, sources []BuildPipelineSource) error {

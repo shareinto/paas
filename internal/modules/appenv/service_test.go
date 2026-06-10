@@ -315,7 +315,7 @@ func TestCreateApplicationDoesNotRequireSourceConfiguration(t *testing.T) {
 	}
 }
 
-func TestCreateApplicationPersistsMultipleRuntimeEnvironments(t *testing.T) {
+func TestCreateApplicationDoesNotPersistRuntimeEnvironments(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	env.svc.runtimeEnvironments = fakeRuntimeEnvironmentQuery{
 		defaultID: "runtime_env_java17",
@@ -337,22 +337,19 @@ func TestCreateApplicationPersistsMultipleRuntimeEnvironments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateApplication() error = %v", err)
 	}
-	if app.RuntimeEnvironmentID != "runtime_env_java17" || len(app.RuntimeEnvironments) != 2 {
-		t.Fatalf("runtime environments should be persisted on application, got %+v", app)
-	}
-	if app.RuntimeEnvironments[0].Name != "java17" || app.RuntimeEnvironments[1].Name != "java21" {
-		t.Fatalf("unexpected runtime environment snapshots: %+v", app.RuntimeEnvironments)
+	if !app.RuntimeEnvironmentID.IsZero() || len(app.RuntimeEnvironments) != 0 {
+		t.Fatalf("runtime environments should not be persisted on application, got %+v", app)
 	}
 	source, err := env.svc.GetApplicationSource(ctx, app.ID)
 	if err != nil {
 		t.Fatalf("GetApplicationSource() error = %v", err)
 	}
 	if source.BuildSpec.RuntimeBaseImage != "registry.example/runtime/java17:1.0" {
-		t.Fatalf("primary runtime should keep BuildSpec compatibility fields, got %+v", source.BuildSpec)
+		t.Fatalf("source compatibility BuildSpec should keep explicit runtime fields, got %+v", source.BuildSpec)
 	}
 }
 
-func TestCreateApplicationTrustsEnabledRuntimeEnvironmentImage(t *testing.T) {
+func TestCreateApplicationDoesNotOverrideSourceRuntimeFromApplicationRuntime(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	env.svc.runtimeEnvironments = fakeRuntimeEnvironmentQuery{
 		defaultID: "runtime_env_custom",
@@ -373,15 +370,15 @@ func TestCreateApplicationTrustsEnabledRuntimeEnvironmentImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateApplication() error = %v", err)
 	}
-	if app.RuntimeEnvironmentID != "runtime_env_custom" {
-		t.Fatalf("runtime environment should be persisted, got %+v", app)
+	if !app.RuntimeEnvironmentID.IsZero() || len(app.RuntimeEnvironments) != 0 {
+		t.Fatalf("runtime environment should not be persisted, got %+v", app)
 	}
 	source, err := env.svc.GetApplicationSource(ctx, app.ID)
 	if err != nil {
 		t.Fatalf("GetApplicationSource() error = %v", err)
 	}
-	if source.BuildSpec.RuntimeBaseImage != "registry.internal/runtime/custom:20260603" {
-		t.Fatalf("runtime image should come from enabled runtime environment, got %+v", source.BuildSpec)
+	if source.BuildSpec.RuntimeBaseImage != "registry.example/runtime/java17:1.0" {
+		t.Fatalf("source runtime image should not come from application runtime field, got %+v", source.BuildSpec)
 	}
 }
 
@@ -430,7 +427,7 @@ func TestBuildEnvironmentSelectionDoesNotDefaultBuildSpecFields(t *testing.T) {
 	}
 }
 
-func TestSyncRuntimeEnvironmentSnapshotUpdatesApplicationsAndPrimaryBuildSpec(t *testing.T) {
+func TestSyncRuntimeEnvironmentSnapshotDoesNotUpdateNewApplications(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	env.svc.runtimeEnvironments = fakeRuntimeEnvironmentQuery{
 		defaultID: "runtime_env_java17",
@@ -460,6 +457,9 @@ func TestSyncRuntimeEnvironmentSnapshotUpdatesApplicationsAndPrimaryBuildSpec(t 
 	if err != nil {
 		t.Fatalf("CreateApplication(secondary) error = %v", err)
 	}
+	if len(primaryApp.RuntimeEnvironments) != 0 || len(secondaryApp.RuntimeEnvironments) != 0 {
+		t.Fatalf("new applications should not persist runtime environments: %+v %+v", primaryApp, secondaryApp)
+	}
 
 	count, err := env.svc.SyncRuntimeEnvironmentSnapshot(ctx, RuntimeEnvironmentSnapshotInput{
 		Actor: appenvActor(),
@@ -474,22 +474,22 @@ func TestSyncRuntimeEnvironmentSnapshotUpdatesApplicationsAndPrimaryBuildSpec(t 
 	if err != nil {
 		t.Fatalf("SyncRuntimeEnvironmentSnapshot() error = %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("expected two synced applications, got %d", count)
+	if count != 0 {
+		t.Fatalf("expected no synced applications, got %d", count)
 	}
 	primary, err := env.svc.GetApplication(ctx, primaryApp.ID)
 	if err != nil {
 		t.Fatalf("GetApplication(primary) error = %v", err)
 	}
-	if primary.RuntimeEnvironments[0].RuntimeBaseImage != "registry.example/runtime/java17:2.0" || primary.RuntimeEnvironments[0].ArtifactDeployPath != "/srv/" || primary.RuntimeEnvironments[0].DockerfilePath != "java/custom/Dockerfile" {
-		t.Fatalf("primary app runtime snapshot was not updated: %+v", primary.RuntimeEnvironments)
+	if len(primary.RuntimeEnvironments) != 0 {
+		t.Fatalf("primary app runtime snapshots should remain empty: %+v", primary.RuntimeEnvironments)
 	}
 	primarySource, err := env.svc.GetApplicationSource(ctx, primaryApp.ID)
 	if err != nil {
 		t.Fatalf("GetApplicationSource(primary) error = %v", err)
 	}
-	if primarySource.BuildSpec.RuntimeBaseImage != "registry.example/runtime/java17:2.0" || primarySource.BuildSpec.ArtifactDeployPath != "/srv/" {
-		t.Fatalf("primary runtime should update source BuildSpec runtime fields, got %+v", primarySource.BuildSpec)
+	if primarySource.BuildSpec.RuntimeBaseImage != "registry.example/runtime/java17:1.0" || primarySource.BuildSpec.ArtifactDeployPath != "/app/" {
+		t.Fatalf("source BuildSpec runtime fields should not be synced from app runtime, got %+v", primarySource.BuildSpec)
 	}
 	secondarySource, err := env.svc.GetApplicationSource(ctx, secondaryApp.ID)
 	if err != nil {
@@ -498,8 +498,10 @@ func TestSyncRuntimeEnvironmentSnapshotUpdatesApplicationsAndPrimaryBuildSpec(t 
 	if secondarySource.BuildSpec.RuntimeBaseImage == "registry.example/runtime/java17:2.0" {
 		t.Fatalf("secondary runtime must not overwrite primary source BuildSpec, got %+v", secondarySource.BuildSpec)
 	}
-	if len(env.audit.events) < 2 || env.audit.events[len(env.audit.events)-1].Action != "application.runtime_environment.sync" {
-		t.Fatalf("expected runtime sync audit events, got %+v", env.audit.events)
+	for _, event := range env.audit.events {
+		if event.Action == "application.runtime_environment.sync" {
+			t.Fatalf("new applications should not receive runtime sync audit events, got %+v", env.audit.events)
+		}
 	}
 }
 
@@ -764,8 +766,8 @@ func TestApplicationQueriesUpdateDeleteAndManualBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateApplication() with source error = %v", err)
 	}
-	if updated.RuntimeEnvironmentID != "runtime_env_java17" {
-		t.Fatalf("runtime environment should be updated, got %+v", updated)
+	if !updated.RuntimeEnvironmentID.IsZero() || len(updated.RuntimeEnvironments) != 0 {
+		t.Fatalf("runtime environment should not be updated on application, got %+v", updated)
 	}
 	editedSource, err := env.svc.GetApplicationSource(ctx, app.ID)
 	if err != nil || editedSource.BuildSpec.BuildCommand != "mvn verify" || editedSource.BuildSpec.ArtifactCopyCommand != "cp -ar target/edited.jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"" {

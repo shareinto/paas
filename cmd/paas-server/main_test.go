@@ -298,6 +298,9 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 		ApplicationID: created.ID,
 		Name:          "main",
 		DisplayName:   "主流水线",
+		RuntimeEnvironmentIDs: []shared.ID{
+			"runtime_env_java17",
+		},
 		Sources: []build.BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: shared.ID(source.ID), SourcePath: ".", IsPrimary: true, BuildSpec: build.BuildSpec{
 			SourcePath:          ".",
 			BuildCommand:        "mvn clean package -DskipTests",
@@ -463,6 +466,9 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 		ApplicationID: created.ID,
 		Name:          "main",
 		DisplayName:   "主流水线",
+		RuntimeEnvironmentIDs: []shared.ID{
+			"runtime_env_java17",
+		},
 		Sources: []build.BuildPipelineSourceInput{{Key: "main", DisplayName: "主代码源", SourceRepositoryID: repo.ID, SourcePath: ".", IsPrimary: true, BuildSpec: build.BuildSpec{
 			SourcePath:          ".",
 			BuildCommand:        "mvn clean package -DskipTests",

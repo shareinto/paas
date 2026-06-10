@@ -126,20 +126,22 @@ type TriggerBuildSourceInput struct {
 }
 
 type CreateBuildPipelineInput struct {
-	Actor         identityaccess.Subject     `json:"actor"`
-	ApplicationID shared.ID                  `json:"application_id"`
-	Name          string                     `json:"name"`
-	DisplayName   string                     `json:"display_name"`
-	Description   string                     `json:"description"`
-	Sources       []BuildPipelineSourceInput `json:"sources"`
+	Actor                 identityaccess.Subject     `json:"actor"`
+	ApplicationID         shared.ID                  `json:"application_id"`
+	Name                  string                     `json:"name"`
+	DisplayName           string                     `json:"display_name"`
+	Description           string                     `json:"description"`
+	RuntimeEnvironmentIDs []shared.ID                `json:"runtime_environment_ids"`
+	Sources               []BuildPipelineSourceInput `json:"sources"`
 }
 
 type UpdateBuildPipelineInput struct {
-	Actor       identityaccess.Subject     `json:"actor"`
-	PipelineID  shared.ID                  `json:"pipeline_id"`
-	DisplayName string                     `json:"display_name"`
-	Description string                     `json:"description"`
-	Sources     []BuildPipelineSourceInput `json:"sources"`
+	Actor                 identityaccess.Subject     `json:"actor"`
+	PipelineID            shared.ID                  `json:"pipeline_id"`
+	DisplayName           string                     `json:"display_name"`
+	Description           string                     `json:"description"`
+	RuntimeEnvironmentIDs []shared.ID                `json:"runtime_environment_ids"`
+	Sources               []BuildPipelineSourceInput `json:"sources"`
 }
 
 type BuildPipelineSourceInput struct {
@@ -861,7 +863,11 @@ func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipe
 	} else if shared.CodeOf(err) != shared.CodeNotFound {
 		return BuildPipeline{}, err
 	}
-	sources, err := s.preparePipelineSources(ctx, app, "", input.Sources)
+	runtimes, err := s.requireEnabledRuntimeEnvironments(ctx, input.RuntimeEnvironmentIDs)
+	if err != nil {
+		return BuildPipeline{}, err
+	}
+	sources, err := s.preparePipelineSources(ctx, app, "", input.Sources, runtimes)
 	if err != nil {
 		return BuildPipeline{}, err
 	}
@@ -871,20 +877,21 @@ func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipe
 	}
 	now := s.clock.Now()
 	pipeline := BuildPipeline{
-		ID:                id,
-		TenantID:          app.TenantID,
-		ProjectID:         app.ProjectID,
-		ApplicationID:     app.ID,
-		Name:              name,
-		DisplayName:       normalizeDisplayName(input.DisplayName, name),
-		Description:       strings.TrimSpace(input.Description),
-		Provider:          "jenkins",
-		ExternalJobName:   s.pipelineJobName(app, name),
-		TemplateID:        "global-build-template",
-		Status:            BuildPipelineStatusActive,
-		ManagedByPlatform: true,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ID:                  id,
+		TenantID:            app.TenantID,
+		ProjectID:           app.ProjectID,
+		ApplicationID:       app.ID,
+		Name:                name,
+		DisplayName:         normalizeDisplayName(input.DisplayName, name),
+		Description:         strings.TrimSpace(input.Description),
+		Provider:            "jenkins",
+		ExternalJobName:     s.pipelineJobName(app, name),
+		TemplateID:          "global-build-template",
+		Status:              BuildPipelineStatusActive,
+		ManagedByPlatform:   true,
+		RuntimeEnvironments: runtimes,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 	if err := s.repo.CreatePipeline(ctx, pipeline); err != nil {
 		return BuildPipeline{}, err
@@ -897,7 +904,11 @@ func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipe
 	if err := s.repo.ReplacePipelineSources(ctx, pipeline.ID, sources); err != nil {
 		return BuildPipeline{}, err
 	}
+	if err := s.repo.ReplacePipelineRuntimeEnvironments(ctx, pipeline.ID, runtimes); err != nil {
+		return BuildPipeline{}, err
+	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "build_pipeline.create", ResourceType: "build_pipeline", ResourceID: pipeline.ID, Result: "succeeded", Summary: "创建构建流水线", OccurredAt: now})
+	pipeline.RuntimeEnvironments = runtimes
 	return pipeline, nil
 }
 
@@ -928,8 +939,18 @@ func (s *Service) UpdateBuildPipeline(ctx context.Context, input UpdateBuildPipe
 	if err := s.check(ctx, input.Actor, app, "build_pipeline:update"); err != nil {
 		return BuildPipeline{}, err
 	}
+	runtimes := pipeline.RuntimeEnvironments
+	if len(input.RuntimeEnvironmentIDs) > 0 {
+		runtimes, err = s.requireEnabledRuntimeEnvironments(ctx, input.RuntimeEnvironmentIDs)
+		if err != nil {
+			return BuildPipeline{}, err
+		}
+	}
+	if len(runtimes) == 0 {
+		return BuildPipeline{}, shared.NewError(shared.CodeInvalidArgument, "runtime_environment_ids is required")
+	}
 	if len(input.Sources) > 0 {
-		sources, err := s.preparePipelineSources(ctx, app, pipeline.ID, input.Sources)
+		sources, err := s.preparePipelineSources(ctx, app, pipeline.ID, input.Sources, runtimes)
 		if err != nil {
 			return BuildPipeline{}, err
 		}
@@ -943,8 +964,14 @@ func (s *Service) UpdateBuildPipeline(ctx context.Context, input UpdateBuildPipe
 			return BuildPipeline{}, err
 		}
 	}
+	if len(input.RuntimeEnvironmentIDs) > 0 {
+		if err := s.repo.ReplacePipelineRuntimeEnvironments(ctx, pipeline.ID, runtimes); err != nil {
+			return BuildPipeline{}, err
+		}
+	}
 	pipeline.DisplayName = normalizeDisplayName(input.DisplayName, pipeline.Name)
 	pipeline.Description = strings.TrimSpace(input.Description)
+	pipeline.RuntimeEnvironments = runtimes
 	pipeline.UpdatedAt = s.clock.Now()
 	if err := s.repo.UpdatePipeline(ctx, pipeline); err != nil {
 		return BuildPipeline{}, err
@@ -1403,7 +1430,7 @@ func (s *Service) ensurePipeline(ctx context.Context, app ApplicationRef, pipeli
 		}
 		template = BuildTemplate{ID: "global-build-template", Name: "global-build-template", Version: 1, Content: defaultBuildTemplateContent}
 	}
-	jenkinsfile, err := s.renderBuildTemplate(ctx, template.Content, app, sources, repos, runSources, run)
+	jenkinsfile, err := s.renderBuildTemplate(ctx, template.Content, app, pipeline, sources, repos, runSources, run)
 	if err != nil {
 		return BuildPipeline{}, err
 	}
@@ -1465,7 +1492,7 @@ type buildTemplateImageTargetView struct {
 	IsPrimary          bool
 }
 
-func (s *Service) renderBuildTemplate(ctx context.Context, content string, app ApplicationRef, sources []ApplicationSourceRef, repos map[string]SourceRepositoryRef, runSources []BuildRunSource, run BuildRun) (string, error) {
+func (s *Service) renderBuildTemplate(ctx context.Context, content string, app ApplicationRef, pipeline BuildPipeline, sources []ApplicationSourceRef, repos map[string]SourceRepositoryRef, runSources []BuildRunSource, run BuildRun) (string, error) {
 	if strings.TrimSpace(content) == "" {
 		content = defaultBuildTemplateContent
 	}
@@ -1473,8 +1500,8 @@ func (s *Service) renderBuildTemplate(ctx context.Context, content string, app A
 	if err != nil {
 		return "", shared.WrapError(shared.CodeInvalidArgument, "build template syntax is invalid", err)
 	}
-	runtimePayload := buildRuntimePayload(app, sources)
-	imageTargets := s.buildTemplateImageTargets(app, sources, runSources, run)
+	runtimePayload := buildRuntimePayload(pipeline.RuntimeEnvironments, sources)
+	imageTargets := s.buildTemplateImageTargets(app, pipeline.RuntimeEnvironments, sources, runSources, run)
 	view := buildTemplateView{
 		AgentLabel:           "any",
 		Sources:              make([]buildTemplateSourceView, 0, len(sources)),
@@ -1557,14 +1584,14 @@ func (s *Service) buildTemplateDockerfileRepositoryView() buildTemplateDockerfil
 	}
 }
 
-func (s *Service) buildTemplateImageTargets(app ApplicationRef, sources []ApplicationSourceRef, runSources []BuildRunSource, run BuildRun) []buildTemplateImageTargetView {
+func (s *Service) buildTemplateImageTargets(app ApplicationRef, runtimes []RuntimeEnvironmentRef, sources []ApplicationSourceRef, runSources []BuildRunSource, run BuildRun) []buildTemplateImageTargetView {
 	imageRepo := strings.TrimRight(strings.TrimSpace(s.imageRepository), "/")
 	if imageRepo == "" {
 		imageRepo = "registry.local/paas"
 	}
 	baseTag := buildImageBaseTag(runSources, run)
 	primarySource := primaryBuildSource(sources, runSources)
-	runtimes := nonEmptyRuntimeEnvironments(app.RuntimeEnvironments)
+	runtimes = nonEmptyRuntimeEnvironments(runtimes)
 	if len(runtimes) == 0 && len(sources) > 0 {
 		runtimes = []RuntimeEnvironmentRef{{
 			Name:               firstNonEmpty(primarySource.Key, "main"),
@@ -1782,11 +1809,15 @@ func (s *Service) synthesizedArtifactInputs(ctx context.Context, run BuildRun, r
 	if err != nil {
 		return nil, err
 	}
+	pipeline, err := s.repo.GetPipeline(ctx, run.PipelineID)
+	if err != nil {
+		return nil, err
+	}
 	imageRepo := strings.TrimRight(strings.TrimSpace(s.imageRepository), "/")
 	if imageRepo == "" {
 		return nil, shared.NewError(shared.CodeInvalidArgument, "artifacts is required for succeeded build")
 	}
-	runtimes := nonEmptyRuntimeEnvironments(app.RuntimeEnvironments)
+	runtimes := nonEmptyRuntimeEnvironments(pipeline.RuntimeEnvironments)
 	if len(runtimes) > 0 {
 		source := primaryRunSource(runSources)
 		if source.SourceKey == "" {
@@ -1858,10 +1889,10 @@ func nonEmptyRuntimeEnvironments(runtimes []RuntimeEnvironmentRef) []RuntimeEnvi
 	return out
 }
 
-func buildRuntimePayload(app ApplicationRef, sources []ApplicationSourceRef) []map[string]string {
-	if appRuntimes := nonEmptyRuntimeEnvironments(app.RuntimeEnvironments); len(appRuntimes) > 0 {
-		runtimes := make([]map[string]string, 0, len(appRuntimes))
-		for _, runtime := range appRuntimes {
+func buildRuntimePayload(pipelineRuntimes []RuntimeEnvironmentRef, sources []ApplicationSourceRef) []map[string]string {
+	if pipelineRuntimes := nonEmptyRuntimeEnvironments(pipelineRuntimes); len(pipelineRuntimes) > 0 {
+		runtimes := make([]map[string]string, 0, len(pipelineRuntimes))
+		for _, runtime := range pipelineRuntimes {
 			runtimes = append(runtimes, map[string]string{
 				"id":                   runtime.ID.String(),
 				"name":                 runtime.Name,
@@ -2075,9 +2106,12 @@ func (s *Service) loadPipelineBuildContext(ctx context.Context, pipelineID share
 	return app, pipeline, sources, repos, nil
 }
 
-func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef, pipelineID shared.ID, inputs []BuildPipelineSourceInput) ([]BuildPipelineSource, error) {
+func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef, pipelineID shared.ID, inputs []BuildPipelineSourceInput, runtimes []RuntimeEnvironmentRef) ([]BuildPipelineSource, error) {
 	if len(inputs) == 0 {
 		return nil, shared.NewError(shared.CodeInvalidArgument, "pipeline sources are required")
+	}
+	if len(runtimes) == 0 {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "runtime_environment_ids is required")
 	}
 	sources := make([]BuildPipelineSource, 0, len(inputs))
 	seen := map[string]struct{}{}
@@ -2115,6 +2149,7 @@ func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef
 		if strings.TrimSpace(spec.DefaultRef) == "" {
 			spec.DefaultRef = "main"
 		}
+		applyPipelineRuntime(runtimes[0], &spec)
 		if err := validateBuildSpec(spec); err != nil {
 			return nil, err
 		}
@@ -2154,6 +2189,43 @@ func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef
 		sources[0] = primary
 	}
 	return sources, nil
+}
+
+func (s *Service) requireEnabledRuntimeEnvironments(ctx context.Context, ids []shared.ID) ([]RuntimeEnvironmentRef, error) {
+	if len(ids) == 0 {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "runtime_environment_ids is required")
+	}
+	out := make([]RuntimeEnvironmentRef, 0, len(ids))
+	seen := map[shared.ID]struct{}{}
+	for _, id := range ids {
+		if id.IsZero() {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "runtime_environment_id is required")
+		}
+		if _, ok := seen[id]; ok {
+			return nil, shared.NewError(shared.CodeConflict, "runtime environment already selected")
+		}
+		seen[id] = struct{}{}
+		environment, err := s.repo.GetRuntimeEnvironment(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if environment.Status != RuntimeEnvironmentEnabled {
+			return nil, shared.NewError(shared.CodeFailedPrecondition, "runtime environment is disabled")
+		}
+		out = append(out, RuntimeEnvironmentRef{
+			ID:                 environment.ID,
+			Name:               environment.Name,
+			RuntimeBaseImage:   environment.RuntimeBaseImage,
+			ArtifactDeployPath: environment.ArtifactDeployPath,
+			DockerfilePath:     environment.DockerfilePath,
+		})
+	}
+	return out, nil
+}
+
+func applyPipelineRuntime(runtime RuntimeEnvironmentRef, spec *BuildSpec) {
+	spec.RuntimeBaseImage = runtime.RuntimeBaseImage
+	spec.ArtifactDeployPath = runtime.ArtifactDeployPath
 }
 
 func (s *Service) requireApplication(ctx context.Context, applicationID shared.ID) (ApplicationRef, error) {

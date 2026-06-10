@@ -28,7 +28,7 @@
 ## 2026-05-31 更新记录
 
 - 新增平台级构建管理，支持构建环境、运行时环境和全局构建模板管理。
-- `ApplicationSource` 记录用户创建应用时选择的构建环境，`Application` 记录运行时环境，首次构建创建 `BuildPipeline` 时按全局模板渲染 Pipeline Job XML。
+- `BuildPipelineSource` 记录用户创建构建流水线时选择的构建环境，`BuildPipeline` 记录运行时环境快照，首次构建时按全局模板渲染 Pipeline Job XML。
 - Jenkinsfile 中渲染当前 BuildRun 专属回调地址 `/api/builds/{buildRunId}/callback`。
 - 日志接口在 Jenkins build number 未就绪时返回排队状态事件，前端可持续刷新等待日志。
 - 2026-06-02 更新：应用创建阶段不再创建 Jenkins Job；点击构建时按固定名称创建或更新 Jenkins Job 后触发，不再计算 md5 指纹。
