@@ -141,6 +141,9 @@ func TestBuildCorePipelineColumnsAreBackfilled(t *testing.T) {
 			"information_schema.columns",
 			"ADD COLUMN",
 			"build_pipelines",
+			"name",
+			"display_name",
+			"description",
 			"template_id",
 			"config_hash",
 			"managed_by_platform",
@@ -157,6 +160,31 @@ func TestBuildCorePipelineColumnsAreBackfilled(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("backfill_build_core_pipeline_columns migration not found")
+	}
+}
+
+func TestBuildPipelineIdentityColumnsAreBackfilled(t *testing.T) {
+	var found bool
+	for _, migration := range migrations.All() {
+		if migration.Name != "backfill_build_pipeline_identity_columns" {
+			continue
+		}
+		found = true
+		for _, want := range []string{
+			"information_schema.columns",
+			"ADD COLUMN",
+			"build_pipelines",
+			"name",
+			"display_name",
+			"description",
+		} {
+			if !strings.Contains(migration.Up, want) {
+				t.Fatalf("build pipeline identity backfill migration Up SQL missing %q:\n%s", want, migration.Up)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("backfill_build_pipeline_identity_columns migration not found")
 	}
 }
 

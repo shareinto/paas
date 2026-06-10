@@ -19,6 +19,9 @@ func TestMigrationsBackfillBuildCorePipelineColumns(t *testing.T) {
 
 	oldCore := Migrations[0]
 	replacements := []string{
+		"  name VARCHAR(64) NOT NULL DEFAULT '',\n",
+		"  display_name VARCHAR(128) NOT NULL DEFAULT '',\n",
+		"  description VARCHAR(1024) NOT NULL DEFAULT '',\n",
 		"  template_id VARCHAR(128) NOT NULL,\n",
 		"  config_hash VARCHAR(64) NOT NULL DEFAULT '',\n",
 		"  managed_by_platform TINYINT(1) NOT NULL DEFAULT 1,\n",
@@ -41,7 +44,7 @@ func TestMigrationsBackfillBuildCorePipelineColumns(t *testing.T) {
 	}
 
 	for table, columns := range map[string][]string{
-		"build_pipelines":        {"template_id", "config_hash", "managed_by_platform"},
+		"build_pipelines":        {"name", "display_name", "description", "template_id", "config_hash", "managed_by_platform"},
 		"build_runs":             {"pipeline_name", "pipeline_display_name"},
 		"build_pipeline_sources": {"build_environment_id"},
 	} {
@@ -121,6 +124,49 @@ CREATE TABLE build_pipeline_sources (
 		t.Fatalf("apply backfill migration: %v", err)
 	}
 	assertMySQLColumnExists(t, ctx, db, "build_pipeline_sources", "build_environment_id")
+}
+
+func TestMigrationsBackfillBuildPipelineIdentityColumnsAfterCoreBackfillWasApplied(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.MySQLDB(t)
+	migrator := database.NewMigrator(db)
+
+	oldCore := Migrations[0]
+	for _, replacement := range []string{
+		"  name VARCHAR(64) NOT NULL DEFAULT '',\n",
+		"  display_name VARCHAR(128) NOT NULL DEFAULT '',\n",
+		"  description VARCHAR(1024) NOT NULL DEFAULT '',\n",
+	} {
+		oldCore.Up = strings.Replace(oldCore.Up, replacement, "", 1)
+	}
+	if oldCore.Up == Migrations[0].Up {
+		t.Fatalf("test setup did not remove build pipeline identity columns from old core migration")
+	}
+	if err := migrator.Up(ctx, []database.Migration{oldCore}); err != nil {
+		t.Fatalf("apply old core migration: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)", int64(202606090402), "backfill_build_core_pipeline_columns", time.Now().UTC()); err != nil {
+		t.Fatalf("mark old backfill migration applied: %v", err)
+	}
+
+	if err := migrator.Up(ctx, Migrations[1:]); err != nil {
+		t.Fatalf("apply current follow-up migrations: %v", err)
+	}
+
+	for _, column := range []string{"name", "display_name", "description"} {
+		assertMySQLColumnExists(t, ctx, db, "build_pipelines", column)
+	}
+	repo, err := NewMySQLRepository(ctx, db)
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	result, err := repo.ListPipelinesByApplication(ctx, "app_1", shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListPipelinesByApplication() error = %v", err)
+	}
+	if got := len(result.Items); got != 0 {
+		t.Fatalf("ListPipelinesByApplication() returned %d items, want 0", got)
+	}
 }
 
 type columnQueryer interface {

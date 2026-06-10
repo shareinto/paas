@@ -2,6 +2,44 @@ package build
 
 import "github.com/shareinto/paas/internal/platform/database"
 
+const backfillBuildPipelineIdentityColumnsSQL = `
+SET @build_pipelines_name_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipelines'
+    AND column_name = 'name'
+);
+SET @build_pipelines_name_ddl := IF(@build_pipelines_name_missing, 'ALTER TABLE build_pipelines ADD COLUMN name VARCHAR(64) NOT NULL DEFAULT '''' AFTER application_id', 'SELECT 1');
+PREPARE build_pipelines_name_stmt FROM @build_pipelines_name_ddl;
+EXECUTE build_pipelines_name_stmt;
+DEALLOCATE PREPARE build_pipelines_name_stmt;
+
+SET @build_pipelines_display_name_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipelines'
+    AND column_name = 'display_name'
+);
+SET @build_pipelines_display_name_ddl := IF(@build_pipelines_display_name_missing, 'ALTER TABLE build_pipelines ADD COLUMN display_name VARCHAR(128) NOT NULL DEFAULT '''' AFTER name', 'SELECT 1');
+PREPARE build_pipelines_display_name_stmt FROM @build_pipelines_display_name_ddl;
+EXECUTE build_pipelines_display_name_stmt;
+DEALLOCATE PREPARE build_pipelines_display_name_stmt;
+
+SET @build_pipelines_description_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipelines'
+    AND column_name = 'description'
+);
+SET @build_pipelines_description_ddl := IF(@build_pipelines_description_missing, 'ALTER TABLE build_pipelines ADD COLUMN description VARCHAR(1024) NOT NULL DEFAULT '''' AFTER display_name', 'SELECT 1');
+PREPARE build_pipelines_description_stmt FROM @build_pipelines_description_ddl;
+EXECUTE build_pipelines_description_stmt;
+DEALLOCATE PREPARE build_pipelines_description_stmt;
+`
+
 var Migrations = []database.Migration{
 	{
 		Version: 202605300601,
@@ -249,7 +287,7 @@ CREATE TABLE IF NOT EXISTS build_pipeline_sources (
   KEY idx_build_pipeline_sources_pipeline (pipeline_id),
   CONSTRAINT fk_build_pipeline_sources_pipeline FOREIGN KEY (pipeline_id) REFERENCES build_pipelines(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
+` + backfillBuildPipelineIdentityColumnsSQL + `
 SET @build_pipelines_template_id_missing := (
   SELECT COUNT(*) = 0
   FROM information_schema.columns
@@ -323,5 +361,11 @@ EXECUTE build_pipeline_sources_build_environment_id_stmt;
 DEALLOCATE PREPARE build_pipeline_sources_build_environment_id_stmt;
 `,
 		Down: `SELECT 1;`,
+	},
+	{
+		Version: 202606100101,
+		Name:    "backfill_build_pipeline_identity_columns",
+		Up:      backfillBuildPipelineIdentityColumnsSQL,
+		Down:    `SELECT 1;`,
 	},
 }
