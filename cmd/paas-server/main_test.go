@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shareinto/paas/internal/migrations"
 	"github.com/shareinto/paas/internal/modules/appenv"
 	"github.com/shareinto/paas/internal/modules/build"
 	"github.com/shareinto/paas/internal/modules/clusteragent"
@@ -17,6 +18,7 @@ import (
 	"github.com/shareinto/paas/internal/modules/sourcerepository"
 	"github.com/shareinto/paas/internal/modules/tenantproject"
 	"github.com/shareinto/paas/internal/shared"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type serverTestFixture struct {
@@ -30,11 +32,8 @@ type serverTestFixture struct {
 }
 
 func TestApplicationStartsAndServesDevelopmentAPI(t *testing.T) {
-	app, err := newApplication(context.Background())
-	if err != nil {
-		t.Fatalf("newApplication() error = %v", err)
-	}
-
+	app := newTestApplication(t)
+	defer app.db.Close()
 	health := httptest.NewRecorder()
 	app.handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if health.Code != http.StatusOK {
@@ -79,6 +78,16 @@ func TestApplicationStartsAndServesDevelopmentAPI(t *testing.T) {
 	}
 }
 
+func newTestApplication(t *testing.T) *application {
+	t.Helper()
+	testsupport.ConfigureMySQLEnv(t, migrations.All()...)
+	app, err := newApplication(context.Background())
+	if err != nil {
+		t.Fatalf("newApplication() error = %v", err)
+	}
+	return app
+}
+
 func TestMigrateDatabaseIfEnabledSkipsByDefault(t *testing.T) {
 	t.Setenv("PAAS_AUTO_MIGRATE", "")
 	t.Setenv("MYSQL_HOST", "127.0.0.1")
@@ -92,18 +101,9 @@ func TestMigrateDatabaseIfEnabledSkipsByDefault(t *testing.T) {
 	}
 }
 
-func TestNewApplicationRejectsUnsupportedRepositoryDriver(t *testing.T) {
-	t.Setenv("PAAS_REPOSITORY_DRIVER", "bad")
-	if _, err := newApplication(context.Background()); err == nil || shared.CodeOf(err) != shared.CodeInvalidArgument {
-		t.Fatalf("expected invalid repository driver error, got %v", err)
-	}
-}
-
 func TestDevelopmentRoutesCoverConsoleContract(t *testing.T) {
-	app, err := newApplication(context.Background())
-	if err != nil {
-		t.Fatalf("newApplication() error = %v", err)
-	}
+	app := newTestApplication(t)
+	defer app.db.Close()
 	fixture := seedServerTestData(t, app)
 
 	for _, tc := range []struct {
@@ -142,10 +142,8 @@ func TestDevelopmentRoutesCoverConsoleContract(t *testing.T) {
 }
 
 func TestProjectManagementCreateAndDeleteRoutes(t *testing.T) {
-	app, err := newApplication(context.Background())
-	if err != nil {
-		t.Fatalf("newApplication() error = %v", err)
-	}
+	app := newTestApplication(t)
+	defer app.db.Close()
 	fixture := seedServerTestData(t, app)
 
 	body := bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"tenant_id":"` + fixture.tenant.ID.String() + `","name":"empty-project","display_name":"空项目","description":"临时验证项目"}`)
@@ -208,11 +206,31 @@ func TestProjectManagementCreateAndDeleteRoutes(t *testing.T) {
 	}
 }
 
-func TestModuleRoutesUseWiredPorts(t *testing.T) {
-	app, err := newApplication(context.Background())
-	if err != nil {
-		t.Fatalf("newApplication() error = %v", err)
+func TestTenantManagementUpdateRoute(t *testing.T) {
+	app := newTestApplication(t)
+	defer app.db.Close()
+	fixture := seedServerTestData(t, app)
+
+	body := bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"display_name":"平台租户","description":"用于平台项目"}`)
+	updateRec := httptest.NewRecorder()
+	app.handler.ServeHTTP(updateRec, httptest.NewRequest(http.MethodPatch, "/api/tenants/"+fixture.tenant.ID.String(), body))
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update tenant status = %d body = %s", updateRec.Code, updateRec.Body.String())
 	}
+	if !bytes.Contains(updateRec.Body.Bytes(), []byte("平台租户")) || !bytes.Contains(updateRec.Body.Bytes(), []byte("用于平台项目")) {
+		t.Fatalf("tenant update response missing updated fields: %s", updateRec.Body.String())
+	}
+
+	listRec := httptest.NewRecorder()
+	app.handler.ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/tenants", nil))
+	if listRec.Code != http.StatusOK || !bytes.Contains(listRec.Body.Bytes(), []byte("平台租户")) {
+		t.Fatalf("tenants response = %d %s", listRec.Code, listRec.Body.String())
+	}
+}
+
+func TestModuleRoutesUseWiredPorts(t *testing.T) {
+	app := newTestApplication(t)
+	defer app.db.Close()
 	fixture := seedServerTestData(t, app)
 
 	body := bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"git_ref":"main","commit_sha":"abc123"}`)
@@ -236,10 +254,8 @@ func TestModuleRoutesUseWiredPorts(t *testing.T) {
 }
 
 func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
-	app, err := newApplication(context.Background())
-	if err != nil {
-		t.Fatalf("newApplication() error = %v", err)
-	}
+	app := newTestApplication(t)
+	defer app.db.Close()
 	fixture := seedServerTestData(t, app)
 
 	repoBody := bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"project_id":"` + fixture.project.ID.String() + `","name":"invoice-api","display_name":"发票服务仓库","default_branch":"main"}`)
@@ -307,10 +323,8 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 }
 
 func TestServerAdaptersAndHelpers(t *testing.T) {
-	app, err := newApplication(context.Background())
-	if err != nil {
-		t.Fatalf("newApplication() error = %v", err)
-	}
+	app := newTestApplication(t)
+	defer app.db.Close()
 	fixture := seedServerTestData(t, app)
 	ctx := context.Background()
 

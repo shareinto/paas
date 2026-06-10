@@ -85,4 +85,20 @@ DROP TABLE IF EXISTS deployment_template_revisions;
 DROP TABLE IF EXISTS deployment_templates;
 `,
 	},
+	{
+		Version: 202606090201,
+		Name:    "gitops_lookup_constraints",
+		Up: `
+ALTER TABLE deployment_templates
+  ADD UNIQUE KEY uk_deployment_templates_platform_name (scope, name),
+  ADD UNIQUE KEY uk_deployment_templates_application (scope, application_id);
+ALTER TABLE deployments
+  ADD UNIQUE KEY uk_deployments_promotion (promotion_id);
+`,
+		Down: `
+ALTER TABLE deployments DROP INDEX uk_deployments_promotion;
+ALTER TABLE deployment_templates DROP INDEX uk_deployment_templates_application;
+ALTER TABLE deployment_templates DROP INDEX uk_deployment_templates_platform_name;
+`,
+	},
 }

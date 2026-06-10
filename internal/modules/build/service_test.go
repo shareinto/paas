@@ -14,6 +14,7 @@ import (
 	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
 	"github.com/shareinto/paas/internal/shared/testutil"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type fakeApplicationQuery struct {
@@ -176,7 +177,7 @@ func (s *recordingRuntimeSyncer) SyncRuntimeEnvironment(_ context.Context, _ ide
 
 type buildTestEnv struct {
 	svc        *Service
-	repo       *MemoryRepository
+	repo       Repository
 	runner     *fakeRunner
 	permission *recordingPermission
 	audit      *recordingAudit
@@ -184,8 +185,12 @@ type buildTestEnv struct {
 	syncer     *recordingRuntimeSyncer
 }
 
-func newBuildTestEnv() buildTestEnv {
-	repo := NewMemoryRepository()
+func newBuildTestEnv(t *testing.T) buildTestEnv {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
 	runner := &fakeRunner{queue: BuildQueueItem{QueueID: "queue-1"}, queueItems: map[string]BuildQueueItem{}, statuses: map[int64]BuildStatus{}}
 	permission := &recordingPermission{}
 	audit := &recordingAudit{}
@@ -263,7 +268,7 @@ func createDefaultPipeline(t *testing.T, env buildTestEnv) BuildPipeline {
 }
 
 func TestEnsureDefaultBuildConfigurationDoesNotRecreateDeletedEnvironments(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	actor := buildActor()
 
@@ -301,7 +306,7 @@ func TestEnsureDefaultBuildConfigurationDoesNotRecreateDeletedEnvironments(t *te
 }
 
 func TestUpdateBuildAndRuntimeEnvironmentsEditFields(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	actor := buildActor()
 
@@ -364,7 +369,7 @@ func TestUpdateBuildAndRuntimeEnvironmentsEditFields(t *testing.T) {
 }
 
 func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 
 	pipeline := createDefaultPipeline(t, env)
@@ -413,7 +418,7 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 }
 
 func TestCreateNamedPipelinesAndTriggerSelectedPipeline(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 
 	apiPipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
@@ -480,7 +485,7 @@ func TestCreateNamedPipelinesAndTriggerSelectedPipeline(t *testing.T) {
 }
 
 func TestApplicationLevelBuildTriggerRequiresPipelineID(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor(), ApplicationID: "app_user"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("application-level trigger should require pipeline_id, got %v", err)
@@ -488,7 +493,7 @@ func TestApplicationLevelBuildTriggerRequiresPipelineID(t *testing.T) {
 }
 
 func TestTriggerBuildRendersLegacyTemplateDockerfilePath(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	if err := env.repo.SaveBuildTemplate(ctx, BuildTemplate{
 		ID:      "global-build-template",
@@ -509,7 +514,7 @@ func TestTriggerBuildRendersLegacyTemplateDockerfilePath(t *testing.T) {
 }
 
 func TestTriggerBuildRendersAcceleratedDefaultJenkinsfile(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 
 	pipeline := createDefaultPipeline(t, env)
@@ -566,7 +571,7 @@ func TestTriggerBuildRendersAcceleratedDefaultJenkinsfile(t *testing.T) {
 }
 
 func TestTriggerBuildImageTagDoesNotUseBuildRunID(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 
 	pipeline := createDefaultPipeline(t, env)
@@ -586,7 +591,7 @@ func TestTriggerBuildImageTagDoesNotUseBuildRunID(t *testing.T) {
 }
 
 func TestSaveBuildTemplateAcceptsAcceleratedTemplateWithoutNewViewFields(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 
 	if _, err := env.svc.SaveBuildTemplate(ctx, SaveBuildTemplateInput{Actor: buildActor(), Content: defaultBuildTemplateContent}); err != nil {
@@ -595,7 +600,7 @@ func TestSaveBuildTemplateAcceptsAcceleratedTemplateWithoutNewViewFields(t *test
 }
 
 func TestTriggerBuildFailsWhenDockerfileRepositoryIsNotConfigured(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	env.svc.dockerfileRepo = DockerfileRepositoryConfig{}
 	ctx := context.Background()
 
@@ -613,7 +618,7 @@ func TestTriggerBuildFailsWhenDockerfileRepositoryIsNotConfigured(t *testing.T) 
 }
 
 func TestCreateBuildPipelineDoesNotProvisionJenkinsUntilTriggered(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 
 	pipeline := createDefaultPipeline(t, env)
@@ -629,8 +634,43 @@ func TestCreateBuildPipelineDoesNotProvisionJenkinsUntilTriggered(t *testing.T) 
 	}
 }
 
+func TestListBuildPipelinesReturnsNewestFirst(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+
+	createDefaultPipeline(t, env)
+	second, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
+		Actor:         buildActor(),
+		ApplicationID: "app_user",
+		Name:          "release",
+		DisplayName:   "发布流水线",
+		Sources: []BuildPipelineSourceInput{{
+			Key:                "main",
+			DisplayName:        "主代码源",
+			SourceRepositoryID: "repo_user",
+			SourcePath:         validBuildSpec().SourcePath,
+			BuildSpec:          validBuildSpec(),
+			IsPrimary:          true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateBuildPipeline(release) error = %v", err)
+	}
+
+	result, err := env.svc.ListBuildPipelines(ctx, "app_user", shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListBuildPipelines() error = %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("expected 2 pipelines, got %+v", result.Items)
+	}
+	if result.Items[0].ID != second.ID {
+		t.Fatalf("newest pipeline should be first, got %+v", result.Items)
+	}
+}
+
 func TestDeleteBuildPipelineDeletesManagedJenkinsJob(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	pipeline := createDefaultPipeline(t, env)
 	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
@@ -657,7 +697,7 @@ func TestDeleteBuildPipelineDeletesManagedJenkinsJob(t *testing.T) {
 }
 
 func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	frontSources := []BuildPipelineSourceInput{
 		{Key: "frontcomponents", SourceRepositoryID: "repo_frontcomponents", BuildSpec: BuildSpec{
@@ -746,7 +786,7 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 }
 
 func TestEnsureBuildPipelineRejectsMissingArtifactCopyCommand(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	spec := validBuildSpec()
 	spec.ArtifactCopyCommand = " "
@@ -758,7 +798,7 @@ func TestEnsureBuildPipelineRejectsMissingArtifactCopyCommand(t *testing.T) {
 }
 
 func TestTriggerBuildUpdatesPipelineWhenConfigChangesAndSupportsTomcatWar(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	pipeline := createDefaultPipeline(t, env)
 	firstRun, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
@@ -799,7 +839,7 @@ func TestTriggerBuildUpdatesPipelineWhenConfigChangesAndSupportsTomcatWar(t *tes
 }
 
 func TestTriggerBuildUpdatesPipelineBeforeBuildWhenPreviousRunIsActive(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	env.runner.queue = BuildQueueItem{QueueID: "queue-1", BuildNumber: 9}
 	pipeline := createDefaultPipeline(t, env)
@@ -835,7 +875,7 @@ func TestTriggerBuildUpdatesPipelineBeforeBuildWhenPreviousRunIsActive(t *testin
 }
 
 func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	env.svc.SetApplicationQuery(fakeApplicationQuery{
 		apps: map[shared.ID]ApplicationRef{
@@ -899,7 +939,7 @@ func TestTriggerBuildValidationAndFailures(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := newBuildTestEnv()
+			env := newBuildTestEnv(t)
 			spec := validBuildSpec()
 			tt.mut(&spec)
 			env.svc.apps = fakeApplicationQuery{
@@ -912,55 +952,55 @@ func TestTriggerBuildValidationAndFailures(t *testing.T) {
 		})
 	}
 
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	pipeline := createDefaultPipeline(t, env)
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: identityaccess.Subject{}, PipelineID: pipeline.ID}); shared.CodeOf(err) != shared.CodeUnauthenticated {
 		t.Fatalf("missing actor should fail, got %v", err)
 	}
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	pipeline = createDefaultPipeline(t, env)
 	env.permission.err = shared.NewError(shared.CodePermissionDenied, "denied")
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); shared.CodeOf(err) != shared.CodePermissionDenied {
 		t.Fatalf("permission denial should fail, got %v", err)
 	}
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	pipeline = createDefaultPipeline(t, env)
 	env.runner.jobErr = errors.New("jenkins job failed")
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); err == nil {
 		t.Fatalf("job failure should fail")
 	}
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	pipeline = createDefaultPipeline(t, env)
 	env.runner.triggerErr = errors.New("jenkins trigger failed")
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); err == nil {
 		t.Fatalf("trigger failure should fail")
 	}
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	pipeline = createDefaultPipeline(t, env)
 	env.svc.runner = nil
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing runner should fail, got %v", err)
 	}
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	pipeline = createDefaultPipeline(t, env)
 	env.svc.apps = nil
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing app query should fail, got %v", err)
 	}
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	pipeline = createDefaultPipeline(t, env)
 	env.svc.sourceRepos = nil
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing source repository query should fail, got %v", err)
 	}
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor()}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("missing pipeline_id should fail, got %v", err)
 	}
 }
 
 func TestQueueSyncLogsCancelAndCallback(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	pipeline := createDefaultPipeline(t, env)
 	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
@@ -1017,7 +1057,7 @@ func TestQueueSyncLogsCancelAndCallback(t *testing.T) {
 		t.Fatalf("callback should be idempotent for terminal run, got %+v, %v", again, err)
 	}
 
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	env.runner.queue = BuildQueueItem{QueueID: "queue-2", BuildNumber: 22}
 	pipeline = createDefaultPipeline(t, env)
 	cancelRun, _ := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
@@ -1028,7 +1068,7 @@ func TestQueueSyncLogsCancelAndCallback(t *testing.T) {
 }
 
 func TestBuildCallbackDrainsFinalLogsBeforeTerminalStatus(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	env.runner.queue = BuildQueueItem{QueueID: "queue-final", BuildNumber: 71}
 	pipeline := createDefaultPipeline(t, env)
@@ -1066,7 +1106,7 @@ func TestBuildCallbackDrainsFinalLogsBeforeTerminalStatus(t *testing.T) {
 }
 
 func TestTerminalBuildLogStreamWaitsForJenkinsLogCompletion(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	env.runner.queue = BuildQueueItem{QueueID: "queue-terminal", BuildNumber: 81}
 	pipeline := createDefaultPipeline(t, env)
@@ -1096,7 +1136,7 @@ func TestTerminalBuildLogStreamWaitsForJenkinsLogCompletion(t *testing.T) {
 }
 
 func TestCallbackFailureAndPreconditions(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	pipeline := createDefaultPipeline(t, env)
 	run, _ := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
@@ -1130,7 +1170,7 @@ func TestCallbackFailureAndPreconditions(t *testing.T) {
 
 func TestAdditionalServiceBranches(t *testing.T) {
 	ctx := context.Background()
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	env.runner.queue = BuildQueueItem{QueueID: "queue-canceled"}
 	pipeline := createDefaultPipeline(t, env)
 	run, _ := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
@@ -1144,7 +1184,7 @@ func TestAdditionalServiceBranches(t *testing.T) {
 		t.Fatalf("sync completed queue should be no-op, got %+v, %v", again, err)
 	}
 
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	env.runner.queue = BuildQueueItem{QueueID: "queue-log", BuildNumber: 44}
 	pipeline = createDefaultPipeline(t, env)
 	run, _ = env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
@@ -1157,7 +1197,7 @@ func TestAdditionalServiceBranches(t *testing.T) {
 		t.Fatalf("runner log error should fail")
 	}
 
-	env = newBuildTestEnv()
+	env = newBuildTestEnv(t)
 	env.runner.queue = BuildQueueItem{QueueID: "queue-cancel", BuildNumber: 45}
 	env.runner.cancelErr = errors.New("cancel unavailable")
 	pipeline = createDefaultPipeline(t, env)
@@ -1222,7 +1262,7 @@ func TestJenkinsfileTemplateValidationAndWrapping(t *testing.T) {
 }
 
 func TestDeleteJenkinsJobTemplateRejectsReferencedTemplate(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	template, err := env.svc.CreateJenkinsJobTemplate(ctx, CreateJenkinsJobTemplateInput{Actor: buildActor(), Name: "custom-java", JenkinsfileContent: defaultJenkinsfile})
 	if err != nil {
@@ -1244,7 +1284,7 @@ func TestDeleteJenkinsJobTemplateRejectsReferencedTemplate(t *testing.T) {
 }
 
 func TestRepositoryAndHandler(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	ctx := context.Background()
 	pipeline := createDefaultPipeline(t, env)
 	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
@@ -1347,7 +1387,7 @@ func TestRepositoryAndHandler(t *testing.T) {
 }
 
 func TestHandlerErrorBranches(t *testing.T) {
-	env := newBuildTestEnv()
+	env := newBuildTestEnv(t)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/missing/builds", nil), http.StatusNotFound)

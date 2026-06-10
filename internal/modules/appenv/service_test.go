@@ -15,6 +15,7 @@ import (
 	"github.com/shareinto/paas/internal/modules/tenantproject"
 	"github.com/shareinto/paas/internal/shared"
 	"github.com/shareinto/paas/internal/shared/testutil"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type fakeProjectQuery struct {
@@ -149,7 +150,7 @@ func (p *recordingBuildPipelineProvisioner) DeleteBuildPipeline(_ context.Contex
 
 type appenvTestEnv struct {
 	svc        *Service
-	repo       *MemoryRepository
+	repo       Repository
 	permission *recordingPermission
 	clusters   *fakeClusterPlacement
 	gitops     *recordingGitOps
@@ -164,8 +165,18 @@ func (failingIDGenerator) NewID(string) (shared.ID, error) {
 	return "", errors.New("id generation failed")
 }
 
-func newAppenvTestEnv(clusterAvailable bool) appenvTestEnv {
-	repo := NewMemoryRepository()
+func newTestRepository(t *testing.T) Repository {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	return repo
+}
+
+func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
+	t.Helper()
+	repo := newTestRepository(t)
 	permission := &recordingPermission{}
 	clusters := &fakeClusterPlacement{
 		candidate: ClusterCandidate{ClusterID: "cluster_dev", ClusterName: "dev-cluster", Namespace: "payment"},
@@ -225,7 +236,7 @@ func validSourceInput(repoID shared.ID, spec BuildSpec) CreateApplicationSourceI
 }
 
 func TestCreateApplicationPersistsSourceAndPendingDefaultEnvironmentsWhenNoCluster(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 
 	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "User-API", DisplayName: "用户接口", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
@@ -279,7 +290,7 @@ func TestCreateApplicationPersistsSourceAndPendingDefaultEnvironmentsWhenNoClust
 }
 
 func TestCreateApplicationDoesNotRequireSourceConfiguration(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 
 	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "User-API", DisplayName: "用户接口"})
@@ -305,7 +316,7 @@ func TestCreateApplicationDoesNotRequireSourceConfiguration(t *testing.T) {
 }
 
 func TestCreateApplicationPersistsMultipleRuntimeEnvironments(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	env.svc.runtimeEnvironments = fakeRuntimeEnvironmentQuery{
 		defaultID: "runtime_env_java17",
 		environments: map[shared.ID]RuntimeEnvironmentRef{
@@ -342,7 +353,7 @@ func TestCreateApplicationPersistsMultipleRuntimeEnvironments(t *testing.T) {
 }
 
 func TestCreateApplicationTrustsEnabledRuntimeEnvironmentImage(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	env.svc.runtimeEnvironments = fakeRuntimeEnvironmentQuery{
 		defaultID: "runtime_env_custom",
 		environments: map[shared.ID]RuntimeEnvironmentRef{
@@ -375,7 +386,7 @@ func TestCreateApplicationTrustsEnabledRuntimeEnvironmentImage(t *testing.T) {
 }
 
 func TestBuildEnvironmentSelectionDoesNotDefaultBuildSpecFields(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	env.svc.runtimeEnvironments = fakeRuntimeEnvironmentQuery{
 		defaultID: "runtime_env_java17",
 		environments: map[shared.ID]RuntimeEnvironmentRef{
@@ -420,7 +431,7 @@ func TestBuildEnvironmentSelectionDoesNotDefaultBuildSpecFields(t *testing.T) {
 }
 
 func TestSyncRuntimeEnvironmentSnapshotUpdatesApplicationsAndPrimaryBuildSpec(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	env.svc.runtimeEnvironments = fakeRuntimeEnvironmentQuery{
 		defaultID: "runtime_env_java17",
 		environments: map[shared.ID]RuntimeEnvironmentRef{
@@ -493,7 +504,7 @@ func TestSyncRuntimeEnvironmentSnapshotUpdatesApplicationsAndPrimaryBuildSpec(t 
 }
 
 func TestCreateApplicationBindsDefaultEnvironmentsWhenClusterAvailable(t *testing.T) {
-	env := newAppenvTestEnv(true)
+	env := newAppenvTestEnv(t, true)
 	ctx := context.Background()
 
 	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "worker", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", BuildSpec{
@@ -532,7 +543,7 @@ func TestCreateApplicationBindsDefaultEnvironmentsWhenClusterAvailable(t *testin
 }
 
 func TestCreateApplicationAcceptsNodeStaticSource(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 	spec := BuildSpec{
 		SourcePath:          ".",
@@ -556,7 +567,7 @@ func TestCreateApplicationAcceptsNodeStaticSource(t *testing.T) {
 }
 
 func TestSetEnvironmentConfigAndSecretAuditWithoutSecretValue(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "config-api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
 	if err != nil {
@@ -595,7 +606,7 @@ func TestSetEnvironmentConfigAndSecretAuditWithoutSecretValue(t *testing.T) {
 }
 
 func TestCreateApplicationValidatesExplicitSourceRepository(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 
 	if _, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_other", validBuildSpec())}}); shared.CodeOf(err) != shared.CodeInvalidArgument {
@@ -617,7 +628,7 @@ func TestCreateApplicationBuildSpecValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env := newAppenvTestEnv(false)
+			env := newAppenvTestEnv(t, false)
 			spec := validBuildSpec()
 			tt.mut(&spec)
 			_, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", spec)}})
@@ -629,13 +640,13 @@ func TestCreateApplicationBuildSpecValidation(t *testing.T) {
 }
 
 func TestCreateApplicationPropagatesPermissionAndProvisionFailures(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	env.permission.err = shared.NewError(shared.CodePermissionDenied, "denied")
 	if _, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); shared.CodeOf(err) != shared.CodePermissionDenied {
 		t.Fatalf("permission denial should fail, got %v", err)
 	}
 
-	env = newAppenvTestEnv(true)
+	env = newAppenvTestEnv(t, true)
 	env.gitops.err = errors.New("gitops unavailable")
 	if _, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); err == nil {
 		t.Fatalf("gitops provisioning failure should fail")
@@ -643,19 +654,19 @@ func TestCreateApplicationPropagatesPermissionAndProvisionFailures(t *testing.T)
 }
 
 func TestCreateApplicationPropagatesClusterAndEventFailures(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	env.clusters.err = errors.New("cluster placement failed")
 	if _, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); err == nil {
 		t.Fatalf("cluster placement failure should fail")
 	}
 
-	env = newAppenvTestEnv(false)
+	env = newAppenvTestEnv(t, false)
 	env.events.err = errors.New("event bus failed")
 	if _, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); err == nil {
 		t.Fatalf("event publish failure should fail")
 	}
 
-	env = newAppenvTestEnv(false)
+	env = newAppenvTestEnv(t, false)
 	env.svc.ids = failingIDGenerator{}
 	if _, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); err == nil {
 		t.Fatalf("id generation failure should fail")
@@ -663,7 +674,7 @@ func TestCreateApplicationPropagatesClusterAndEventFailures(t *testing.T) {
 }
 
 func TestServiceGuardBranches(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 	if _, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: identityaccess.Subject{}, ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); shared.CodeOf(err) != shared.CodeUnauthenticated {
 		t.Fatalf("missing actor should fail, got %v", err)
@@ -681,18 +692,18 @@ func TestServiceGuardBranches(t *testing.T) {
 		t.Fatalf("list missing project should fail, got %v", err)
 	}
 
-	noProjectService := NewService(Options{Repository: NewMemoryRepository()})
+	noProjectService := NewService(Options{Repository: newTestRepository(t)})
 	if _, err := noProjectService.ListApplicationsByProject(ctx, "project_payment", shared.PageRequest{}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("nil project query should fail, got %v", err)
 	}
-	noRepoService := NewService(Options{Repository: NewMemoryRepository(), ProjectQuery: env.svc.projects})
+	noRepoService := NewService(Options{Repository: newTestRepository(t), ProjectQuery: env.svc.projects})
 	if _, err := noRepoService.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("nil source repository query should fail, got %v", err)
 	}
 }
 
 func TestEnvironmentStateAndEvents(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
 	if err != nil {
@@ -720,7 +731,7 @@ func TestEnvironmentStateAndEvents(t *testing.T) {
 }
 
 func TestApplicationQueriesUpdateDeleteAndManualBinding(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
 	if err != nil {
@@ -806,7 +817,7 @@ func TestApplicationQueriesUpdateDeleteAndManualBinding(t *testing.T) {
 }
 
 func TestRepositoryDirectMethods(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 30, 6, 0, 0, 0, time.UTC)
 	app := Application{ID: "app_1", TenantID: "tenant_a", ProjectID: "project_payment", Name: "api", Status: ApplicationStatusActive, CreatedAt: now, UpdatedAt: now}
@@ -941,7 +952,7 @@ func TestRepositoryDirectMethods(t *testing.T) {
 }
 
 func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
 	body, _ := json.Marshal(CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
@@ -1000,7 +1011,7 @@ func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
 }
 
 func TestHandlerErrorBranches(t *testing.T) {
-	env := newAppenvTestEnv(false)
+	env := newAppenvTestEnv(t, false)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
 	assertStatus(t, serveJSON(mux, http.MethodPatch, "/api/applications/missing", []byte("{")), http.StatusBadRequest)

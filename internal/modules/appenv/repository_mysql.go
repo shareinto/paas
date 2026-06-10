@@ -3,209 +3,527 @@ package appenv
 import (
 	"context"
 	"database/sql"
+	"strings"
+	"time"
 
 	"github.com/shareinto/paas/internal/platform/database"
 	"github.com/shareinto/paas/internal/shared"
 )
 
-type MySQLRepository struct {
-	*MemoryRepository
-	store *database.SnapshotStore
+type MySQLRepository struct{ db *sql.DB }
+
+func NewMySQLRepository(_ context.Context, db *sql.DB) (*MySQLRepository, error) {
+	return &MySQLRepository{db: db}, nil
 }
 
-type appenvSnapshot struct {
-	Applications []Application
-	Sources      []ApplicationSource
-	Environments []Environment
-	Configs      []EnvironmentConfig
-	Secrets      []EnvironmentSecret
-	Routes       []EnvironmentRoute
-	Bindings     []EnvironmentClusterBinding
-	States       []EnvironmentState
-	Events       map[shared.ID][]EnvironmentEvent
+func (r *MySQLRepository) CreateApplication(ctx context.Context, app Application) error {
+	if err := r.insertApplication(ctx, app); err != nil {
+		return err
+	}
+	return r.replaceApplicationRuntimeEnvironments(ctx, app.ID, app.RuntimeEnvironments)
 }
 
-func NewMySQLRepository(ctx context.Context, db *sql.DB) (*MySQLRepository, error) {
-	repo := &MySQLRepository{MemoryRepository: NewMemoryRepository(), store: database.NewSnapshotStore(db, "application-environment")}
-	var snapshot appenvSnapshot
-	if err := repo.store.Load(ctx, &snapshot); err != nil {
+func (r *MySQLRepository) UpdateApplication(ctx context.Context, app Application) error {
+	prev, err := r.GetApplication(ctx, app.ID)
+	if err != nil {
+		return err
+	}
+	if prev.TenantID != app.TenantID || prev.ProjectID != app.ProjectID {
+		return shared.NewError(shared.CodeInvalidArgument, "application ownership cannot be changed")
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+UPDATE applications SET runtime_environment_id = ?, name = ?, display_name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?`,
+		app.RuntimeEnvironmentID, app.Name, app.DisplayName, app.Description, app.Status, mysqlTime(app.UpdatedAt), app.ID)
+	if err != nil {
+		return database.ConflictOrUnavailable(err, "application name already exists in project", "update application failed")
+	}
+	return r.replaceApplicationRuntimeEnvironments(ctx, app.ID, app.RuntimeEnvironments)
+}
+
+func (r *MySQLRepository) DeleteApplicationData(ctx context.Context, applicationID shared.ID) error {
+	if _, err := r.GetApplication(ctx, applicationID); err != nil {
+		return err
+	}
+	exec := database.ExecutorFromContext(ctx, r.db)
+	for _, stmt := range []string{
+		"DELETE FROM environment_events WHERE application_id = ?",
+		"DELETE FROM environment_states WHERE application_id = ?",
+		"DELETE FROM environment_cluster_bindings WHERE application_id = ?",
+		"DELETE FROM environment_routes WHERE application_id = ?",
+		"DELETE FROM environment_secrets WHERE application_id = ?",
+		"DELETE FROM environment_configs WHERE application_id = ?",
+		"DELETE FROM environments WHERE application_id = ?",
+		"DELETE FROM application_sources WHERE application_id = ?",
+		"DELETE FROM application_runtime_environments WHERE application_id = ?",
+		"DELETE FROM applications WHERE id = ?",
+	} {
+		if _, err := exec.ExecContext(ctx, stmt, applicationID); err != nil {
+			return database.WrapUnavailable(err, "delete application data failed")
+		}
+	}
+	return nil
+}
+
+func (r *MySQLRepository) GetApplication(ctx context.Context, id shared.ID) (Application, error) {
+	app, err := scanApplication(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, applicationSelect()+" WHERE id = ?", id))
+	if err != nil {
+		return Application{}, database.NotFound(err, "application not found")
+	}
+	app.RuntimeEnvironments, _ = r.listApplicationRuntimeEnvironments(ctx, app.ID)
+	return app, nil
+}
+
+func (r *MySQLRepository) FindApplicationByProjectAndName(ctx context.Context, projectID shared.ID, name string) (Application, error) {
+	app, err := scanApplication(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, applicationSelect()+" WHERE project_id = ? AND name = ?", projectID, name))
+	if err != nil {
+		return Application{}, database.NotFound(err, "application not found")
+	}
+	app.RuntimeEnvironments, _ = r.listApplicationRuntimeEnvironments(ctx, app.ID)
+	return app, nil
+}
+
+func (r *MySQLRepository) ListApplicationsByProject(ctx context.Context, projectID shared.ID, page shared.PageRequest) (shared.PageResult[Application], error) {
+	return r.listApplications(ctx, "project_id = ?", []any{projectID}, page)
+}
+
+func (r *MySQLRepository) ListApplicationsByRuntimeEnvironment(ctx context.Context, runtimeEnvironmentID shared.ID, page shared.PageRequest) (shared.PageResult[Application], error) {
+	return r.listApplications(ctx, "id IN (SELECT application_id FROM application_runtime_environments WHERE runtime_environment_id = ?)", []any{runtimeEnvironmentID}, page)
+}
+
+func (r *MySQLRepository) CreateApplicationSource(ctx context.Context, source ApplicationSource) error {
+	if _, err := r.GetApplication(ctx, source.ApplicationID); err != nil {
+		return err
+	}
+	return r.insertApplicationSource(ctx, source)
+}
+
+func (r *MySQLRepository) UpdateApplicationSource(ctx context.Context, source ApplicationSource) error {
+	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+UPDATE application_sources
+SET source_key = ?, display_name = ?, source_repository_id = ?, jenkins_template_id = ?, build_environment_id = ?,
+    source_path = ?, build_command = ?, artifact_copy_command = ?, runtime_base_image = ?, artifact_deploy_path = ?,
+    default_ref = ?, is_primary = ?, updated_at = ?
+WHERE id = ?`,
+		normalizedSourceKey(source.Key), source.DisplayName, source.SourceRepositoryID, source.JenkinsTemplateID, source.BuildEnvironmentID,
+		source.SourcePath, source.BuildSpec.BuildCommand, source.BuildSpec.ArtifactCopyCommand, source.BuildSpec.RuntimeBaseImage,
+		source.BuildSpec.ArtifactDeployPath, source.BuildSpec.DefaultRef, source.IsPrimary, mysqlTime(source.UpdatedAt), source.ID)
+	if err != nil {
+		return database.ConflictOrUnavailable(err, "application source already exists", "update application source failed")
+	}
+	return database.RequireAffected(result, "application source not found")
+}
+
+func (r *MySQLRepository) ReplaceApplicationSources(ctx context.Context, applicationID shared.ID, sources []ApplicationSource) error {
+	if _, err := r.GetApplication(ctx, applicationID); err != nil {
+		return err
+	}
+	if len(sources) == 0 {
+		return shared.NewError(shared.CodeInvalidArgument, "sources is required")
+	}
+	exec := database.ExecutorFromContext(ctx, r.db)
+	if _, err := exec.ExecContext(ctx, "DELETE FROM application_sources WHERE application_id = ?", applicationID); err != nil {
+		return database.WrapUnavailable(err, "replace application sources failed")
+	}
+	seen := map[string]struct{}{}
+	for _, source := range sources {
+		if source.ApplicationID != applicationID {
+			return shared.NewError(shared.CodeInvalidArgument, "application source ownership cannot be changed")
+		}
+		key := normalizedSourceKey(source.Key)
+		if _, ok := seen[key]; ok {
+			return shared.NewError(shared.CodeConflict, "application source already exists")
+		}
+		seen[key] = struct{}{}
+		if err := r.insertApplicationSource(ctx, source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *MySQLRepository) GetApplicationSource(ctx context.Context, applicationID shared.ID) (ApplicationSource, error) {
+	source, err := scanApplicationSource(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, applicationSourceSelect()+`
+ WHERE application_id = ? ORDER BY is_primary DESC, source_key ASC LIMIT 1`, applicationID))
+	if err != nil {
+		return ApplicationSource{}, database.NotFound(err, "application source not found")
+	}
+	return source, nil
+}
+
+func (r *MySQLRepository) ListApplicationSources(ctx context.Context, applicationID shared.ID) ([]ApplicationSource, error) {
+	if _, err := r.GetApplication(ctx, applicationID); err != nil {
 		return nil, err
 	}
-	repo.restore(snapshot)
-	return repo, nil
-}
-
-func (r *MySQLRepository) restore(snapshot appenvSnapshot) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, app := range snapshot.Applications {
-		r.applications[app.ID] = app
-		r.applicationNameIndex[applicationNameKey{projectID: app.ProjectID, name: app.Name}] = app.ID
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, applicationSourceSelect()+`
+ WHERE application_id = ? ORDER BY is_primary DESC, source_key ASC`, applicationID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list application sources failed")
 	}
-	for _, source := range snapshot.Sources {
-		key := source.Key
-		if key == "" {
-			key = "main"
-			source.Key = key
+	defer rows.Close()
+	items := []ApplicationSource{}
+	for rows.Next() {
+		source, err := scanApplicationSource(rows)
+		if err != nil {
+			return nil, err
 		}
-		if r.sourcesByApplication[source.ApplicationID] == nil {
-			r.sourcesByApplication[source.ApplicationID] = map[string]ApplicationSource{}
-		}
-		r.sourcesByApplication[source.ApplicationID][key] = source
+		items = append(items, source)
 	}
-	for _, env := range snapshot.Environments {
-		r.environments[env.ID] = env
-		r.environmentsByApp[env.ApplicationID] = append(r.environmentsByApp[env.ApplicationID], env.ID)
+	if err := rows.Err(); err != nil {
+		return nil, database.WrapUnavailable(err, "list application sources failed")
 	}
-	for _, config := range snapshot.Configs {
-		r.configs[config.ID] = config
+	if len(items) == 0 {
+		return nil, shared.NewError(shared.CodeNotFound, "application source not found")
 	}
-	for _, secret := range snapshot.Secrets {
-		r.secrets[secret.ID] = secret
-	}
-	for _, route := range snapshot.Routes {
-		r.routes[route.ID] = route
-	}
-	for _, binding := range snapshot.Bindings {
-		r.bindingsByEnvironment[binding.EnvironmentID] = binding
-	}
-	for _, state := range snapshot.States {
-		r.statesByEnvironment[state.EnvironmentID] = state
-	}
-	if snapshot.Events != nil {
-		r.eventsByEnvironment = snapshot.Events
-	}
+	return items, nil
 }
 
-func (r *MySQLRepository) snapshot() appenvSnapshot {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := appenvSnapshot{
-		Applications: make([]Application, 0, len(r.applications)),
-		Sources:      []ApplicationSource{},
-		Environments: make([]Environment, 0, len(r.environments)),
-		Configs:      make([]EnvironmentConfig, 0, len(r.configs)),
-		Secrets:      make([]EnvironmentSecret, 0, len(r.secrets)),
-		Routes:       make([]EnvironmentRoute, 0, len(r.routes)),
-		Bindings:     make([]EnvironmentClusterBinding, 0, len(r.bindingsByEnvironment)),
-		States:       make([]EnvironmentState, 0, len(r.statesByEnvironment)),
-		Events:       map[shared.ID][]EnvironmentEvent{},
+func (r *MySQLRepository) CreateEnvironment(ctx context.Context, env Environment) error {
+	if _, err := r.GetApplication(ctx, env.ApplicationID); err != nil {
+		return err
 	}
-	for _, v := range r.applications {
-		out.Applications = append(out.Applications, v)
-	}
-	for _, sources := range r.sourcesByApplication {
-		for _, v := range sources {
-			out.Sources = append(out.Sources, v)
-		}
-	}
-	for _, v := range r.environments {
-		out.Environments = append(out.Environments, v)
-	}
-	for _, v := range r.configs {
-		out.Configs = append(out.Configs, v)
-	}
-	for _, v := range r.secrets {
-		out.Secrets = append(out.Secrets, v)
-	}
-	for _, v := range r.routes {
-		out.Routes = append(out.Routes, v)
-	}
-	for _, v := range r.bindingsByEnvironment {
-		out.Bindings = append(out.Bindings, v)
-	}
-	for _, v := range r.statesByEnvironment {
-		out.States = append(out.States, v)
-	}
-	for id, events := range r.eventsByEnvironment {
-		out.Events[id] = append([]EnvironmentEvent(nil), events...)
-	}
-	return out
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO environments (id, tenant_id, project_id, application_id, name, display_name, description, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		env.ID, env.TenantID, env.ProjectID, env.ApplicationID, env.Name, env.DisplayName, env.Description, mysqlTime(env.CreatedAt), mysqlTime(env.UpdatedAt))
+	return database.ConflictOrUnavailable(err, "environment already exists", "create environment failed")
 }
 
-func (r *MySQLRepository) persist(ctx context.Context) error { return r.store.Save(ctx, r.snapshot()) }
+func (r *MySQLRepository) UpdateEnvironment(ctx context.Context, env Environment) error {
+	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+UPDATE environments SET name = ?, display_name = ?, description = ?, updated_at = ? WHERE id = ?`,
+		env.Name, env.DisplayName, env.Description, mysqlTime(env.UpdatedAt), env.ID)
+	if err != nil {
+		return database.ConflictOrUnavailable(err, "environment name already exists in application", "update environment failed")
+	}
+	return database.RequireAffected(result, "environment not found")
+}
 
-func (r *MySQLRepository) CreateApplication(ctx context.Context, application Application) error {
-	if err := r.MemoryRepository.CreateApplication(ctx, application); err != nil {
-		return err
+func (r *MySQLRepository) GetEnvironment(ctx context.Context, id shared.ID) (Environment, error) {
+	env, err := scanEnvironment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, environmentSelect()+" WHERE id = ?", id))
+	if err != nil {
+		return Environment{}, database.NotFound(err, "environment not found")
 	}
-	return r.persist(ctx)
+	return env, nil
 }
-func (r *MySQLRepository) UpdateApplication(ctx context.Context, application Application) error {
-	if err := r.MemoryRepository.UpdateApplication(ctx, application); err != nil {
-		return err
+
+func (r *MySQLRepository) ListEnvironmentsByApplication(ctx context.Context, applicationID shared.ID) ([]Environment, error) {
+	if _, err := r.GetApplication(ctx, applicationID); err != nil {
+		return nil, err
 	}
-	return r.persist(ctx)
-}
-func (r *MySQLRepository) DeleteApplicationData(ctx context.Context, applicationID shared.ID) error {
-	if err := r.MemoryRepository.DeleteApplicationData(ctx, applicationID); err != nil {
-		return err
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, environmentSelect()+`
+ WHERE application_id = ? ORDER BY FIELD(name, 'dev', 'test', 'staging', 'prod'), name ASC`, applicationID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list environments failed")
 	}
-	return r.persist(ctx)
+	defer rows.Close()
+	return scanEnvironmentRows(rows)
 }
-func (r *MySQLRepository) CreateApplicationSource(ctx context.Context, source ApplicationSource) error {
-	if err := r.MemoryRepository.CreateApplicationSource(ctx, source); err != nil {
-		return err
-	}
-	return r.persist(ctx)
-}
-func (r *MySQLRepository) UpdateApplicationSource(ctx context.Context, source ApplicationSource) error {
-	if err := r.MemoryRepository.UpdateApplicationSource(ctx, source); err != nil {
-		return err
-	}
-	return r.persist(ctx)
-}
-func (r *MySQLRepository) ReplaceApplicationSources(ctx context.Context, applicationID shared.ID, sources []ApplicationSource) error {
-	if err := r.MemoryRepository.ReplaceApplicationSources(ctx, applicationID, sources); err != nil {
-		return err
-	}
-	return r.persist(ctx)
-}
-func (r *MySQLRepository) CreateEnvironment(ctx context.Context, environment Environment) error {
-	if err := r.MemoryRepository.CreateEnvironment(ctx, environment); err != nil {
-		return err
-	}
-	return r.persist(ctx)
-}
-func (r *MySQLRepository) UpdateEnvironment(ctx context.Context, environment Environment) error {
-	if err := r.MemoryRepository.UpdateEnvironment(ctx, environment); err != nil {
-		return err
-	}
-	return r.persist(ctx)
-}
+
 func (r *MySQLRepository) CreateEnvironmentConfig(ctx context.Context, config EnvironmentConfig) error {
-	if err := r.MemoryRepository.CreateEnvironmentConfig(ctx, config); err != nil {
+	if _, err := r.GetEnvironment(ctx, config.EnvironmentID); err != nil {
 		return err
 	}
-	return r.persist(ctx)
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO environment_configs (id, tenant_id, project_id, application_id, environment_id, config_key, config_value, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.EnvironmentID, config.Key, config.Value, mysqlTime(config.CreatedAt), mysqlTime(config.UpdatedAt))
+	return database.ConflictOrUnavailable(err, "environment config already exists", "create environment config failed")
 }
+
 func (r *MySQLRepository) CreateEnvironmentSecret(ctx context.Context, secret EnvironmentSecret) error {
-	if err := r.MemoryRepository.CreateEnvironmentSecret(ctx, secret); err != nil {
+	if _, err := r.GetEnvironment(ctx, secret.EnvironmentID); err != nil {
 		return err
 	}
-	return r.persist(ctx)
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO environment_secrets (id, tenant_id, project_id, application_id, environment_id, secret_key, secret_ref, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		secret.ID, secret.TenantID, secret.ProjectID, secret.ApplicationID, secret.EnvironmentID, secret.Key, secret.SecretRef, mysqlTime(secret.CreatedAt), mysqlTime(secret.UpdatedAt))
+	return database.ConflictOrUnavailable(err, "environment secret already exists", "create environment secret failed")
 }
+
 func (r *MySQLRepository) CreateEnvironmentRoute(ctx context.Context, route EnvironmentRoute) error {
-	if err := r.MemoryRepository.CreateEnvironmentRoute(ctx, route); err != nil {
+	if _, err := r.GetEnvironment(ctx, route.EnvironmentID); err != nil {
 		return err
 	}
-	return r.persist(ctx)
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO environment_routes (id, tenant_id, project_id, application_id, environment_id, host, path, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		route.ID, route.TenantID, route.ProjectID, route.ApplicationID, route.EnvironmentID, route.Host, route.Path, mysqlTime(route.CreatedAt), mysqlTime(route.UpdatedAt))
+	return database.ConflictOrUnavailable(err, "environment route already exists", "create environment route failed")
 }
+
 func (r *MySQLRepository) CreateEnvironmentClusterBinding(ctx context.Context, binding EnvironmentClusterBinding) error {
-	if err := r.MemoryRepository.CreateEnvironmentClusterBinding(ctx, binding); err != nil {
+	if _, err := r.GetEnvironment(ctx, binding.EnvironmentID); err != nil {
 		return err
 	}
-	return r.persist(ctx)
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO environment_cluster_bindings (id, tenant_id, project_id, application_id, environment_id, cluster_id, cluster_name, namespace, status, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		binding.ID, binding.TenantID, binding.ProjectID, binding.ApplicationID, binding.EnvironmentID, binding.ClusterID, binding.ClusterName, binding.Namespace, binding.Status, mysqlTime(binding.CreatedAt), mysqlTime(binding.UpdatedAt))
+	return database.ConflictOrUnavailable(err, "environment cluster binding already exists", "create environment cluster binding failed")
 }
+
+func (r *MySQLRepository) GetEnvironmentClusterBinding(ctx context.Context, environmentID shared.ID) (EnvironmentClusterBinding, error) {
+	binding, err := scanBinding(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, bindingSelect()+" WHERE environment_id = ?", environmentID))
+	if err != nil {
+		return EnvironmentClusterBinding{}, database.NotFound(err, "environment cluster binding not found")
+	}
+	return binding, nil
+}
+
+func (r *MySQLRepository) ListEnvironmentClusterBindingsByApplication(ctx context.Context, applicationID shared.ID) ([]EnvironmentClusterBinding, error) {
+	if _, err := r.GetApplication(ctx, applicationID); err != nil {
+		return nil, err
+	}
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, bindingSelect()+`
+ WHERE application_id = ? ORDER BY FIELD((SELECT name FROM environments WHERE environments.id = environment_cluster_bindings.environment_id), 'dev', 'test', 'staging', 'prod')`, applicationID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list environment cluster bindings failed")
+	}
+	defer rows.Close()
+	items := []EnvironmentClusterBinding{}
+	for rows.Next() {
+		binding, err := scanBinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, binding)
+	}
+	return items, rows.Err()
+}
+
 func (r *MySQLRepository) SaveEnvironmentState(ctx context.Context, state EnvironmentState) error {
-	if err := r.MemoryRepository.SaveEnvironmentState(ctx, state); err != nil {
+	if _, err := r.GetEnvironment(ctx, state.EnvironmentID); err != nil {
 		return err
 	}
-	return r.persist(ctx)
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO environment_states (environment_id, tenant_id, project_id, application_id, status, message, last_reported_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE status = VALUES(status), message = VALUES(message), last_reported_at = VALUES(last_reported_at), updated_at = VALUES(updated_at)`,
+		state.EnvironmentID, state.TenantID, state.ProjectID, state.ApplicationID, state.Status, state.Message, mysqlTimePtr(state.LastReportedAt), mysqlTime(state.UpdatedAt))
+	return database.WrapUnavailable(err, "save environment state failed")
 }
+
+func (r *MySQLRepository) GetEnvironmentState(ctx context.Context, environmentID shared.ID) (EnvironmentState, error) {
+	state, err := scanState(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, stateSelect()+" WHERE environment_id = ?", environmentID))
+	if err != nil {
+		return EnvironmentState{}, database.NotFound(err, "environment state not found")
+	}
+	return state, nil
+}
+
+func (r *MySQLRepository) ListEnvironmentStatesByApplication(ctx context.Context, applicationID shared.ID) ([]EnvironmentState, error) {
+	if _, err := r.GetApplication(ctx, applicationID); err != nil {
+		return nil, err
+	}
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, stateSelect()+`
+ WHERE application_id = ? ORDER BY FIELD((SELECT name FROM environments WHERE environments.id = environment_states.environment_id), 'dev', 'test', 'staging', 'prod')`, applicationID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list environment states failed")
+	}
+	defer rows.Close()
+	items := []EnvironmentState{}
+	for rows.Next() {
+		state, err := scanState(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, state)
+	}
+	return items, rows.Err()
+}
+
 func (r *MySQLRepository) AppendEnvironmentEvent(ctx context.Context, event EnvironmentEvent) error {
-	if err := r.MemoryRepository.AppendEnvironmentEvent(ctx, event); err != nil {
+	if _, err := r.GetEnvironment(ctx, event.EnvironmentID); err != nil {
 		return err
 	}
-	return r.persist(ctx)
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO environment_events (id, tenant_id, project_id, application_id, environment_id, type, status, message, occurred_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.ID, event.TenantID, event.ProjectID, event.ApplicationID, event.EnvironmentID, event.Type, event.Status, event.Message, mysqlTime(event.OccurredAt))
+	return database.ConflictOrUnavailable(err, "environment event already exists", "append environment event failed")
+}
+
+func (r *MySQLRepository) ListEnvironmentEvents(ctx context.Context, environmentID shared.ID, page shared.PageRequest) (shared.PageResult[EnvironmentEvent], error) {
+	if _, err := r.GetEnvironment(ctx, environmentID); err != nil {
+		return shared.PageResult[EnvironmentEvent]{}, err
+	}
+	var total int64
+	if err := database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, "SELECT COUNT(*) FROM environment_events WHERE environment_id = ?", environmentID).Scan(&total); err != nil {
+		return shared.PageResult[EnvironmentEvent]{}, database.WrapUnavailable(err, "count environment events failed")
+	}
+	page, limit, offset := database.LimitOffset(page)
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
+SELECT id, tenant_id, project_id, application_id, environment_id, type, status, message, occurred_at
+FROM environment_events WHERE environment_id = ? ORDER BY occurred_at ASC, id ASC LIMIT ? OFFSET ?`, environmentID, limit, offset)
+	if err != nil {
+		return shared.PageResult[EnvironmentEvent]{}, database.WrapUnavailable(err, "list environment events failed")
+	}
+	defer rows.Close()
+	items := []EnvironmentEvent{}
+	for rows.Next() {
+		event, err := scanEvent(rows)
+		if err != nil {
+			return shared.PageResult[EnvironmentEvent]{}, err
+		}
+		items = append(items, event)
+	}
+	return shared.NewPageResult(items, total, page), rows.Err()
+}
+
+func (r *MySQLRepository) insertApplication(ctx context.Context, app Application) error {
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO applications (id, tenant_id, project_id, name, display_name, description, runtime_environment_id, status, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		app.ID, app.TenantID, app.ProjectID, app.Name, app.DisplayName, app.Description, app.RuntimeEnvironmentID, app.Status, mysqlTime(app.CreatedAt), mysqlTime(app.UpdatedAt))
+	return database.ConflictOrUnavailable(err, "application name already exists in project", "create application failed")
+}
+
+func (r *MySQLRepository) insertApplicationSource(ctx context.Context, source ApplicationSource) error {
+	key := normalizedSourceKey(source.Key)
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO application_sources (id, tenant_id, project_id, application_id, source_key, display_name, source_repository_id, jenkins_template_id, build_environment_id, source_path, build_command, artifact_copy_command, runtime_base_image, artifact_deploy_path, default_ref, is_primary, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		source.ID, source.TenantID, source.ProjectID, source.ApplicationID, key, source.DisplayName, source.SourceRepositoryID, source.JenkinsTemplateID, source.BuildEnvironmentID, source.SourcePath, source.BuildSpec.BuildCommand, source.BuildSpec.ArtifactCopyCommand, source.BuildSpec.RuntimeBaseImage, source.BuildSpec.ArtifactDeployPath, source.BuildSpec.DefaultRef, source.IsPrimary, mysqlTime(source.CreatedAt), mysqlTime(source.UpdatedAt))
+	return database.ConflictOrUnavailable(err, "application source already exists", "create application source failed")
+}
+
+func (r *MySQLRepository) listApplications(ctx context.Context, where string, args []any, page shared.PageRequest) (shared.PageResult[Application], error) {
+	var total int64
+	if err := database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, "SELECT COUNT(*) FROM applications WHERE "+where, args...).Scan(&total); err != nil {
+		return shared.PageResult[Application]{}, database.WrapUnavailable(err, "count applications failed")
+	}
+	page, limit, offset := database.LimitOffset(page)
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, applicationSelect()+" WHERE "+where+" ORDER BY name ASC LIMIT ? OFFSET ?", append(args, limit, offset)...)
+	if err != nil {
+		return shared.PageResult[Application]{}, database.WrapUnavailable(err, "list applications failed")
+	}
+	defer rows.Close()
+	items := []Application{}
+	for rows.Next() {
+		app, err := scanApplication(rows)
+		if err != nil {
+			return shared.PageResult[Application]{}, err
+		}
+		app.RuntimeEnvironments, _ = r.listApplicationRuntimeEnvironments(ctx, app.ID)
+		items = append(items, app)
+	}
+	return shared.NewPageResult(items, total, page), rows.Err()
+}
+
+func (r *MySQLRepository) replaceApplicationRuntimeEnvironments(ctx context.Context, applicationID shared.ID, envs []ApplicationRuntimeEnvironment) error {
+	exec := database.ExecutorFromContext(ctx, r.db)
+	if _, err := exec.ExecContext(ctx, "DELETE FROM application_runtime_environments WHERE application_id = ?", applicationID); err != nil {
+		return database.WrapUnavailable(err, "replace application runtime environments failed")
+	}
+	for i, env := range envs {
+		if _, err := exec.ExecContext(ctx, `
+INSERT INTO application_runtime_environments (application_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, position)
+VALUES (?, ?, ?, ?, ?, ?, ?)`, applicationID, env.ID, env.Name, env.RuntimeBaseImage, env.ArtifactDeployPath, env.DockerfilePath, i); err != nil {
+			return database.WrapUnavailable(err, "replace application runtime environments failed")
+		}
+	}
+	return nil
+}
+
+func (r *MySQLRepository) listApplicationRuntimeEnvironments(ctx context.Context, applicationID shared.ID) ([]ApplicationRuntimeEnvironment, error) {
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
+SELECT runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path
+FROM application_runtime_environments WHERE application_id = ? ORDER BY position ASC, runtime_environment_id ASC`, applicationID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list application runtime environments failed")
+	}
+	defer rows.Close()
+	items := []ApplicationRuntimeEnvironment{}
+	for rows.Next() {
+		var env ApplicationRuntimeEnvironment
+		if err := rows.Scan(&env.ID, &env.Name, &env.RuntimeBaseImage, &env.ArtifactDeployPath, &env.DockerfilePath); err != nil {
+			return nil, err
+		}
+		items = append(items, env)
+	}
+	return items, rows.Err()
+}
+
+type appenvScanner interface{ Scan(dest ...any) error }
+
+func applicationSelect() string {
+	return "SELECT id, tenant_id, project_id, name, display_name, description, runtime_environment_id, status, created_at, updated_at FROM applications"
+}
+func applicationSourceSelect() string {
+	return "SELECT id, tenant_id, project_id, application_id, source_key, display_name, source_repository_id, jenkins_template_id, build_environment_id, source_path, build_command, artifact_copy_command, runtime_base_image, artifact_deploy_path, default_ref, is_primary, created_at, updated_at FROM application_sources"
+}
+func environmentSelect() string {
+	return "SELECT id, tenant_id, project_id, application_id, name, display_name, description, created_at, updated_at FROM environments"
+}
+func bindingSelect() string {
+	return "SELECT id, tenant_id, project_id, application_id, environment_id, cluster_id, cluster_name, namespace, status, created_at, updated_at FROM environment_cluster_bindings"
+}
+func stateSelect() string {
+	return "SELECT tenant_id, project_id, application_id, environment_id, status, message, last_reported_at, updated_at FROM environment_states"
+}
+
+func scanApplication(scanner appenvScanner) (Application, error) {
+	var app Application
+	err := scanner.Scan(&app.ID, &app.TenantID, &app.ProjectID, &app.Name, &app.DisplayName, &app.Description, &app.RuntimeEnvironmentID, &app.Status, &app.CreatedAt, &app.UpdatedAt)
+	return app, err
+}
+func scanApplicationSource(scanner appenvScanner) (ApplicationSource, error) {
+	var source ApplicationSource
+	err := scanner.Scan(&source.ID, &source.TenantID, &source.ProjectID, &source.ApplicationID, &source.Key, &source.DisplayName, &source.SourceRepositoryID, &source.JenkinsTemplateID, &source.BuildEnvironmentID, &source.SourcePath, &source.BuildSpec.BuildCommand, &source.BuildSpec.ArtifactCopyCommand, &source.BuildSpec.RuntimeBaseImage, &source.BuildSpec.ArtifactDeployPath, &source.BuildSpec.DefaultRef, &source.IsPrimary, &source.CreatedAt, &source.UpdatedAt)
+	source.BuildSpec.SourcePath = source.SourcePath
+	return source, err
+}
+func scanEnvironment(scanner appenvScanner) (Environment, error) {
+	var env Environment
+	err := scanner.Scan(&env.ID, &env.TenantID, &env.ProjectID, &env.ApplicationID, &env.Name, &env.DisplayName, &env.Description, &env.CreatedAt, &env.UpdatedAt)
+	return env, err
+}
+func scanEnvironmentRows(rows *sql.Rows) ([]Environment, error) {
+	items := []Environment{}
+	for rows.Next() {
+		env, err := scanEnvironment(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, env)
+	}
+	return items, rows.Err()
+}
+func scanBinding(scanner appenvScanner) (EnvironmentClusterBinding, error) {
+	var binding EnvironmentClusterBinding
+	err := scanner.Scan(&binding.ID, &binding.TenantID, &binding.ProjectID, &binding.ApplicationID, &binding.EnvironmentID, &binding.ClusterID, &binding.ClusterName, &binding.Namespace, &binding.Status, &binding.CreatedAt, &binding.UpdatedAt)
+	return binding, err
+}
+func scanState(scanner appenvScanner) (EnvironmentState, error) {
+	var state EnvironmentState
+	err := scanner.Scan(&state.TenantID, &state.ProjectID, &state.ApplicationID, &state.EnvironmentID, &state.Status, &state.Message, &state.LastReportedAt, &state.UpdatedAt)
+	return state, err
+}
+func scanEvent(scanner appenvScanner) (EnvironmentEvent, error) {
+	var event EnvironmentEvent
+	err := scanner.Scan(&event.ID, &event.TenantID, &event.ProjectID, &event.ApplicationID, &event.EnvironmentID, &event.Type, &event.Status, &event.Message, &event.OccurredAt)
+	return event, err
+}
+
+func normalizedSourceKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "main"
+	}
+	return key
+}
+
+func mysqlTime(value time.Time) time.Time {
+	if value.IsZero() {
+		return time.Now().UTC()
+	}
+	return value
+}
+
+func mysqlTimePtr(value *time.Time) any {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	return *value
 }

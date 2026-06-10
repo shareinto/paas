@@ -11,7 +11,7 @@
 ## 完成记录
 
 - 实现目录：`internal/modules/tenantproject/`。
-- 完成内容：租户、项目、租户成员领域模型；内存仓储；服务层用例；`TenantQuery`、`ProjectQuery`、`ProjectMembershipQuery` port；MySQL 迁移草案；权限检查、领域事件和审计记录。
+- 完成内容：租户、项目、租户成员领域模型；MySQL 正式表仓储；服务层用例；`TenantQuery`、`ProjectQuery`、`ProjectMembershipQuery` port；MySQL 迁移；权限检查、领域事件和审计记录。
 - 权限假设：创建租户要求平台作用域 `tenant:update`；租户成员变更要求租户作用域 `tenant:update`；创建项目要求租户作用域 `project:update`；更新项目要求项目作用域 `project:update`。
 - 验证命令：`go test ./internal/modules/tenantproject -cover`，覆盖率 `90.1%`。
 - 全量验证：`go test ./...` 通过。

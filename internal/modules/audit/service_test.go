@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/shareinto/paas/internal/shared"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type staticIDs struct{ ids []shared.ID }
@@ -23,8 +24,17 @@ type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
 
+func newTestRepository(t *testing.T) *MySQLRepository {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	return repo
+}
+
 func TestAuditLogIsAppendOnlyAndSanitizesSensitiveDetails(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	now := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
 	svc := NewService(Options{Repository: repo, IDGenerator: &staticIDs{ids: []shared.ID{"audit_1"}}, Clock: fixedClock{now: now}})
 	err := svc.Log(context.Background(), AuditLog{
@@ -45,7 +55,7 @@ func TestAuditLogIsAppendOnlyAndSanitizesSensitiveDetails(t *testing.T) {
 	if log.Details["token"] != "[REDACTED]" || log.Details["note"] != "ok" {
 		t.Fatalf("sensitive details not sanitized: %#v", log.Details)
 	}
-	if log.OccurredAt != now || log.CreatedAt != now {
+	if !log.OccurredAt.Equal(now) || !log.CreatedAt.Equal(now) {
 		t.Fatalf("timestamps not assigned")
 	}
 	if err := repo.Append(context.Background(), log); shared.CodeOf(err) != shared.CodeConflict {
@@ -54,7 +64,7 @@ func TestAuditLogIsAppendOnlyAndSanitizesSensitiveDetails(t *testing.T) {
 }
 
 func TestAuditQueryFiltersByTenantActorResourceActionAndTime(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	now := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
 	svc := NewService(Options{Repository: repo, IDGenerator: &staticIDs{ids: []shared.ID{"audit_1", "audit_2"}}, Clock: fixedClock{now: now}})
 	_ = svc.Log(context.Background(), AuditLog{TenantID: "tenant_1", ProjectID: "project_1", ActorID: "user_1", ResourceType: "promotion", ResourceID: "promotion_1", Action: "promotion.approve", OccurredAt: now})
@@ -71,7 +81,7 @@ func TestAuditQueryFiltersByTenantActorResourceActionAndTime(t *testing.T) {
 }
 
 func TestAuditHTTPHandlerListsGetsAndValidatesQuery(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	now := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
 	svc := NewService(Options{Repository: repo, IDGenerator: &staticIDs{ids: []shared.ID{"audit_1"}}, Clock: fixedClock{now: now}})
 	if err := svc.Log(context.Background(), AuditLog{TenantID: "tenant_1", ActorID: "user_1", ResourceType: "build", ResourceID: "build_1", Action: "build.trigger", Result: "succeeded"}); err != nil {
@@ -138,9 +148,13 @@ func TestAuditDefaultsValidationAndNilBridge(t *testing.T) {
 	}
 }
 
-func TestAuditMatchQueryRejectsEveryFilterMismatch(t *testing.T) {
+func TestAuditRepositoryQueryRejectsEveryFilterMismatch(t *testing.T) {
+	repo := newTestRepository(t)
 	now := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
 	log := AuditLog{TenantID: "tenant_1", ProjectID: "project_1", ActorID: "user_1", ResourceType: "build", ResourceID: "build_1", Action: "build.trigger", OccurredAt: now}
+	if err := repo.Append(context.Background(), log); err != nil {
+		t.Fatalf("append log: %v", err)
+	}
 	before := now.Add(time.Minute)
 	after := now.Add(-time.Minute)
 	cases := []Query{
@@ -154,11 +168,19 @@ func TestAuditMatchQueryRejectsEveryFilterMismatch(t *testing.T) {
 		{To: &after},
 	}
 	for _, query := range cases {
-		if matchQuery(log, query) {
-			t.Fatalf("query should not match: %#v", query)
+		result, err := repo.List(context.Background(), query, shared.PageRequest{Page: 1, PageSize: 10})
+		if err != nil {
+			t.Fatalf("list query %#v: %v", query, err)
+		}
+		if result.Total != 0 {
+			t.Fatalf("query should not match: %#v result=%#v", query, result)
 		}
 	}
-	if !matchQuery(log, Query{}) {
-		t.Fatalf("empty query should match")
+	result, err := repo.List(context.Background(), Query{}, shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("empty list: %v", err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("empty query should match, got %#v", result)
 	}
 }

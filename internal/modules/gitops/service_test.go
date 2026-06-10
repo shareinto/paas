@@ -13,6 +13,7 @@ import (
 	"github.com/shareinto/paas/internal/modules/clusteragent"
 	"github.com/shareinto/paas/internal/modules/delivery"
 	"github.com/shareinto/paas/internal/shared"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type staticIDs struct{ ids []shared.ID }
@@ -41,7 +42,7 @@ func (g gitopsFailingIDs) NewID(string) (shared.ID, error) {
 }
 
 type gitopsErrRepo struct {
-	*MemoryRepository
+	Repository
 	createTemplateErr         error
 	updateTemplateErr         error
 	createTemplateRevisionErr error
@@ -55,49 +56,58 @@ func (r *gitopsErrRepo) CreateTemplate(ctx context.Context, template DeploymentT
 	if r.createTemplateErr != nil {
 		return r.createTemplateErr
 	}
-	return r.MemoryRepository.CreateTemplate(ctx, template)
+	return r.Repository.CreateTemplate(ctx, template)
 }
 
 func (r *gitopsErrRepo) UpdateTemplate(ctx context.Context, template DeploymentTemplate) error {
 	if r.updateTemplateErr != nil {
 		return r.updateTemplateErr
 	}
-	return r.MemoryRepository.UpdateTemplate(ctx, template)
+	return r.Repository.UpdateTemplate(ctx, template)
 }
 
 func (r *gitopsErrRepo) CreateTemplateRevision(ctx context.Context, revision DeploymentTemplateRevision) error {
 	if r.createTemplateRevisionErr != nil {
 		return r.createTemplateRevisionErr
 	}
-	return r.MemoryRepository.CreateTemplateRevision(ctx, revision)
+	return r.Repository.CreateTemplateRevision(ctx, revision)
 }
 
 func (r *gitopsErrRepo) CreateDeployment(ctx context.Context, deployment Deployment) error {
 	if r.createDeploymentErr != nil {
 		return r.createDeploymentErr
 	}
-	return r.MemoryRepository.CreateDeployment(ctx, deployment)
+	return r.Repository.CreateDeployment(ctx, deployment)
 }
 
 func (r *gitopsErrRepo) CreateManifestRevision(ctx context.Context, revision ManifestRevision) error {
 	if r.createManifestRevisionErr != nil {
 		return r.createManifestRevisionErr
 	}
-	return r.MemoryRepository.CreateManifestRevision(ctx, revision)
+	return r.Repository.CreateManifestRevision(ctx, revision)
 }
 
 func (r *gitopsErrRepo) UpdateDeployment(ctx context.Context, deployment Deployment) error {
 	if r.updateDeploymentErr != nil {
 		return r.updateDeploymentErr
 	}
-	return r.MemoryRepository.UpdateDeployment(ctx, deployment)
+	return r.Repository.UpdateDeployment(ctx, deployment)
 }
 
 func (r *gitopsErrRepo) CreateDeploymentEvent(ctx context.Context, event DeploymentEvent) error {
 	if r.createDeploymentEventErr != nil {
 		return r.createDeploymentEventErr
 	}
-	return r.MemoryRepository.CreateDeploymentEvent(ctx, event)
+	return r.Repository.CreateDeploymentEvent(ctx, event)
+}
+
+func newTestRepository(t *testing.T) Repository {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	return repo
 }
 
 type gitopsErrManifest struct{ err error }
@@ -149,11 +159,11 @@ func (q envQuery) GetActiveBinding(_ context.Context, id shared.ID) (ClusterBind
 	return q.bindings[id], nil
 }
 
-func newTestService(ids []shared.ID) (*Service, *FakeManifestRepository, *auditRecorder) {
+func newTestService(t *testing.T, ids []shared.ID) (*Service, *FakeManifestRepository, *auditRecorder) {
 	manifest := NewFakeManifestRepository()
 	audit := &auditRecorder{}
 	svc := NewService(Options{
-		Repository: NewMemoryRepository(), ManifestRepo: manifest,
+		Repository: newTestRepository(t), ManifestRepo: manifest,
 		Application: appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}},
 		Environment: envQuery{envs: map[shared.ID]EnvironmentRef{"env_dev": {ID: "env_dev", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "dev"}, "env_prod": {ID: "env_prod", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "prod"}}, bindings: map[shared.ID]ClusterBindingRef{"env_dev": {ID: "binding_dev", EnvironmentID: "env_dev", Namespace: "order-dev", Active: true}, "env_prod": {ID: "binding_prod", EnvironmentID: "env_prod", Namespace: "order-prod", Active: true}}},
 		Audit:       audit, IDGenerator: &staticIDs{ids: ids}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
@@ -162,7 +172,7 @@ func newTestService(ids []shared.ID) (*Service, *FakeManifestRepository, *auditR
 }
 
 func TestApplicationTemplateCopyDoesNotMutatePlatformTemplate(t *testing.T) {
-	svc, _, _ := newTestService([]shared.ID{"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app", "deployment_template_revision_app2"})
+	svc, _, _ := newTestService(t, []shared.ID{"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app", "deployment_template_revision_app2"})
 	base, err := svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
 	if err != nil {
 		t.Fatalf("platform template: %v", err)
@@ -182,7 +192,7 @@ func TestApplicationTemplateCopyDoesNotMutatePlatformTemplate(t *testing.T) {
 }
 
 func TestTemplatePolicyValidationRejectsPrivilegedAndAllowsInitContainer(t *testing.T) {
-	svc, _, _ := newTestService(nil)
+	svc, _, _ := newTestService(t, nil)
 	allowed := svc.ValidateTemplate(context.Background(), "initContainers:\n- name: init\nsecurityContext:\n  runAsNonRoot: true")
 	if !allowed.Valid {
 		t.Fatalf("expected initContainer template to be valid: %#v", allowed)
@@ -199,7 +209,7 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 		"deployment_1", "manifest_revision_1", "deployment_event_1",
 		"deployment_2", "manifest_revision_2", "deployment_event_2", "deployment_event_3",
 	}
-	svc, manifest, audit := newTestService(ids)
+	svc, manifest, audit := newTestService(t, ids)
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
 	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
 	dev, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev", ImageURI: "registry/order-api:v1", ImageDigest: "sha256:old"})
@@ -238,7 +248,7 @@ func TestGitOpsHTTPHandlerCoversTemplateAndDeploymentAPIs(t *testing.T) {
 		"deployment_template_revision_app2",
 		"deployment_1", "manifest_revision_1", "deployment_event_1",
 	}
-	svc, manifest, _ := newTestService(ids)
+	svc, manifest, _ := newTestService(t, ids)
 	mux := http.NewServeMux()
 	NewHandler(svc).Register(mux)
 
@@ -327,7 +337,7 @@ func TestNoopAuditLogger(t *testing.T) {
 }
 
 func TestGitOpsValidationErrorsRepositoryQueriesAndStatusMapping(t *testing.T) {
-	svc, _, _ := newTestService([]shared.ID{"deployment_template_platform", "deployment_template_revision_platform"})
+	svc, _, _ := newTestService(t, []shared.ID{"deployment_template_platform", "deployment_template_revision_platform"})
 	if _, err := svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app"); err != nil {
 		t.Fatalf("platform template: %v", err)
 	}
@@ -379,7 +389,7 @@ func TestGitOpsValidationErrorsRepositoryQueriesAndStatusMapping(t *testing.T) {
 	if got := firstNonEmpty(" ", ""); got != "" {
 		t.Fatalf("firstNonEmpty empty value = %q", got)
 	}
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	svcNoRevision := NewService(Options{Repository: repo})
 	if err := repo.CreateTemplate(context.Background(), DeploymentTemplate{ID: "template_without_revision", Scope: TemplateScopeApplication, ApplicationID: "app_without_revision"}); err != nil {
 		t.Fatalf("create template without revision: %v", err)
@@ -389,8 +399,8 @@ func TestGitOpsValidationErrorsRepositoryQueriesAndStatusMapping(t *testing.T) {
 	}
 }
 
-func TestGitOpsMemoryRepositoryConflictAndMissingBranches(t *testing.T) {
-	repo := NewMemoryRepository()
+func TestGitOpsRepositoryConflictAndMissingBranches(t *testing.T) {
+	repo := newTestRepository(t)
 	ctx := context.Background()
 	template := DeploymentTemplate{ID: "template_1", Name: "java", Scope: TemplateScopeApplication, ApplicationID: "app_1"}
 	if err := repo.CreateTemplate(ctx, template); err != nil {
@@ -444,7 +454,7 @@ func TestGitOpsMemoryRepositoryConflictAndMissingBranches(t *testing.T) {
 
 func TestGitOpsServicePropagatesTemplateAndQueryErrors(t *testing.T) {
 	errBoom := shared.NewError(shared.CodeInternal, "boom")
-	repo := &gitopsErrRepo{MemoryRepository: NewMemoryRepository()}
+	repo := &gitopsErrRepo{Repository: newTestRepository(t)}
 	svc := NewService(Options{Repository: repo, ManifestRepo: NewFakeManifestRepository(), Application: appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}}, IDGenerator: &staticIDs{ids: []shared.ID{"template_bad", "revision_bad", "template_bad2", "revision_bad2", "template_1", "revision_1", "template_2", "revision_2", "revision_3", "revision_4"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
 	repo.createTemplateErr = errBoom
 	if _, err := svc.EnsurePlatformTemplate(context.Background(), "java", "containers: []"); shared.CodeOf(err) != shared.CodeInternal {
@@ -475,11 +485,11 @@ func TestGitOpsServicePropagatesTemplateAndQueryErrors(t *testing.T) {
 		t.Fatalf("update revision error should propagate, got %v", err)
 	}
 
-	idFailSvc := NewService(Options{Repository: NewMemoryRepository(), ManifestRepo: NewFakeManifestRepository(), IDGenerator: gitopsFailingIDs{err: errBoom}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
+	idFailSvc := NewService(Options{Repository: newTestRepository(t), ManifestRepo: NewFakeManifestRepository(), IDGenerator: gitopsFailingIDs{err: errBoom}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
 	if _, err := idFailSvc.EnsurePlatformTemplate(context.Background(), "java", "containers: []"); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("id failure should propagate, got %v", err)
 	}
-	appErrSvc := NewService(Options{Repository: NewMemoryRepository(), ManifestRepo: NewFakeManifestRepository(), Application: errAppQuery{err: errBoom}, IDGenerator: &staticIDs{ids: []shared.ID{"template_1", "revision_1"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
+	appErrSvc := NewService(Options{Repository: newTestRepository(t), ManifestRepo: NewFakeManifestRepository(), Application: errAppQuery{err: errBoom}, IDGenerator: &staticIDs{ids: []shared.ID{"template_1", "revision_1"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
 	if _, err := appErrSvc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1"); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("app query error should propagate, got %v", err)
 	}
@@ -487,7 +497,7 @@ func TestGitOpsServicePropagatesTemplateAndQueryErrors(t *testing.T) {
 
 func TestGitOpsServicePropagatesPromotionAndAgentUpdateErrors(t *testing.T) {
 	errBoom := shared.NewError(shared.CodeInternal, "boom")
-	repo := &gitopsErrRepo{MemoryRepository: NewMemoryRepository()}
+	repo := &gitopsErrRepo{Repository: newTestRepository(t)}
 	manifest := NewFakeManifestRepository()
 	svc := NewService(Options{
 		Repository: repo, ManifestRepo: manifest,

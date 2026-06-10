@@ -14,7 +14,7 @@
 
 ## 本次实现记录
 
-- 新增 `internal/modules/identityaccess`，包含领域模型、port、内存 repository、服务层、HTTP API handler 和 MySQL 迁移草案。
+- 新增 `internal/modules/identityaccess`，包含领域模型、port、MySQL 正式表 repository、服务层、HTTP API handler 和 MySQL 迁移。
 - 本地用户密码使用 bcrypt 哈希保存，不保存明文密码。
 - AccessToken/RefreshToken 只保存 SHA-256 哈希；登录响应返回一次性明文 token，后续存储和查询均使用哈希。
 - OIDC 登录使用 `OIDCVerifier` port 支持 mock provider，按 `issuer` + `subject` 唯一映射平台 `User`。

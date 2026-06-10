@@ -11,7 +11,7 @@
 
 ## 2026-05-30 完成记录
 
-- 新增 `internal/modules/appenv` 模块，包含领域模型、端口、服务、内存仓库、HTTP API 和 MySQL 迁移草案。
+- 新增 `internal/modules/appenv` 模块，包含领域模型、端口、服务、MySQL 正式表仓库、HTTP API 和 MySQL 迁移。
 - 创建 Application 时必须绑定已有 `SourceRepository`，不会创建源码仓库。
 - `ApplicationSource` 固化 `source_path` 和 `BuildSpec`，当前测试可用版本支持 `java_springboot` 与 `java_tomcat`。
 - BuildSpec 校验覆盖构建命令、产物拷贝命令、运行时基础镜像允许列表、产物放置路径和默认分支。

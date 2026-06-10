@@ -9,6 +9,7 @@ import (
 	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
 	"github.com/shareinto/paas/internal/shared/testutil"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type recordingPermission struct {
@@ -61,8 +62,18 @@ func (g *recordingDeletionGuard) PrepareProjectDeletion(_ context.Context, actor
 	return g.err
 }
 
-func newTestService() (*Service, *MemoryRepository, *recordingPermission, *recordingAudit, *recordingPublisher) {
-	repo := NewMemoryRepository()
+func newTestRepository(t *testing.T) Repository {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	return repo
+}
+
+func newTestService(t *testing.T) (*Service, Repository, *recordingPermission, *recordingAudit, *recordingPublisher) {
+	t.Helper()
+	repo := newTestRepository(t)
 	permission := &recordingPermission{}
 	audit := &recordingAudit{}
 	events := &recordingPublisher{}
@@ -88,7 +99,7 @@ func (failingIDGenerator) NewID(string) (shared.ID, error) {
 }
 
 func TestCreateTenantPublishesEventAndAudit(t *testing.T) {
-	svc, _, permission, audit, events := newTestService()
+	svc, _, permission, audit, events := newTestService(t)
 	ctx := context.Background()
 
 	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "Payment", DisplayName: "支付团队", Description: " core "})
@@ -110,7 +121,7 @@ func TestCreateTenantPublishesEventAndAudit(t *testing.T) {
 }
 
 func TestCreateTenantValidationAndConflicts(t *testing.T) {
-	svc, _, permission, _, events := newTestService()
+	svc, _, permission, _, events := newTestService(t)
 	ctx := context.Background()
 
 	if _, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "1bad"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
@@ -138,7 +149,7 @@ func TestCreateTenantValidationAndConflicts(t *testing.T) {
 }
 
 func TestTenantMemberLifecycleAndQueries(t *testing.T) {
-	svc, _, _, audit, _ := newTestService()
+	svc, _, _, audit, _ := newTestService(t)
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "platform"})
 	if err != nil {
@@ -176,7 +187,7 @@ func TestTenantMemberLifecycleAndQueries(t *testing.T) {
 }
 
 func TestTenantMemberValidationAndRepositoryErrors(t *testing.T) {
-	svc, repo, _, _, _ := newTestService()
+	svc, repo, _, _, _ := newTestService(t)
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "platform"})
 	if err != nil {
@@ -206,7 +217,7 @@ func TestTenantMemberValidationAndRepositoryErrors(t *testing.T) {
 }
 
 func TestUpdateTenantAndTenantQueries(t *testing.T) {
-	svc, repo, permission, audit, _ := newTestService()
+	svc, repo, permission, audit, _ := newTestService(t)
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "payment"})
 	if err != nil {
@@ -256,7 +267,7 @@ func TestUpdateTenantAndTenantQueries(t *testing.T) {
 }
 
 func TestCreateProjectRequiresTenantAndPublishesEvent(t *testing.T) {
-	svc, _, permission, audit, events := newTestService()
+	svc, _, permission, audit, events := newTestService(t)
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "payment"})
 	if err != nil {
@@ -287,7 +298,7 @@ func TestCreateProjectRequiresTenantAndPublishesEvent(t *testing.T) {
 }
 
 func TestProjectValidationAndUpdate(t *testing.T) {
-	svc, repo, permission, _, _ := newTestService()
+	svc, repo, permission, _, _ := newTestService(t)
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "payment"})
 	if err != nil {
@@ -355,7 +366,7 @@ func TestProjectValidationAndUpdate(t *testing.T) {
 }
 
 func TestDeleteProjectChecksPermissionGuardPublishesEventAndAudit(t *testing.T) {
-	svc, repo, permission, audit, events := newTestService()
+	svc, repo, permission, audit, events := newTestService(t)
 	guard := &recordingDeletionGuard{}
 	svc.deletion = guard
 	ctx := context.Background()
@@ -393,7 +404,7 @@ func TestDeleteProjectChecksPermissionGuardPublishesEventAndAudit(t *testing.T) 
 }
 
 func TestDeleteProjectValidationErrors(t *testing.T) {
-	svc, repo, _, _, events := newTestService()
+	svc, repo, _, _, events := newTestService(t)
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "payment"})
 	if err != nil {
@@ -424,7 +435,7 @@ func TestDeleteProjectValidationErrors(t *testing.T) {
 }
 
 func TestListQueriesArePagedAndSorted(t *testing.T) {
-	svc, _, _, _, _ := newTestService()
+	svc, _, _, _, _ := newTestService(t)
 	ctx := context.Background()
 	alpha, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "alpha"})
 	if err != nil {
@@ -468,7 +479,7 @@ func TestDefaultServiceNoopsAndIDFailure(t *testing.T) {
 		t.Fatalf("NoopEventPublisher should not fail: %v", err)
 	}
 
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	svc := NewService(Options{Repository: repo})
 	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "default"})
 	if err != nil {
@@ -479,7 +490,7 @@ func TestDefaultServiceNoopsAndIDFailure(t *testing.T) {
 	}
 
 	failing := NewService(Options{
-		Repository:        NewMemoryRepository(),
+		Repository:        newTestRepository(t),
 		PermissionChecker: &recordingPermission{},
 		IDGenerator:       failingIDGenerator{},
 		Clock:             testutil.NewFakeClock(time.Date(2026, 5, 30, 3, 0, 0, 0, time.UTC)),
@@ -487,7 +498,7 @@ func TestDefaultServiceNoopsAndIDFailure(t *testing.T) {
 	if _, err := failing.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "fail"}); err == nil {
 		t.Fatalf("id generator failure should fail tenant creation")
 	}
-	repo2 := NewMemoryRepository()
+	repo2 := newTestRepository(t)
 	failingPublish := NewService(Options{
 		Repository:        repo2,
 		PermissionChecker: &recordingPermission{},

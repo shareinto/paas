@@ -93,6 +93,27 @@ export async function listTenants(): Promise<Tenant[]> {
   return tenants.map((item) => ({ ...item }));
 }
 
+export async function createTenant(input: { name: string; displayName: string; description?: string }) {
+  await wait();
+  if (tenants.some((item) => item.name === input.name)) throw new Error('租户标识已存在');
+  const tenant = { id: `tenant_${Date.now()}`, name: input.name, displayName: input.displayName || input.name, description: input.description || '', updatedAt: '刚刚' };
+  tenants.unshift(tenant);
+  return { ...tenant };
+}
+
+export async function updateTenant(id: string, input: { displayName: string; description?: string }) {
+  await wait();
+  const tenant = tenants.find((item) => item.id === id);
+  if (!tenant) throw new Error('租户不存在');
+  tenant.displayName = input.displayName || tenant.name;
+  tenant.description = input.description || '';
+  tenant.updatedAt = '刚刚';
+  projects.forEach((project) => {
+    if (project.tenantId === tenant.id) project.tenant = tenant.displayName;
+  });
+  return { ...tenant };
+}
+
 export async function listProjects(): Promise<Project[]> {
   await wait();
   return projects.map((item) => ({ ...item }));

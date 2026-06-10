@@ -26,6 +26,10 @@ type User struct {
 	UpdatedAt   time.Time
 }
 
+func normalizeUsername(username string) string {
+	return strings.ToLower(strings.TrimSpace(username))
+}
+
 type Identity struct {
 	ID        shared.ID
 	UserID    shared.ID

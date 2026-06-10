@@ -19,6 +19,7 @@ func NewHandler(service *Service) *Handler {
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tenants", h.handleListTenants)
 	mux.HandleFunc("POST /api/tenants", h.handleCreateTenant)
+	mux.HandleFunc("PATCH /api/tenants/{tenantId}", h.handleUpdateTenant)
 	mux.HandleFunc("GET /api/projects", h.handleListProjects)
 	mux.HandleFunc("POST /api/projects", h.handleCreateProject)
 	mux.HandleFunc("GET /api/projects/{projectId}", h.handleGetProject)
@@ -69,6 +70,20 @@ func (h *Handler) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, tenant)
+}
+
+func (h *Handler) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
+	var req UpdateTenantInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.TenantID = shared.ID(r.PathValue("tenantId"))
+	tenant, err := h.service.UpdateTenant(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tenant)
 }
 
 func (h *Handler) handleListProjects(w http.ResponseWriter, r *http.Request) {

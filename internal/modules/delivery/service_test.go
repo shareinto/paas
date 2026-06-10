@@ -13,6 +13,7 @@ import (
 	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
 	"github.com/shareinto/paas/internal/shared/testutil"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type fakeBuildQuery struct {
@@ -119,15 +120,25 @@ func (p *recordingPublisher) Publish(_ context.Context, e shared.DomainEvent) er
 
 type deliveryEnv struct {
 	svc      *Service
-	repo     *MemoryRepository
+	repo     Repository
 	gitops   *recordingGitOps
 	audit    *recordingAudit
 	events   *recordingPublisher
 	envQuery fakeEnvQuery
 }
 
-func newDeliveryEnv() deliveryEnv {
-	repo := NewMemoryRepository()
+func newTestRepository(t *testing.T) Repository {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	return repo
+}
+
+func newDeliveryEnv(t *testing.T) deliveryEnv {
+	t.Helper()
+	repo := newTestRepository(t)
 	gitops := &recordingGitOps{}
 	audit := &recordingAudit{}
 	events := &recordingPublisher{}
@@ -170,7 +181,7 @@ func seedFreight(t *testing.T, env deliveryEnv) Freight {
 }
 
 func TestBuildSucceededCreatesReleaseFreightAndDefaultFlow(t *testing.T) {
-	env := newDeliveryEnv()
+	env := newDeliveryEnv(t)
 	release, freight, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"})
 	if err != nil {
 		t.Fatalf("HandleBuildSucceeded() error = %v", err)
@@ -203,7 +214,7 @@ func TestBuildSucceededCreatesReleaseFreightAndDefaultFlow(t *testing.T) {
 }
 
 func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
-	env := newDeliveryEnv()
+	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
 	dev, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
 	if err != nil {
@@ -232,7 +243,7 @@ func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
 }
 
 func TestRejectAbortPendingEnvironmentRollbackAndGitOpsFailure(t *testing.T) {
-	env := newDeliveryEnv()
+	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
 	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_pending"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("pending cluster binding should block promotion, got %v", err)
@@ -258,7 +269,7 @@ func TestRejectAbortPendingEnvironmentRollbackAndGitOpsFailure(t *testing.T) {
 }
 
 func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
-	env := newDeliveryEnv()
+	env := newDeliveryEnv(t)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
 	body, _ := json.Marshal(BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"})
@@ -315,7 +326,7 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 
 func TestFailureBranchesAndRepositoryContracts(t *testing.T) {
 	ctx := context.Background()
-	env := newDeliveryEnv()
+	env := newDeliveryEnv(t)
 	if err := (NoopAuditLogger{}).Log(ctx, AuditEvent{}); err != nil {
 		t.Fatalf("noop audit: %v", err)
 	}
@@ -329,25 +340,25 @@ func TestFailureBranchesAndRepositoryContracts(t *testing.T) {
 	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing build query should fail, got %v", err)
 	}
-	env = newDeliveryEnv()
+	env = newDeliveryEnv(t)
 	env.svc.apps = nil
 	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing app query should fail, got %v", err)
 	}
-	env = newDeliveryEnv()
+	env = newDeliveryEnv(t)
 	env.svc.envs = nil
 	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing env query should fail, got %v", err)
 	}
-	env = newDeliveryEnv()
+	env = newDeliveryEnv(t)
 	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "other", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("ownership mismatch should fail, got %v", err)
 	}
-	env = newDeliveryEnv()
+	env = newDeliveryEnv(t)
 	freight := seedFreight(t, env)
-	var release Release
-	for _, value := range env.repo.releases {
-		release = value
+	release, err := env.repo.FindReleaseByBuildRun(ctx, "build_1")
+	if err != nil {
+		t.Fatalf("FindReleaseByBuildRun() error = %v", err)
 	}
 	if _, err := env.svc.GetRelease(ctx, release.ID); err != nil {
 		t.Fatalf("GetRelease() error = %v", err)
@@ -410,13 +421,13 @@ func TestFailureBranchesAndRepositoryContracts(t *testing.T) {
 
 func TestPromotionFailureBranches(t *testing.T) {
 	ctx := context.Background()
-	env := newDeliveryEnv()
+	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
 	env.svc.permission = &recordingPermission{err: shared.NewError(shared.CodePermissionDenied, "denied")}
 	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodePermissionDenied {
 		t.Fatalf("promotion permission should fail, got %v", err)
 	}
-	env = newDeliveryEnv()
+	env = newDeliveryEnv(t)
 	freight = seedFreight(t, env)
 	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("missing env should fail, got %v", err)
@@ -429,7 +440,7 @@ func TestPromotionFailureBranches(t *testing.T) {
 	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing gitops should fail, got %v", err)
 	}
-	env = newDeliveryEnv()
+	env = newDeliveryEnv(t)
 	freight = seedFreight(t, env)
 	prod, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
 	if _, err := env.svc.RejectPromotion(ctx, ApprovalInput{Actor: actor("usr_dev"), PromotionID: prod.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
@@ -458,11 +469,11 @@ func TestPromotionFailureBranches(t *testing.T) {
 
 func TestMoreRepositoryAndDefaultBranches(t *testing.T) {
 	ctx := context.Background()
-	defaultSvc := NewService(Options{Repository: NewMemoryRepository()})
+	defaultSvc := NewService(Options{Repository: newTestRepository(t)})
 	if defaultSvc.audit == nil || defaultSvc.events == nil || defaultSvc.ids == nil || defaultSvc.clock == nil {
 		t.Fatalf("default service dependencies should be set")
 	}
-	env := newDeliveryEnv()
+	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
 	promo, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
 	if err := env.repo.CreatePromotion(ctx, promo); shared.CodeOf(err) != shared.CodeConflict {
@@ -511,7 +522,7 @@ func TestMoreRepositoryAndDefaultBranches(t *testing.T) {
 
 func TestRemainingServiceBranches(t *testing.T) {
 	ctx := context.Background()
-	env := newDeliveryEnv()
+	env := newDeliveryEnv(t)
 	env.svc.builds = fakeBuildQuery{
 		runs:      map[shared.ID]BuildRunRef{"build_1": {ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user"}},
 		artifacts: map[shared.ID]BuildArtifactRef{},
@@ -519,7 +530,7 @@ func TestRemainingServiceBranches(t *testing.T) {
 	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("missing build artifact should fail, got %v", err)
 	}
-	env = newDeliveryEnv()
+	env = newDeliveryEnv(t)
 	freight := seedFreight(t, env)
 	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: identityaccess.Subject{}, FreightID: freight.ID, TargetEnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodeUnauthenticated {
 		t.Fatalf("promotion missing actor should fail, got %v", err)

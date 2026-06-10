@@ -230,4 +230,56 @@ EXECUTE add_artifact_path_stmt;
 DEALLOCATE PREPARE add_artifact_path_stmt;
 `,
 	},
+	{
+		Version: 202606090300,
+		Name:    "backfill_application_source_jenkins_template_id",
+		Up: `
+SELECT IF(COUNT(*) = 0, 'ALTER TABLE application_sources ADD COLUMN jenkins_template_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER source_repository_id', 'SELECT 1') INTO @add_source_jenkins_template_id
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'application_sources' AND column_name = 'jenkins_template_id';
+PREPARE add_source_jenkins_template_id_stmt FROM @add_source_jenkins_template_id;
+EXECUTE add_source_jenkins_template_id_stmt;
+DEALLOCATE PREPARE add_source_jenkins_template_id_stmt;
+`,
+		Down: `
+SELECT 1;
+`,
+	},
+	{
+		Version: 202606090301,
+		Name:    "application_runtime_environment_tables",
+		Up: `
+SELECT IF(COUNT(*) = 0, 'ALTER TABLE applications ADD COLUMN runtime_environment_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER description', 'SELECT 1') INTO @add_app_runtime_environment_id
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'applications' AND column_name = 'runtime_environment_id';
+PREPARE add_app_runtime_environment_id_stmt FROM @add_app_runtime_environment_id;
+EXECUTE add_app_runtime_environment_id_stmt;
+DEALLOCATE PREPARE add_app_runtime_environment_id_stmt;
+
+SELECT IF(COUNT(*) = 0, 'ALTER TABLE application_sources ADD COLUMN build_environment_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER jenkins_template_id', 'SELECT 1') INTO @add_source_build_environment_id
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'application_sources' AND column_name = 'build_environment_id';
+PREPARE add_source_build_environment_id_stmt FROM @add_source_build_environment_id;
+EXECUTE add_source_build_environment_id_stmt;
+DEALLOCATE PREPARE add_source_build_environment_id_stmt;
+
+CREATE TABLE application_runtime_environments (
+  application_id VARCHAR(64) NOT NULL,
+  runtime_environment_id VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL DEFAULT '',
+  runtime_base_image VARCHAR(512) NOT NULL DEFAULT '',
+  artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
+  dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
+  position INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (application_id, runtime_environment_id),
+  KEY idx_application_runtime_environments_runtime (runtime_environment_id),
+  CONSTRAINT fk_application_runtime_environments_application FOREIGN KEY (application_id) REFERENCES applications(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+		Down: `
+DROP TABLE IF EXISTS application_runtime_environments;
+ALTER TABLE application_sources DROP COLUMN build_environment_id;
+ALTER TABLE applications DROP COLUMN runtime_environment_id;
+`,
+	},
 }

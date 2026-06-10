@@ -27,7 +27,25 @@ export async function listProjects() {
 export async function listTenants() {
   if (!hasAPIBaseURL()) return mock.listTenants();
   const data = await request<PageResult<mock.Tenant>>('/api/tenants?page=1&page_size=100');
-  return data.items;
+  return data.items.map(mapTenant);
+}
+
+export async function createTenant(input: { name: string; displayName: string; description?: string }) {
+  if (!hasAPIBaseURL()) return mock.createTenant(input);
+  const item = await request<any>('/api/tenants', {
+    method: 'POST',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, name: input.name, display_name: input.displayName, description: input.description || '' })
+  });
+  return mapTenant(item);
+}
+
+export async function updateTenant(id: string, input: { displayName: string; description?: string }) {
+  if (!hasAPIBaseURL()) return mock.updateTenant(id, input);
+  const item = await request<any>(`/api/tenants/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, display_name: input.displayName, description: input.description || '' })
+  });
+  return mapTenant(item);
 }
 
 export async function createProject(input: { tenantId: string; name: string; displayName: string; description?: string }) {
@@ -543,6 +561,16 @@ function formatTime(value?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function mapTenant(item: any): mock.Tenant {
+  return {
+    id: item.id,
+    name: item.name,
+    displayName: item.display_name || item.displayName || item.name,
+    description: item.description || '',
+    updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
+  };
 }
 
 function mapSourceRepository(item: any, projectName = ''): mock.SourceRepository {

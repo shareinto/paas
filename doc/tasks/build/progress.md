@@ -12,7 +12,7 @@
 
 ## 2026-05-30 完成记录
 
-- 新增 `internal/modules/build` 模块，包含领域模型、端口、服务、内存仓库、HTTP API 和 MySQL 迁移草案。
+- 新增 `internal/modules/build` 模块，包含领域模型、端口、服务、MySQL 正式表仓库、HTTP API 和 MySQL 迁移。
 - `BuildRunnerPort` 覆盖统一 Job 创建、触发构建、queue item 查询、progressiveText 读取和取消构建。
 - BuildPipeline 查询或创建使用平台托管固定 Job 名称 `paas/{tenant_name}/{project_name}/{app_name}`，Jenkins 不暴露给用户。
 - 触发构建时通过 `ApplicationQuery` 读取 `ApplicationSource` 内固化的 BuildSpec，并在触发 Jenkins 前按本次 BuildRun 渲染和更新 Jenkinsfile。

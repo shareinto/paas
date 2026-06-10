@@ -439,6 +439,7 @@ func (s *Service) SyncRuntimeEnvironmentSnapshot(ctx context.Context, input Runt
 		return 0, shared.NewError(shared.CodeInvalidArgument, "runtime_base_image is required")
 	}
 	now := s.clock.Now()
+	applications := []Application{}
 	total := 0
 	for page := 1; ; page++ {
 		result, err := s.repo.ListApplicationsByRuntimeEnvironment(ctx, input.Environment.ID, shared.PageRequest{Page: page, PageSize: 100})
@@ -446,53 +447,55 @@ func (s *Service) SyncRuntimeEnvironmentSnapshot(ctx context.Context, input Runt
 			return total, err
 		}
 		if len(result.Items) == 0 {
-			return total, nil
+			break
 		}
-		for _, app := range result.Items {
-			updated := false
-			for i := range app.RuntimeEnvironments {
-				if app.RuntimeEnvironments[i].ID != input.Environment.ID {
-					continue
-				}
-				app.RuntimeEnvironments[i] = ApplicationRuntimeEnvironment{
-					ID:                 input.Environment.ID,
-					Name:               input.Environment.Name,
-					RuntimeBaseImage:   input.Environment.RuntimeBaseImage,
-					ArtifactDeployPath: input.Environment.ArtifactDeployPath,
-					DockerfilePath:     input.Environment.DockerfilePath,
-				}
-				updated = true
-			}
-			if !updated {
-				continue
-			}
-			if app.RuntimeEnvironmentID == input.Environment.ID {
-				sources, err := s.repo.ListApplicationSources(ctx, app.ID)
-				if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
-					return total, err
-				}
-				for i := range sources {
-					sources[i].BuildSpec.RuntimeBaseImage = input.Environment.RuntimeBaseImage
-					sources[i].BuildSpec.ArtifactDeployPath = input.Environment.ArtifactDeployPath
-					sources[i].UpdatedAt = now
-				}
-				if len(sources) > 0 {
-					if err := s.repo.ReplaceApplicationSources(ctx, app.ID, sources); err != nil {
-						return total, err
-					}
-				}
-			}
-			app.UpdatedAt = now
-			if err := s.repo.UpdateApplication(ctx, app); err != nil {
-				return total, err
-			}
-			_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "application.runtime_environment.sync", ResourceType: "application", ResourceID: app.ID, Result: "succeeded", Summary: "同步运行时环境快照", OccurredAt: now})
-			total++
-		}
+		applications = append(applications, result.Items...)
 		if int64(page*100) >= result.Total {
-			return total, nil
+			break
 		}
 	}
+	for _, app := range applications {
+		updated := false
+		for i := range app.RuntimeEnvironments {
+			if app.RuntimeEnvironments[i].ID != input.Environment.ID {
+				continue
+			}
+			app.RuntimeEnvironments[i] = ApplicationRuntimeEnvironment{
+				ID:                 input.Environment.ID,
+				Name:               input.Environment.Name,
+				RuntimeBaseImage:   input.Environment.RuntimeBaseImage,
+				ArtifactDeployPath: input.Environment.ArtifactDeployPath,
+				DockerfilePath:     input.Environment.DockerfilePath,
+			}
+			updated = true
+		}
+		if !updated {
+			continue
+		}
+		if app.RuntimeEnvironmentID == input.Environment.ID {
+			sources, err := s.repo.ListApplicationSources(ctx, app.ID)
+			if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
+				return total, err
+			}
+			for i := range sources {
+				sources[i].BuildSpec.RuntimeBaseImage = input.Environment.RuntimeBaseImage
+				sources[i].BuildSpec.ArtifactDeployPath = input.Environment.ArtifactDeployPath
+				sources[i].UpdatedAt = now
+			}
+			if len(sources) > 0 {
+				if err := s.repo.ReplaceApplicationSources(ctx, app.ID, sources); err != nil {
+					return total, err
+				}
+			}
+		}
+		app.UpdatedAt = now
+		if err := s.repo.UpdateApplication(ctx, app); err != nil {
+			return total, err
+		}
+		_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "application.runtime_environment.sync", ResourceType: "application", ResourceID: app.ID, Result: "succeeded", Summary: "同步运行时环境快照", OccurredAt: now})
+		total++
+	}
+	return total, nil
 }
 
 func (s *Service) GetApplicationSource(ctx context.Context, applicationID shared.ID) (ApplicationSource, error) {

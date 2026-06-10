@@ -14,6 +14,7 @@ import (
 	"github.com/shareinto/paas/internal/modules/tenantproject"
 	"github.com/shareinto/paas/internal/shared"
 	"github.com/shareinto/paas/internal/shared/testutil"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type fakeProjectQuery struct {
@@ -178,15 +179,25 @@ func (g *fakeGit) ListBranches(context.Context, string) ([]RepositoryBranch, err
 
 type testEnv struct {
 	svc        *Service
-	repo       *MemoryRepository
+	repo       Repository
 	git        *fakeGit
 	permission *recordingPermission
 	audit      *recordingAudit
 	events     *recordingPublisher
 }
 
-func newTestEnv() testEnv {
-	repo := NewMemoryRepository()
+func newTestRepository(t *testing.T) Repository {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	return repo
+}
+
+func newTestEnv(t *testing.T) testEnv {
+	t.Helper()
+	repo := newTestRepository(t)
 	git := &fakeGit{files: []RepositoryFile{
 		{Path: "services/user-api/pom.xml"},
 		{Path: "services/user-api/target/user-api.jar"},
@@ -234,7 +245,7 @@ func actor() identityaccess.Subject {
 }
 
 func TestCreateSourceRepositoryCallsGitAndPublishesEvent(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	ctx := context.Background()
 
 	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "User-API", DisplayName: "用户接口", Description: " core "})
@@ -266,7 +277,7 @@ func TestCreateSourceRepositoryCallsGitAndPublishesEvent(t *testing.T) {
 }
 
 func TestDeleteSourceRepositoryRemovesGitProjectAndBlocksAssociatedApplications(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	ctx := context.Background()
 	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "delete-api"})
 	if err != nil {
@@ -293,7 +304,7 @@ func TestDeleteSourceRepositoryRemovesGitProjectAndBlocksAssociatedApplications(
 }
 
 func TestCreateSourceRepositoryValidationAndFailures(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	ctx := context.Background()
 	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "", Name: "api"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("missing project should fail, got %v", err)
@@ -326,7 +337,7 @@ func TestCreateSourceRepositoryValidationAndFailures(t *testing.T) {
 }
 
 func TestPermissionMappingAndSync(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	ctx := context.Background()
 	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api"})
 	if err != nil {
@@ -360,7 +371,7 @@ func TestPermissionMappingAndSync(t *testing.T) {
 }
 
 func TestRepositoryMigrationLifecycleAndSuggestions(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	ctx := context.Background()
 	migration, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "legacy-web", SourceURL: "https://example.com/legacy.git"})
 	if err != nil {
@@ -399,7 +410,7 @@ func TestRepositoryMigrationLifecycleAndSuggestions(t *testing.T) {
 }
 
 func TestMigrationCancelRetryAndFailure(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	ctx := context.Background()
 	migration, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "api", SourceURL: "https://example.com/api.git"})
 	if err != nil {
@@ -416,7 +427,7 @@ func TestMigrationCancelRetryAndFailure(t *testing.T) {
 		t.Fatalf("canceling terminal migration should fail, got %v", err)
 	}
 
-	failing := newTestEnv()
+	failing := newTestEnv(t)
 	failing.git.mirrorErr = errors.New("mirror rejected")
 	failedMigration, err := failing.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "mirror-fail", SourceURL: "https://example.com/fail.git"})
 	if err != nil {
@@ -468,7 +479,7 @@ func TestGenerateBuildSpecSuggestions(t *testing.T) {
 }
 
 func TestRepositoryMemoryEdges(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	ctx := context.Background()
 	now := time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)
 	source := SourceRepository{ID: "repo_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "api", Status: RepositoryStatusReady, CreatedAt: now, UpdatedAt: now}
@@ -549,7 +560,7 @@ func TestRepositoryMemoryEdges(t *testing.T) {
 }
 
 func TestHTTPHandler(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
 	body := bytes.NewBufferString(`{"actor":{"Type":"user","ID":"usr_actor"},"project_id":"project_payment","name":"api"}`)
@@ -636,7 +647,7 @@ func TestHTTPHandler(t *testing.T) {
 }
 
 func TestHTTPRetryMigrationEndpoint(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
 
@@ -664,7 +675,7 @@ func TestHTTPRetryMigrationEndpoint(t *testing.T) {
 }
 
 func TestHTTPErrorBranches(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
 
@@ -708,7 +719,7 @@ func TestNoopAndDefaultServiceFailures(t *testing.T) {
 	if err := (NoopEventPublisher{}).Publish(ctx, shared.DomainEvent{}); err != nil {
 		t.Fatalf("noop publisher should not fail: %v", err)
 	}
-	svc := NewService(Options{Repository: NewMemoryRepository()})
+	svc := NewService(Options{Repository: newTestRepository(t)})
 	if _, err := svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing project query should fail, got %v", err)
 	}
@@ -716,7 +727,7 @@ func TestNoopAndDefaultServiceFailures(t *testing.T) {
 
 func TestServiceAdditionalErrorBranches(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv()
+	env := newTestEnv(t)
 	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "develop-repo", DefaultBranch: "develop"})
 	if err != nil {
 		t.Fatalf("CreateSourceRepository() error = %v", err)
@@ -724,27 +735,27 @@ func TestServiceAdditionalErrorBranches(t *testing.T) {
 	if repository.DefaultBranch != "develop" {
 		t.Fatalf("explicit default branch should be kept, got %+v", repository)
 	}
-	env = newTestEnv()
+	env = newTestEnv(t)
 	env.git.protectErr = errors.New("protect failed")
 	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "protect-fail"}); err == nil {
 		t.Fatalf("protect failure should fail create")
 	}
-	env = newTestEnv()
+	env = newTestEnv(t)
 	env.git.webhookErr = errors.New("webhook failed")
 	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "webhook-fail"}); err == nil {
 		t.Fatalf("webhook failure should fail create")
 	}
-	env = newTestEnv()
+	env = newTestEnv(t)
 	env.events.err = errors.New("event bus down")
 	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "event-fail"}); err == nil {
 		t.Fatalf("event publish failure should fail create")
 	}
-	env = newTestEnv()
+	env = newTestEnv(t)
 	env.svc.ids = failingIDGenerator{}
 	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "id-fail"}); err == nil {
 		t.Fatalf("id generation failure should fail create")
 	}
-	env = newTestEnv()
+	env = newTestEnv(t)
 	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "bad"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("missing source_url should fail, got %v", err)
 	}
@@ -774,19 +785,19 @@ func TestServiceAdditionalErrorBranches(t *testing.T) {
 
 func TestIDGenerationFailuresAfterPrimaryID(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv()
+	env := newTestEnv(t)
 	env.svc.ids = &sequenceIDGenerator{ids: []shared.ID{"repo_custom"}}
 	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "event-id-fail"}); err == nil {
 		t.Fatalf("event id failure should fail source repository create")
 	}
 
-	env = newTestEnv()
+	env = newTestEnv(t)
 	env.svc.ids = &sequenceIDGenerator{ids: []shared.ID{"repo_custom"}}
 	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "migration-id-fail", SourceURL: "https://example.com/repo.git"}); err == nil {
 		t.Fatalf("second migration id failure should fail migration create")
 	}
 
-	env = newTestEnv()
+	env = newTestEnv(t)
 	env.svc.ids = &sequenceIDGenerator{ids: []shared.ID{"repo_custom", "migration_custom"}}
 	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "migration-event-id-fail", SourceURL: "https://example.com/repo.git"}); err == nil {
 		t.Fatalf("event id failure should fail migration create")
@@ -806,7 +817,7 @@ func TestProcessMigrationFailureBranches(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			env := newTestEnv()
+			env := newTestEnv(t)
 			tc.mutate(env.git)
 			ctx := context.Background()
 			migration, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: tc.name, SourceURL: "https://example.com/" + tc.name + ".git"})
@@ -826,7 +837,7 @@ func TestProcessMigrationFailureBranches(t *testing.T) {
 }
 
 func TestProcessMigrationTerminalAndInvalidTransition(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	ctx := context.Background()
 	migration, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "terminal", SourceURL: "https://example.com/terminal.git"})
 	if err != nil {
@@ -849,7 +860,7 @@ func TestProcessMigrationTerminalAndInvalidTransition(t *testing.T) {
 }
 
 func TestSyncRepositoryPermissionsPortFailures(t *testing.T) {
-	env := newTestEnv()
+	env := newTestEnv(t)
 	ctx := context.Background()
 	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "sync-port"})
 	if err != nil {

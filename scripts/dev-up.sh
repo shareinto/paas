@@ -14,11 +14,7 @@ fi
 export DOCKERFILE_REPOSITORY_URL=ssh://git@gitops:2422/paas/dockerfiles.git
 export PAAS_HTTP_ADDR="${PAAS_HTTP_ADDR:-:8080}"
 export PAAS_AUTO_MIGRATE="${PAAS_AUTO_MIGRATE:-false}"
-export PAAS_REPOSITORY_DRIVER="${PAAS_REPOSITORY_DRIVER:-memory}"
-
-if [[ "$PAAS_REPOSITORY_DRIVER" == "mysql" && "$PAAS_AUTO_MIGRATE" != "true" ]]; then
-  echo "warning: PAAS_REPOSITORY_DRIVER=mysql but PAAS_AUTO_MIGRATE is not true; repository_snapshots must already exist."
-fi
+export PAAS_REPOSITORY_DRIVER="mysql"
 
 export MYSQL_HOST="${MYSQL_HOST:-127.0.0.1}"
 export MYSQL_PORT="${MYSQL_PORT:-3306}"

@@ -1,4 +1,4 @@
-import { AppstoreOutlined, BellOutlined, BuildOutlined, CloudServerOutlined, CodeOutlined, DeploymentUnitOutlined, DownOutlined, FileSearchOutlined, FolderOpenOutlined, MenuOutlined, PlusCircleOutlined, QuestionCircleOutlined, SearchOutlined, SettingOutlined, TagsOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, BellOutlined, BuildOutlined, CloudServerOutlined, CodeOutlined, DeploymentUnitOutlined, DownOutlined, FileSearchOutlined, FolderOpenOutlined, MenuOutlined, PlusCircleOutlined, QuestionCircleOutlined, SearchOutlined, SettingOutlined, TagsOutlined, TeamOutlined } from '@ant-design/icons';
 import { Avatar, Badge, Input, Layout, Menu, Space, Typography } from 'antd';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSession } from '../app/store';
@@ -18,6 +18,7 @@ const platformItems = [
 ];
 
 const adminItems = [
+  { key: '/tenants', icon: <TeamOutlined />, label: '租户管理' },
   { key: '/jenkins-templates', icon: <BuildOutlined />, label: '构建管理' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' }
 ];
@@ -69,6 +70,7 @@ function selectedKey(pathname: string) {
   if (pathname.startsWith('/source-repositories')) return '/source-repositories';
   if (pathname.startsWith('/apps')) return '/apps';
   if (pathname.startsWith('/builds')) return '/builds';
+  if (pathname.startsWith('/tenants')) return '/tenants';
   if (pathname.startsWith('/jenkins-templates')) return '/jenkins-templates';
   return pathname;
 }

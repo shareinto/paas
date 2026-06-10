@@ -3,7 +3,6 @@ package build
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
@@ -19,27 +18,6 @@ func newMySQLRepositoryForLogTest(t *testing.T) (*MySQLRepository, sqlmock.Sqlmo
 	if err != nil {
 		t.Fatalf("sqlmock.New() error = %v", err)
 	}
-	now := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
-	snapshot := buildSnapshot{
-		Runs: []BuildRun{{
-			ID:            "build_run_1",
-			TenantID:      "tenant_1",
-			ProjectID:     "project_1",
-			PipelineID:    "pipeline_1",
-			ApplicationID: "app_1",
-			Status:        BuildRunRunning,
-			CreatedAt:     now,
-			UpdatedAt:     now,
-		}},
-	}
-	payload, err := json.Marshal(snapshot)
-	if err != nil {
-		t.Fatalf("marshal snapshot: %v", err)
-	}
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT payload FROM repository_snapshots WHERE module = ?")).
-		WithArgs("build").
-		WillReturnRows(sqlmock.NewRows([]string{"payload"}).AddRow(string(payload)))
-
 	repo, err := NewMySQLRepository(context.Background(), db)
 	if err != nil {
 		t.Fatalf("NewMySQLRepository() error = %v", err)
@@ -47,10 +25,27 @@ func newMySQLRepositoryForLogTest(t *testing.T) (*MySQLRepository, sqlmock.Sqlmo
 	return repo, mock, db
 }
 
+func expectBuildRunLookup(mock sqlmock.Sqlmock) {
+	now := time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(regexp.QuoteMeta(buildRunSelect() + " WHERE id = ?")).
+		WithArgs(shared.ID("build_run_1")).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "tenant_id", "project_id", "pipeline_id", "pipeline_name", "pipeline_display_name",
+			"application_id", "source_repository_id", "git_ref", "commit_sha", "status", "jenkins_queue_id",
+			"jenkins_build_number", "primary_artifact_id", "log_offset", "error_message", "requested_by",
+			"created_at", "updated_at", "started_at", "finished_at",
+		}).AddRow(
+			"build_run_1", "tenant_1", "project_1", "pipeline_1", "", "",
+			"app_1", "repo_1", "main", "", BuildRunRunning, "", int64(0),
+			"", int64(0), "", "usr_builder", now, now, nil, nil,
+		))
+}
+
 func TestMySQLRepositoryAppendBuildLogWritesAppendOnlyTable(t *testing.T) {
 	repo, mock, db := newMySQLRepositoryForLogTest(t)
 	defer db.Close()
 
+	expectBuildRunLookup(mock)
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO build_logs(build_run_id, log_text, created_at) VALUES (?, ?, ?)")).
 		WithArgs(shared.ID("build_run_1"), "line 1\n", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -67,6 +62,7 @@ func TestMySQLRepositoryAppendBuildLogSplitsLargeChunks(t *testing.T) {
 	repo, mock, db := newMySQLRepositoryForLogTest(t)
 	defer db.Close()
 
+	expectBuildRunLookup(mock)
 	first := strings.Repeat("a", maxBuildLogChunkBytes)
 	second := strings.Repeat("b", 10*1024)
 	text := first + second
@@ -90,6 +86,7 @@ func TestMySQLRepositoryListBuildLogsReadsAppendOnlyTable(t *testing.T) {
 	repo, mock, db := newMySQLRepositoryForLogTest(t)
 	defer db.Close()
 
+	expectBuildRunLookup(mock)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT log_text FROM build_logs WHERE build_run_id = ? ORDER BY id")).
 		WithArgs(shared.ID("build_run_1")).
 		WillReturnRows(sqlmock.NewRows([]string{"log_text"}).AddRow("line 1\n").AddRow("line 2\n"))

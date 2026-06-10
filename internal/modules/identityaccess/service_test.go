@@ -14,6 +14,7 @@ import (
 
 	"github.com/shareinto/paas/internal/shared"
 	"github.com/shareinto/paas/internal/shared/testutil"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type fakeVerifier struct {
@@ -56,8 +57,18 @@ func (g *failingIDGenerator) NewID(prefix string) (shared.ID, error) {
 	return shared.ID(prefix + "_ok"), nil
 }
 
-func newTestService(verifier OIDCVerifier) (*Service, *MemoryRepository, *recordingAudit) {
-	repo := NewMemoryRepository()
+func newTestRepository(t *testing.T) Repository {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	return repo
+}
+
+func newTestService(t *testing.T, verifier OIDCVerifier) (*Service, Repository, *recordingAudit) {
+	t.Helper()
+	repo := newTestRepository(t)
 	audit := &recordingAudit{}
 	svc := NewService(Options{
 		Repository:  repo,
@@ -83,7 +94,7 @@ func TestValidatePermission(t *testing.T) {
 }
 
 func TestCreateLocalUserStoresPasswordHashAndLoginIssuesHashedTokens(t *testing.T) {
-	svc, repo, audit := newTestService(nil)
+	svc, repo, audit := newTestService(t, nil)
 	ctx := context.Background()
 
 	user, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{ActorID: "usr_admin", Username: "Alice", Password: "secret", DisplayName: "Alice", Email: "a@example.com"})
@@ -112,11 +123,11 @@ func TestCreateLocalUserStoresPasswordHashAndLoginIssuesHashedTokens(t *testing.
 	if loggedIn.ID != user.ID || pair.AccessToken == "" || pair.RefreshToken == "" {
 		t.Fatalf("unexpected login result: %+v %+v", pair, loggedIn)
 	}
-	if _, ok := repo.tokens[pair.AccessToken]; ok {
+	if _, err := repo.FindAccessTokenByHash(ctx, pair.AccessToken); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("raw access token must not be stored")
 	}
-	if _, ok := repo.tokens[hashToken(pair.AccessToken)]; !ok {
-		t.Fatalf("hashed access token should be stored")
+	if _, err := repo.FindAccessTokenByHash(ctx, hashToken(pair.AccessToken)); err != nil {
+		t.Fatalf("hashed access token should be stored: %v", err)
 	}
 	if len(audit.events) < 2 {
 		t.Fatalf("create and login should write audit events")
@@ -124,7 +135,7 @@ func TestCreateLocalUserStoresPasswordHashAndLoginIssuesHashedTokens(t *testing.
 }
 
 func TestLocalLoginRejectsBadPasswordAndDisabledUser(t *testing.T) {
-	svc, _, _ := newTestService(nil)
+	svc, _, _ := newTestService(t, nil)
 	ctx := context.Background()
 	user, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "bob", Password: "secret"})
 	if err != nil {
@@ -142,7 +153,7 @@ func TestLocalLoginRejectsBadPasswordAndDisabledUser(t *testing.T) {
 }
 
 func TestLocalUserServiceErrorBranches(t *testing.T) {
-	svc, repo, _ := newTestService(nil)
+	svc, repo, _ := newTestService(t, nil)
 	ctx := context.Background()
 	if _, _, err := svc.LoginLocal(ctx, "missing", "secret"); shared.CodeOf(err) != shared.CodeUnauthenticated {
 		t.Fatalf("missing local user should be unauthenticated, got %v", err)
@@ -170,7 +181,7 @@ func TestLocalUserServiceErrorBranches(t *testing.T) {
 }
 
 func TestResetPassword(t *testing.T) {
-	svc, _, _ := newTestService(nil)
+	svc, _, _ := newTestService(t, nil)
 	ctx := context.Background()
 	user, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "reset", Password: "old"})
 	if err != nil {
@@ -189,7 +200,7 @@ func TestResetPassword(t *testing.T) {
 
 func TestOIDCStartAndCallbackCreatesAndReusesIdentity(t *testing.T) {
 	verifier := &fakeVerifier{claims: OIDCClaims{Issuer: "https://idp.example.com", Subject: "sub-1", Username: "oidc-user", DisplayName: "企业用户", Email: "oidc@example.com"}}
-	svc, repo, _ := newTestService(verifier)
+	svc, repo, _ := newTestService(t, verifier)
 	ctx := context.Background()
 	provider, err := svc.CreateOIDCProvider(ctx, OIDCProvider{ID: "oidc_main", Name: "企业身份", Issuer: "https://idp.example.com", ClientID: "paas", ClientSecretRef: "secret/oidc", Scopes: []string{"openid", "profile"}, RedirectURI: "https://paas.example.com/callback", Enabled: true})
 	if err != nil {
@@ -234,7 +245,7 @@ func TestOIDCStartAndCallbackCreatesAndReusesIdentity(t *testing.T) {
 }
 
 func TestOIDCStateValidation(t *testing.T) {
-	svc, _, _ := newTestService(&fakeVerifier{claims: OIDCClaims{Issuer: "https://idp", Subject: "s"}})
+	svc, _, _ := newTestService(t, &fakeVerifier{claims: OIDCClaims{Issuer: "https://idp", Subject: "s"}})
 	ctx := context.Background()
 	provider, err := svc.CreateOIDCProvider(ctx, OIDCProvider{Name: "企业身份", Issuer: "https://idp", ClientID: "paas", ClientSecretRef: "secret", RedirectURI: "https://paas/callback", Enabled: true})
 	if err != nil {
@@ -256,7 +267,7 @@ func TestOIDCStateValidation(t *testing.T) {
 }
 
 func TestPermissionCheckerDirectGroupAndServiceAccount(t *testing.T) {
-	svc, repo, _ := newTestService(nil)
+	svc, repo, _ := newTestService(t, nil)
 	ctx := context.Background()
 
 	user, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "dev", Password: "secret"})
@@ -302,7 +313,7 @@ func TestPermissionCheckerDirectGroupAndServiceAccount(t *testing.T) {
 }
 
 func TestTokenAuthenticateRefreshAndLogout(t *testing.T) {
-	svc, _, _ := newTestService(nil)
+	svc, _, _ := newTestService(t, nil)
 	ctx := context.Background()
 	user, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "token", Password: "secret"})
 	if err != nil {
@@ -335,7 +346,7 @@ func TestTokenAuthenticateRefreshAndLogout(t *testing.T) {
 }
 
 func TestTokenFailureBranches(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	clock := testutil.NewFakeClock(time.Date(2026, 5, 30, 1, 0, 0, 0, time.UTC))
 	svc := NewService(Options{Repository: repo, IDGenerator: testutil.NewFakeIDGenerator(1), Clock: clock, AccessTTL: time.Minute, RefreshTTL: 2 * time.Minute})
 	ctx := context.Background()
@@ -380,7 +391,7 @@ func TestTokenFailureBranches(t *testing.T) {
 }
 
 func TestIssueTokenPairIDFailure(t *testing.T) {
-	svc, _, _ := newTestService(nil)
+	svc, _, _ := newTestService(t, nil)
 	ctx := context.Background()
 	if _, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "idtoken", Password: "secret"}); err != nil {
 		t.Fatalf("CreateLocalUser() error = %v", err)
@@ -397,7 +408,7 @@ func TestIssueTokenPairIDFailure(t *testing.T) {
 
 func TestOIDCErrorBranches(t *testing.T) {
 	ctx := context.Background()
-	svc, repo, _ := newTestService(&fakeVerifier{claims: OIDCClaims{Issuer: "https://idp", Subject: "sub", Username: "oidc-err"}})
+	svc, repo, _ := newTestService(t, &fakeVerifier{claims: OIDCClaims{Issuer: "https://idp", Subject: "sub", Username: "oidc-err"}})
 	disabled, err := svc.CreateOIDCProvider(ctx, OIDCProvider{Name: "停用身份源", Issuer: "https://disabled", ClientID: "client", ClientSecretRef: "secret", RedirectURI: "https://paas/callback", Enabled: false})
 	if err != nil {
 		t.Fatalf("CreateOIDCProvider disabled error = %v", err)
@@ -454,7 +465,7 @@ func TestOIDCErrorBranches(t *testing.T) {
 
 func TestOIDCCreateUserFallbacksAndConflicts(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := newTestService(&fakeVerifier{claims: OIDCClaims{Issuer: "https://idp", Subject: "sub-email", Email: "mail@example.com"}})
+	svc, _, _ := newTestService(t, &fakeVerifier{claims: OIDCClaims{Issuer: "https://idp", Subject: "sub-email", Email: "mail@example.com"}})
 	provider, err := svc.CreateOIDCProvider(ctx, OIDCProvider{Name: "企业身份", Issuer: "https://idp", ClientID: "client", ClientSecretRef: "secret", RedirectURI: "https://paas/callback", Enabled: true})
 	if err != nil {
 		t.Fatalf("CreateOIDCProvider() error = %v", err)
@@ -530,7 +541,7 @@ func TestScopeCoversAndPermissionAllows(t *testing.T) {
 }
 
 func TestRepositoryListUsersAndConflictPaths(t *testing.T) {
-	svc, repo, _ := newTestService(nil)
+	svc, repo, _ := newTestService(t, nil)
 	ctx := context.Background()
 	for _, username := range []string{"c", "a", "b"} {
 		if _, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: username, Password: "secret"}); err != nil {
@@ -563,7 +574,7 @@ func TestRepositoryListUsersAndConflictPaths(t *testing.T) {
 }
 
 func TestServiceQueryPorts(t *testing.T) {
-	svc, _, _ := newTestService(nil)
+	svc, _, _ := newTestService(t, nil)
 	ctx := context.Background()
 	user, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "query", Password: "secret"})
 	if err != nil {
@@ -583,7 +594,7 @@ func TestServiceQueryPorts(t *testing.T) {
 }
 
 func TestServiceDefaultDependenciesAndValidation(t *testing.T) {
-	svc := NewService(Options{Repository: NewMemoryRepository()})
+	svc := NewService(Options{Repository: newTestRepository(t)})
 	if svc.audit == nil || svc.ids == nil || svc.clock == nil || svc.accessTTL != defaultAccessTTL || svc.refreshTTL != defaultRefreshTTL {
 		t.Fatalf("default dependencies were not initialized")
 	}
@@ -619,7 +630,7 @@ func TestServiceDefaultDependenciesAndValidation(t *testing.T) {
 }
 
 func TestHTTPHandlersLoginMeAndOIDCProviderRedaction(t *testing.T) {
-	svc, _, _ := newTestService(nil)
+	svc, _, _ := newTestService(t, nil)
 	ctx := context.Background()
 	_, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "api", Password: "secret"})
 	if err != nil {
@@ -673,7 +684,7 @@ func TestHTTPHandlersLoginMeAndOIDCProviderRedaction(t *testing.T) {
 
 func TestHTTPHandlersCoverUserRoleTokenAndOIDCFlows(t *testing.T) {
 	verifier := &fakeVerifier{claims: OIDCClaims{Issuer: "https://idp", Subject: "sub", Username: "oidc-api"}}
-	svc, _, _ := newTestService(verifier)
+	svc, _, _ := newTestService(t, verifier)
 	mux := http.NewServeMux()
 	NewHandler(svc).Register(mux)
 

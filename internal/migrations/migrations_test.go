@@ -9,10 +9,6 @@ import (
 
 func TestAllMigrationsAreUniqueAndOrderedByVersion(t *testing.T) {
 	all := migrations.All()
-	if len(all) != 19 {
-		t.Fatalf("migration count = %d, want 19", len(all))
-	}
-
 	seen := map[int64]string{}
 	for _, migration := range all {
 		if migration.Version == 0 {
@@ -28,6 +24,55 @@ func TestAllMigrationsAreUniqueAndOrderedByVersion(t *testing.T) {
 			t.Fatalf("duplicate migration version %d: %q and %q", migration.Version, existing, migration.Name)
 		}
 		seen[migration.Version] = migration.Name
+	}
+}
+
+func TestRepositorySnapshotsAreDroppedByFinalMigration(t *testing.T) {
+	var found bool
+	for _, migration := range migrations.All() {
+		if migration.Name != "drop_repository_snapshots" {
+			continue
+		}
+		found = true
+		if !strings.Contains(migration.Up, "DROP TABLE IF EXISTS repository_snapshots") {
+			t.Fatalf("drop migration must remove repository_snapshots table:\n%s", migration.Up)
+		}
+	}
+	if !found {
+		t.Fatalf("drop_repository_snapshots migration not found")
+	}
+}
+
+func TestApplicationSourceJenkinsTemplateColumnIsBackfilledBeforeRuntimeEnvironmentMigration(t *testing.T) {
+	all := migrations.All()
+	var runtimeVersion int64
+	for _, migration := range all {
+		if migration.Name == "application_runtime_environment_tables" {
+			runtimeVersion = migration.Version
+			break
+		}
+	}
+	if runtimeVersion == 0 {
+		t.Fatalf("application_runtime_environment_tables migration not found")
+	}
+
+	var found bool
+	for _, migration := range all {
+		if migration.Version >= runtimeVersion {
+			continue
+		}
+		if !strings.Contains(migration.Up, "application_sources") ||
+			!strings.Contains(migration.Up, "jenkins_template_id") ||
+			!strings.Contains(migration.Up, "ADD COLUMN jenkins_template_id") {
+			continue
+		}
+		found = true
+		if !strings.Contains(migration.Up, "information_schema.columns") {
+			t.Fatalf("jenkins_template_id backfill migration must be safe for fresh databases:\n%s", migration.Up)
+		}
+	}
+	if !found {
+		t.Fatalf("missing application_sources.jenkins_template_id backfill migration before application_runtime_environment_tables")
 	}
 }
 

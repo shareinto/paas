@@ -34,9 +34,12 @@ test('request 映射后端错误响应', async () => {
 
 test('真实 API 分支使用 VITE_API_BASE_URL', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
-  const fetchMock = vi.fn(async (url: string) => {
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/api/auth/local/login')) return new Response(JSON.stringify({ token: 'token_1', userName: '李雷' }), { status: 200 });
     if (url.endsWith('/api/auth/oidc/start')) return new Response(JSON.stringify({ redirect_url: 'https://idp.example/login' }), { status: 200 });
+    if (url.endsWith('/api/tenants?page=1&page_size=100')) return new Response(JSON.stringify({ items: [{ id: 'tenant_1', name: 'rnd', displayName: '研发中心', description: '默认租户', updatedAt: '2026-05-30 10:00' }], total: 1, page: 1, page_size: 100 }), { status: 200 });
+    if (url.endsWith('/api/tenants') && init?.method === 'POST') return new Response(JSON.stringify({ id: 'tenant_2', name: 'ops', display_name: '运维中心', description: '平台运维', updated_at: '2026-05-30T10:00:00Z' }), { status: 201 });
+    if (url.endsWith('/api/tenants/tenant_2') && init?.method === 'PATCH') return new Response(JSON.stringify({ id: 'tenant_2', name: 'ops', display_name: '平台运维', description: '统一运维租户', updated_at: '2026-05-30T11:00:00Z' }), { status: 200 });
     if (url.endsWith('/api/projects?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'project_1' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
     if (url.endsWith('/api/applications?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'app_1' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
     if (url.endsWith('/api/builds?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'build_1' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
@@ -51,6 +54,9 @@ test('真实 API 分支使用 VITE_API_BASE_URL', async () => {
   const api = await import('./index');
   await expect(api.login('admin', 'password')).resolves.toEqual({ token: 'token_1', userName: '李雷' });
   await expect(api.oidcLoginURL()).resolves.toBe('https://idp.example/login');
+  await expect(api.listTenants()).resolves.toMatchObject([{ id: 'tenant_1', displayName: '研发中心' }]);
+  await expect(api.createTenant({ name: 'ops', displayName: '运维中心', description: '平台运维' })).resolves.toMatchObject({ id: 'tenant_2', name: 'ops', displayName: '运维中心' });
+  await expect(api.updateTenant('tenant_2', { displayName: '平台运维', description: '统一运维租户' })).resolves.toMatchObject({ id: 'tenant_2', displayName: '平台运维', description: '统一运维租户' });
   await expect(api.listProjects()).resolves.toEqual([{ id: 'project_1' }]);
   await expect(api.listApplications()).resolves.toEqual([{ id: 'app_1' }]);
   await expect(api.listBuilds()).resolves.toEqual([{ id: 'build_1' }]);
@@ -59,6 +65,25 @@ test('真实 API 分支使用 VITE_API_BASE_URL', async () => {
   await expect(api.listAuditLogs()).resolves.toMatchObject([{ id: 'audit_1', actor: 'usr_1', action: 'promotion.approve', resource: 'promotion promotion_1', result: '成功', summary: '审批通过' }]);
   await expect(api.listFreights()).resolves.toMatchObject([{ id: 'freight_1', version: 'v1.0.0', image: 'registry.local/app:v1.0.0', digest: 'sha256:abc', commit: 'abc123' }]);
   await expect(api.listFreights('app_2')).resolves.toMatchObject([{ id: 'freight_2', version: 'v2.0.0', image: 'registry.local/app:v2.0.0', digest: 'sha256:def', commit: '-' }]);
+});
+
+test('真实 API 分支查询流水线时同时加载代码源', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  const fetchMock = vi.fn(async (url: string) => {
+    if (url.endsWith('/api/apps/app_1/build-pipelines?page=1&page_size=50')) {
+      return new Response(JSON.stringify({ items: [{ id: 'pipeline_1', application_id: 'app_1', name: 'main', display_name: '主流水线', status: 'active' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
+    }
+    if (url.endsWith('/api/build-pipelines/pipeline_1/sources')) {
+      return new Response(JSON.stringify({ items: [{ id: 'source_1', pipeline_id: 'pipeline_1', key: 'main', display_name: '主代码源', source_repository_id: 'repo_1', source_path: '.', build_spec: { source_path: '.', build_command: 'mvn clean package -DskipTests', artifact_copy_command: 'cp target/*.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"', runtime_base_image: 'registry.example/runtime/java17:1.0', artifact_deploy_path: '/app/', default_ref: 'main' } }] }), { status: 200 });
+    }
+    return new Response('', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const api = await import('./index');
+  await expect(api.listBuildPipelines('app_1')).resolves.toMatchObject([
+    { id: 'pipeline_1', name: 'main', displayName: '主流水线', sources: [{ key: 'main', displayName: '主代码源', pipelineId: 'pipeline_1' }] }
+  ]);
 });
 
 test('streamBuildLog 使用 fetch 流式读取 SSE 并携带 token', async () => {

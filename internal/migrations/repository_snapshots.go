@@ -88,4 +88,10 @@ WHERE module = 'application-environment' AND JSON_CONTAINS_PATH(payload, 'one', 
 `,
 		Down: `SELECT 1;`,
 	},
+	{
+		Version: 202606090901,
+		Name:    "drop_repository_snapshots",
+		Up:      `DROP TABLE IF EXISTS repository_snapshots;`,
+		Down:    `CREATE TABLE repository_snapshots (module VARCHAR(128) NOT NULL PRIMARY KEY, payload JSON NOT NULL, updated_at DATETIME(6) NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;`,
+	},
 }

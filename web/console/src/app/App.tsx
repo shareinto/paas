@@ -17,6 +17,7 @@ import { PromotionPage } from '../pages/PromotionPage';
 import { AuditPage } from '../pages/AuditPage';
 import { TemplateConfigPage } from '../pages/TemplateConfigPage';
 import { JenkinsTemplatesPage } from '../pages/JenkinsTemplatesPage';
+import { TenantsPage } from '../pages/TenantsPage';
 
 function Guard({ children }: { children: JSX.Element }) {
   const token = useSession((state) => state.token);
@@ -43,6 +44,7 @@ export function App() {
         <Route path="promotions" element={<PromotionPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="templates" element={<TemplateConfigPage />} />
+        <Route path="tenants" element={<TenantsPage />} />
         <Route path="jenkins-templates" element={<JenkinsTemplatesPage />} />
       </Route>
     </Routes>

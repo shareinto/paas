@@ -130,11 +130,6 @@ CREATE TABLE build_logs (
   created_at DATETIME(6) NOT NULL,
   KEY idx_build_logs_run_id (build_run_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-UPDATE repository_snapshots
-SET payload = JSON_REMOVE(payload, '$.Logs'),
-    updated_at = UTC_TIMESTAMP(6)
-WHERE module = 'build' AND JSON_CONTAINS_PATH(payload, 'one', '$.Logs');
 `,
 		Down: `DROP TABLE IF EXISTS build_logs;`,
 	},
@@ -162,5 +157,73 @@ EXECUTE build_logs_fk_stmt;
 DEALLOCATE PREPARE build_logs_fk_stmt;
 `,
 		Down: `SELECT 1;`,
+	},
+	{
+		Version: 202606090401,
+		Name:    "build_configuration_tables",
+		Up: `
+CREATE TABLE build_environments (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  name VARCHAR(128) NOT NULL,
+  description VARCHAR(1024) NOT NULL DEFAULT '',
+  build_image VARCHAR(512) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  is_default TINYINT(1) NOT NULL DEFAULT 0,
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_build_environments_name (name),
+  KEY idx_build_environments_status_default (status, is_default)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE runtime_environments (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  name VARCHAR(128) NOT NULL,
+  description VARCHAR(1024) NOT NULL DEFAULT '',
+  runtime_base_image VARCHAR(512) NOT NULL,
+  artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
+  dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
+  status VARCHAR(32) NOT NULL,
+  is_default TINYINT(1) NOT NULL DEFAULT 0,
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_runtime_environments_name (name),
+  KEY idx_runtime_environments_status_default (status, is_default)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE build_templates (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  name VARCHAR(128) NOT NULL,
+  version INT NOT NULL,
+  content LONGTEXT NOT NULL,
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE jenkins_job_templates (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  name VARCHAR(128) NOT NULL,
+  display_name VARCHAR(128) NOT NULL DEFAULT '',
+  description VARCHAR(1024) NOT NULL DEFAULT '',
+  runtime_base_image VARCHAR(512) NOT NULL DEFAULT '',
+  version INT NOT NULL,
+  xml_content LONGTEXT NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  is_default TINYINT(1) NOT NULL DEFAULT 0,
+  created_by VARCHAR(64) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_jenkins_job_templates_name (name),
+  KEY idx_jenkins_job_templates_status_default (status, is_default)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+		Down: `
+DROP TABLE IF EXISTS jenkins_job_templates;
+DROP TABLE IF EXISTS build_templates;
+DROP TABLE IF EXISTS runtime_environments;
+DROP TABLE IF EXISTS build_environments;
+`,
 	},
 }

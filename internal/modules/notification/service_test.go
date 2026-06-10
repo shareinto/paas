@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shareinto/paas/internal/shared"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type staticIDs struct{ ids []shared.ID }
@@ -24,8 +25,17 @@ type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
 
+func newTestRepository(t *testing.T) *MySQLRepository {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	return repo
+}
+
 func TestHandleEventRendersTemplateSendsAndDedupes(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	sender := &FakeSender{}
 	svc := NewService(Options{Repository: repo, Sender: sender, IDGenerator: &staticIDs{ids: []shared.ID{"notification_1"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC)}})
 	if err := svc.EnsureDefaults(context.Background()); err != nil {
@@ -52,7 +62,7 @@ func TestHandleEventRendersTemplateSendsAndDedupes(t *testing.T) {
 }
 
 func TestSendFailureCanRetry(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	sender := &FakeSender{Err: errors.New("network")}
 	svc := NewService(Options{Repository: repo, Sender: sender, IDGenerator: &staticIDs{ids: []shared.ID{"notification_1"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC)}})
 	if err := svc.EnsureDefaults(context.Background()); err != nil {
@@ -77,7 +87,7 @@ func TestSendFailureCanRetry(t *testing.T) {
 }
 
 func TestCreateChannelValidationAndHTTPList(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	sender := &FakeSender{}
 	svc := NewService(Options{Repository: repo, Sender: sender, IDGenerator: &staticIDs{ids: []shared.ID{"channel_1", "notification_1"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC)}})
 	if _, err := svc.CreateChannel(context.Background(), NotificationChannel{Name: " ", Type: ChannelFake}); shared.CodeOf(err) != shared.CodeInvalidArgument {
@@ -114,7 +124,7 @@ func TestCreateChannelValidationAndHTTPList(t *testing.T) {
 }
 
 func TestUnsupportedEventAndInvalidTemplateFail(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	svc := NewService(Options{Repository: repo, IDGenerator: &staticIDs{ids: []shared.ID{"notification_1"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC)}})
 	if _, err := svc.HandleEvent(context.Background(), Event{Type: "Unknown"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("unsupported event should fail, got %v", err)
@@ -125,7 +135,7 @@ func TestUnsupportedEventAndInvalidTemplateFail(t *testing.T) {
 }
 
 func TestNotificationRepositoryEdgesAndErrorWriter(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	svc := NewService(Options{Repository: repo, IDGenerator: &staticIDs{ids: []shared.ID{"notification_1"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC)}})
 	if err := svc.EnsureDefaults(context.Background()); err != nil {
 		t.Fatalf("defaults: %v", err)
@@ -159,7 +169,7 @@ func TestNotificationRepositoryEdgesAndErrorWriter(t *testing.T) {
 
 func TestNotificationHandleEventFailureBranches(t *testing.T) {
 	now := time.Date(2026, 5, 30, 11, 0, 0, 0, time.UTC)
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	svc := NewService(Options{Repository: repo, IDGenerator: &staticIDs{ids: []shared.ID{"notification_1"}}, Clock: fixedClock{now: now}})
 	if _, err := svc.HandleEvent(context.Background(), Event{Type: "BuildFailed", Payload: map[string]any{"application_name": "订单服务"}}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("missing template should fail, got %v", err)
@@ -171,7 +181,7 @@ func TestNotificationHandleEventFailureBranches(t *testing.T) {
 		t.Fatalf("disabled template should fail, got %v", err)
 	}
 
-	repo = NewMemoryRepository()
+	repo = newTestRepository(t)
 	svc = NewService(Options{Repository: repo, IDGenerator: &staticIDs{ids: []shared.ID{"notification_1"}}, Clock: fixedClock{now: now}})
 	if err := repo.CreateTemplate(context.Background(), NotificationTemplate{ID: "template_1", EventType: "BuildFailed", TitleTemplate: "构建失败", ContentTemplate: "失败", Enabled: true}); err != nil {
 		t.Fatalf("create template: %v", err)
@@ -180,7 +190,7 @@ func TestNotificationHandleEventFailureBranches(t *testing.T) {
 		t.Fatalf("missing channel should fail, got %v", err)
 	}
 
-	repo = NewMemoryRepository()
+	repo = newTestRepository(t)
 	svc = NewService(Options{Repository: repo, IDGenerator: &staticIDs{ids: []shared.ID{"notification_1"}}, Clock: fixedClock{now: now}})
 	if err := repo.CreateTemplate(context.Background(), NotificationTemplate{ID: "template_1", EventType: "BuildFailed", TitleTemplate: "{{.bad", ContentTemplate: "失败", Enabled: true}); err != nil {
 		t.Fatalf("create invalid template: %v", err)
@@ -194,7 +204,7 @@ func TestNotificationHandleEventFailureBranches(t *testing.T) {
 }
 
 func TestNotificationRepositoryConflictAndMissingBranches(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	ctx := context.Background()
 	template := NotificationTemplate{ID: "template_1", EventType: "BuildFailed", Enabled: true}
 	if err := repo.CreateTemplate(ctx, template); err != nil {

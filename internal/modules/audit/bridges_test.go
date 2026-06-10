@@ -17,7 +17,7 @@ import (
 )
 
 func TestAuditBridgesCoverCriticalEventsAndBuildSpecDetails(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	svc := NewService(Options{Repository: repo, IDGenerator: &staticIDs{ids: []shared.ID{
 		"audit_1", "audit_2", "audit_3", "audit_4", "audit_5", "audit_6", "audit_7", "audit_8", "audit_9", "audit_10", "audit_11", "audit_12", "audit_13", "audit_14", "audit_15", "audit_16",
 	}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 15, 0, 0, 0, time.UTC)}})

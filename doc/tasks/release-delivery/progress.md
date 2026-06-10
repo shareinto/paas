@@ -12,7 +12,7 @@
 
 ## 2026-05-30 完成记录
 
-- 新增 `internal/modules/delivery` 模块，包含领域模型、端口、服务、内存仓库、HTTP API 和 MySQL 迁移草案。
+- 新增 `internal/modules/delivery` 模块，包含领域模型、端口、服务、MySQL 正式表仓库、HTTP API 和 MySQL 迁移。
 - 消费 `BuildSucceeded` 载荷生成 `Release`、`Freight` 和 `FreightItem`，并创建默认 `dev -> test -> staging -> prod` DeliveryFlow。
 - Promotion 创建会校验目标环境存在 active `EnvironmentClusterBinding`；`pending_cluster_binding` 环境会阻止发布。
 - 非 prod Promotion 直接调用 `GitOpsDeploymentCommand` 写入发布意图；release-delivery 不直接写 GitLab 清单仓库。

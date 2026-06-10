@@ -186,28 +186,16 @@ type repositories struct {
 }
 
 func openRepositories(ctx context.Context) (repositories, *sql.DB, error) {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("PAAS_REPOSITORY_DRIVER"))) {
-	case "", "memory":
-		return repositories{
-			identity: identityaccess.NewMemoryRepository(), tenant: tenantproject.NewMemoryRepository(),
-			source: sourcerepository.NewMemoryRepository(), app: appenv.NewMemoryRepository(), build: build.NewMemoryRepository(),
-			delivery: delivery.NewMemoryRepository(), audit: audit.NewMemoryRepository(), notification: notification.NewMemoryRepository(),
-			cluster: clusteragent.NewMemoryRepository(), gitops: gitops.NewMemoryRepository(),
-		}, nil, nil
-	case "mysql":
-		db, err := database.Open(ctx, database.ConfigFromEnv())
-		if err != nil {
-			return repositories{}, nil, err
-		}
-		repos, err := openMySQLRepositories(ctx, db)
-		if err != nil {
-			_ = db.Close()
-			return repositories{}, nil, err
-		}
-		return repos, db, nil
-	default:
-		return repositories{}, nil, shared.NewError(shared.CodeInvalidArgument, "unsupported repository driver")
+	db, err := database.Open(ctx, database.ConfigFromEnv())
+	if err != nil {
+		return repositories{}, nil, err
 	}
+	repos, err := openMySQLRepositories(ctx, db)
+	if err != nil {
+		_ = db.Close()
+		return repositories{}, nil, err
+	}
+	return repos, db, nil
 }
 
 func openMySQLRepositories(ctx context.Context, db *sql.DB) (repositories, error) {

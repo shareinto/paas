@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/shareinto/paas/internal/shared"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 type staticIDs struct{ ids []shared.ID }
@@ -38,7 +39,7 @@ func (u failingReportUpdater) UpdateFromAgent(context.Context, StatusReport) err
 }
 
 type clusterRepoWithErrors struct {
-	*MemoryRepository
+	Repository
 	listErr             error
 	createHeartbeatErr  error
 	updateClusterErr    error
@@ -53,60 +54,69 @@ func (r *clusterRepoWithErrors) CreateCluster(ctx context.Context, cluster Clust
 	if r.createClusterErr != nil {
 		return r.createClusterErr
 	}
-	return r.MemoryRepository.CreateCluster(ctx, cluster)
+	return r.Repository.CreateCluster(ctx, cluster)
 }
 
 func (r *clusterRepoWithErrors) UpdateCluster(ctx context.Context, cluster Cluster) error {
 	if r.updateClusterErr != nil {
 		return r.updateClusterErr
 	}
-	return r.MemoryRepository.UpdateCluster(ctx, cluster)
+	return r.Repository.UpdateCluster(ctx, cluster)
 }
 
 func (r *clusterRepoWithErrors) ListClusters(ctx context.Context, page shared.PageRequest) (shared.PageResult[Cluster], error) {
 	if r.listErr != nil {
 		return shared.PageResult[Cluster]{}, r.listErr
 	}
-	return r.MemoryRepository.ListClusters(ctx, page)
+	return r.Repository.ListClusters(ctx, page)
 }
 
 func (r *clusterRepoWithErrors) CreateHeartbeat(ctx context.Context, heartbeat ClusterHeartbeat) error {
 	if r.createHeartbeatErr != nil {
 		return r.createHeartbeatErr
 	}
-	return r.MemoryRepository.CreateHeartbeat(ctx, heartbeat)
+	return r.Repository.CreateHeartbeat(ctx, heartbeat)
 }
 
 func (r *clusterRepoWithErrors) CreateSnapshot(ctx context.Context, snapshot ClusterResourceSnapshot) error {
 	if r.createSnapshotErr != nil {
 		return r.createSnapshotErr
 	}
-	return r.MemoryRepository.CreateSnapshot(ctx, snapshot)
+	return r.Repository.CreateSnapshot(ctx, snapshot)
 }
 
 func (r *clusterRepoWithErrors) UpdateTask(ctx context.Context, task ClusterTask) error {
 	if r.updateTaskErr != nil {
 		return r.updateTaskErr
 	}
-	return r.MemoryRepository.UpdateTask(ctx, task)
+	return r.Repository.UpdateTask(ctx, task)
 }
 
 func (r *clusterRepoWithErrors) ListPendingTasks(ctx context.Context, clusterID shared.ID, limit int) ([]ClusterTask, error) {
 	if r.listPendingTasksErr != nil {
 		return nil, r.listPendingTasksErr
 	}
-	return r.MemoryRepository.ListPendingTasks(ctx, clusterID, limit)
+	return r.Repository.ListPendingTasks(ctx, clusterID, limit)
 }
 
 func (r *clusterRepoWithErrors) CreateTaskResult(ctx context.Context, result ClusterTaskResult) error {
 	if r.createTaskResultErr != nil {
 		return r.createTaskResultErr
 	}
-	return r.MemoryRepository.CreateTaskResult(ctx, result)
+	return r.Repository.CreateTaskResult(ctx, result)
+}
+
+func newTestRepository(t *testing.T) Repository {
+	t.Helper()
+	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	return repo
 }
 
 func TestAgentTokenBindingHeartbeatTimeoutAndStatusForward(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	env := &reportRecorder{}
 	deployments := &reportRecorder{}
@@ -142,7 +152,7 @@ func TestAgentTokenBindingHeartbeatTimeoutAndStatusForward(t *testing.T) {
 }
 
 func TestTaskPullAndResultAreScopedToCluster(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "cluster_task_1", "cluster_task_result_1"}}
 	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})
@@ -171,7 +181,7 @@ func TestTaskPullAndResultAreScopedToCluster(t *testing.T) {
 }
 
 func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "cluster_task_1", "heartbeat_1", "snapshot_1", "snapshot_2", "cluster_task_result_1"}}
 	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})
@@ -262,7 +272,7 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 }
 
 func TestClusterServiceValidationRotationAndScopedFailures(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_bad", "cluster_1", "cluster_2", "cluster_task_1"}}
 	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})
@@ -314,8 +324,8 @@ func TestClusterServiceValidationRotationAndScopedFailures(t *testing.T) {
 	}
 }
 
-func TestClusterMemoryRepositoryConflictAndMissingBranches(t *testing.T) {
-	repo := NewMemoryRepository()
+func TestClusterRepositoryConflictAndMissingBranches(t *testing.T) {
+	repo := newTestRepository(t)
 	ctx := context.Background()
 	cluster := Cluster{ID: "cluster_1", Name: "开发集群", Status: ClusterReady, CreatedAt: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	if err := repo.CreateCluster(ctx, cluster); err != nil {
@@ -350,7 +360,7 @@ func TestClusterMemoryRepositoryConflictAndMissingBranches(t *testing.T) {
 }
 
 func TestClusterServiceStatusForwardingHeartbeatAndUnreachableBranches(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "heartbeat_1", "snapshot_1", "snapshot_2", "snapshot_3"}}
 	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock, EnvironmentState: failingReportUpdater{err: shared.NewError(shared.CodeInternal, "env failed")}, HeartbeatTimeout: time.Minute})
@@ -391,7 +401,7 @@ func TestClusterServiceStatusForwardingHeartbeatAndUnreachableBranches(t *testin
 }
 
 func TestClusterAgentHTTPHandlerAuthenticationFailures(t *testing.T) {
-	repo := NewMemoryRepository()
+	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1"}}
 	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})
@@ -427,8 +437,8 @@ func TestClusterAgentHTTPHandlerAuthenticationFailures(t *testing.T) {
 }
 
 func TestClusterServicePropagatesRepositoryErrors(t *testing.T) {
-	base := NewMemoryRepository()
-	repo := &clusterRepoWithErrors{MemoryRepository: base}
+	base := newTestRepository(t)
+	repo := &clusterRepoWithErrors{Repository: base}
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "heartbeat_1", "heartbeat_2", "snapshot_1", "cluster_task_1", "cluster_task_result_1", "cluster_task_result_2", "cluster_2"}}
 	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})

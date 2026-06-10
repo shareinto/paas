@@ -177,11 +177,16 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose }: { appl
           }
         };
       });
-      return createBuildPipeline(applicationId, { name: values.name, displayName: values.displayName, description: values.description, sources });
+      const pipeline = await createBuildPipeline(applicationId, { name: values.name, displayName: values.displayName, description: values.description, sources });
+      return { ...pipeline, sources };
     },
-    onSuccess: () => {
+    onSuccess: (pipeline) => {
       message.success('流水线已创建');
-      queryClient.invalidateQueries({ queryKey: ['build-pipelines', applicationId] });
+      queryClient.setQueryData<BuildPipeline[]>(['build-pipelines', applicationId], (current = []) => {
+        const existing = current.filter((item) => item.id !== pipeline.id);
+        return [pipeline, ...existing];
+      });
+      queryClient.invalidateQueries({ queryKey: ['build-pipelines', applicationId], refetchType: 'none' });
       onClose();
     },
     onError: (error) => message.error(error instanceof Error ? error.message : '创建流水线失败')

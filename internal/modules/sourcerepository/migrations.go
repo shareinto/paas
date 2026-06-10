@@ -64,4 +64,20 @@ DROP TABLE IF EXISTS repository_migrations;
 DROP TABLE IF EXISTS source_repositories;
 `,
 	},
+	{
+		Version: 202606090101,
+		Name:    "source_repository_associations",
+		Up: `
+CREATE TABLE source_repository_associations (
+  source_repository_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  application_name VARCHAR(64) NOT NULL,
+  application_display_name VARCHAR(128) NOT NULL DEFAULT '',
+  PRIMARY KEY (source_repository_id, application_id),
+  KEY idx_source_repository_associations_name (source_repository_id, application_name),
+  CONSTRAINT fk_source_repository_associations_source_repo FOREIGN KEY (source_repository_id) REFERENCES source_repositories(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+		Down: `DROP TABLE IF EXISTS source_repository_associations;`,
+	},
 }

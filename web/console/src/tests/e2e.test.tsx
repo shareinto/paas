@@ -210,6 +210,41 @@ test('项目管理页面支持创建和删除项目', async () => {
   await waitFor(() => expect(screen.queryByText('测试项目')).not.toBeInTheDocument());
 });
 
+test('租户管理页面支持创建、搜索和编辑租户', async () => {
+  window.localStorage.setItem('paas_token', 'test');
+  useSession.setState({ token: 'test', userName: '测试用户' });
+  renderFlow('/tenants');
+  expect(await screen.findByRole('heading', { name: '租户管理' })).toBeInTheDocument();
+  expect(await screen.findByText('研发中心')).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: /创建租户/ }));
+  const createDialog = screen.getByRole('dialog', { name: '创建租户' });
+  await userEvent.type(within(createDialog).getByPlaceholderText('rnd'), 'ops');
+  await userEvent.type(within(createDialog).getByPlaceholderText('研发中心'), '运维中心');
+  await userEvent.type(within(createDialog).getByPlaceholderText('说明租户用途'), '平台运维租户');
+  await userEvent.click(within(createDialog).getByRole('button', { name: /创\s*建/ }));
+
+  expect(await screen.findByText('运维中心')).toBeInTheDocument();
+  await userEvent.type(screen.getByPlaceholderText('搜索租户名称或标识'), 'ops');
+  expect(screen.getByText('运维中心')).toBeInTheDocument();
+
+  const row = screen.getByText('运维中心').closest('tr');
+  expect(row).not.toBeNull();
+  await userEvent.click(within(row as HTMLTableRowElement).getByRole('button', { name: /编\s*辑/ }));
+  const editDialog = await screen.findByRole('dialog', { name: '编辑租户' });
+  expect(within(editDialog).getByDisplayValue('ops')).toBeDisabled();
+  const displayName = within(editDialog).getByDisplayValue('运维中心');
+  await userEvent.clear(displayName);
+  await userEvent.type(displayName, '平台运维');
+  const description = within(editDialog).getByDisplayValue('平台运维租户');
+  await userEvent.clear(description);
+  await userEvent.type(description, '统一运维租户');
+  await userEvent.click(within(editDialog).getByRole('button', { name: /保\s*存/ }));
+
+  expect(await screen.findByText('平台运维')).toBeInTheDocument();
+  expect(await screen.findByText('统一运维租户')).toBeInTheDocument();
+});
+
 test('源码仓库管理页面支持创建、筛选和删除仓库', async () => {
   window.localStorage.setItem('paas_token', 'test');
   useSession.setState({ token: 'test', userName: '测试用户' });
