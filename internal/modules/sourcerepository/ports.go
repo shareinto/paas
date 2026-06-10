@@ -90,6 +90,7 @@ type PermissionChecker interface {
 
 type ProjectQuery interface {
 	GetProject(ctx context.Context, id shared.ID) (tenantproject.Project, error)
+	GetTenant(ctx context.Context, id shared.ID) (tenantproject.Tenant, error)
 }
 
 type ProjectMembershipQuery interface {
