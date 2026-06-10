@@ -130,6 +130,36 @@ func TestBuildLogsMigrationDropsBuildRunsForeignKey(t *testing.T) {
 	}
 }
 
+func TestBuildCorePipelineColumnsAreBackfilled(t *testing.T) {
+	var found bool
+	for _, migration := range migrations.All() {
+		if migration.Name != "backfill_build_core_pipeline_columns" {
+			continue
+		}
+		found = true
+		for _, want := range []string{
+			"information_schema.columns",
+			"ADD COLUMN",
+			"build_pipelines",
+			"template_id",
+			"config_hash",
+			"managed_by_platform",
+			"build_runs",
+			"pipeline_name",
+			"pipeline_display_name",
+			"build_pipeline_sources",
+			"build_environment_id",
+		} {
+			if !strings.Contains(migration.Up, want) {
+				t.Fatalf("build core backfill migration Up SQL missing %q:\n%s", want, migration.Up)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("backfill_build_core_pipeline_columns migration not found")
+	}
+}
+
 func TestAllReturnsCopy(t *testing.T) {
 	first := migrations.All()
 	second := migrations.All()

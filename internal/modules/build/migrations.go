@@ -226,4 +226,102 @@ DROP TABLE IF EXISTS runtime_environments;
 DROP TABLE IF EXISTS build_environments;
 `,
 	},
+	{
+		Version: 202606090402,
+		Name:    "backfill_build_core_pipeline_columns",
+		Up: `
+CREATE TABLE IF NOT EXISTS build_pipeline_sources (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  pipeline_id VARCHAR(64) NOT NULL,
+  source_key VARCHAR(64) NOT NULL,
+  display_name VARCHAR(128) NOT NULL DEFAULT '',
+  source_repository_id VARCHAR(64) NOT NULL,
+  build_environment_id VARCHAR(64) NOT NULL DEFAULT '',
+  source_path VARCHAR(512) NOT NULL,
+  build_spec JSON NOT NULL,
+  is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_build_pipeline_sources_key (pipeline_id, source_key),
+  KEY idx_build_pipeline_sources_pipeline (pipeline_id),
+  CONSTRAINT fk_build_pipeline_sources_pipeline FOREIGN KEY (pipeline_id) REFERENCES build_pipelines(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+SET @build_pipelines_template_id_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipelines'
+    AND column_name = 'template_id'
+);
+SET @build_pipelines_template_id_ddl := IF(@build_pipelines_template_id_missing, 'ALTER TABLE build_pipelines ADD COLUMN template_id VARCHAR(128) NOT NULL DEFAULT '''' AFTER external_job_name', 'SELECT 1');
+PREPARE build_pipelines_template_id_stmt FROM @build_pipelines_template_id_ddl;
+EXECUTE build_pipelines_template_id_stmt;
+DEALLOCATE PREPARE build_pipelines_template_id_stmt;
+
+SET @build_pipelines_config_hash_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipelines'
+    AND column_name = 'config_hash'
+);
+SET @build_pipelines_config_hash_ddl := IF(@build_pipelines_config_hash_missing, 'ALTER TABLE build_pipelines ADD COLUMN config_hash VARCHAR(64) NOT NULL DEFAULT '''' AFTER template_id', 'SELECT 1');
+PREPARE build_pipelines_config_hash_stmt FROM @build_pipelines_config_hash_ddl;
+EXECUTE build_pipelines_config_hash_stmt;
+DEALLOCATE PREPARE build_pipelines_config_hash_stmt;
+
+SET @build_pipelines_managed_by_platform_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipelines'
+    AND column_name = 'managed_by_platform'
+);
+SET @build_pipelines_managed_by_platform_ddl := IF(@build_pipelines_managed_by_platform_missing, 'ALTER TABLE build_pipelines ADD COLUMN managed_by_platform TINYINT(1) NOT NULL DEFAULT 1 AFTER status', 'SELECT 1');
+PREPARE build_pipelines_managed_by_platform_stmt FROM @build_pipelines_managed_by_platform_ddl;
+EXECUTE build_pipelines_managed_by_platform_stmt;
+DEALLOCATE PREPARE build_pipelines_managed_by_platform_stmt;
+
+SET @build_runs_pipeline_name_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_runs'
+    AND column_name = 'pipeline_name'
+);
+SET @build_runs_pipeline_name_ddl := IF(@build_runs_pipeline_name_missing, 'ALTER TABLE build_runs ADD COLUMN pipeline_name VARCHAR(64) NOT NULL DEFAULT '''' AFTER pipeline_id', 'SELECT 1');
+PREPARE build_runs_pipeline_name_stmt FROM @build_runs_pipeline_name_ddl;
+EXECUTE build_runs_pipeline_name_stmt;
+DEALLOCATE PREPARE build_runs_pipeline_name_stmt;
+
+SET @build_runs_pipeline_display_name_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_runs'
+    AND column_name = 'pipeline_display_name'
+);
+SET @build_runs_pipeline_display_name_ddl := IF(@build_runs_pipeline_display_name_missing, 'ALTER TABLE build_runs ADD COLUMN pipeline_display_name VARCHAR(128) NOT NULL DEFAULT '''' AFTER pipeline_name', 'SELECT 1');
+PREPARE build_runs_pipeline_display_name_stmt FROM @build_runs_pipeline_display_name_ddl;
+EXECUTE build_runs_pipeline_display_name_stmt;
+DEALLOCATE PREPARE build_runs_pipeline_display_name_stmt;
+
+SET @build_pipeline_sources_build_environment_id_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipeline_sources'
+    AND column_name = 'build_environment_id'
+);
+SET @build_pipeline_sources_build_environment_id_ddl := IF(@build_pipeline_sources_build_environment_id_missing, 'ALTER TABLE build_pipeline_sources ADD COLUMN build_environment_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER source_repository_id', 'SELECT 1');
+PREPARE build_pipeline_sources_build_environment_id_stmt FROM @build_pipeline_sources_build_environment_id_ddl;
+EXECUTE build_pipeline_sources_build_environment_id_stmt;
+DEALLOCATE PREPARE build_pipeline_sources_build_environment_id_stmt;
+`,
+		Down: `SELECT 1;`,
+	},
 }
