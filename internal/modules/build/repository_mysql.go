@@ -482,6 +482,30 @@ func (r *MySQLRepository) CreateRun(ctx context.Context, run BuildRun) error {
 	if _, err := r.GetPipeline(ctx, run.PipelineID); err != nil {
 		return err
 	}
+	return r.insertRun(ctx, run)
+}
+
+func (r *MySQLRepository) CreateRunWithSources(ctx context.Context, run BuildRun, sources []BuildRunSource) error {
+	if _, err := r.GetPipeline(ctx, run.PipelineID); err != nil {
+		return err
+	}
+	return r.withTx(ctx, func(txCtx context.Context) error {
+		if err := r.insertRun(txCtx, run); err != nil {
+			return err
+		}
+		for _, source := range sources {
+			if source.BuildRunID != run.ID || source.ApplicationID != run.ApplicationID || source.TenantID != run.TenantID || source.ProjectID != run.ProjectID {
+				return shared.NewError(shared.CodeInvalidArgument, "build run source ownership cannot be changed")
+			}
+			if err := r.insertRunSource(txCtx, source); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (r *MySQLRepository) insertRun(ctx context.Context, run BuildRun) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO build_runs (id, tenant_id, project_id, pipeline_id, pipeline_name, pipeline_display_name, application_id, source_repository_id, git_ref, commit_sha, status, jenkins_queue_id, jenkins_build_number, primary_artifact_id, log_offset, error_message, requested_by, created_at, updated_at, started_at, finished_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -531,6 +555,10 @@ func (r *MySQLRepository) CreateRunSource(ctx context.Context, source BuildRunSo
 	if _, err := r.GetRun(ctx, source.BuildRunID); err != nil {
 		return err
 	}
+	return r.insertRunSource(ctx, source)
+}
+
+func (r *MySQLRepository) insertRunSource(ctx context.Context, source BuildRunSource) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO build_run_sources (id, tenant_id, project_id, build_run_id, application_id, source_key, source_repository_id, git_ref, commit_sha, source_path, is_primary, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

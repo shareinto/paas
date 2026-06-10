@@ -228,6 +228,18 @@ func newBuildTestEnv(t *testing.T) buildTestEnv {
 	return buildTestEnv{svc: svc, repo: repo, runner: runner, permission: permission, audit: audit, events: events, syncer: syncer}
 }
 
+type failingRunSourceRepository struct {
+	Repository
+}
+
+func (r failingRunSourceRepository) CreateRunSource(context.Context, BuildRunSource) error {
+	return shared.NewError(shared.CodeUnavailable, "create build run source failed")
+}
+
+func (r failingRunSourceRepository) CreateRunWithSources(context.Context, BuildRun, []BuildRunSource) error {
+	return shared.NewError(shared.CodeUnavailable, "create build run source failed")
+}
+
 func seedRuntimeEnvironments(t *testing.T, env buildTestEnv) {
 	t.Helper()
 	ctx := context.Background()
@@ -513,6 +525,25 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	}
 	if len(env.events.events) != 1 || env.events.events[0].EventType != "BuildStarted" {
 		t.Fatalf("expected BuildStarted, got %+v", env.events.events)
+	}
+}
+
+func TestTriggerBuildDoesNotLeaveRunWhenRunSourceCreationFails(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	pipeline := createDefaultPipeline(t, env)
+	env.svc.repo = failingRunSourceRepository{Repository: env.repo}
+
+	_, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
+	if shared.CodeOf(err) != shared.CodeUnavailable {
+		t.Fatalf("TriggerBuild() error code = %s, want unavailable: %v", shared.CodeOf(err), err)
+	}
+	runs, err := env.repo.ListRunsByApplication(ctx, pipeline.ApplicationID, shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListRunsByApplication() error = %v", err)
+	}
+	if len(runs.Items) != 0 {
+		t.Fatalf("failed trigger should not leave build runs, got %+v", runs.Items)
 	}
 }
 

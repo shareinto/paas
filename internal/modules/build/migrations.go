@@ -419,4 +419,28 @@ DEALLOCATE PREPARE build_pipeline_runtime_backfill_stmt;
 DROP TABLE IF EXISTS build_pipeline_runtime_environments;
 `,
 	},
+	{
+		Version: 202606100103,
+		Name:    "backfill_build_run_sources_table",
+		Up: `
+CREATE TABLE IF NOT EXISTS build_run_sources (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  build_run_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  source_key VARCHAR(64) NOT NULL,
+  source_repository_id VARCHAR(64) NOT NULL,
+  git_ref VARCHAR(128) NOT NULL,
+  commit_sha VARCHAR(128) NOT NULL DEFAULT '',
+  source_path VARCHAR(512) NOT NULL,
+  is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_build_run_sources_key (build_run_id, source_key),
+  KEY idx_build_run_sources_run (build_run_id),
+  CONSTRAINT fk_build_run_sources_run FOREIGN KEY (build_run_id) REFERENCES build_runs(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+		Down: `SELECT 1;`,
+	},
 }
