@@ -3,7 +3,7 @@
 ## 总体状态
 
 - [ ] 未开始
-- [ ] 开发中
+- [x] 开发中
 - [ ] 后端完成
 - [ ] 前端完成
 - [ ] 联调完成
@@ -11,8 +11,8 @@
 
 ## 任务进度
 
-- [ ] 数据库迁移
-- [ ] application-environment 模块 Workload 与环境配置
+- [x] 数据库迁移
+- [x] application-environment 模块 Workload 与环境配置
 - [ ] build 模块 Workload 适配
 - [ ] release-delivery 模块手动 Freight
 - [ ] gitops-deployment 多 Workload values 写入
@@ -24,6 +24,16 @@
 - [ ] 后端测试
 - [ ] 前端测试
 - [ ] 端到端验收
+
+## 合并记录
+
+- 2026-06-10：已合并 `feature/workload-v2-backend`，提交 `106ef2a`，包含 Workload 与 WorkloadEnvironmentConfig 后端基础、迁移、仓储、API、审计和测试。
+
+## 已运行测试
+
+- `feature/workload-v2-backend` 合并前：`git diff --check` 通过。
+- `feature/workload-v2-backend` 合并前：`go test ./internal/modules/appenv ./internal/migrations` 通过。
+- `feature/workload-v2-backend` 合并前：`go test ./...` 通过。
 
 ## 当前结论
 
