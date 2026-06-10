@@ -126,6 +126,109 @@ CREATE TABLE build_pipeline_sources (
 	assertMySQLColumnExists(t, ctx, db, "build_pipeline_sources", "build_environment_id")
 }
 
+func TestMigrationsBackfillBuildRunSourcesTableWhenCoreWasAppliedWithoutIt(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.MySQLDB(t)
+	migrator := database.NewMigrator(db)
+
+	oldCore := Migrations[0]
+	oldCore.Up = strings.Replace(oldCore.Up, `
+CREATE TABLE build_run_sources (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  build_run_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  source_key VARCHAR(64) NOT NULL,
+  source_repository_id VARCHAR(64) NOT NULL,
+  git_ref VARCHAR(128) NOT NULL,
+  commit_sha VARCHAR(128) NOT NULL DEFAULT '',
+  source_path VARCHAR(512) NOT NULL,
+  is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_build_run_sources_key (build_run_id, source_key),
+  KEY idx_build_run_sources_run (build_run_id),
+  CONSTRAINT fk_build_run_sources_run FOREIGN KEY (build_run_id) REFERENCES build_runs(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`, "", 1)
+	if oldCore.Up == Migrations[0].Up {
+		t.Fatalf("test setup did not remove build_run_sources from old core migration")
+	}
+	if err := migrator.Up(ctx, []database.Migration{oldCore}); err != nil {
+		t.Fatalf("apply old core migration: %v", err)
+	}
+
+	backfill := findBuildMigration(t, "backfill_build_run_sources_table")
+	if err := migrator.Up(ctx, []database.Migration{backfill}); err != nil {
+		t.Fatalf("apply build_run_sources backfill migration: %v", err)
+	}
+	assertMySQLColumnExists(t, ctx, db, "build_run_sources", "source_key")
+
+	repo, err := NewMySQLRepository(ctx, db)
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	now := time.Now().UTC()
+	pipeline := BuildPipeline{
+		ID:                "pipeline_1",
+		TenantID:          "tenant_1",
+		ProjectID:         "project_1",
+		ApplicationID:     "app_1",
+		Name:              "main",
+		DisplayName:       "主流水线",
+		Provider:          "jenkins",
+		ExternalJobName:   "paas/project/app/main",
+		TemplateID:        "template_1",
+		Status:            BuildPipelineStatusActive,
+		ManagedByPlatform: true,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if err := repo.CreatePipeline(ctx, pipeline); err != nil {
+		t.Fatalf("CreatePipeline() error = %v", err)
+	}
+	run := BuildRun{
+		ID:                  "build_run_1",
+		TenantID:            pipeline.TenantID,
+		ProjectID:           pipeline.ProjectID,
+		PipelineID:          pipeline.ID,
+		PipelineName:        pipeline.Name,
+		PipelineDisplayName: pipeline.DisplayName,
+		ApplicationID:       pipeline.ApplicationID,
+		SourceRepositoryID:  "repo_1",
+		GitRef:              "main",
+		Status:              BuildRunQueued,
+		RequestedBy:         "usr_builder",
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	if err := repo.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	if err := repo.CreateRunSource(ctx, BuildRunSource{
+		ID:                 "build_run_source_1",
+		TenantID:           pipeline.TenantID,
+		ProjectID:          pipeline.ProjectID,
+		BuildRunID:         run.ID,
+		ApplicationID:      pipeline.ApplicationID,
+		SourceKey:          "main",
+		SourceRepositoryID: "repo_1",
+		GitRef:             "main",
+		SourcePath:         ".",
+		IsPrimary:          true,
+		CreatedAt:          now,
+	}); err != nil {
+		t.Fatalf("CreateRunSource() error = %v", err)
+	}
+	sources, err := repo.ListRunSources(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("ListRunSources() error = %v", err)
+	}
+	if len(sources) != 1 || sources[0].SourceKey != "main" {
+		t.Fatalf("unexpected run sources: %+v", sources)
+	}
+}
+
 func TestMigrationsBackfillBuildPipelineIdentityColumnsAfterCoreBackfillWasApplied(t *testing.T) {
 	ctx := context.Background()
 	db := testsupport.MySQLDB(t)

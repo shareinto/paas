@@ -47,6 +47,7 @@ type Repository interface {
 	ListActiveRunsByPipeline(ctx context.Context, pipelineID shared.ID) ([]BuildRun, error)
 
 	CreateRun(ctx context.Context, run BuildRun) error
+	CreateRunWithSources(ctx context.Context, run BuildRun, sources []BuildRunSource) error
 	UpdateRun(ctx context.Context, run BuildRun) error
 	GetRun(ctx context.Context, id shared.ID) (BuildRun, error)
 	ListRunsByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[BuildRun], error)

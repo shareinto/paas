@@ -1061,13 +1061,8 @@ func (s *Service) TriggerBuild(ctx context.Context, input TriggerBuildInput) (Bu
 		return BuildRun{}, err
 	}
 	run.PipelineID = pipeline.ID
-	if err := s.repo.CreateRun(ctx, run); err != nil {
+	if err := s.repo.CreateRunWithSources(ctx, run, runSources); err != nil {
 		return BuildRun{}, err
-	}
-	for _, source := range runSources {
-		if err := s.repo.CreateRunSource(ctx, source); err != nil {
-			return BuildRun{}, err
-		}
 	}
 	queue, err := s.runnerOrError().TriggerBuild(ctx, pipeline.ExternalJobName, map[string]string{})
 	if err != nil {
