@@ -40,3 +40,52 @@ WHERE table_schema = DATABASE() AND table_name = 'application_sources' AND colum
 		}
 	}
 }
+
+func TestMigrationsCreateWorkloadTables(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.MySQLDB(t, Migrations...)
+
+	checkColumns := map[string][]string{
+		"workloads": {
+			"id",
+			"tenant_id",
+			"project_id",
+			"application_id",
+			"name",
+			"workload_type",
+			"status",
+			"image_source_mode",
+			"created_by",
+		},
+		"workload_environment_configs": {
+			"id",
+			"application_id",
+			"workload_id",
+			"environment_id",
+			"replicas",
+			"service_ports_json",
+			"resource_requests_json",
+			"resource_limits_json",
+			"probes_json",
+			"ingress_hosts_json",
+			"config_files_json",
+			"writable_dirs_json",
+			"values_override_json",
+		},
+	}
+	for table, columns := range checkColumns {
+		for _, column := range columns {
+			var count int
+			err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM information_schema.columns
+WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, table, column).Scan(&count)
+			if err != nil {
+				t.Fatalf("query column %s.%s: %v", table, column, err)
+			}
+			if count != 1 {
+				t.Fatalf("column %s.%s count = %d, want 1", table, column, count)
+			}
+		}
+	}
+}

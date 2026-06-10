@@ -607,6 +607,214 @@ func TestSetEnvironmentConfigAndSecretAuditWithoutSecretValue(t *testing.T) {
 	}
 }
 
+func TestWorkloadLifecycleValidationEnabledListAndAudit(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "workload-api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+
+	workload, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{
+		Actor:         appenvActor(),
+		ApplicationID: app.ID,
+		Name:          "api",
+		DisplayName:   "接口服务",
+		WorkloadType:  WorkloadTypeDeployment,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkload() error = %v", err)
+	}
+	if workload.ApplicationID != app.ID || workload.Name != "api" || workload.WorkloadType != WorkloadTypeDeployment || workload.Status != WorkloadStatusEnabled {
+		t.Fatalf("unexpected workload: %+v", workload)
+	}
+	lowercase, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{
+		Actor:         appenvActor(),
+		ApplicationID: app.ID,
+		Name:          "lowercase-api",
+		WorkloadType:  WorkloadType("deployment"),
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkload(lowercase) error = %v", err)
+	}
+	if lowercase.WorkloadType != WorkloadTypeDeployment {
+		t.Fatalf("lowercase workload_type should be normalized, got %+v", lowercase)
+	}
+	if _, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeStatefulSet}); shared.CodeOf(err) != shared.CodeConflict {
+		t.Fatalf("duplicate workload name should fail, got %v", err)
+	}
+	if _, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "worker", WorkloadType: WorkloadType("DaemonSet")}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("unsupported workload type should fail, got %v", err)
+	}
+
+	worker, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "worker", WorkloadType: WorkloadTypeStatefulSet})
+	if err != nil {
+		t.Fatalf("CreateWorkload(worker) error = %v", err)
+	}
+	updated, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", Description: "handles async jobs"})
+	if err != nil {
+		t.Fatalf("UpdateWorkload() error = %v", err)
+	}
+	if updated.DisplayName != "后台任务" || updated.Description != "handles async jobs" || updated.WorkloadType != WorkloadTypeStatefulSet {
+		t.Fatalf("unexpected updated workload: %+v", updated)
+	}
+	if _, err := env.svc.DisableWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID}); err != nil {
+		t.Fatalf("DisableWorkload() error = %v", err)
+	}
+	enabled, err := env.svc.ListEnabledWorkloads(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("ListEnabledWorkloads() error = %v", err)
+	}
+	if len(enabled) != 2 || enabled[0].ID != workload.ID || enabled[1].ID != lowercase.ID {
+		t.Fatalf("disabled workload should not be listed as enabled, got %+v", enabled)
+	}
+	if _, err := env.svc.EnableWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID}); err != nil {
+		t.Fatalf("EnableWorkload() error = %v", err)
+	}
+	if _, err := env.svc.DeleteWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID}); err != nil {
+		t.Fatalf("DeleteWorkload() error = %v", err)
+	}
+	if _, err := env.svc.EnableWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("deleted workload should not be re-enabled, got %v", err)
+	}
+	if _, err := env.svc.DisableWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("deleted workload should not be disabled again, got %v", err)
+	}
+	enabled, err = env.svc.ListEnabledWorkloads(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("ListEnabledWorkloads(after delete) error = %v", err)
+	}
+	if len(enabled) != 2 || enabled[0].ID != workload.ID || enabled[1].ID != lowercase.ID {
+		t.Fatalf("deleted workload should not be listed as enabled, got %+v", enabled)
+	}
+
+	actions := map[string]int{}
+	for _, event := range env.audit.events {
+		actions[event.Action]++
+	}
+	if actions["workload.create"] != 3 || actions["workload.status_change"] != 3 {
+		t.Fatalf("expected workload create and status audits, got %+v", env.audit.events)
+	}
+}
+
+func TestWorkloadEnvironmentConfigSaveQueryAndAudit(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "config-workload", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+	environments, err := env.svc.ListEnvironments(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("ListEnvironments() error = %v", err)
+	}
+	workload, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeDeployment})
+	if err != nil {
+		t.Fatalf("CreateWorkload() error = %v", err)
+	}
+
+	config, err := env.svc.SaveWorkloadEnvironmentConfig(ctx, SaveWorkloadEnvironmentConfigInput{
+		Actor:         appenvActor(),
+		ApplicationID: app.ID,
+		WorkloadID:    workload.ID,
+		EnvironmentID: environments[0].ID,
+		Replicas:      2,
+		ServicePorts:  []WorkloadServicePort{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
+		ResourceRequests: WorkloadResourceList{
+			CPU:    "100m",
+			Memory: "128Mi",
+		},
+		ResourceLimits: WorkloadResourceList{
+			CPU:    "500m",
+			Memory: "512Mi",
+		},
+		Probes:         []WorkloadProbe{{Name: "readiness", Type: "http", Path: "/healthz", Port: 8080, InitialDelaySeconds: 5, PeriodSeconds: 10}},
+		IngressHosts:   []WorkloadIngressHost{{Host: "api.dev.example.com", Path: "/"}},
+		EnvVars:        []WorkloadEnvVar{{Name: "JAVA_OPTS", Value: "-Xmx256m"}},
+		SecretRefs:     []WorkloadSecretRef{{Name: "DB_PASSWORD", SecretRef: "secret/data/payment/db"}},
+		ConfigFiles:    []WorkloadConfigFile{{MountPath: "/etc/app/app.yml", Content: "server.port: 8080"}},
+		WritableDirs:   []WorkloadWritableDir{{MountPath: "/data/uploads", SizeLimit: "1Gi"}},
+		VolumeMounts:   []WorkloadVolumeMount{{Name: "cache", MountPath: "/cache"}},
+		InitContainers: []WorkloadInitContainer{{Name: "init-db", Image: "busybox:1.36", Command: []string{"sh", "-c", "echo init"}}},
+		ValuesOverride: map[string]any{"podAnnotations": map[string]any{"prometheus.io/scrape": "true"}},
+	})
+	if err != nil {
+		t.Fatalf("SaveWorkloadEnvironmentConfig() error = %v", err)
+	}
+	if config.Replicas != 2 || len(config.ServicePorts) != 1 || len(config.Probes) != 1 || len(config.IngressHosts) != 1 || len(config.ConfigFiles) != 1 || len(config.WritableDirs) != 1 {
+		t.Fatalf("deployment config should preserve structured fields: %+v", config)
+	}
+	got, err := env.svc.GetWorkloadEnvironmentConfig(ctx, workload.ID, environments[0].ID)
+	if err != nil {
+		t.Fatalf("GetWorkloadEnvironmentConfig() error = %v", err)
+	}
+	if got.ID != config.ID || got.ServicePorts[0].TargetPort != 8080 || got.ResourceLimits.Memory != "512Mi" || got.ConfigFiles[0].MountPath != "/etc/app/app.yml" || got.WritableDirs[0].MountPath != "/data/uploads" {
+		t.Fatalf("unexpected saved config: %+v", got)
+	}
+	configs, err := env.svc.ListWorkloadEnvironmentConfigs(ctx, workload.ID)
+	if err != nil {
+		t.Fatalf("ListWorkloadEnvironmentConfigs() error = %v", err)
+	}
+	if len(configs) != 1 || configs[0].ID != config.ID {
+		t.Fatalf("unexpected config list: %+v", configs)
+	}
+	var audited bool
+	for _, event := range env.audit.events {
+		if event.Action == "workload_environment_config.update" && event.ResourceID == config.ID {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Fatalf("config change should be audited, got %+v", env.audit.events)
+	}
+
+	if _, err := env.svc.DeleteWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: workload.ID}); err != nil {
+		t.Fatalf("DeleteWorkload() error = %v", err)
+	}
+	if _, err := env.svc.SaveWorkloadEnvironmentConfig(ctx, SaveWorkloadEnvironmentConfigInput{
+		Actor:         appenvActor(),
+		ApplicationID: app.ID,
+		WorkloadID:    workload.ID,
+		EnvironmentID: environments[0].ID,
+		Replicas:      1,
+	}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("deleted workload should not accept environment config, got %v", err)
+	}
+}
+
+func TestWorkloadEnvironmentConfigRequiresApplicationOwnership(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	firstApp, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "first-app", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	if err != nil {
+		t.Fatalf("CreateApplication(first) error = %v", err)
+	}
+	secondApp, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "second-app", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	if err != nil {
+		t.Fatalf("CreateApplication(second) error = %v", err)
+	}
+	environments, err := env.svc.ListEnvironments(ctx, firstApp.ID)
+	if err != nil {
+		t.Fatalf("ListEnvironments() error = %v", err)
+	}
+	workload, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: firstApp.ID, Name: "api", WorkloadType: WorkloadTypeDeployment})
+	if err != nil {
+		t.Fatalf("CreateWorkload() error = %v", err)
+	}
+	if _, err := env.svc.SaveWorkloadEnvironmentConfig(ctx, SaveWorkloadEnvironmentConfigInput{
+		Actor:         appenvActor(),
+		ApplicationID: firstApp.ID,
+		WorkloadID:    workload.ID,
+		EnvironmentID: environments[0].ID,
+		Replicas:      1,
+	}); err != nil {
+		t.Fatalf("SaveWorkloadEnvironmentConfig() error = %v", err)
+	}
+	if _, err := env.svc.ListWorkloadEnvironmentConfigsForApplication(ctx, secondApp.ID, workload.ID); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("cross-application config list should fail, got %v", err)
+	}
+}
+
 func TestCreateApplicationValidatesExplicitSourceRepository(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
@@ -1004,10 +1212,44 @@ func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
 	stateBody, _ := json.Marshal(UpdateEnvironmentStateInput{Status: EnvironmentStatusRunning, Message: "运行中"})
 	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/"+environmentID+"/state", stateBody), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/environments/"+environmentID+"/events?page=1&page_size=5", nil), http.StatusOK)
-	deleteBody, _ := json.Marshal(struct {
+
+	actorBody, _ := json.Marshal(struct {
 		Actor identityaccess.Subject `json:"actor"`
 	}{Actor: appenvActor()})
-	assertStatus(t, serveJSON(mux, http.MethodDelete, "/api/applications/"+app.ID.String(), deleteBody), http.StatusNoContent)
+	workloadBody, _ := json.Marshal(CreateWorkloadInput{Actor: appenvActor(), Name: "api", DisplayName: "接口服务", WorkloadType: WorkloadTypeDeployment})
+	workloadRec := serveJSON(mux, http.MethodPost, "/api/applications/"+app.ID.String()+"/workloads", workloadBody)
+	assertStatus(t, workloadRec, http.StatusCreated)
+	var workload Workload
+	if err := json.NewDecoder(workloadRec.Body).Decode(&workload); err != nil {
+		t.Fatalf("decode workload: %v", err)
+	}
+	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads", nil), http.StatusOK)
+	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads?enabled=true", nil), http.StatusOK)
+	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String(), nil), http.StatusOK)
+	updateWorkloadBody, _ := json.Marshal(UpdateWorkloadInput{Actor: appenvActor(), DisplayName: "接口服务 v2", WorkloadType: WorkloadTypeDeployment})
+	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String(), updateWorkloadBody), http.StatusOK)
+	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+":disable", actorBody), http.StatusOK)
+	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+":enable", actorBody), http.StatusOK)
+	configPayload, _ := json.Marshal(SaveWorkloadEnvironmentConfigInput{
+		Actor:        appenvActor(),
+		Replicas:     1,
+		ServicePorts: []WorkloadServicePort{{Name: "http", Port: 80, TargetPort: 8080}},
+		ConfigFiles:  []WorkloadConfigFile{{MountPath: "/etc/app/app.yml", Content: "server.port: 8080"}},
+		WritableDirs: []WorkloadWritableDir{{MountPath: "/data"}},
+	})
+	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/environment-configs/"+environmentID, configPayload), http.StatusOK)
+	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/environment-configs", nil), http.StatusOK)
+	otherBody, _ := json.Marshal(CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "other-api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	otherRec := serveJSON(mux, http.MethodPost, "/api/applications", otherBody)
+	assertStatus(t, otherRec, http.StatusCreated)
+	var otherApp Application
+	if err := json.NewDecoder(otherRec.Body).Decode(&otherApp); err != nil {
+		t.Fatalf("decode other app: %v", err)
+	}
+	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+otherApp.ID.String()+"/workloads/"+workload.ID.String()+"/environment-configs", nil), http.StatusNotFound)
+	assertStatus(t, serveJSON(mux, http.MethodDelete, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String(), actorBody), http.StatusOK)
+
+	assertStatus(t, serveJSON(mux, http.MethodDelete, "/api/applications/"+app.ID.String(), actorBody), http.StatusNoContent)
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/applications", []byte("{")), http.StatusBadRequest)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/missing", nil), http.StatusNotFound)
 }
