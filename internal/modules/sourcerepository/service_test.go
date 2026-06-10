@@ -19,6 +19,7 @@ import (
 
 type fakeProjectQuery struct {
 	projects map[shared.ID]tenantproject.Project
+	tenants  map[shared.ID]tenantproject.Tenant
 }
 
 func (q fakeProjectQuery) GetProject(_ context.Context, id shared.ID) (tenantproject.Project, error) {
@@ -27,6 +28,14 @@ func (q fakeProjectQuery) GetProject(_ context.Context, id shared.ID) (tenantpro
 		return tenantproject.Project{}, shared.NewError(shared.CodeNotFound, "project not found")
 	}
 	return project, nil
+}
+
+func (q fakeProjectQuery) GetTenant(_ context.Context, id shared.ID) (tenantproject.Tenant, error) {
+	tenant, ok := q.tenants[id]
+	if !ok {
+		return tenantproject.Tenant{}, shared.NewError(shared.CodeNotFound, "tenant not found")
+	}
+	return tenant, nil
 }
 
 type fakeMembershipQuery struct {
@@ -222,6 +231,8 @@ func newTestEnv(t *testing.T) testEnv {
 		Git:        git,
 		ProjectQuery: fakeProjectQuery{projects: map[shared.ID]tenantproject.Project{
 			"project_payment": {ID: "project_payment", TenantID: "tenant_a", Name: "payment"},
+		}, tenants: map[shared.ID]tenantproject.Tenant{
+			"tenant_a": {ID: "tenant_a", Name: "rnd"},
 		}},
 		MembershipQuery: fakeMembershipQuery{members: []tenantproject.TenantMember{
 			{TenantID: "tenant_a", UserID: "usr_owner", RoleID: identityaccess.RoleTenantOwner},
@@ -260,6 +271,10 @@ func TestCreateSourceRepositoryCallsGitAndPublishesEvent(t *testing.T) {
 	}
 	if len(env.git.createCalls) != 1 || len(env.git.initCalls) != 0 || len(env.git.protectCalls) != 1 || len(env.git.webhookCalls) != 1 {
 		t.Fatalf("expected create/protect/webhook calls without repository initialization, got %+v", env.git)
+	}
+	createSpec := env.git.createCalls[0]
+	if createSpec.TenantID != "tenant_a" || createSpec.TenantName != "rnd" || createSpec.ProjectName != "payment" || createSpec.RepositoryName != "user-api" {
+		t.Fatalf("git create spec should use tenant name for namespace path while preserving ids, got %+v", createSpec)
 	}
 	if len(env.permission.calls) != 1 || env.permission.calls[0].resource.ProjectID != "project_payment" || env.permission.calls[0].action != "project:update" {
 		t.Fatalf("unexpected permission calls: %+v", env.permission.calls)

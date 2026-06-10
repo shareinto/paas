@@ -93,6 +93,10 @@ func (s *Service) CreateSourceRepository(ctx context.Context, input CreateSource
 	if err != nil {
 		return SourceRepository{}, err
 	}
+	tenant, err := s.projects.GetTenant(ctx, project.TenantID)
+	if err != nil {
+		return SourceRepository{}, err
+	}
 	if err := s.checkProject(ctx, input.Actor, project, "project:update"); err != nil {
 		return SourceRepository{}, err
 	}
@@ -134,6 +138,7 @@ func (s *Service) CreateSourceRepository(ctx context.Context, input CreateSource
 	}
 	gitProject, err := s.git.CreateProject(ctx, GitProjectSpec{
 		TenantID:       project.TenantID,
+		TenantName:     tenant.Name,
 		ProjectID:      project.ID,
 		ProjectName:    project.Name,
 		RepositoryID:   repository.ID,
