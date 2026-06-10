@@ -43,7 +43,7 @@ doc/tasks/<模块名称>/progress.md
 - 平台作为统一入口，普通用户不直接访问 Jenkins、GitLab 部署清单仓库、Argo CD 或 Kubernetes。
 - 控制面不直接调用 Kubernetes API Server。
 - 每个 Kubernetes 集群内运行 Argo CD 和 PaaS Agent。
-- 应用以最小独立交付单元建模。
+- Application 作为业务交付上下文建模，Workload 作为最小可部署单元建模。
 - 当前测试可用版本构建支持 Java，管理员通过构建环境维护构建镜像。
 - Jenkins 只运行平台统一 Job 模板，按 PaaS 固化的 BuildSpec 执行构建。
 
@@ -302,11 +302,13 @@ npm run e2e
 必须至少覆盖以下端到端路径：
 
 - 准备或迁移 SourceRepository。
-- 创建 Application，并指定 BuildSpec。
+- 创建 Application，并在 Application 下创建至少一个 Workload。
+- 为 Workload 指定 BuildSpec 或自定义镜像来源。
 - 首次构建。
 - 查看实时构建日志。
-- 构建成功后生成 Release 和 Freight。
-- 发布到 dev。
+- 构建成功后生成 BuildArtifact 和 Workload Release 候选。
+- 手动创建覆盖所有启用 Workload 的 Freight。
+- 在 dev Stage 点击发布并选择可发布 Freight。
 - 晋级到 test。
 - 申请发布 prod。
 - 审批 prod。

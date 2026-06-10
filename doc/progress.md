@@ -22,6 +22,7 @@
 - [x] [audit](tasks/audit/progress.md)
 - [x] [notification](tasks/notification/progress.md)
 - [x] [integrations](tasks/integrations/progress.md)
+- [ ] [workload-freight-v2](tasks/workload-freight-v2/progress.md)
 
 ## 测试可用版本验收与试点进度
 

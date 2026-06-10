@@ -24,7 +24,9 @@
 
 ## 完成标准
 
-- [x] Application 是最小独立交付单元。
+> V2 变更：Application 已调整为业务交付上下文，Workload 是最小可部署单元。新开发任务见 `doc/tasks/workload-freight-v2/task.md`。
+
+- [x] V1 历史完成：单镜像 Application 交付单元规则。
 - [x] 创建 Application 不创建 SourceRepository。
 - [x] BuildSpec 被固化到 ApplicationSource。
 - [x] 无集群时构建可运行但部署被阻止。

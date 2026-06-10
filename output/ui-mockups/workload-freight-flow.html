@@ -1,0 +1,749 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PaaS Workload 与 Freight 发布原型</title>
+  <style>
+    :root {
+      --primary: #1677ff;
+      --primary-soft: #e6f4ff;
+      --success: #16a34a;
+      --success-soft: #e8f7ee;
+      --warning: #d97706;
+      --warning-soft: #fff7e6;
+      --error: #dc2626;
+      --error-soft: #fff1f0;
+      --nav: #071426;
+      --bg: #f5f7fb;
+      --panel: #fff;
+      --line: #e5eaf2;
+      --text: #1f2937;
+      --muted: #667085;
+      --muted-2: #98a2b3;
+      --shadow: 0 8px 24px rgba(15, 23, 42, .08);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    button, input, select, textarea { font: inherit; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 232px minmax(0, 1fr); }
+    .sidebar { background: var(--nav); color: #d7e3f3; padding: 18px 14px; }
+    .brand { height: 42px; display: flex; align-items: center; gap: 10px; color: #fff; font-size: 17px; font-weight: 700; margin-bottom: 24px; }
+    .brand-mark { width: 28px; height: 28px; border-radius: 7px; background: linear-gradient(135deg, #1677ff, #31c48d); display: grid; place-items: center; }
+    .nav-section { color: #7d8ca3; font-size: 12px; margin: 20px 10px 8px; }
+    .nav-item { height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 7px; color: #c8d5e8; margin: 3px 0; }
+    .nav-item.active { color: #fff; background: #17345d; box-shadow: inset 3px 0 0 var(--primary); }
+    .nav-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .8; }
+    .main { min-width: 0; display: flex; flex-direction: column; }
+    .topbar { height: 56px; background: #fff; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
+    .search { width: 360px; height: 34px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); display: flex; align-items: center; padding: 0 12px; background: #fafcff; }
+    .content { padding: 20px 24px 32px; max-width: 1680px; width: 100%; }
+    .page-title { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 14px; }
+    h1 { font-size: 22px; line-height: 1.25; margin: 0 0 6px; }
+    h2 { font-size: 17px; margin: 0; }
+    h3 { font-size: 15px; margin: 0 0 12px; }
+    .muted { color: var(--muted); }
+    .btn { height: 34px; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 0 12px; color: var(--text); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+    .btn:hover { border-color: var(--primary); color: var(--primary); }
+    .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+    .btn.success { background: var(--success); border-color: var(--success); color: #fff; }
+    .btn.danger { color: var(--error); border-color: #fecaca; }
+    .btn:disabled { cursor: not-allowed; color: var(--muted-2); background: #f2f4f7; border-color: var(--line); }
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+    .tab { border: 0; background: transparent; padding: 12px 14px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+    .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+    .screen { display: none; }
+    .screen.active { display: block; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .panel-header { min-height: 48px; padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .panel-body { padding: 16px; }
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: minmax(0, 1fr) 360px; }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .metric { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+    .metric .value { margin-top: 8px; font-size: 22px; font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    th { color: var(--muted); font-weight: 600; background: #fafcff; }
+    tr:last-child td { border-bottom: 0; }
+    .tag, .status { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 8px; font-size: 12px; white-space: nowrap; border: 1px solid transparent; }
+    .tag.blue { color: #0958d9; background: var(--primary-soft); border-color: #bae0ff; }
+    .tag.green, .status.ok { color: #15803d; background: var(--success-soft); border-color: #bbf7d0; }
+    .tag.orange, .status.warn { color: #b45309; background: var(--warning-soft); border-color: #fed7aa; }
+    .tag.gray, .status.idle { color: #475467; background: #f2f4f7; border-color: #e4e7ec; }
+    .tag.red, .status.err { color: #b42318; background: var(--error-soft); border-color: #ffccc7; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .flow { display: flex; align-items: center; gap: 8px; margin: 12px 0 18px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; overflow-x: auto; }
+    .flow-node { min-width: 142px; border: 1px solid var(--line); background: #fbfdff; border-radius: 7px; padding: 9px 10px; text-align: center; color: var(--muted); }
+    .flow-node.active { color: var(--primary); border-color: #91caff; background: var(--primary-soft); font-weight: 600; }
+    .arrow { color: var(--muted-2); font-weight: 700; }
+    .drawer-note, .notice { border: 1px solid #fed7aa; background: var(--warning-soft); color: #92400e; border-radius: 7px; padding: 10px 12px; line-height: 1.5; }
+    .checklist { display: grid; gap: 10px; }
+    .check { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: #fff; display: flex; gap: 9px; align-items: flex-start; }
+    .check .icon { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; flex: 0 0 auto; color: #fff; background: var(--success); font-size: 12px; }
+    .check.warn .icon { background: var(--warning); }
+    .mini-card { border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 12px; display: grid; gap: 8px; }
+    .kv { display: grid; grid-template-columns: 98px minmax(0, 1fr); gap: 8px; font-size: 13px; }
+    .kv .k { color: var(--muted); }
+    .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #f6f8fb; border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    label { color: #344054; font-size: 13px; font-weight: 600; }
+    input, select, textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #fff; color: var(--text); outline: none; }
+    input:focus, select:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(22, 119, 255, .12); }
+    textarea { min-height: 120px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; }
+    .help { font-size: 12px; color: var(--muted); }
+    .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; padding: 2px; background: #f8fafc; }
+    .segmented button { border: 0; background: transparent; height: 28px; padding: 0 12px; border-radius: 5px; cursor: pointer; color: var(--muted); }
+    .segmented button.active { color: var(--primary); background: #fff; box-shadow: 0 1px 4px rgba(15, 23, 42, .08); font-weight: 600; }
+    .freight-rail { display: flex; gap: 12px; overflow-x: auto; padding: 4px 2px 14px; }
+    .freight-card { width: 252px; flex: 0 0 252px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; padding: 12px; opacity: .55; cursor: default; transition: .15s ease; }
+    .freight-card.current { opacity: 1; border-color: var(--success); box-shadow: 0 0 0 3px rgba(22, 163, 74, .08); }
+    .freight-card.selectable { opacity: 1; border-color: #91caff; box-shadow: 0 0 0 3px rgba(22, 119, 255, .08); cursor: pointer; }
+    .freight-card.selected { opacity: 1; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(22, 119, 255, .18); }
+    .freight-title { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; margin-bottom: 10px; }
+    .freight-items { display: grid; gap: 6px; }
+    .freight-item { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
+    .stages { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .stage { border: 1px solid var(--line); border-radius: var(--radius); background: #fff; padding: 14px; min-height: 190px; }
+    .stage.active-target { border-color: #91caff; box-shadow: 0 0 0 3px rgba(22, 119, 255, .08); }
+    .stage-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px; }
+    .side-panel { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; min-height: 100%; }
+    .modal-mask, .drawer-mask { position: fixed; inset: 0; z-index: 40; display: none; background: rgba(15, 23, 42, .35); }
+    .modal-mask.open, .drawer-mask.open { display: block; }
+    .modal { position: fixed; z-index: 50; top: 8vh; left: 50%; width: min(960px, calc(100vw - 32px)); max-height: 84vh; transform: translateX(-50%); background: #fff; border-radius: 10px; box-shadow: 0 24px 64px rgba(15, 23, 42, .22); display: none; overflow: hidden; }
+    .modal.open { display: flex; flex-direction: column; }
+    .modal-header, .drawer-header { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .modal-body, .drawer-body { padding: 16px 18px; overflow: auto; }
+    .modal-footer, .drawer-footer { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; background: #fff; }
+    .drawer { position: fixed; z-index: 50; top: 0; right: 0; width: min(820px, 100vw); height: 100vh; background: #fff; box-shadow: -24px 0 64px rgba(15, 23, 42, .18); display: none; flex-direction: column; }
+    .drawer.open { display: flex; }
+    .steps { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; overflow-x: auto; }
+    .step { display: flex; align-items: center; gap: 8px; color: var(--muted); white-space: nowrap; }
+    .step-num { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: #eef2f7; color: var(--muted); font-size: 12px; font-weight: 700; }
+    .step.active .step-num { background: var(--primary); color: #fff; }
+    .step.done .step-num { background: var(--success); color: #fff; }
+    .step-line { width: 36px; height: 1px; background: var(--line); }
+    .validation-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; margin-top: 12px; }
+
+    @media (max-width: 1180px) {
+      .app { grid-template-columns: 76px minmax(0, 1fr); }
+      .brand span, .nav-item span, .nav-section { display: none; }
+      .summary, .grid.three, .stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid.two { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 760px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .topbar { padding: 0 12px; }
+      .search { display: none; }
+      .content { padding: 14px; }
+      .summary, .form-grid, .stages { grid-template-columns: 1fr; }
+      table { min-width: 880px; }
+      .panel-body { overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">P</div><span>平台控制台</span></div>
+      <div class="nav-section">平台</div>
+      <div class="nav-item active"><i class="nav-dot"></i><span>应用</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>构建</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>版本</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>发布</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>审计</span></div>
+      <div class="nav-section">平台管理</div>
+      <div class="nav-item"><i class="nav-dot"></i><span>流水线模板</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>集群</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>成员</span></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="search">搜索应用、Workload、Freight 或审计记录</div>
+        <div class="muted">租户：研发中心　项目：云管平台　用户：平台管理员</div>
+      </header>
+
+      <section class="content">
+        <div class="page-title">
+          <div>
+            <h1>macc-frontend 部署交互原型</h1>
+            <div class="muted">一个镜像对应一个 Workload；Freight 必须包含全部启用 Workload；环境差异保存在 Stage/Environment 配置中。</div>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn">导出 values</button>
+            <button class="btn primary" data-jump="promotion">发布晋级</button>
+          </div>
+        </div>
+
+        <div class="flow">
+          <div class="flow-node active">创建 Workload</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">配置环境差异</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">创建完整 Freight</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">选择目标 Stage</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">发布晋级</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">回滚历史 Freight</div>
+        </div>
+
+        <nav class="tabs" aria-label="原型页面">
+          <button class="tab active" data-screen="overview">应用 Workload</button>
+          <button class="tab" data-screen="promotion">发布晋级</button>
+        </nav>
+
+        <section id="overview" class="screen active">
+          <div class="summary">
+            <div class="metric"><div class="muted">启用 Workload</div><div class="value">3</div></div>
+            <div class="metric"><div class="muted">最新 Freight</div><div class="value">20260610.4</div></div>
+            <div class="metric"><div class="muted">生产环境</div><div class="value">运行中</div></div>
+            <div class="metric"><div class="muted">待审批</div><div class="value">1</div></div>
+            <div class="metric"><div class="muted">配置来源</div><div class="value">标准 Chart</div></div>
+          </div>
+
+          <div class="grid two">
+            <div class="panel">
+              <div class="panel-header">
+                <h2>Workload 列表</h2>
+                <button class="btn primary" data-open-modal="workloadModal">创建 Workload</button>
+              </div>
+              <div class="panel-body">
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width:16%">Workload</th>
+                      <th style="width:12%">类型</th>
+                      <th style="width:18%">默认镜像来源</th>
+                      <th style="width:10%">端口</th>
+                      <th style="width:22%">访问域名</th>
+                      <th style="width:10%">状态</th>
+                      <th style="width:12%">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><strong>frontend</strong><br><span class="muted">前端入口</span></td>
+                      <td><span class="tag blue">无状态</span></td>
+                      <td>流水线产物<br><span class="muted">frontend-pipeline</span></td>
+                      <td>80/TCP</td>
+                      <td><span class="tag green">cloud-ltt.example.com</span></td>
+                      <td><span class="status ok"><i class="dot"></i>启用</span></td>
+                      <td><button class="btn" data-open-drawer="deployDrawer" data-workload-name="frontend">配置</button></td>
+                    </tr>
+                    <tr>
+                      <td><strong>backend</strong><br><span class="muted">Tomcat 服务</span></td>
+                      <td><span class="tag blue">无状态</span></td>
+                      <td>流水线产物<br><span class="muted">backend-pipeline</span></td>
+                      <td>8080/TCP</td>
+                      <td><span class="tag gray">集群内访问</span></td>
+                      <td><span class="status ok"><i class="dot"></i>启用</span></td>
+                      <td><button class="btn" data-open-drawer="deployDrawer" data-workload-name="backend">配置</button></td>
+                    </tr>
+                    <tr>
+                      <td><strong>worker</strong><br><span class="muted">异步任务</span></td>
+                      <td><span class="tag blue">无状态</span></td>
+                      <td>自定义镜像<br><span class="muted">手工维护</span></td>
+                      <td>-</td>
+                      <td><span class="tag gray">不暴露</span></td>
+                      <td><span class="status ok"><i class="dot"></i>启用</span></td>
+                      <td><button class="btn" data-open-drawer="deployDrawer" data-workload-name="worker">配置</button></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <aside class="side-panel">
+              <h3>设计规则</h3>
+              <div class="checklist">
+                <div class="check"><div class="icon">✓</div><div><strong>一个镜像一个 Workload</strong><br><span class="muted">每个 Workload 独立扩缩容、探针、配置、网络访问和回滚。</span></div></div>
+                <div class="check"><div class="icon">✓</div><div><strong>Freight 是完整应用版本</strong><br><span class="muted">创建时必须覆盖全部启用 Workload。</span></div></div>
+                <div class="check warn"><div class="icon">!</div><div><strong>允许自定义镜像</strong><br><span class="muted">允许 tag 或 digest，使用 tag 时提示回滚不可完全复现。</span></div></div>
+                <div class="check"><div class="icon">✓</div><div><strong>环境差异不放入 Freight</strong><br><span class="muted">dev/prod 的 values、域名、资源和环境变量归属 Stage/Environment。</span></div></div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section id="promotion" class="screen">
+          <div class="grid two">
+            <div class="grid">
+              <div class="panel">
+                <div class="panel-header">
+                  <h2>Freight 时间轴</h2>
+                  <button class="btn primary" data-open-drawer="freightDrawer">创建 Freight</button>
+                </div>
+                <div class="panel-body">
+                  <div class="notice" id="publishHint">点击某个 Stage 的发布按钮后，可发布的 Freight 会点亮，选择后在右侧确认发布。</div>
+                  <div class="freight-rail" id="freightRail">
+                    <div class="freight-card current" data-freight-id="20260608.6" data-eligible="dev,test,staging,prod">
+                      <div class="freight-title"><strong>20260608.6</strong><span class="tag green">当前生产</span></div>
+                      <div class="muted">06-08 16:20 创建</div>
+                      <div class="freight-items">
+                        <div class="freight-item"><span>frontend</span><span>20260608-6</span></div>
+                        <div class="freight-item"><span>backend</span><span>20260608-6-ack</span></div>
+                        <div class="freight-item"><span>worker</span><span>20260608-7</span></div>
+                      </div>
+                    </div>
+                    <div class="freight-card" data-freight-id="20260609.2" data-eligible="dev,test,staging">
+                      <div class="freight-title"><strong>20260609.2</strong><span class="tag blue">已到 test</span></div>
+                      <div class="muted">06-09 11:45 创建</div>
+                      <div class="freight-items">
+                        <div class="freight-item"><span>frontend</span><span>20260609-2</span></div>
+                        <div class="freight-item"><span>backend</span><span>20260609-1-ack</span></div>
+                        <div class="freight-item"><span>worker</span><span>20260608-7</span></div>
+                      </div>
+                    </div>
+                    <div class="freight-card" data-freight-id="20260610.4" data-eligible="dev">
+                      <div class="freight-title"><strong>20260610.4</strong><span class="tag orange">仅 dev 可选</span></div>
+                      <div class="muted">06-10 10:12 创建</div>
+                      <div class="freight-items">
+                        <div class="freight-item"><span>frontend</span><span>20260610-4</span></div>
+                        <div class="freight-item"><span>backend</span><span>20260610-4-ack</span></div>
+                        <div class="freight-item"><span>worker</span><span>custom-tag</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-header">
+                  <h2>Stage 发布视图</h2>
+                  <span class="muted">dev → test → staging → prod</span>
+                </div>
+                <div class="panel-body">
+                  <div class="stages">
+                    <div class="stage" id="stage-dev">
+                      <div class="stage-title"><strong>dev</strong><button class="btn" data-stage="dev">发布</button></div>
+                      <div class="kv"><span class="k">当前 Freight</span><span>20260610.4</span></div>
+                      <div class="kv"><span class="k">副本</span><span>1 / 1 / 1</span></div>
+                      <div class="kv"><span class="k">域名</span><span>dev-cloud.example.com</span></div>
+                      <div class="kv"><span class="k">配置</span><span>dev values</span></div>
+                    </div>
+                    <div class="stage" id="stage-test">
+                      <div class="stage-title"><strong>test</strong><button class="btn" data-stage="test">发布</button></div>
+                      <div class="kv"><span class="k">当前 Freight</span><span>20260609.2</span></div>
+                      <div class="kv"><span class="k">副本</span><span>1 / 1 / 1</span></div>
+                      <div class="kv"><span class="k">域名</span><span>test-cloud.example.com</span></div>
+                      <div class="kv"><span class="k">配置</span><span>test values</span></div>
+                    </div>
+                    <div class="stage" id="stage-staging">
+                      <div class="stage-title"><strong>staging</strong><button class="btn" data-stage="staging">发布</button></div>
+                      <div class="kv"><span class="k">当前 Freight</span><span>20260608.6</span></div>
+                      <div class="kv"><span class="k">副本</span><span>2 / 2 / 1</span></div>
+                      <div class="kv"><span class="k">域名</span><span>pre-cloud.example.com</span></div>
+                      <div class="kv"><span class="k">配置</span><span>staging values</span></div>
+                    </div>
+                    <div class="stage" id="stage-prod">
+                      <div class="stage-title"><strong>prod</strong><button class="btn" data-stage="prod">发布</button></div>
+                      <div class="kv"><span class="k">当前 Freight</span><span>20260608.6</span></div>
+                      <div class="kv"><span class="k">副本</span><span>2 / 4 / 2</span></div>
+                      <div class="kv"><span class="k">域名</span><span>cloud.example.com</span></div>
+                      <div class="kv"><span class="k">配置</span><span>prod values</span></div>
+                      <div style="margin-top:10px;"><span class="tag orange">生产需审批</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <aside class="side-panel" id="promotionPanel">
+              <h3>发布确认</h3>
+              <div class="muted">请先点击 Stage 上的发布按钮，再从左侧选择点亮的 Freight。</div>
+              <div class="checklist" style="margin-top:12px;">
+                <div class="check"><div class="icon">✓</div><div>Freight 只携带镜像版本</div></div>
+                <div class="check"><div class="icon">✓</div><div>环境差异来自目标 Stage 配置</div></div>
+                <div class="check warn"><div class="icon">!</div><div>prod 发布会进入审批流程</div></div>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-mask" data-close-layer></div>
+  <div class="drawer-mask" data-close-layer></div>
+
+  <section class="modal" id="workloadModal" aria-modal="true">
+    <div class="modal-header">
+      <h2>创建 Workload</h2>
+      <button class="btn" data-close-layer>关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="steps">
+        <div class="step done"><span class="step-num">✓</span>基础信息</div><span class="step-line"></span>
+        <div class="step done"><span class="step-num">✓</span>镜像来源</div><span class="step-line"></span>
+        <div class="step active"><span class="step-num">3</span>运行参数</div><span class="step-line"></span>
+        <div class="step"><span class="step-num">4</span>网络访问</div><span class="step-line"></span>
+        <div class="step"><span class="step-num">5</span>配置与目录</div><span class="step-line"></span>
+        <div class="step"><span class="step-num">6</span>预览校验</div>
+      </div>
+      <div class="grid two">
+        <div class="grid">
+          <div class="form-grid">
+            <div class="field"><label>Workload 标识</label><input value="backend" /><div class="help">用于生成资源名，只允许小写字母、数字和短横线。</div></div>
+            <div class="field"><label>显示名称</label><input value="后端服务" /></div>
+            <div class="field"><label>工作负载类型</label><div class="segmented"><button class="active">无状态</button><button>有状态</button></div></div>
+            <div class="field"><label>副本数</label><input value="2" /></div>
+            <div class="field"><label>默认镜像来源</label><select><option>流水线产物</option><option>自定义镜像</option><option>暂不绑定</option></select></div>
+            <div class="field"><label>绑定流水线</label><select><option>backend-pipeline</option><option>frontend-pipeline</option></select></div>
+            <div class="field"><label>容器端口</label><input value="8080" /></div>
+            <div class="field"><label>健康检查</label><input value="HTTP /webproxy/ruok" /></div>
+          </div>
+          <div class="notice">创建后会出现在 Workload 列表；后续创建 Freight 时必须为它选择镜像。</div>
+        </div>
+        <div class="side-panel">
+          <h3>校验清单</h3>
+          <div class="checklist">
+            <div class="check"><div class="icon">✓</div><div>名称可用</div></div>
+            <div class="check"><div class="icon">✓</div><div>流水线属于当前应用</div></div>
+            <div class="check warn"><div class="icon">!</div><div>尚未配置生产环境资源规格</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" data-close-layer>取消</button>
+      <button class="btn">校验</button>
+      <button class="btn primary" data-close-layer>创建</button>
+    </div>
+  </section>
+
+  <section class="drawer" id="deployDrawer" aria-modal="true">
+    <div class="drawer-header">
+      <h2><span id="deployDrawerTitle">frontend</span> 部署配置</h2>
+      <button class="btn" data-close-layer>关闭</button>
+    </div>
+    <div class="drawer-body">
+      <div class="form-grid">
+        <div class="field"><label>环境</label><select><option>prod</option><option>staging</option><option>test</option><option>dev</option></select></div>
+        <div class="field"><label>工作负载类型</label><div class="segmented"><button class="active">Deployment</button><button>StatefulSet</button></div></div>
+        <div class="field"><label>资源规格</label><input value="requests: 250m / 256Mi，limits: 2C / 2Gi" /></div>
+        <div class="field"><label>探针</label><input value="HTTP /webproxy/ruok，初始延迟 60 秒" /></div>
+      </div>
+      <h3 style="margin-top:18px;">网络访问</h3>
+      <table>
+        <thead><tr><th>域名</th><th>路径</th><th>Service 端口</th><th>TLS</th><th>状态</th></tr></thead>
+        <tbody>
+          <tr><td>cloud-ltt.example.com</td><td>/</td><td>http:80</td><td>启用</td><td><span class="status ok"><i class="dot"></i>有效</span></td></tr>
+          <tr><td>console-ltt.example.com</td><td>/macc</td><td>http:80</td><td>启用</td><td><span class="status ok"><i class="dot"></i>有效</span></td></tr>
+        </tbody>
+      </table>
+      <h3 style="margin-top:18px;">配置文件</h3>
+      <table>
+        <thead><tr><th>文件名</th><th>挂载路径</th><th>类型</th><th>敏感项</th><th>操作</th></tr></thead>
+        <tbody>
+          <tr><td>nginx.conf</td><td>/etc/nginx/nginx.conf</td><td>ConfigMap</td><td><span class="tag green">未发现</span></td><td><button class="btn">编辑</button></td></tr>
+          <tr><td>macc_http.conf</td><td>/etc/nginx/conf.d/macc_http.conf</td><td>ConfigMap</td><td><span class="tag green">未发现</span></td><td><button class="btn">编辑</button></td></tr>
+          <tr><td>admin_init.properties</td><td>/usr/local/tomcat/macc_conf/admin_init.properties</td><td>Secret 引用</td><td><span class="tag orange">建议脱敏</span></td><td><button class="btn">编辑</button></td></tr>
+        </tbody>
+      </table>
+      <h3 style="margin-top:18px;">可写目录</h3>
+      <table>
+        <thead><tr><th>挂载路径</th><th>卷类型</th><th>权限初始化</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>/logs</td><td>hostPath /cloud</td><td>uid 10001，mode 775</td><td>按 Pod 子目录写入日志</td></tr>
+          <tr><td>/macc</td><td>emptyDir</td><td>uid 10001，mode 775</td><td>运行期临时数据</td></tr>
+          <tr><td>/etc/config</td><td>emptyDir</td><td>uid 10001，mode 775</td><td>应用 home 目录</td></tr>
+        </tbody>
+      </table>
+      <h3 style="margin-top:18px;">values 预览</h3>
+      <textarea readonly>workload:
+  type: Deployment
+  replicas: 2
+image:
+  source: freight
+service:
+  enabled: true
+ingress:
+  enabled: true
+configFiles:
+  - name: nginx.conf
+writableDirs:
+  - name: logs
+    type: hostPath</textarea>
+    </div>
+    <div class="drawer-footer">
+      <button class="btn" data-close-layer>取消</button>
+      <button class="btn primary" data-close-layer>保存配置</button>
+    </div>
+  </section>
+
+  <section class="drawer" id="freightDrawer" aria-modal="true">
+    <div class="drawer-header">
+      <h2>创建 Freight</h2>
+      <button class="btn" data-close-layer>关闭</button>
+    </div>
+    <div class="drawer-body">
+      <div class="notice">系统会自动列出全部启用 Workload。每个 Workload 必须选择镜像版本，不能少选、不能重复、不能删除行。</div>
+      <div class="form-grid" style="margin-top:14px;">
+        <div class="field"><label>Freight 名称</label><input id="freightName" value="macc-frontend-20260610.5" /></div>
+        <div class="field"><label>说明</label><input value="完整应用版本包" /></div>
+      </div>
+      <div style="margin-top:16px; overflow-x:auto;">
+        <table class="freight-table">
+          <thead>
+            <tr>
+              <th style="width:14%">Workload</th>
+              <th style="width:13%">镜像来源</th>
+              <th style="width:24%">流水线产物</th>
+              <th style="width:28%">自定义镜像</th>
+              <th style="width:10%">校验</th>
+              <th style="width:11%">说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-row="frontend">
+              <td><strong>frontend</strong><br><span class="muted">必须包含</span></td>
+              <td><select class="source"><option value="">请选择</option><option value="pipeline">流水线产物</option><option value="custom">自定义镜像</option></select></td>
+              <td><select class="artifact"><option value="">选择成功构建镜像</option><option value="frontend:20260610-5">frontend:20260610-5</option><option value="frontend:20260610-4">frontend:20260610-4</option></select></td>
+              <td><input class="custom" placeholder="registry.example.com/app/frontend:v1" /></td>
+              <td><span class="status err row-status"><i class="dot"></i>待选择</span></td>
+              <td><span class="muted">公开入口</span></td>
+            </tr>
+            <tr data-row="backend">
+              <td><strong>backend</strong><br><span class="muted">必须包含</span></td>
+              <td><select class="source"><option value="">请选择</option><option value="pipeline">流水线产物</option><option value="custom">自定义镜像</option></select></td>
+              <td><select class="artifact"><option value="">选择成功构建镜像</option><option value="backend:20260610-5-ack">backend:20260610-5-ack</option><option value="backend:20260610-4-ack">backend:20260610-4-ack</option></select></td>
+              <td><input class="custom" placeholder="registry.example.com/app/backend:v1" /></td>
+              <td><span class="status err row-status"><i class="dot"></i>待选择</span></td>
+              <td><span class="muted">集群内访问</span></td>
+            </tr>
+            <tr data-row="worker">
+              <td><strong>worker</strong><br><span class="muted">必须包含</span></td>
+              <td><select class="source"><option value="">请选择</option><option value="pipeline">流水线产物</option><option value="custom">自定义镜像</option></select></td>
+              <td><select class="artifact"><option value="">选择成功构建镜像</option><option value="worker:20260610-1">worker:20260610-1</option><option value="worker:20260608-7">worker:20260608-7</option></select></td>
+              <td><input class="custom" placeholder="registry.example.com/app/worker:v1" /></td>
+              <td><span class="status err row-status"><i class="dot"></i>待选择</span></td>
+              <td><span class="muted">任务处理</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="validation-bar">
+        <div>
+          <strong id="freightValidationTitle">尚未覆盖全部 Workload</strong>
+          <div class="muted" id="freightValidationText">需要为 3 个启用 Workload 都选择镜像后才能创建 Freight。</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn" id="fillLatest">从最新成功版本填充</button>
+          <button class="btn" id="copyHistory">从历史 Freight 复制</button>
+        </div>
+      </div>
+    </div>
+    <div class="drawer-footer">
+      <button class="btn" data-close-layer>取消</button>
+      <button class="btn primary" id="createFreight" disabled>创建 Freight</button>
+    </div>
+  </section>
+
+  <script>
+    const tabs = Array.from(document.querySelectorAll('.tab'));
+    const screens = Array.from(document.querySelectorAll('.screen'));
+    const modalMask = document.querySelector('.modal-mask');
+    const drawerMask = document.querySelector('.drawer-mask');
+    let activeStage = '';
+    let selectedFreight = '';
+
+    function showScreen(id) {
+      tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.screen === id));
+      screens.forEach((screen) => screen.classList.toggle('active', screen.id === id));
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function openModal(id) {
+      modalMask.classList.add('open');
+      document.getElementById(id).classList.add('open');
+    }
+
+    function openDrawer(id) {
+      drawerMask.classList.add('open');
+      document.getElementById(id).classList.add('open');
+    }
+
+    function closeLayers() {
+      modalMask.classList.remove('open');
+      drawerMask.classList.remove('open');
+      document.querySelectorAll('.modal.open, .drawer.open').forEach((item) => item.classList.remove('open'));
+    }
+
+    function updatePublishSelection(stage) {
+      activeStage = stage;
+      selectedFreight = '';
+      document.querySelectorAll('.stage').forEach((item) => item.classList.toggle('active-target', item.id === `stage-${stage}`));
+      document.querySelectorAll('.freight-card').forEach((card) => {
+        const eligible = (card.dataset.eligible || '').split(',').includes(stage);
+        card.classList.toggle('selectable', eligible);
+        card.classList.remove('selected');
+      });
+      document.getElementById('publishHint').textContent = `正在选择发布到 ${stage} 的 Freight，蓝色高亮项可发布。`;
+      renderPromotionPanel();
+    }
+
+    function renderPromotionPanel() {
+      const panel = document.getElementById('promotionPanel');
+      if (!activeStage) {
+        panel.innerHTML = '<h3>发布确认</h3><div class="muted">请先点击 Stage 上的发布按钮，再从左侧选择点亮的 Freight。</div><div class="checklist" style="margin-top:12px;"><div class="check"><div class="icon">✓</div><div>Freight 只携带镜像版本</div></div><div class="check"><div class="icon">✓</div><div>环境差异来自目标 Stage 配置</div></div><div class="check warn"><div class="icon">!</div><div>prod 发布会进入审批流程</div></div></div>';
+        return;
+      }
+      if (!selectedFreight) {
+        panel.innerHTML = `<h3>发布到 ${activeStage}</h3><div class="muted">请选择一个已点亮的 Freight。</div><div class="drawer-note" style="margin-top:12px;">系统会按目标 Stage 的环境配置渲染 manifests，Freight 只提供镜像版本。</div>`;
+        return;
+      }
+      const approval = activeStage === 'prod' ? '<div class="notice" style="margin-top:12px;">生产环境发布需要审批，禁止自审批。</div>' : '';
+      panel.innerHTML = `
+        <h3>发布确认</h3>
+        <div class="kv"><span class="k">目标 Stage</span><span>${activeStage}</span></div>
+        <div class="kv"><span class="k">选择 Freight</span><span>${selectedFreight}</span></div>
+        <div class="kv"><span class="k">环境配置</span><span>${activeStage} values</span></div>
+        <h3 style="margin-top:16px;">FreightItem</h3>
+        <div class="mini-card">
+          <div class="freight-item"><span>frontend</span><span>镜像来自 Freight</span></div>
+          <div class="freight-item"><span>backend</span><span>镜像来自 Freight</span></div>
+          <div class="freight-item"><span>worker</span><span>镜像来自 Freight</span></div>
+        </div>
+        ${approval}
+        <button class="btn primary" id="confirmPromotion" style="width:100%; margin-top:14px;">确认发布</button>
+      `;
+    }
+
+    document.addEventListener('click', (event) => {
+      const tab = event.target.closest('.tab');
+      if (tab) showScreen(tab.dataset.screen);
+
+      const jump = event.target.closest('[data-jump]');
+      if (jump) showScreen(jump.dataset.jump);
+
+      const modalTrigger = event.target.closest('[data-open-modal]');
+      if (modalTrigger) openModal(modalTrigger.dataset.openModal);
+
+      const drawerTrigger = event.target.closest('[data-open-drawer]');
+      if (drawerTrigger) {
+        if (drawerTrigger.dataset.workloadName) {
+          document.getElementById('deployDrawerTitle').textContent = drawerTrigger.dataset.workloadName;
+        }
+        openDrawer(drawerTrigger.dataset.openDrawer);
+      }
+
+      if (event.target.closest('[data-close-layer]')) closeLayers();
+
+      const stageButton = event.target.closest('[data-stage]');
+      if (stageButton) updatePublishSelection(stageButton.dataset.stage);
+
+      const freightCard = event.target.closest('.freight-card');
+      if (freightCard && freightCard.classList.contains('selectable')) {
+        document.querySelectorAll('.freight-card').forEach((card) => card.classList.remove('selected'));
+        freightCard.classList.add('selected');
+        selectedFreight = freightCard.dataset.freightId;
+        renderPromotionPanel();
+      }
+
+      if (event.target.id === 'confirmPromotion') {
+        const stage = document.getElementById(`stage-${activeStage}`);
+        if (stage) stage.querySelector('.kv span + span').textContent = selectedFreight;
+        document.getElementById('publishHint').textContent = `${selectedFreight} 已提交到 ${activeStage}，等待同步结果。`;
+      }
+    });
+
+    const rows = Array.from(document.querySelectorAll('.freight-table tbody tr'));
+    const createButton = document.getElementById('createFreight');
+    const validationTitle = document.getElementById('freightValidationTitle');
+    const validationText = document.getElementById('freightValidationText');
+
+    function rowSelected(row) {
+      const source = row.querySelector('.source').value;
+      const artifact = row.querySelector('.artifact').value.trim();
+      const custom = row.querySelector('.custom').value.trim();
+      if (source === 'pipeline') return artifact !== '';
+      if (source === 'custom') return custom !== '';
+      return false;
+    }
+
+    function updateFreightValidation() {
+      let selected = 0;
+      rows.forEach((row) => {
+        const ok = rowSelected(row);
+        if (ok) selected += 1;
+        const badge = row.querySelector('.row-status');
+        badge.className = ok ? 'status ok row-status' : 'status err row-status';
+        badge.innerHTML = ok ? '<i class="dot"></i>已选择' : '<i class="dot"></i>待选择';
+      });
+      const allOk = selected === rows.length;
+      createButton.disabled = !allOk;
+      validationTitle.textContent = allOk ? '已覆盖全部 Workload' : '尚未覆盖全部 Workload';
+      validationText.textContent = allOk ? '3 个启用 Workload 都已选择镜像，可以创建完整 Freight。' : `已选择 ${selected} / ${rows.length} 个 Workload，需要全部选择后才能创建 Freight。`;
+    }
+
+    rows.forEach((row) => {
+      row.querySelectorAll('select, input').forEach((control) => {
+        control.addEventListener('input', updateFreightValidation);
+        control.addEventListener('change', updateFreightValidation);
+      });
+    });
+
+    document.getElementById('fillLatest').addEventListener('click', () => {
+      rows.forEach((row) => {
+        row.querySelector('.source').value = 'pipeline';
+        row.querySelector('.artifact').selectedIndex = 1;
+        row.querySelector('.custom').value = '';
+      });
+      updateFreightValidation();
+    });
+
+    document.getElementById('copyHistory').addEventListener('click', () => {
+      rows.forEach((row) => {
+        const workload = row.dataset.row;
+        if (workload === 'worker') {
+          row.querySelector('.source').value = 'custom';
+          row.querySelector('.custom').value = 'registry.example.com/macc/worker:20260608-7';
+          row.querySelector('.artifact').value = '';
+        } else {
+          row.querySelector('.source').value = 'pipeline';
+          row.querySelector('.artifact').selectedIndex = 2;
+          row.querySelector('.custom').value = '';
+        }
+      });
+      updateFreightValidation();
+    });
+
+    createButton.addEventListener('click', () => {
+      const name = document.getElementById('freightName').value.trim() || 'macc-frontend-new';
+      const card = document.createElement('div');
+      card.className = 'freight-card';
+      card.dataset.freightId = name.replace('macc-frontend-', '');
+      card.dataset.eligible = 'dev';
+      card.innerHTML = `
+        <div class="freight-title"><strong>${card.dataset.freightId}</strong><span class="tag orange">新建</span></div>
+        <div class="muted">刚刚创建</div>
+        <div class="freight-items">
+          <div class="freight-item"><span>frontend</span><span>已选择</span></div>
+          <div class="freight-item"><span>backend</span><span>已选择</span></div>
+          <div class="freight-item"><span>worker</span><span>已选择</span></div>
+        </div>`;
+      document.getElementById('freightRail').appendChild(card);
+      closeLayers();
+      showScreen('promotion');
+      document.getElementById('publishHint').textContent = `${card.dataset.freightId} 已创建，出现在时间轴最右侧。`;
+    });
+
+    updateFreightValidation();
+  </script>
+</body>
+</html>

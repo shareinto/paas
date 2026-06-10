@@ -214,7 +214,7 @@ Spring Boot 场景：
 
 - Maven 项目执行用户命令后生成 jar。
 - Jenkins 使用平台 Spring Boot 基础镜像打包并推送镜像。
-- 构建成功后生成 BuildArtifact、Release、Freight。
+- 构建成功后生成 BuildArtifact 和对应 Workload 的 Release 候选；Freight 由用户手动创建。
 
 Tomcat 场景：
 

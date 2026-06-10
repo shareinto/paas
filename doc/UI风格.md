@@ -159,8 +159,17 @@ lucide-react           # 图标，可选；也可使用 Ant Design Icons
 应用详情：
 
 - 顶部摘要区。
-- 下方使用 Tabs：总览、环境、版本、构建、发布、配置、日志、监控、设置。
+- 下方主要使用 Tabs：应用 Workload、发布晋级。其他低频信息可以进入设置、日志或监控入口，不把创建 Freight 和 Freight 详情做成独立 tab。
 - 不使用嵌套卡片堆叠，卡片只用于独立信息块。
+
+应用 Workload：
+
+- 使用表格或紧凑列表展示 Workload 名称、类型、镜像来源、当前各环境版本和健康状态。
+- 创建 Workload 使用抽屉或弹窗，不使用独立 tab。
+- Workload 表单支持选择 Deployment 或 StatefulSet。
+- Workload 表单支持流水线产物来源和自定义镜像来源。
+- 部署配置使用抽屉或弹窗，支持端口、资源、探针、域名、配置文件、环境变量、可写目录和副本数。
+- 一个镜像对应一个 Workload，多个镜像通过多个 Workload 表达。
 
 环境详情：
 
@@ -175,15 +184,16 @@ lucide-react           # 图标，可选；也可使用 Ant Design Icons
 
 发布晋级：
 
-- 展示版本、镜像 digest、commit、构建号、目标环境、审批策略。
+- 展示按创建时间从左到右排列的 Freight 时间轴。
+- 每个 Freight 展示名称、创建时间、覆盖的 Workload 数量、镜像摘要和来源标记。
+- 展示 Stage 卡片，默认顺序为 `dev`、`test`、`staging`、`prod`。
+- 每个 Stage 卡片提供 `发布` 按钮。
+- 点击某个 Stage 的 `发布` 后，仅点亮当前 Stage 可发布的 Freight，其他 Freight 降低透明度或禁用。
+- 用户选择 Freight 后打开确认弹窗，展示所有 Workload 对应镜像版本，确认后创建 Promotion。
 - 生产发布明确展示审批人数、审批人范围、禁止自审批和审批进度。
-
-部署模板配置：
-
-- 左侧或中间使用 Monaco Editor。
-- 右侧显示校验结果和版本记录。
-- 支持 initContainer、目录创建、目录权限、volumeMount、安全上下文等模板字段编辑。
-- 模板变更必须显示校验状态和审计提示。
+- 创建 Freight 使用抽屉或弹窗，并强制列出 Application 下所有启用 Workload。
+- 每个 Workload 必须选择一个镜像版本，来源可以是流水线产物或自定义镜像。
+- 自定义镜像使用 tag 时展示中文风险提示：镜像 tag 可能被覆盖，建议使用 digest。
 
 ## 颜色和状态
 
