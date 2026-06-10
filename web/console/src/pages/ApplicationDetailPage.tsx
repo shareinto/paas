@@ -121,9 +121,9 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose }: { appl
   const { data: runtimeEnvironments = EMPTY_LIST } = useQuery({ queryKey: ['runtime-environments'], queryFn: listRuntimeEnvironments, enabled: open });
   const { data: pipelines = EMPTY_LIST, isFetched: pipelinesFetched } = useQuery({ queryKey: ['build-pipelines', applicationId], queryFn: () => listBuildPipelines(applicationId), enabled: open && !!applicationId });
   const selectedRepositoryId = Form.useWatch(['sources', 0, 'sourceRepositoryId'], form);
-  const selectedRuntimeId = Form.useWatch(['sources', 0, 'runtimeEnvironmentId'], form);
+  const selectedRuntimeIds = Form.useWatch('runtimeEnvironmentIds', form) || [];
   const selectedRepository = repositories.find((item: any) => item.id === selectedRepositoryId);
-  const selectedRuntime = runtimeEnvironments.find((item: any) => item.id === selectedRuntimeId);
+  const selectedRuntimes = runtimeEnvironments.filter((item: any) => selectedRuntimeIds.includes(item.id));
 
   useEffect(() => {
     if (!open) {
@@ -139,12 +139,12 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose }: { appl
     form.setFieldsValue({
       name: defaultPipeline.name,
       displayName: defaultPipeline.displayName,
+      runtimeEnvironmentIds: runtime?.id ? [runtime.id] : [],
       sources: [{
         key: 'main',
         displayName: '主代码源',
         sourceRepositoryId: repo?.id,
         buildEnvironmentId: buildEnv?.id,
-        runtimeEnvironmentId: runtime?.id,
         sourcePath: '.',
         defaultRef: repo?.defaultBranch || 'main',
         buildCommand: 'mvn clean package -DskipTests',
@@ -157,8 +157,9 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose }: { appl
   const mutation = useMutation({
     mutationFn: async () => {
       const values = await form.validateFields();
+      const runtimeEnvironmentIds = values.runtimeEnvironmentIds || [];
+      const primaryRuntime = runtimeEnvironments.find((item: RuntimeEnvironment) => item.id === runtimeEnvironmentIds[0]);
       const sources = (values.sources || []).map((source: any, index: number) => {
-        const runtime = runtimeEnvironments.find((item: RuntimeEnvironment) => item.id === source.runtimeEnvironmentId);
         return {
           key: source.key,
           displayName: source.displayName,
@@ -171,13 +172,13 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose }: { appl
             sourcePath: source.sourcePath,
             buildCommand: source.buildCommand,
             artifactCopyCommand: source.artifactCopyCommand,
-            runtimeBaseImage: runtime?.runtimeBaseImage || '',
-            artifactDeployPath: runtime?.artifactDeployPath || '',
+            runtimeBaseImage: primaryRuntime?.runtimeBaseImage || '',
+            artifactDeployPath: primaryRuntime?.artifactDeployPath || '',
             defaultRef: source.defaultRef
           }
         };
       });
-      const pipeline = await createBuildPipeline(applicationId, { name: values.name, displayName: values.displayName, description: values.description, sources });
+      const pipeline = await createBuildPipeline(applicationId, { name: values.name, displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources });
       return { ...pipeline, sources };
     },
     onSuccess: (pipeline) => {
@@ -204,6 +205,20 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose }: { appl
         <Form.Item label="描述" name="description">
           <Input.TextArea rows={2} />
         </Form.Item>
+        <Form.Item label="运行时环境" name="runtimeEnvironmentIds" rules={[{ required: true, message: '请选择运行时环境' }]}>
+          <Select
+            mode="multiple"
+            options={runtimeEnvironments.map((item: any) => ({
+              value: item.id,
+              label: `${item.name} ${item.runtimeBaseImage ? `(${item.runtimeBaseImage})` : ''}`
+            }))}
+          />
+        </Form.Item>
+        <Space wrap size={[8, 8]} style={{ marginBottom: 16 }}>
+          {selectedRuntimes.length > 0 ? selectedRuntimes.map((runtime: RuntimeEnvironment, index: number) => (
+            <Tag key={runtime.id} color={index === 0 ? 'blue' : 'default'}>{index === 0 ? '主产物' : '附加'} {runtime.name}</Tag>
+          )) : <Typography.Text type="secondary">请选择流水线运行时环境</Typography.Text>}
+        </Space>
         <Form.List name="sources">
           {(fields, { add, remove }) => (
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -227,16 +242,12 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose }: { appl
                   <Form.Item label="构建环境" name={[field.name, 'buildEnvironmentId']} rules={[{ required: true, message: '请选择构建环境' }]}>
                     <Select options={buildEnvironments.map((item: any) => ({ value: item.id, label: item.name }))} />
                   </Form.Item>
-                  <Form.Item label="运行时环境" name={[field.name, 'runtimeEnvironmentId']} rules={[{ required: true, message: '请选择运行时环境' }]}>
-                    <Select options={runtimeEnvironments.map((item: any) => ({ value: item.id, label: `${item.name} ${item.runtimeBaseImage ? `(${item.runtimeBaseImage})` : ''}` }))} />
-                  </Form.Item>
                   <Form.Item label="构建命令" name={[field.name, 'buildCommand']} rules={[{ required: true, message: '请输入构建命令' }]}>
                     <Input.TextArea rows={3} />
                   </Form.Item>
                   <Form.Item label="产物拷贝命令" name={[field.name, 'artifactCopyCommand']} rules={[{ required: true, message: '请输入产物拷贝命令' }]}>
                     <Input.TextArea rows={3} />
                   </Form.Item>
-                  <Typography.Text type="secondary">镜像运行时：{selectedRuntime?.runtimeBaseImage || '-'}</Typography.Text>
                 </Card>
               ))}
               <Button icon={<PlusOutlined />} onClick={() => add({ key: `source-${fields.length + 1}`, displayName: '代码源', sourcePath: '.', defaultRef: 'main' })}>添加代码源</Button>

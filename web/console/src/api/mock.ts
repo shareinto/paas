@@ -4,7 +4,7 @@ export type Application = { id: string; name: string; displayName: string; proje
 export type ApplicationRuntimeEnvironment = { id: string; name: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string };
 export type ApplicationSource = { id?: string; key: string; displayName: string; sourceRepositoryId: string; jenkinsTemplateId?: string; buildEnvironmentId?: string; sourcePath: string; defaultRef: string; isPrimary: boolean; buildSpec: { sourcePath: string; buildCommand: string; artifactCopyCommand: string; runtimeBaseImage?: string; artifactDeployPath?: string; defaultRef: string } };
 export type BuildPipelineSource = ApplicationSource & { pipelineId?: string };
-export type BuildPipeline = { id: string; applicationId: string; name: string; displayName: string; description?: string; status: string; externalJobName?: string; sources?: BuildPipelineSource[]; updatedAt: string };
+export type BuildPipeline = { id: string; applicationId: string; name: string; displayName: string; description?: string; status: string; externalJobName?: string; runtimeEnvironments?: RuntimeEnvironment[]; sources?: BuildPipelineSource[]; updatedAt: string };
 export type BuildRun = { id: string; application: string; pipeline?: string; pipelineId?: string; status: string; ref: string; commit: string; startedAt: string; duration: string };
 export type AuditLog = { id: string; actor: string; action: string; resource: string; result: string; summary: string; time: string };
 export type Freight = { id: string; version: string; image: string; digest: string; commit: string; createdAt: string };
@@ -66,6 +66,7 @@ const buildPipelines: Record<string, BuildPipeline[]> = {
     status: 'active',
     externalJobName: 'paas/rnd/order/order-api/main',
     updatedAt: '2026-05-30 10:12',
+    runtimeEnvironments: [{ ...runtimeEnvironments[0] }],
     sources: [{ id: 'pipeline_source_1', pipelineId: 'pipeline_1', key: 'main', displayName: '主代码源', sourceRepositoryId: 'repo_1', buildEnvironmentId: 'build_env_java_springboot', sourcePath: 'services/order-api', defaultRef: 'main', isPrimary: true, buildSpec: { sourcePath: 'services/order-api', buildCommand: 'mvn clean package -DskipTests', artifactCopyCommand: 'cp -ar target/order-api.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"', runtimeBaseImage: 'registry.example/runtime/java17:1.0', artifactDeployPath: '/app/', defaultRef: 'main' } }]
   }]
 };
@@ -156,16 +157,10 @@ export async function updateApplication(id: string, input: any) {
   await wait();
   const index = applications.findIndex((item) => item.id === id);
   if (index < 0) throw new Error('应用不存在');
-  const runtimeIds = input.runtimeEnvironmentIds || [];
   applications[index] = {
     ...applications[index],
     displayName: input.displayName || applications[index].name,
     description: input.description || '',
-    runtimeEnvironmentId: runtimeIds[0] || input.runtimeEnvironmentId,
-    runtimeEnvironments: runtimeIds.map((runtimeId: string) => {
-      const runtime = runtimeEnvironments.find((item) => item.id === runtimeId);
-      return { id: runtimeId, name: runtime?.name || runtimeId, runtimeBaseImage: runtime?.runtimeBaseImage || '', artifactDeployPath: runtime?.artifactDeployPath, dockerfilePath: runtime?.dockerfilePath };
-    }),
     status: input.disabled ? 'disabled' : 'active',
     updatedAt: '刚刚'
   };
@@ -434,11 +429,7 @@ export async function createApplication(input: any) {
   await wait();
   const id = `app_${Date.now()}`;
   const project = projects.find((item) => item.id === input.projectId);
-  const runtimeIds = input.runtimeEnvironmentIds || [];
-  const app: Application = { id, name: input.name, displayName: input.displayName || input.name, project: project?.displayName || '', projectId: input.projectId, description: input.description || '', runtimeEnvironmentId: runtimeIds[0] || input.runtimeEnvironmentId, runtimeEnvironments: runtimeIds.map((runtimeId: string) => {
-    const runtime = runtimeEnvironments.find((item) => item.id === runtimeId);
-    return { id: runtimeId, name: runtime?.name || runtimeId, runtimeBaseImage: runtime?.runtimeBaseImage || '', artifactDeployPath: runtime?.artifactDeployPath, dockerfilePath: runtime?.dockerfilePath };
-  }), status: 'active', type: input.runtimeEnvironmentIds?.some((id: string) => runtimeEnvironments.find((item) => item.id === id)?.name.includes('tomcat')) ? 'Tomcat' : 'Spring Boot', envStatus: '待绑定集群', build: '-', release: '-', owner: '平台管理员', updatedAt: '刚刚' };
+  const app: Application = { id, name: input.name, displayName: input.displayName || input.name, project: project?.displayName || '', projectId: input.projectId, description: input.description || '', status: 'active', type: '-', envStatus: '待绑定集群', build: '-', release: '-', owner: '平台管理员', updatedAt: '刚刚' };
   applications.unshift(app);
   applicationSources[id] = [];
   buildPipelines[id] = [];
@@ -447,12 +438,13 @@ export async function createApplication(input: any) {
 
 export async function listBuildPipelines(applicationId: string): Promise<BuildPipeline[]> {
   await wait();
-  return (buildPipelines[applicationId] || []).map((pipeline) => ({ ...pipeline, sources: pipeline.sources?.map((source) => ({ ...source, buildSpec: { ...source.buildSpec } })) }));
+  return (buildPipelines[applicationId] || []).map((pipeline) => ({ ...pipeline, runtimeEnvironments: pipeline.runtimeEnvironments?.map((runtime) => ({ ...runtime })), sources: pipeline.sources?.map((source) => ({ ...source, buildSpec: { ...source.buildSpec } })) }));
 }
 
-export async function createBuildPipeline(applicationId: string, input: Omit<BuildPipeline, 'id' | 'applicationId' | 'status' | 'updatedAt'> & { sources: BuildPipelineSource[] }) {
+export async function createBuildPipeline(applicationId: string, input: Omit<BuildPipeline, 'id' | 'applicationId' | 'status' | 'updatedAt' | 'runtimeEnvironments'> & { runtimeEnvironmentIds?: string[]; sources: BuildPipelineSource[] }) {
   await wait();
   const id = `pipeline_${Date.now()}`;
+  const runtimeSnapshots = (input.runtimeEnvironmentIds || []).map((runtimeId) => runtimeEnvironments.find((item) => item.id === runtimeId)).filter(Boolean) as RuntimeEnvironment[];
   const pipeline: BuildPipeline = {
     id,
     applicationId,
@@ -462,6 +454,7 @@ export async function createBuildPipeline(applicationId: string, input: Omit<Bui
     status: 'active',
     externalJobName: '',
     updatedAt: '刚刚',
+    runtimeEnvironments: runtimeSnapshots.map((runtime) => ({ ...runtime })),
     sources: input.sources.map((source, index) => ({ ...source, id: `pipeline_source_${Date.now()}_${index}`, pipelineId: id, displayName: source.displayName || source.key, isPrimary: index === 0, buildSpec: { ...source.buildSpec } }))
   };
   buildPipelines[applicationId] = [pipeline, ...(buildPipelines[applicationId] || [])];

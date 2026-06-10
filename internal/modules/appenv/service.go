@@ -161,14 +161,9 @@ func (s *Service) CreateApplication(ctx context.Context, input CreateApplication
 	if err := validateApplicationName(name); err != nil {
 		return Application{}, err
 	}
-	runtimeEnvironments, err := s.requireEnabledRuntimeEnvironments(ctx, input.RuntimeEnvironmentID, input.RuntimeEnvironmentIDs)
-	if err != nil {
-		return Application{}, err
-	}
-	primaryRuntime := runtimeEnvironments[0]
 	var sources []ApplicationSource
 	if len(input.Sources) > 0 {
-		sources, err = s.prepareApplicationSources(ctx, project, input.Sources, runtimeEnvironments, input.RuntimeOverrides)
+		sources, err = s.prepareApplicationSources(ctx, project, input.Sources, nil, BuildSpec{})
 		if err != nil {
 			return Application{}, err
 		}
@@ -179,17 +174,15 @@ func (s *Service) CreateApplication(ctx context.Context, input CreateApplication
 	}
 	now := s.clock.Now()
 	app := Application{
-		ID:                   appID,
-		TenantID:             project.TenantID,
-		ProjectID:            project.ID,
-		Name:                 name,
-		DisplayName:          normalizeDisplayName(input.DisplayName, name),
-		Description:          strings.TrimSpace(input.Description),
-		RuntimeEnvironmentID: primaryRuntime.ID,
-		RuntimeEnvironments:  applicationRuntimeEnvironments(runtimeEnvironments),
-		Status:               ApplicationStatusActive,
-		CreatedAt:            now,
-		UpdatedAt:            now,
+		ID:          appID,
+		TenantID:    project.TenantID,
+		ProjectID:   project.ID,
+		Name:        name,
+		DisplayName: normalizeDisplayName(input.DisplayName, name),
+		Description: strings.TrimSpace(input.Description),
+		Status:      ApplicationStatusActive,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	sourceKeys := make([]string, 0, len(sources))
 	for i := range sources {
@@ -264,7 +257,9 @@ func (s *Service) prepareApplicationSources(ctx context.Context, project tenantp
 		if err != nil {
 			return nil, err
 		}
-		applyRuntimeEnvironment(runtimeEnvironments[0], runtimeOverrides, &spec)
+		if len(runtimeEnvironments) > 0 {
+			applyRuntimeEnvironment(runtimeEnvironments[0], runtimeOverrides, &spec)
+		}
 		spec, err = s.validateBuildSpec(spec, sourceRepo.DefaultBranch)
 		if err != nil {
 			return nil, err
@@ -338,23 +333,8 @@ func (s *Service) UpdateApplication(ctx context.Context, input UpdateApplication
 	if err != nil {
 		return Application{}, err
 	}
-	runtimeEnvironments := []RuntimeEnvironmentRef{}
-	if len(input.RuntimeEnvironmentIDs) > 0 || !input.RuntimeEnvironmentID.IsZero() || len(input.Sources) > 0 {
-		runtimeEnvironments, err = s.requireEnabledRuntimeEnvironments(ctx, input.RuntimeEnvironmentID, input.RuntimeEnvironmentIDs)
-		if err != nil {
-			return Application{}, err
-		}
-		app.RuntimeEnvironmentID = runtimeEnvironments[0].ID
-		app.RuntimeEnvironments = applicationRuntimeEnvironments(runtimeEnvironments)
-	}
 	if len(input.Sources) > 0 {
-		if len(runtimeEnvironments) == 0 {
-			runtimeEnvironments, err = s.requireEnabledRuntimeEnvironments(ctx, app.RuntimeEnvironmentID, nil)
-			if err != nil {
-				return Application{}, err
-			}
-		}
-		sources, err := s.prepareApplicationSources(ctx, project, input.Sources, runtimeEnvironments, input.RuntimeOverrides)
+		sources, err := s.prepareApplicationSources(ctx, project, input.Sources, nil, BuildSpec{})
 		if err != nil {
 			return Application{}, err
 		}

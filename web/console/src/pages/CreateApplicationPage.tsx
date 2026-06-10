@@ -3,7 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Alert, Button, Card, Form, Input, Select, Typography } from 'antd';
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createApplication, listProjects, listRuntimeEnvironments } from '../api';
+import { createApplication, listProjects } from '../api';
 
 const EMPTY_LIST: any[] = [];
 
@@ -11,19 +11,12 @@ export function CreateApplicationPage() {
   const [form] = Form.useForm();
   const navigate = useNavigate();
   const { data: projects = EMPTY_LIST } = useQuery({ queryKey: ['projects'], queryFn: listProjects });
-  const { data: runtimeEnvironments = EMPTY_LIST } = useQuery({ queryKey: ['runtime-environments'], queryFn: listRuntimeEnvironments });
 
   useEffect(() => {
     if (!form.getFieldValue('projectId') && projects[0]) {
       form.setFieldValue('projectId', projects[0].id);
     }
   }, [form, projects]);
-
-  useEffect(() => {
-    if (form.getFieldValue('runtimeEnvironmentIds')?.length || runtimeEnvironments.length === 0) return;
-    const defaults = runtimeEnvironments.filter((item: any) => item.isDefault).map((item: any) => item.id);
-    form.setFieldValue('runtimeEnvironmentIds', defaults.length > 0 ? defaults : [runtimeEnvironments[0].id]);
-  }, [form, runtimeEnvironments]);
 
   const createMutation = useMutation({
     mutationFn: createApplication,
@@ -32,14 +25,11 @@ export function CreateApplicationPage() {
 
   const submit = async () => {
     const values = await form.validateFields();
-    const runtimeEnvironmentIds = values.runtimeEnvironmentIds || [];
     createMutation.mutate({
       projectId: values.projectId,
       name: values.name,
       displayName: values.displayName,
-      description: values.description,
-      runtimeEnvironmentId: runtimeEnvironmentIds[0],
-      runtimeEnvironmentIds
+      description: values.description
     });
   };
 
@@ -48,7 +38,7 @@ export function CreateApplicationPage() {
       <div className="wizard-title">
         <Typography.Title level={3}>创建应用</Typography.Title>
         <Typography.Paragraph className="wizard-desc">
-          应用只维护交付单元和运行时环境；代码源、BuildSpec 和触发规则在应用详情中创建构建流水线。
+          应用只维护交付单元和默认环境；代码源、BuildSpec、运行时环境和触发规则在应用详情中创建构建流水线。
         </Typography.Paragraph>
       </div>
 
@@ -77,18 +67,6 @@ export function CreateApplicationPage() {
               </Form.Item>
               <Form.Item label="描述" name="description">
                 <Input.TextArea rows={3} placeholder="应用用途、负责人或交付边界" />
-              </Form.Item>
-            </Card>
-
-            <Card title="运行时环境">
-              <Form.Item label="运行时预设" name="runtimeEnvironmentIds" rules={[{ required: true, message: '请选择运行时环境' }]}>
-                <Select
-                  mode="multiple"
-                  options={runtimeEnvironments.map((item: any) => ({
-                    value: item.id,
-                    label: `${item.name} ${item.runtimeBaseImage ? `(${item.runtimeBaseImage})` : ''}`
-                  }))}
-                />
               </Form.Item>
             </Card>
 

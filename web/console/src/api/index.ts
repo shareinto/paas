@@ -92,7 +92,7 @@ export async function getApplicationSources(id: string) {
   return data.items.map(mapApplicationSource);
 }
 
-export async function updateApplication(id: string, input: { displayName: string; description?: string; disabled?: boolean; runtimeEnvironmentId?: string; runtimeEnvironmentIds?: string[] }) {
+export async function updateApplication(id: string, input: { displayName: string; description?: string; disabled?: boolean }) {
   if (!hasAPIBaseURL()) return mock.updateApplication(id, input);
   const item = await request<any>(`/api/applications/${encodeURIComponent(id)}`, {
     method: 'PATCH',
@@ -176,7 +176,7 @@ export async function listBuildPipelineSources(pipelineId: string) {
   return data.items.map(mapBuildPipelineSource);
 }
 
-export async function createBuildPipeline(applicationId: string, input: { name: string; displayName: string; description?: string; sources: mock.BuildPipelineSource[] }) {
+export async function createBuildPipeline(applicationId: string, input: { name: string; displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
   if (!hasAPIBaseURL()) return mock.createBuildPipeline(applicationId, input as any);
   const item = await request<any>(`/api/apps/${encodeURIComponent(applicationId)}/build-pipelines`, {
     method: 'POST',
@@ -185,6 +185,7 @@ export async function createBuildPipeline(applicationId: string, input: { name: 
       name: input.name,
       display_name: input.displayName,
       description: input.description || '',
+      runtime_environment_ids: input.runtimeEnvironmentIds || [],
       sources: input.sources.map(pipelineSourcePayload)
     })
   });
@@ -532,7 +533,7 @@ export type CreateApplicationSource = {
   buildSpec: { sourcePath: string; buildCommand: string; artifactCopyCommand: string; runtimeBaseImage?: string; artifactDeployPath?: string; defaultRef: string };
 };
 
-export async function createApplication(input: { projectId: string; name: string; displayName: string; description?: string; runtimeEnvironmentId?: string; runtimeEnvironmentIds?: string[] }) {
+export async function createApplication(input: { projectId: string; name: string; displayName: string; description?: string }) {
   if (!hasAPIBaseURL()) return mock.createApplication(input);
   const item = await request<any>('/api/applications', {
     method: 'POST',
@@ -545,14 +546,12 @@ export async function createApplication(input: { projectId: string; name: string
   return { id: item.id, name: item.name, displayName: item.display_name || item.displayName || item.name };
 }
 
-function applicationPayload(input: { displayName: string; description?: string; disabled?: boolean; runtimeEnvironmentId?: string; runtimeEnvironmentIds?: string[] }) {
+function applicationPayload(input: { displayName: string; description?: string; disabled?: boolean }) {
   return {
     actor: { type: 'user', id: 'usr_admin' },
     display_name: input.displayName,
     description: input.description || '',
-    disabled: !!input.disabled,
-    runtime_environment_id: input.runtimeEnvironmentId || '',
-    runtime_environment_ids: input.runtimeEnvironmentIds || []
+    disabled: !!input.disabled
   };
 }
 
@@ -649,7 +648,22 @@ function mapBuildPipeline(item: any): mock.BuildPipeline {
     description: item.description || '',
     status: item.status || 'active',
     externalJobName: item.external_job_name || item.externalJobName || '',
+    runtimeEnvironments: (item.runtime_environments || item.runtimeEnvironments || []).map(mapRuntimeEnvironmentSnapshot),
     updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
+  };
+}
+
+function mapRuntimeEnvironmentSnapshot(runtime: any): mock.RuntimeEnvironment {
+  return {
+    id: runtime.id || runtime.runtime_environment_id || runtime.runtimeEnvironmentId || '',
+    name: runtime.name || '',
+    description: runtime.description || '',
+    runtimeBaseImage: runtime.runtime_base_image || runtime.runtimeBaseImage || '',
+    artifactDeployPath: runtime.artifact_deploy_path || runtime.artifactDeployPath || '',
+    dockerfilePath: runtime.dockerfile_path || runtime.dockerfilePath || '',
+    status: runtime.status || 'enabled',
+    isDefault: !!(runtime.is_default || runtime.isDefault),
+    updatedAt: runtime.updatedAt || formatTime(runtime.updated_at || runtime.updatedAt)
   };
 }
 

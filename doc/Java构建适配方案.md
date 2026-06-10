@@ -51,8 +51,8 @@ default_ref
 - `source_path`：应用源码在 SourceRepository 中的相对路径。
 - `build_command`：用户填写的受限构建命令。
 - `artifact_copy_command`：必填产物拷贝命令，用于把当前代码源构建产物复制到平台约定的 `$PAAS_ARTIFACT_OUTPUT` 目录。
-- `runtime_base_image`：平台维护的运行时基础镜像；创建应用页面按应用配置一次。
-- `artifact_deploy_path`：可选产物放置路径，表示构建产物在运行时镜像或容器内的目标位置，创建应用页面按应用配置一次。
+- `runtime_base_image`：平台维护的运行时基础镜像；创建构建流水线时按流水线配置一次。
+- `artifact_deploy_path`：可选产物放置路径，表示构建产物在运行时镜像或容器内的目标位置，创建构建流水线时按流水线配置一次。
 - `default_ref`：默认构建分支、tag 或 commit 引用。
 
 产物规则：
@@ -64,18 +64,19 @@ default_ref
 - `artifact_copy_command` 必须把最终要进入镜像上下文的文件写入 `$PAAS_ARTIFACT_OUTPUT`。
 - 收集后平台会校验 `$PAAS_ARTIFACT_OUTPUT` 非空。
 
-## 4. 创建应用向导
+## 4. 创建构建流水线
 
-创建 Application 时，代码源配置块负责让用户为每个代码源选择“构建环境”，应用级运行时配置负责让用户选择一次“运行时环境”。
+创建 Application 时只维护应用基础信息和默认环境。创建 BuildPipeline 时，代码源配置块负责让用户为每个代码源选择“构建环境”，流水线级运行时配置负责让用户选择一个或多个“运行时环境”。
 
 用户需要填写：
 
 ```text
+流水线标识：main / release
+运行时环境：Java 17 运行时 / Tomcat 8 运行时
 构建环境：java-springboot / java-tomcat
 源码子目录：source_path
 构建命令：build_command
 产物拷贝命令：artifact_copy_command
-运行时环境：Java 17 运行时 / Tomcat 8 运行时
 ```
 
 示例：
@@ -96,9 +97,9 @@ PaaS 校验：
 
 - `source_path` 必须存在或可被 GitLab 仓库 API 验证。
 - 每个代码源必须选择已启用的构建环境，构建环境提供构建镜像。
-- 应用必须选择已启用的运行时环境。
+- 每条构建流水线必须选择一个或多个已启用的运行时环境；首个运行时环境作为主产物镜像目标。
 - `build_command` 不能为空。
-- `runtime_base_image` 来自平台维护的运行时环境；允许按平台策略提供覆盖值。
+- `runtime_base_image` 来自构建流水线选择的运行时环境；不在创建应用页面填写。
 - `artifact_deploy_path` 填写时必须是绝对路径，且不允许通过 `..` 路径逃逸。
 
 ## 5. 仓库扫描建议
@@ -123,7 +124,7 @@ artifact_copy_command
 runtime_base_image
 ```
 
-用户在创建 Application 时必须确认或调整建议，确认后才写入 `ApplicationSource` / `BuildSpec`。
+用户在创建 BuildPipeline 时必须确认或调整建议，确认后才写入 `BuildPipelineSource` / `BuildSpec`。
 
 ## 6. 构建管理和全局模板
 
@@ -136,7 +137,7 @@ runtime_base_image
 ```
 
 - 构建环境：维护可选构建预设，例如 `java-springboot`、`java-tomcat`，包含名称、描述和构建镜像。
-- 运行时环境：维护名称、运行时基础镜像、产物放置路径和 Dockerfile 路径。Dockerfile 路径仅在运行时环境管理页由平台管理员维护，创建应用和触发构建时不向用户展示。
+- 运行时环境：维护名称、运行时基础镜像、产物放置路径和 Dockerfile 路径。Dockerfile 路径仅在运行时环境管理页由平台管理员维护，创建应用、创建流水线和触发构建时不向用户展示。
 - 构建模板：全局仅维护一个模板。平台根据用户填写的代码源、构建环境、运行时环境和平台 Dockerfile 仓库配置渲染最终 Jenkins Job。
 
 Jenkins 仍由 PaaS 创建和管理。Application 创建时不创建 Job；用户点击构建时使用固定名称创建或更新 Job。推荐 Job 名称：

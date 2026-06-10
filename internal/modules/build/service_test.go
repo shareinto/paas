@@ -228,6 +228,49 @@ func newBuildTestEnv(t *testing.T) buildTestEnv {
 	return buildTestEnv{svc: svc, repo: repo, runner: runner, permission: permission, audit: audit, events: events, syncer: syncer}
 }
 
+func seedRuntimeEnvironments(t *testing.T, env buildTestEnv) {
+	t.Helper()
+	ctx := context.Background()
+	for _, runtime := range []RuntimeEnvironment{
+		{
+			ID:                 "runtime_env_java17",
+			Name:               "java17",
+			RuntimeBaseImage:   "registry.example/runtime/java17:1.0",
+			ArtifactDeployPath: "/app/",
+			DockerfilePath:     "java/jar/Dockerfile",
+			Status:             RuntimeEnvironmentEnabled,
+			CreatedBy:          "usr_admin",
+			CreatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
+			UpdatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:                 "runtime_env_java21",
+			Name:               "java21",
+			RuntimeBaseImage:   "registry.example/runtime/java21:1.0",
+			ArtifactDeployPath: "/app/",
+			Status:             RuntimeEnvironmentEnabled,
+			CreatedBy:          "usr_admin",
+			CreatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
+			UpdatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:                 "runtime_env_tomcat8",
+			Name:               "tomcat8",
+			RuntimeBaseImage:   "registry.example/runtime/tomcat8:1.0",
+			ArtifactDeployPath: "/usr/local/tomcat/webapps/",
+			DockerfilePath:     "java/tomcat/Dockerfile",
+			Status:             RuntimeEnvironmentEnabled,
+			CreatedBy:          "usr_admin",
+			CreatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
+			UpdatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
+		},
+	} {
+		if err := env.repo.CreateRuntimeEnvironment(ctx, runtime); err != nil && shared.CodeOf(err) != shared.CodeConflict {
+			t.Fatalf("CreateRuntimeEnvironment(%s) error = %v", runtime.ID, err)
+		}
+	}
+}
+
 func validBuildSpec() BuildSpec {
 	return BuildSpec{
 		SourcePath:          "services/user-api",
@@ -245,11 +288,13 @@ func buildActor() identityaccess.Subject {
 
 func createDefaultPipeline(t *testing.T, env buildTestEnv) BuildPipeline {
 	t.Helper()
+	seedRuntimeEnvironments(t, env)
 	pipeline, err := env.svc.CreateBuildPipeline(context.Background(), CreateBuildPipelineInput{
-		Actor:         buildActor(),
-		ApplicationID: "app_user",
-		Name:          "main",
-		DisplayName:   "主流水线",
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "main",
+		DisplayName:           "主流水线",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
 			Key:                "main",
 			DisplayName:        "主代码源",
@@ -265,6 +310,60 @@ func createDefaultPipeline(t *testing.T, env buildTestEnv) BuildPipeline {
 	env.runner.jobs = nil
 	env.runner.triggers = nil
 	return pipeline
+}
+
+func TestCreateBuildPipelineRequiresRuntimeEnvironments(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+
+	_, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
+		Actor:         buildActor(),
+		ApplicationID: "app_user",
+		Name:          "main",
+		DisplayName:   "主流水线",
+		Sources: []BuildPipelineSourceInput{{
+			Key:                "main",
+			SourceRepositoryID: "repo_user",
+			BuildSpec:          validBuildSpec(),
+			IsPrimary:          true,
+		}},
+	})
+	if shared.CodeOf(err) != shared.CodeInvalidArgument || !strings.Contains(err.Error(), "runtime_environment_ids is required") {
+		t.Fatalf("expected missing runtime environment ids error, got %v", err)
+	}
+}
+
+func TestCreateBuildPipelinePersistsRuntimeSnapshots(t *testing.T) {
+	env := newBuildTestEnv(t)
+	seedRuntimeEnvironments(t, env)
+	ctx := context.Background()
+
+	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "main",
+		DisplayName:           "主流水线",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17", "runtime_env_java21"},
+		Sources: []BuildPipelineSourceInput{{
+			Key:                "main",
+			SourceRepositoryID: "repo_user",
+			BuildSpec:          validBuildSpec(),
+			IsPrimary:          true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateBuildPipeline() error = %v", err)
+	}
+	if len(pipeline.RuntimeEnvironments) != 2 || pipeline.RuntimeEnvironments[0].ID != "runtime_env_java17" || pipeline.RuntimeEnvironments[1].ID != "runtime_env_java21" {
+		t.Fatalf("runtime snapshots should be persisted on pipeline, got %+v", pipeline.RuntimeEnvironments)
+	}
+	sources, err := env.svc.ListBuildPipelineSources(ctx, pipeline.ID)
+	if err != nil {
+		t.Fatalf("ListBuildPipelineSources() error = %v", err)
+	}
+	if sources[0].BuildSpec.RuntimeBaseImage != "registry.example/runtime/java17:1.0" || sources[0].BuildSpec.ArtifactDeployPath != "/app/" {
+		t.Fatalf("primary runtime should keep BuildSpec compatibility fields, got %+v", sources[0].BuildSpec)
+	}
 }
 
 func TestEnsureDefaultBuildConfigurationDoesNotRecreateDeletedEnvironments(t *testing.T) {
@@ -395,7 +494,7 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	if strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_BUILD_SOURCES") || strings.Contains(env.runner.jobs[0].TemplateXML, "SOURCE_REFS_JSON") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_RUNTIME") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_PACKAGE_SPEC") {
 		t.Fatalf("rendered Jenkinsfile should not depend on Jenkins parameters, got %s", env.runner.jobs[0].TemplateXML)
 	}
-	if !strings.Contains(env.runner.jobs[0].TemplateXML, "abc123") || !strings.Contains(env.runner.jobs[0].TemplateXML, "/api/builds/"+run.ID.String()+"/callback") || !strings.Contains(env.runner.jobs[0].TemplateXML, "registry.example/paas/user-api:20260530-abc123-main") {
+	if !strings.Contains(env.runner.jobs[0].TemplateXML, "abc123") || !strings.Contains(env.runner.jobs[0].TemplateXML, "/api/builds/"+run.ID.String()+"/callback") || !strings.Contains(env.runner.jobs[0].TemplateXML, "registry.example/paas/user-api:20260530-abc123-java17") {
 		t.Fatalf("rendered Jenkinsfile should contain build-specific commit, callback and image, got %s", env.runner.jobs[0].TemplateXML)
 	}
 	if len(env.runner.triggers) != 1 {
@@ -419,13 +518,15 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 
 func TestCreateNamedPipelinesAndTriggerSelectedPipeline(t *testing.T) {
 	env := newBuildTestEnv(t)
+	seedRuntimeEnvironments(t, env)
 	ctx := context.Background()
 
 	apiPipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
-		Actor:         buildActor(),
-		ApplicationID: "app_user",
-		Name:          "api",
-		DisplayName:   "API 构建",
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "api",
+		DisplayName:           "API 构建",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
 			Key:                "api",
 			DisplayName:        "API 源码",
@@ -439,10 +540,11 @@ func TestCreateNamedPipelinesAndTriggerSelectedPipeline(t *testing.T) {
 		t.Fatalf("CreateBuildPipeline(api) error = %v", err)
 	}
 	adminPipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
-		Actor:         buildActor(),
-		ApplicationID: "app_user",
-		Name:          "admin",
-		DisplayName:   "管理端构建",
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "admin",
+		DisplayName:           "管理端构建",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
 			Key:                "admin",
 			DisplayName:        "管理端源码",
@@ -465,7 +567,7 @@ func TestCreateNamedPipelinesAndTriggerSelectedPipeline(t *testing.T) {
 	if apiPipeline.ID == adminPipeline.ID || apiPipeline.Name != "api" || adminPipeline.Name != "admin" {
 		t.Fatalf("unexpected pipelines: api=%+v admin=%+v", apiPipeline, adminPipeline)
 	}
-	if _, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "api", Sources: []BuildPipelineSourceInput{{Key: "api", SourceRepositoryID: "repo_user", BuildSpec: validBuildSpec(), IsPrimary: true}}}); shared.CodeOf(err) != shared.CodeConflict {
+	if _, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "api", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: []BuildPipelineSourceInput{{Key: "api", SourceRepositoryID: "repo_user", BuildSpec: validBuildSpec(), IsPrimary: true}}}); shared.CodeOf(err) != shared.CodeConflict {
 		t.Fatalf("duplicate pipeline name should conflict, got %v", err)
 	}
 
@@ -585,7 +687,7 @@ func TestTriggerBuildImageTagDoesNotUseBuildRunID(t *testing.T) {
 	if strings.Contains(xml, "registry.example/paas/user-api:20260530-build_run_1-main") {
 		t.Fatalf("rendered image tag must not use build run id: %s", xml)
 	}
-	if !strings.Contains(xml, "registry.example/paas/user-api:20260530-main-main") {
+	if !strings.Contains(xml, "registry.example/paas/user-api:20260530-main-java17") {
 		t.Fatalf("rendered image tag should fall back to git ref when commit is empty, got %s", xml)
 	}
 }
@@ -640,10 +742,11 @@ func TestListBuildPipelinesReturnsNewestFirst(t *testing.T) {
 
 	createDefaultPipeline(t, env)
 	second, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
-		Actor:         buildActor(),
-		ApplicationID: "app_user",
-		Name:          "release",
-		DisplayName:   "发布流水线",
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "release",
+		DisplayName:           "发布流水线",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
 			Key:                "main",
 			DisplayName:        "主代码源",
@@ -698,6 +801,7 @@ func TestDeleteBuildPipelineDeletesManagedJenkinsJob(t *testing.T) {
 
 func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing.T) {
 	env := newBuildTestEnv(t)
+	seedRuntimeEnvironments(t, env)
 	ctx := context.Background()
 	frontSources := []BuildPipelineSourceInput{
 		{Key: "frontcomponents", SourceRepositoryID: "repo_frontcomponents", BuildSpec: BuildSpec{
@@ -724,10 +828,6 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 				TenantName:  "rnd",
 				ProjectName: "payment",
 				Name:        "macc-frontend",
-				RuntimeEnvironments: []RuntimeEnvironmentRef{
-					{Name: "main", RuntimeBaseImage: "nginx:1.26.2", DockerfilePath: "java/jar/Dockerfile"},
-					{Name: "nginx-1221", RuntimeBaseImage: "nginx:1.22.1", DockerfilePath: "java/jar/Dockerfile"},
-				},
 			},
 		},
 	})
@@ -736,7 +836,7 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 		"repo_frontmacc5":      {ID: "repo_frontmacc5", SSHURL: "git@gitlab.example:macc/macc-cloud.git"},
 	}}
 
-	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "frontend", Sources: frontSources})
+	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "frontend", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17", "runtime_env_java21"}, Sources: frontSources})
 	if err != nil {
 		t.Fatalf("CreateBuildPipeline() error = %v", err)
 	}
@@ -756,8 +856,8 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 		"collect frontcomponents",
 		"collect frontmacc5",
 		"cp -ar dist/. &#34;$PAAS_ARTIFACT_OUTPUT/&#34;",
-		"cp -ar artifact/. &#34;image-context/main/&#34;",
-		"cp -ar artifact/. &#34;image-context/nginx-1221/&#34;",
+		"cp -ar artifact/. &#34;image-context/java17/&#34;",
+		"cp -ar artifact/. &#34;image-context/java21/&#34;",
 		"PAAS_ARTIFACT_OUTPUT",
 		"docker buildx build",
 		"java/jar/Dockerfile",
@@ -791,7 +891,8 @@ func TestEnsureBuildPipelineRejectsMissingArtifactCopyCommand(t *testing.T) {
 	spec := validBuildSpec()
 	spec.ArtifactCopyCommand = " "
 
-	_, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "bad", Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", BuildSpec: spec, IsPrimary: true}}})
+	seedRuntimeEnvironments(t, env)
+	_, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "bad", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", BuildSpec: spec, IsPrimary: true}}})
 	if shared.CodeOf(err) != shared.CodeInvalidArgument || !strings.Contains(err.Error(), "artifact_copy_command is required") {
 		t.Fatalf("expected missing artifact_copy_command error, got %v", err)
 	}
@@ -815,7 +916,7 @@ func TestTriggerBuildUpdatesPipelineWhenConfigChangesAndSupportsTomcatWar(t *tes
 		RuntimeBaseImage:    "registry.example/runtime/tomcat8:1.0",
 		DefaultRef:          "release/1.0",
 	}
-	if _, err := env.svc.UpdateBuildPipeline(ctx, UpdateBuildPipelineInput{Actor: buildActor(), PipelineID: pipeline.ID, DisplayName: pipeline.DisplayName, Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", SourcePath: tomcatSpec.SourcePath, BuildSpec: tomcatSpec, IsPrimary: true}}}); err != nil {
+	if _, err := env.svc.UpdateBuildPipeline(ctx, UpdateBuildPipelineInput{Actor: buildActor(), PipelineID: pipeline.ID, DisplayName: pipeline.DisplayName, RuntimeEnvironmentIDs: []shared.ID{"runtime_env_tomcat8"}, Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", SourcePath: tomcatSpec.SourcePath, BuildSpec: tomcatSpec, IsPrimary: true}}}); err != nil {
 		t.Fatalf("UpdateBuildPipeline() error = %v", err)
 	}
 	env.runner.queue = BuildQueueItem{QueueID: "queue-2", BuildNumber: 7}
@@ -876,6 +977,7 @@ func TestTriggerBuildUpdatesPipelineBeforeBuildWhenPreviousRunIsActive(t *testin
 
 func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
 	env := newBuildTestEnv(t)
+	seedRuntimeEnvironments(t, env)
 	ctx := context.Background()
 	env.svc.SetApplicationQuery(fakeApplicationQuery{
 		apps: map[shared.ID]ApplicationRef{
@@ -884,10 +986,6 @@ func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
 				TenantID:  "tenant_a",
 				ProjectID: "project_payment",
 				Name:      "user-api",
-				RuntimeEnvironments: []RuntimeEnvironmentRef{
-					{ID: "runtime_env_java17", Name: "java17", RuntimeBaseImage: "registry.example/runtime/java17:1.0", ArtifactDeployPath: "/app/", DockerfilePath: "java/custom/Dockerfile"},
-					{ID: "runtime_env_java21", Name: "java21", RuntimeBaseImage: "registry.example/runtime/java21:1.0", ArtifactDeployPath: "/app/"},
-				},
 			},
 		},
 		sources: map[shared.ID]ApplicationSourceRef{
@@ -895,7 +993,24 @@ func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
 		},
 	})
 
-	pipeline := createDefaultPipeline(t, env)
+	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "multi-runtime",
+		DisplayName:           "多运行时流水线",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17", "runtime_env_java21"},
+		Sources: []BuildPipelineSourceInput{{
+			Key:                "main",
+			DisplayName:        "主代码源",
+			SourceRepositoryID: "repo_user",
+			SourcePath:         validBuildSpec().SourcePath,
+			BuildSpec:          validBuildSpec(),
+			IsPrimary:          true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateBuildPipeline() error = %v", err)
+	}
 	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID, CommitSHA: "abc123"})
 	if err != nil {
 		t.Fatalf("TriggerBuild() error = %v", err)
@@ -904,7 +1019,7 @@ func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
 	if len(params) != 0 {
 		t.Fatalf("Jenkins trigger should not pass parameters, got %+v", params)
 	}
-	if !strings.Contains(env.runner.jobs[0].TemplateXML, "java17") || !strings.Contains(env.runner.jobs[0].TemplateXML, "java21") || !strings.Contains(env.runner.jobs[0].TemplateXML, "java/custom/Dockerfile") {
+	if !strings.Contains(env.runner.jobs[0].TemplateXML, "java17") || !strings.Contains(env.runner.jobs[0].TemplateXML, "java21") || !strings.Contains(env.runner.jobs[0].TemplateXML, "java/jar/Dockerfile") {
 		t.Fatalf("runtime snapshot should be rendered into Jenkinsfile, got %s", env.runner.jobs[0].TemplateXML)
 	}
 	if strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_RUNTIME") {
@@ -934,18 +1049,17 @@ func TestTriggerBuildValidationAndFailures(t *testing.T) {
 	}{
 		{name: "empty command", mut: func(spec *BuildSpec) { spec.BuildCommand = " " }},
 		{name: "empty artifact copy command", mut: func(spec *BuildSpec) { spec.ArtifactCopyCommand = " " }},
-		{name: "empty runtime", mut: func(spec *BuildSpec) { spec.RuntimeBaseImage = "" }},
-		{name: "bad artifact deploy path", mut: func(spec *BuildSpec) { spec.ArtifactDeployPath = "../app" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			env := newBuildTestEnv(t)
+			seedRuntimeEnvironments(t, env)
 			spec := validBuildSpec()
 			tt.mut(&spec)
 			env.svc.apps = fakeApplicationQuery{
 				apps: map[shared.ID]ApplicationRef{"app_user": {ID: "app_user", TenantID: "tenant_a", ProjectID: "project_payment", Name: "user-api"}},
 			}
-			_, err := env.svc.CreateBuildPipeline(context.Background(), CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "bad", Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", BuildSpec: spec, IsPrimary: true}}})
+			_, err := env.svc.CreateBuildPipeline(context.Background(), CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "bad", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", BuildSpec: spec, IsPrimary: true}}})
 			if shared.CodeOf(err) != shared.CodeInvalidArgument {
 				t.Fatalf("expected invalid_argument, got %v", err)
 			}

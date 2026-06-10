@@ -42,26 +42,38 @@ test('OIDC mock 登录可以完成回调', async () => {
   await waitFor(() => expect(useSession.getState().token).toBe('mock-oidc-token'));
 });
 
-test('创建应用页面只维护应用基础信息和运行时环境', async () => {
+test('创建应用页面只维护应用基础信息', async () => {
   window.localStorage.setItem('paas_token', 'test');
   useSession.setState({ token: 'test', userName: '测试用户' });
   renderFlow('/apps/new');
   expect((await screen.findAllByText('创建应用')).length).toBeGreaterThan(0);
   expect(screen.getByText('基础信息')).toBeInTheDocument();
-  expect(screen.getByText('运行时预设')).toBeInTheDocument();
   expect(screen.getByText('后续配置')).toBeInTheDocument();
+  expect(screen.queryByText('运行时环境')).not.toBeInTheDocument();
+  expect(screen.queryByText('运行时预设')).not.toBeInTheDocument();
   expect(screen.queryByText('仓库目录')).not.toBeInTheDocument();
   expect(screen.queryByText('构建命令')).not.toBeInTheDocument();
   expect(screen.queryByText('产物拷贝命令')).not.toBeInTheDocument();
 });
 
-test('应用详情中创建流水线可以添加代码源', async () => {
+test('编辑应用页面不维护运行时环境', async () => {
+  window.localStorage.setItem('paas_token', 'test');
+  useSession.setState({ token: 'test', userName: '测试用户' });
+  renderFlow('/apps/app_1/edit');
+  expect(await screen.findByRole('heading', { name: '编辑应用' })).toBeInTheDocument();
+  expect(screen.getByText('基础信息')).toBeInTheDocument();
+  expect(screen.queryByText('运行时环境')).not.toBeInTheDocument();
+  expect(screen.queryByText('运行时预设')).not.toBeInTheDocument();
+});
+
+test('应用详情中创建流水线可以选择多个运行时环境并添加代码源', async () => {
   window.localStorage.setItem('paas_token', 'test');
   useSession.setState({ token: 'test', userName: '测试用户' });
   renderFlow('/apps/app_1');
   await userEvent.click(await screen.findByRole('button', { name: /创建流水线/ }));
   const dialog = await screen.findByRole('dialog', { name: '创建构建流水线' });
   expect(await within(dialog).findByText('主代码源')).toBeInTheDocument();
+  expect(within(dialog).getAllByText('运行时环境')).toHaveLength(1);
   expect(within(dialog).getByText('构建命令')).toBeInTheDocument();
   expect(within(dialog).getByText('产物拷贝命令')).toBeInTheDocument();
 
@@ -70,7 +82,7 @@ test('应用详情中创建流水线可以添加代码源', async () => {
   await waitFor(() => expect(within(dialog).getByDisplayValue('source-2')).toBeInTheDocument());
   expect(within(dialog).getAllByText('构建命令')).toHaveLength(2);
   expect(within(dialog).getAllByText('产物拷贝命令')).toHaveLength(2);
-  expect(within(dialog).getAllByText('运行时环境')).toHaveLength(2);
+  expect(within(dialog).getAllByText('运行时环境')).toHaveLength(1);
 
   await userEvent.click(within(dialog).getAllByRole('button', { name: /删\s*除/ })[1]);
 

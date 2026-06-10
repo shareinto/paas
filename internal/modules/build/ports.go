@@ -39,6 +39,8 @@ type Repository interface {
 	FindPipelineByApplication(ctx context.Context, applicationID shared.ID) (BuildPipeline, error)
 	FindPipelineByApplicationAndName(ctx context.Context, applicationID shared.ID, name string) (BuildPipeline, error)
 	ListPipelinesByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[BuildPipeline], error)
+	ReplacePipelineRuntimeEnvironments(ctx context.Context, pipelineID shared.ID, runtimes []RuntimeEnvironmentRef) error
+	ListPipelineRuntimeEnvironments(ctx context.Context, pipelineID shared.ID) ([]RuntimeEnvironmentRef, error)
 	ReplacePipelineSources(ctx context.Context, pipelineID shared.ID, sources []BuildPipelineSource) error
 	ListPipelineSources(ctx context.Context, pipelineID shared.ID) ([]BuildPipelineSource, error)
 	HasActiveRunsByPipeline(ctx context.Context, pipelineID shared.ID) (bool, error)
