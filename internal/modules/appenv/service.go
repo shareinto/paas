@@ -149,6 +149,51 @@ type SetEnvironmentSecretInput struct {
 	SecretRef     string                 `json:"secret_ref"`
 }
 
+type CreateWorkloadInput struct {
+	Actor         identityaccess.Subject `json:"actor"`
+	ApplicationID shared.ID              `json:"application_id"`
+	Name          string                 `json:"name"`
+	DisplayName   string                 `json:"display_name"`
+	WorkloadType  WorkloadType           `json:"workload_type"`
+	Description   string                 `json:"description"`
+}
+
+type UpdateWorkloadInput struct {
+	Actor         identityaccess.Subject `json:"actor"`
+	ApplicationID shared.ID              `json:"application_id"`
+	WorkloadID    shared.ID              `json:"workload_id"`
+	Name          string                 `json:"name"`
+	DisplayName   string                 `json:"display_name"`
+	WorkloadType  WorkloadType           `json:"workload_type"`
+	Description   string                 `json:"description"`
+}
+
+type WorkloadStatusInput struct {
+	Actor         identityaccess.Subject `json:"actor"`
+	ApplicationID shared.ID              `json:"application_id"`
+	WorkloadID    shared.ID              `json:"workload_id"`
+}
+
+type SaveWorkloadEnvironmentConfigInput struct {
+	Actor            identityaccess.Subject  `json:"actor"`
+	ApplicationID    shared.ID               `json:"application_id"`
+	WorkloadID       shared.ID               `json:"workload_id"`
+	EnvironmentID    shared.ID               `json:"environment_id"`
+	Replicas         int                     `json:"replicas"`
+	ServicePorts     []WorkloadServicePort   `json:"service_ports"`
+	ResourceRequests WorkloadResourceList    `json:"resource_requests"`
+	ResourceLimits   WorkloadResourceList    `json:"resource_limits"`
+	Probes           []WorkloadProbe         `json:"probes"`
+	IngressHosts     []WorkloadIngressHost   `json:"ingress_hosts"`
+	EnvVars          []WorkloadEnvVar        `json:"env_vars"`
+	SecretRefs       []WorkloadSecretRef     `json:"secret_refs"`
+	ConfigFiles      []WorkloadConfigFile    `json:"config_files"`
+	WritableDirs     []WorkloadWritableDir   `json:"writable_dirs"`
+	VolumeMounts     []WorkloadVolumeMount   `json:"volume_mounts"`
+	InitContainers   []WorkloadInitContainer `json:"init_containers"`
+	ValuesOverride   map[string]any          `json:"values_override"`
+}
+
 func (s *Service) CreateApplication(ctx context.Context, input CreateApplicationInput) (Application, error) {
 	project, err := s.requireProject(ctx, input.ProjectID)
 	if err != nil {
@@ -486,11 +531,242 @@ func (s *Service) ListApplicationSources(ctx context.Context, applicationID shar
 	return s.repo.ListApplicationSources(ctx, applicationID)
 }
 
+func (s *Service) CreateWorkload(ctx context.Context, input CreateWorkloadInput) (Workload, error) {
+	app, err := s.repo.GetApplication(ctx, input.ApplicationID)
+	if err != nil {
+		return Workload{}, err
+	}
+	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeApplication, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID}, "application:update"); err != nil {
+		return Workload{}, err
+	}
+	name := normalizeWorkloadName(input.Name)
+	if err := validateWorkloadName(name); err != nil {
+		return Workload{}, err
+	}
+	workloadType := normalizeWorkloadType(input.WorkloadType)
+	if err := validateWorkloadType(workloadType); err != nil {
+		return Workload{}, err
+	}
+	if _, err := s.repo.FindWorkloadByApplicationAndName(ctx, app.ID, name); err == nil {
+		return Workload{}, shared.NewError(shared.CodeConflict, "workload name already exists in application")
+	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
+		return Workload{}, err
+	}
+	id, err := s.ids.NewID("workload")
+	if err != nil {
+		return Workload{}, err
+	}
+	now := s.clock.Now()
+	workload := Workload{
+		ID:              id,
+		TenantID:        app.TenantID,
+		ProjectID:       app.ProjectID,
+		ApplicationID:   app.ID,
+		Name:            name,
+		DisplayName:     normalizeDisplayName(input.DisplayName, name),
+		WorkloadType:    workloadType,
+		Description:     strings.TrimSpace(input.Description),
+		Status:          WorkloadStatusEnabled,
+		ImageSourceMode: "pipeline_artifact",
+		CreatedBy:       input.Actor.ID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := s.repo.CreateWorkload(ctx, workload); err != nil {
+		return Workload{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload.create", ResourceType: "workload", ResourceID: workload.ID, Result: "succeeded", Summary: "创建 Workload", OccurredAt: now})
+	return workload, nil
+}
+
+func (s *Service) UpdateWorkload(ctx context.Context, input UpdateWorkloadInput) (Workload, error) {
+	workload, err := s.requireWorkloadInApplication(ctx, input.ApplicationID, input.WorkloadID)
+	if err != nil {
+		return Workload{}, err
+	}
+	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeApplication, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID}, "application:update"); err != nil {
+		return Workload{}, err
+	}
+	if workload.Status == WorkloadStatusDeleted {
+		return Workload{}, shared.NewError(shared.CodeFailedPrecondition, "deleted workload cannot be updated")
+	}
+	name := workload.Name
+	if strings.TrimSpace(input.Name) != "" {
+		name = normalizeWorkloadName(input.Name)
+	}
+	if err := validateWorkloadName(name); err != nil {
+		return Workload{}, err
+	}
+	workloadType := workload.WorkloadType
+	if input.WorkloadType != "" {
+		workloadType = normalizeWorkloadType(input.WorkloadType)
+	}
+	if err := validateWorkloadType(workloadType); err != nil {
+		return Workload{}, err
+	}
+	if name != workload.Name {
+		if existing, err := s.repo.FindWorkloadByApplicationAndName(ctx, workload.ApplicationID, name); err == nil && existing.ID != workload.ID {
+			return Workload{}, shared.NewError(shared.CodeConflict, "workload name already exists in application")
+		} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
+			return Workload{}, err
+		}
+	}
+	workload.Name = name
+	workload.DisplayName = normalizeDisplayName(input.DisplayName, name)
+	workload.Description = strings.TrimSpace(input.Description)
+	workload.WorkloadType = workloadType
+	workload.UpdatedAt = s.clock.Now()
+	if err := s.repo.UpdateWorkload(ctx, workload); err != nil {
+		return Workload{}, err
+	}
+	return workload, nil
+}
+
+func (s *Service) EnableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error) {
+	return s.changeWorkloadStatus(ctx, input, WorkloadStatusEnabled)
+}
+
+func (s *Service) DisableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error) {
+	return s.changeWorkloadStatus(ctx, input, WorkloadStatusDisabled)
+}
+
+func (s *Service) DeleteWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error) {
+	return s.changeWorkloadStatus(ctx, input, WorkloadStatusDeleted)
+}
+
+func (s *Service) GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (Workload, error) {
+	return s.requireWorkloadInApplication(ctx, applicationID, workloadID)
+}
+
+func (s *Service) ListWorkloads(ctx context.Context, applicationID shared.ID) ([]Workload, error) {
+	if _, err := s.repo.GetApplication(ctx, applicationID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListWorkloadsByApplication(ctx, applicationID)
+}
+
+func (s *Service) ListEnabledWorkloads(ctx context.Context, applicationID shared.ID) ([]Workload, error) {
+	if _, err := s.repo.GetApplication(ctx, applicationID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListEnabledWorkloadsByApplication(ctx, applicationID)
+}
+
+func (s *Service) SaveWorkloadEnvironmentConfig(ctx context.Context, input SaveWorkloadEnvironmentConfigInput) (WorkloadEnvironmentConfig, error) {
+	workload, err := s.requireWorkloadInApplication(ctx, input.ApplicationID, input.WorkloadID)
+	if err != nil {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	if workload.Status == WorkloadStatusDeleted {
+		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeFailedPrecondition, "deleted workload cannot be configured")
+	}
+	env, err := s.repo.GetEnvironment(ctx, input.EnvironmentID)
+	if err != nil {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	if env.ApplicationID != workload.ApplicationID {
+		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeInvalidArgument, "environment does not belong to workload application")
+	}
+	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeEnvironment, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID}, "environment:update"); err != nil {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	if input.Replicas < 0 {
+		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeInvalidArgument, "replicas cannot be negative")
+	}
+	now := s.clock.Now()
+	id, err := s.ids.NewID("workload_env_config")
+	if err != nil {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	if existing, err := s.repo.GetWorkloadEnvironmentConfig(ctx, workload.ID, env.ID); err == nil {
+		id = existing.ID
+	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	config := WorkloadEnvironmentConfig{
+		ID:               id,
+		TenantID:         workload.TenantID,
+		ProjectID:        workload.ProjectID,
+		ApplicationID:    workload.ApplicationID,
+		WorkloadID:       workload.ID,
+		EnvironmentID:    env.ID,
+		Replicas:         input.Replicas,
+		ServicePorts:     input.ServicePorts,
+		ResourceRequests: input.ResourceRequests,
+		ResourceLimits:   input.ResourceLimits,
+		Probes:           input.Probes,
+		IngressHosts:     input.IngressHosts,
+		EnvVars:          input.EnvVars,
+		SecretRefs:       input.SecretRefs,
+		ConfigFiles:      input.ConfigFiles,
+		WritableDirs:     input.WritableDirs,
+		VolumeMounts:     input.VolumeMounts,
+		InitContainers:   input.InitContainers,
+		ValuesOverride:   input.ValuesOverride,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := s.repo.SaveWorkloadEnvironmentConfig(ctx, config); err != nil {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload_environment_config.update", ResourceType: "workload_environment_config", ResourceID: config.ID, Result: "succeeded", Summary: "修改 Workload 部署配置", OccurredAt: now})
+	return config, nil
+}
+
+func (s *Service) GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error) {
+	return s.repo.GetWorkloadEnvironmentConfig(ctx, workloadID, environmentID)
+}
+
+func (s *Service) ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error) {
+	if _, err := s.repo.GetWorkload(ctx, workloadID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListWorkloadEnvironmentConfigs(ctx, workloadID)
+}
+
+func (s *Service) ListWorkloadEnvironmentConfigsForApplication(ctx context.Context, applicationID shared.ID, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error) {
+	if _, err := s.requireWorkloadInApplication(ctx, applicationID, workloadID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListWorkloadEnvironmentConfigs(ctx, workloadID)
+}
+
 func (s *Service) ListEnvironments(ctx context.Context, applicationID shared.ID) ([]Environment, error) {
 	if _, err := s.repo.GetApplication(ctx, applicationID); err != nil {
 		return nil, err
 	}
 	return s.repo.ListEnvironmentsByApplication(ctx, applicationID)
+}
+
+func (s *Service) changeWorkloadStatus(ctx context.Context, input WorkloadStatusInput, status WorkloadStatus) (Workload, error) {
+	workload, err := s.requireWorkloadInApplication(ctx, input.ApplicationID, input.WorkloadID)
+	if err != nil {
+		return Workload{}, err
+	}
+	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeApplication, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID}, "application:update"); err != nil {
+		return Workload{}, err
+	}
+	if workload.Status == WorkloadStatusDeleted {
+		return Workload{}, shared.NewError(shared.CodeFailedPrecondition, "deleted workload cannot change status")
+	}
+	workload.Status = status
+	workload.UpdatedAt = s.clock.Now()
+	if err := s.repo.UpdateWorkload(ctx, workload); err != nil {
+		return Workload{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload.status_change", ResourceType: "workload", ResourceID: workload.ID, Result: "succeeded", Summary: "变更 Workload 状态", OccurredAt: workload.UpdatedAt})
+	return workload, nil
+}
+
+func (s *Service) requireWorkloadInApplication(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (Workload, error) {
+	workload, err := s.repo.GetWorkload(ctx, workloadID)
+	if err != nil {
+		return Workload{}, err
+	}
+	if workload.ApplicationID != applicationID {
+		return Workload{}, shared.NewError(shared.CodeNotFound, "workload not found")
+	}
+	return workload, nil
 }
 
 func (s *Service) GetEnvironment(ctx context.Context, id shared.ID) (Environment, error) {

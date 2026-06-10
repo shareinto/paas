@@ -24,6 +24,17 @@ type Repository interface {
 	GetApplicationSource(ctx context.Context, applicationID shared.ID) (ApplicationSource, error)
 	ListApplicationSources(ctx context.Context, applicationID shared.ID) ([]ApplicationSource, error)
 
+	CreateWorkload(ctx context.Context, workload Workload) error
+	UpdateWorkload(ctx context.Context, workload Workload) error
+	GetWorkload(ctx context.Context, id shared.ID) (Workload, error)
+	FindWorkloadByApplicationAndName(ctx context.Context, applicationID shared.ID, name string) (Workload, error)
+	ListWorkloadsByApplication(ctx context.Context, applicationID shared.ID) ([]Workload, error)
+	ListEnabledWorkloadsByApplication(ctx context.Context, applicationID shared.ID) ([]Workload, error)
+
+	SaveWorkloadEnvironmentConfig(ctx context.Context, config WorkloadEnvironmentConfig) error
+	GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error)
+	ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error)
+
 	CreateEnvironment(ctx context.Context, environment Environment) error
 	UpdateEnvironment(ctx context.Context, environment Environment) error
 	GetEnvironment(ctx context.Context, id shared.ID) (Environment, error)
@@ -165,6 +176,24 @@ type ApplicationQuery interface {
 	ListApplicationsByProject(ctx context.Context, projectID shared.ID, page shared.PageRequest) (shared.PageResult[Application], error)
 	GetApplicationSource(ctx context.Context, applicationID shared.ID) (ApplicationSource, error)
 	ListApplicationSources(ctx context.Context, applicationID shared.ID) ([]ApplicationSource, error)
+}
+
+type WorkloadCommand interface {
+	CreateWorkload(ctx context.Context, input CreateWorkloadInput) (Workload, error)
+	UpdateWorkload(ctx context.Context, input UpdateWorkloadInput) (Workload, error)
+	EnableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
+	DisableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
+	DeleteWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
+	SaveWorkloadEnvironmentConfig(ctx context.Context, input SaveWorkloadEnvironmentConfigInput) (WorkloadEnvironmentConfig, error)
+}
+
+type WorkloadQuery interface {
+	GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (Workload, error)
+	ListWorkloads(ctx context.Context, applicationID shared.ID) ([]Workload, error)
+	ListEnabledWorkloads(ctx context.Context, applicationID shared.ID) ([]Workload, error)
+	GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error)
+	ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error)
+	ListWorkloadEnvironmentConfigsForApplication(ctx context.Context, applicationID shared.ID, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error)
 }
 
 type EnvironmentCommand interface {

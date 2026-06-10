@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
@@ -24,6 +25,14 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/applications/{applicationId}", h.handleDeleteApplication)
 	mux.HandleFunc("GET /api/projects/{projectId}/applications", h.handleListApplications)
 	mux.HandleFunc("GET /api/applications/{applicationId}/source", h.handleGetApplicationSource)
+	mux.HandleFunc("GET /api/applications/{applicationId}/workloads", h.handleListWorkloads)
+	mux.HandleFunc("POST /api/applications/{applicationId}/workloads", h.handleCreateWorkload)
+	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}", h.handleGetWorkload)
+	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}", h.handleUpdateWorkload)
+	mux.HandleFunc("DELETE /api/applications/{applicationId}/workloads/{workloadId}", h.handleDeleteWorkload)
+	mux.HandleFunc("POST /api/applications/{applicationId}/workloads/{workloadAction}", h.handleWorkloadAction)
+	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}/environment-configs", h.handleListWorkloadEnvironmentConfigs)
+	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}/environment-configs/{environmentId}", h.handleSaveWorkloadEnvironmentConfig)
 	mux.HandleFunc("GET /api/applications/{applicationId}/environments", h.handleListEnvironments)
 	mux.HandleFunc("GET /api/environments/{environmentId}", h.handleGetEnvironment)
 	mux.HandleFunc("POST /api/environments/{environmentId}/cluster-binding", h.handleBindEnvironmentCluster)
@@ -100,6 +109,134 @@ func (h *Handler) handleGetApplicationSource(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": sources})
+}
+
+func (h *Handler) handleCreateWorkload(w http.ResponseWriter, r *http.Request) {
+	var req CreateWorkloadInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.ApplicationID = shared.ID(r.PathValue("applicationId"))
+	workload, err := h.service.CreateWorkload(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, workload)
+}
+
+func (h *Handler) handleUpdateWorkload(w http.ResponseWriter, r *http.Request) {
+	var req UpdateWorkloadInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.ApplicationID = shared.ID(r.PathValue("applicationId"))
+	req.WorkloadID = shared.ID(r.PathValue("workloadId"))
+	workload, err := h.service.UpdateWorkload(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workload)
+}
+
+func (h *Handler) handleWorkloadAction(w http.ResponseWriter, r *http.Request) {
+	var req WorkloadStatusInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	actionValue := r.PathValue("workloadAction")
+	workloadID, action, ok := strings.Cut(actionValue, ":")
+	if !ok || workloadID == "" {
+		writeError(w, shared.NewError(shared.CodeNotFound, "workload action not found"))
+		return
+	}
+	req.ApplicationID = shared.ID(r.PathValue("applicationId"))
+	req.WorkloadID = shared.ID(workloadID)
+	var (
+		workload Workload
+		err      error
+	)
+	switch action {
+	case "enable":
+		workload, err = h.service.EnableWorkload(r.Context(), req)
+	case "disable":
+		workload, err = h.service.DisableWorkload(r.Context(), req)
+	default:
+		err = shared.NewError(shared.CodeNotFound, "workload action not found")
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workload)
+}
+
+func (h *Handler) handleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
+	var req WorkloadStatusInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.ApplicationID = shared.ID(r.PathValue("applicationId"))
+	req.WorkloadID = shared.ID(r.PathValue("workloadId"))
+	workload, err := h.service.DeleteWorkload(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workload)
+}
+
+func (h *Handler) handleGetWorkload(w http.ResponseWriter, r *http.Request) {
+	workload, err := h.service.GetWorkload(r.Context(), shared.ID(r.PathValue("applicationId")), shared.ID(r.PathValue("workloadId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, workload)
+}
+
+func (h *Handler) handleListWorkloads(w http.ResponseWriter, r *http.Request) {
+	applicationID := shared.ID(r.PathValue("applicationId"))
+	var (
+		workloads []Workload
+		err       error
+	)
+	if r.URL.Query().Get("enabled") == "true" {
+		workloads, err = h.service.ListEnabledWorkloads(r.Context(), applicationID)
+	} else {
+		workloads, err = h.service.ListWorkloads(r.Context(), applicationID)
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": workloads})
+}
+
+func (h *Handler) handleSaveWorkloadEnvironmentConfig(w http.ResponseWriter, r *http.Request) {
+	var req SaveWorkloadEnvironmentConfigInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.ApplicationID = shared.ID(r.PathValue("applicationId"))
+	req.WorkloadID = shared.ID(r.PathValue("workloadId"))
+	req.EnvironmentID = shared.ID(r.PathValue("environmentId"))
+	config, err := h.service.SaveWorkloadEnvironmentConfig(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+func (h *Handler) handleListWorkloadEnvironmentConfigs(w http.ResponseWriter, r *http.Request) {
+	configs, err := h.service.ListWorkloadEnvironmentConfigsForApplication(r.Context(), shared.ID(r.PathValue("applicationId")), shared.ID(r.PathValue("workloadId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": configs})
 }
 
 func (h *Handler) handleListEnvironments(w http.ResponseWriter, r *http.Request) {
