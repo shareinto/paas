@@ -15,7 +15,7 @@
 - [x] application-environment 模块 Workload 与环境配置
 - [x] build 模块 Workload 适配
 - [x] release-delivery 模块手动 Freight
-- [ ] gitops-deployment 多 Workload values 写入
+- [x] gitops-deployment 多 Workload values 写入
 - [x] 权限和审计
 - [ ] 应用详情导航调整
 - [ ] 应用 Workload 页面
@@ -29,6 +29,7 @@
 
 - 2026-06-10：已合并 `feature/workload-v2-backend`，提交 `106ef2a`，包含 Workload 与 WorkloadEnvironmentConfig 后端基础、迁移、仓储、API、审计和测试。
 - 2026-06-11：已合并 `feature/workload-v2-release-freight`，提交 `827d38d`，包含 Build Workload 绑定、Workload Release 候选、手动 Freight、FreightItem 来源、Stage eligible-freights、Promotion 前置校验、权限和审计。
+- 2026-06-11：已合并 `feature/workload-v2-gitops`，提交 `47db0f3`，包含多 Workload values 渲染、WorkloadEnvironmentConfig 写入、Deployment workload_summary、回滚镜像写回和 GitOps 失败 Deployment 记录。
 
 ## 已运行测试
 
@@ -38,6 +39,9 @@
 - `feature/workload-v2-release-freight` 合并前：`git diff --check` 通过。
 - `feature/workload-v2-release-freight` 合并前：`go test -count=1 ./internal/modules/build ./internal/modules/delivery ./internal/modules/audit ./internal/modules/identityaccess ./internal/migrations` 通过。
 - `feature/workload-v2-release-freight` 合并前：`go test -count=1 ./...` 通过。
+- `feature/workload-v2-gitops` 合并前：`git diff --check` 通过。
+- `feature/workload-v2-gitops` 合并前：`go test -count=1 ./internal/modules/gitops ./internal/migrations ./internal/modules/delivery` 通过。
+- `feature/workload-v2-gitops` 合并前：`go test -count=1 ./...` 通过。
 
 ## 当前结论
 
