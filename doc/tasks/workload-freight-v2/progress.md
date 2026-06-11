@@ -3,11 +3,11 @@
 ## 总体状态
 
 - [ ] 未开始
-- [x] 开发中
-- [ ] 后端完成
-- [ ] 前端完成
-- [ ] 联调完成
-- [ ] 验收完成
+- [ ] 开发中
+- [x] 后端完成
+- [x] 前端完成
+- [x] 联调完成
+- [x] 验收完成
 
 ## 任务进度
 
@@ -23,7 +23,7 @@
 - [x] 发布晋级页类 Kargo 交互
 - [x] 后端测试
 - [x] 前端测试
-- [ ] 端到端验收
+- [x] 端到端验收
 
 ## 合并记录
 
@@ -56,6 +56,7 @@
 - `feature/workload-v2-web-promotion` 合并后：`go test -count=1 ./internal/modules/delivery` 通过。
 - `feature/workload-v2-web-promotion` 合并后：`cd web/console && npm test -- src/api/index.workload.test.ts src/pages/ApplicationDetailPage.workload.test.tsx src/pages/ApplicationDetailPage.api.test.tsx src/pages/PromotionPage.api.test.tsx src/pages/PromotionPage.test.tsx` 通过。
 - `feature/workload-v2-web-promotion` 合并后：`cd web/console && npm run build` 通过，仅 Vite chunk size 警告。
+- 最终验收：`scripts/test-full.sh` 通过。脚本自动启动 1 个临时 MySQL 容器并设置 `PAAS_TEST_MYSQL_DSN`，串行执行 `go test -p 1 -count=1 ./...`、`cd web/console && npm test -- --coverage`、`cd web/console && npm run build`，结束后自动清理临时 MySQL 容器；前端构建仅有 Vite chunk size 警告。
 
 ## 当前结论
 
