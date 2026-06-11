@@ -15,7 +15,10 @@ func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/delivery/build-succeeded", h.handleBuildSucceeded)
 	mux.HandleFunc("GET /api/apps/{appId}/freights", h.handleListFreights)
+	mux.HandleFunc("POST /api/apps/{appId}/freights", h.handleCreateFreight)
+	mux.HandleFunc("GET /api/apps/{appId}/freights/creation-context", h.handleFreightCreationContext)
 	mux.HandleFunc("GET /api/freights/{freightId}", h.handleGetFreight)
+	mux.HandleFunc("GET /api/apps/{appId}/delivery/stages/{stageId}/eligible-freights", h.handleEligibleFreights)
 	mux.HandleFunc("POST /api/promotions", h.handleCreatePromotion)
 	mux.HandleFunc("POST /api/promotions/rollback", h.handleRollbackPromotion)
 	mux.HandleFunc("GET /api/promotions/{promotionId}", h.handleGetPromotion)
@@ -30,12 +33,12 @@ func (h *Handler) handleBuildSucceeded(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	release, freight, err := h.service.HandleBuildSucceeded(r.Context(), req)
+	release, err := h.service.HandleBuildSucceeded(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"release": release, "freight": freight})
+	writeJSON(w, http.StatusCreated, map[string]any{"release": release})
 }
 func (h *Handler) handleListFreights(w http.ResponseWriter, r *http.Request) {
 	result, err := h.service.ListFreights(r.Context(), shared.ID(r.PathValue("appId")), pageFromQuery(r))
@@ -44,6 +47,35 @@ func (h *Handler) handleListFreights(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+func (h *Handler) handleCreateFreight(w http.ResponseWriter, r *http.Request) {
+	var req CreateFreightInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.ApplicationID = shared.ID(r.PathValue("appId"))
+	freight, err := h.service.CreateFreight(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, freight)
+}
+func (h *Handler) handleFreightCreationContext(w http.ResponseWriter, r *http.Request) {
+	context, err := h.service.GetFreightCreationContext(r.Context(), shared.ID(r.PathValue("appId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, context)
+}
+func (h *Handler) handleEligibleFreights(w http.ResponseWriter, r *http.Request) {
+	freights, err := h.service.ListEligibleFreights(r.Context(), shared.ID(r.PathValue("appId")), shared.ID(r.PathValue("stageId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, freights)
 }
 func (h *Handler) handleGetFreight(w http.ResponseWriter, r *http.Request) {
 	freight, err := h.service.GetFreight(r.Context(), shared.ID(r.PathValue("freightId")))

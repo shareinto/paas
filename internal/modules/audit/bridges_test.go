@@ -34,7 +34,7 @@ func TestAuditBridgesCoverCriticalEventsAndBuildSpecDetails(t *testing.T) {
 	_ = (SourceRepositoryLogger{Logger: svc}).Log(ctx, sourcerepository.AuditEvent{ActorID: "user_1", Action: "repository_migration.create", ResourceType: "repository_migration", ResourceID: "migration_1", Result: "succeeded", Summary: "迁移仓库", OccurredAt: now})
 	_ = (BuildLogger{Logger: svc}).Log(ctx, build.AuditEvent{ActorID: "user_1", Action: "build.trigger", ResourceType: "build_run", ResourceID: "build_1", Result: "succeeded", Summary: "触发构建", Details: map[string]string{"build_command": "mvn clean package", "artifact_copy_command": "cp -ar target/app.jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"", "runtime_base_image": "registry/runtime:17", "token": "plain"}, OccurredAt: now})
 	_ = (BuildLogger{Logger: svc}).Log(ctx, build.AuditEvent{ActorID: "user_1", Action: "build.cancel", ResourceType: "build_run", ResourceID: "build_1", Result: "succeeded", Summary: "取消构建", OccurredAt: now})
-	_ = (DeliveryLogger{Logger: svc}).Log(ctx, delivery.AuditEvent{ActorID: "user_1", Action: "freight.create", ResourceType: "freight", ResourceID: "freight_1", Result: "succeeded", Summary: "创建 Freight", OccurredAt: now})
+	_ = (DeliveryLogger{Logger: svc}).Log(ctx, delivery.AuditEvent{ActorID: "user_1", Action: "freight.create", ResourceType: "freight", ResourceID: "freight_1", Result: "succeeded", Summary: "创建 Freight", Details: map[string]string{"custom_image_tag_risk": "true", "token": "plain"}, OccurredAt: now})
 	_ = (DeliveryLogger{Logger: svc}).Log(ctx, delivery.AuditEvent{ActorID: "user_1", Action: "promotion.create", ResourceType: "promotion", ResourceID: "promotion_1", Result: "succeeded", Summary: "创建 Promotion", OccurredAt: now})
 	_ = (DeliveryLogger{Logger: svc}).Log(ctx, delivery.AuditEvent{ActorID: "user_2", Action: "promotion.approve", ResourceType: "promotion", ResourceID: "promotion_1", Result: "succeeded", Summary: "审批发布", OccurredAt: now})
 	_ = (GitOpsLogger{Logger: svc}).Log(ctx, gitops.AuditEvent{ActorID: "user_1", TenantID: "tenant_1", ProjectID: "project_1", Action: "manifest_revision.create", ResourceType: "manifest_revision", ResourceID: "manifest_1", Result: "succeeded", Summary: "回滚清单修改", OccurredAt: now})
@@ -59,5 +59,12 @@ func TestAuditBridgesCoverCriticalEventsAndBuildSpecDetails(t *testing.T) {
 	}
 	if buildLog.Details["token"] != "[REDACTED]" {
 		t.Fatalf("sensitive audit detail was not redacted: %#v", buildLog.Details)
+	}
+	deliveryLog := seen["freight.create"]
+	if deliveryLog.Details["custom_image_tag_risk"] != "true" {
+		t.Fatalf("delivery audit custom image tag risk detail missing: %#v", deliveryLog.Details)
+	}
+	if deliveryLog.Details["token"] != "[REDACTED]" {
+		t.Fatalf("delivery audit sensitive detail was not redacted: %#v", deliveryLog.Details)
 	}
 }

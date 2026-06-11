@@ -293,9 +293,14 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 	if err := json.Unmarshal(appRec.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decode application response: %v", err)
 	}
+	workload, err := app.apps.CreateWorkload(context.Background(), appenv.CreateWorkloadInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"}, ApplicationID: created.ID, Name: "api", DisplayName: "发票服务", WorkloadType: appenv.WorkloadTypeDeployment})
+	if err != nil {
+		t.Fatalf("create workload: %v", err)
+	}
 	pipeline, err := app.builds.CreateBuildPipeline(context.Background(), build.CreateBuildPipelineInput{
 		Actor:         identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"},
 		ApplicationID: created.ID,
+		WorkloadID:    workload.ID,
 		Name:          "main",
 		DisplayName:   "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{
@@ -447,6 +452,10 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	if err != nil {
 		t.Fatalf("create application: %v", err)
 	}
+	workload, err := app.apps.CreateWorkload(ctx, appenv.CreateWorkloadInput{Actor: actor, ApplicationID: created.ID, Name: "api", DisplayName: "测试服务", WorkloadType: appenv.WorkloadTypeDeployment})
+	if err != nil {
+		t.Fatalf("create workload: %v", err)
+	}
 	envs, err := app.apps.ListEnvironments(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("list environments: %v", err)
@@ -464,6 +473,7 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	pipeline, err := app.builds.CreateBuildPipeline(ctx, build.CreateBuildPipelineInput{
 		Actor:         actor,
 		ApplicationID: created.ID,
+		WorkloadID:    workload.ID,
 		Name:          "main",
 		DisplayName:   "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{
@@ -488,8 +498,11 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	if err != nil {
 		t.Fatalf("finish build: %v", err)
 	}
-	_, _, err = app.delivery.HandleBuildSucceeded(ctx, delivery.BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: created.ID, BuildArtifactID: run.PrimaryArtifactID, ImageURI: "registry.local/test-api:v1", ImageDigest: "sha256:test", CommitSHA: "8c1a09f"})
+	release, err := app.delivery.HandleBuildSucceeded(ctx, delivery.BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: created.ID, WorkloadID: workload.ID, BuildArtifactID: run.PrimaryArtifactID, ImageURI: "registry.local/test-api:v1", ImageDigest: "sha256:test", CommitSHA: "8c1a09f"})
 	if err != nil {
+		t.Fatalf("create release candidate: %v", err)
+	}
+	if _, err := app.delivery.CreateFreight(ctx, delivery.CreateFreightInput{Actor: actor, ApplicationID: created.ID, Name: "测试发布包", Items: []delivery.CreateFreightItemInput{{WorkloadID: workload.ID, SourceType: delivery.FreightItemPipelineArtifact, ReleaseID: release.ID}}}); err != nil {
 		t.Fatalf("create freight: %v", err)
 	}
 	return serverTestFixture{tenant: tenant, project: project, source: repo.ID, application: created, pipeline: pipeline, environments: envs, buildRun: run}

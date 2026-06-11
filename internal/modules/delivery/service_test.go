@@ -7,10 +7,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/shareinto/paas/internal/modules/identityaccess"
+	"github.com/shareinto/paas/internal/platform/database"
 	"github.com/shareinto/paas/internal/shared"
 	"github.com/shareinto/paas/internal/shared/testutil"
 	"github.com/shareinto/paas/internal/testsupport"
@@ -57,6 +59,15 @@ func (q fakeAppQuery) GetApplication(_ context.Context, id shared.ID) (Applicati
 		return ApplicationRef{}, shared.NewError(shared.CodeNotFound, "application not found")
 	}
 	return v, nil
+}
+
+type fakeWorkloadQuery struct{ workloads map[shared.ID][]WorkloadRef }
+
+func (q fakeWorkloadQuery) ListEnabledWorkloads(_ context.Context, appID shared.ID) ([]WorkloadRef, error) {
+	if workloads, ok := q.workloads[appID]; ok {
+		return workloads, nil
+	}
+	return nil, shared.NewError(shared.CodeNotFound, "workloads not found")
 }
 
 type fakeEnvQuery struct{ envs map[shared.ID]EnvironmentRef }
@@ -153,9 +164,10 @@ func newDeliveryEnv(t *testing.T) deliveryEnv {
 		Repository: repo,
 		BuildQuery: fakeBuildQuery{
 			runs:      map[shared.ID]BuildRunRef{"build_1": {ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: "pipeline_main", PipelineName: "main", PipelineDisplayName: "主流水线", CommitSHA: "abcdef1234567890"}},
-			artifacts: map[shared.ID]BuildArtifactRef{"artifact_1": {ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", URI: "registry.example/paas/user-api:abcdef", Digest: "sha256:abc", IsPrimary: true}},
+			artifacts: map[shared.ID]BuildArtifactRef{"artifact_1": {ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:abcdef", Digest: "sha256:abc", IsPrimary: true}},
 		},
 		ApplicationQuery:  fakeAppQuery{apps: map[shared.ID]ApplicationRef{"app_user": {ID: "app_user", TenantID: "tenant_a", ProjectID: "project_payment", Name: "user-api"}}},
+		WorkloadQuery:     fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"}}}},
 		EnvironmentQuery:  envs,
 		GitOpsDeployment:  gitops,
 		PermissionChecker: &recordingPermission{},
@@ -173,28 +185,54 @@ func actor(id shared.ID) identityaccess.Subject {
 
 func seedFreight(t *testing.T, env deliveryEnv) Freight {
 	t.Helper()
-	_, freight, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"})
+	release, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"})
 	if err != nil {
 		t.Fatalf("HandleBuildSucceeded() error = %v", err)
+	}
+	freight, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{
+		Actor:         actor("usr_dev"),
+		ApplicationID: "app_user",
+		Name:          "freight-main",
+		Items: []CreateFreightItemInput{{
+			WorkloadID: "workload_api",
+			SourceType: FreightItemPipelineArtifact,
+			ReleaseID:  release.ID,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateFreight() error = %v", err)
 	}
 	return freight
 }
 
-func TestBuildSucceededCreatesReleaseFreightAndDefaultFlow(t *testing.T) {
+func promoteFreightThrough(t *testing.T, env deliveryEnv, freight Freight, environmentIDs ...shared.ID) {
+	t.Helper()
+	for _, environmentID := range environmentIDs {
+		promotion, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: environmentID})
+		if err != nil {
+			t.Fatalf("CreatePromotion(%s) error = %v", environmentID, err)
+		}
+		if promotion.Status != PromotionManifestUpdated {
+			t.Fatalf("CreatePromotion(%s) status = %s, want %s", environmentID, promotion.Status, PromotionManifestUpdated)
+		}
+	}
+}
+
+func TestBuildSucceededCreatesWorkloadReleaseCandidateOnly(t *testing.T) {
 	env := newDeliveryEnv(t)
-	release, freight, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"})
+	release, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"})
 	if err != nil {
 		t.Fatalf("HandleBuildSucceeded() error = %v", err)
 	}
-	if release.Status != ReleaseReady || release.Version != "abcdef123456" || freight.Status != FreightAvailable {
-		t.Fatalf("unexpected release/freight: %+v %+v", release, freight)
+	if release.Status != ReleaseReady || release.Version != "abcdef123456" || release.WorkloadID != "workload_api" {
+		t.Fatalf("unexpected release: %+v", release)
 	}
-	if release.PipelineID != "pipeline_main" || release.PipelineName != "main" || freight.PipelineID != "pipeline_main" || freight.PipelineDisplayName != "主流水线" {
-		t.Fatalf("release and freight should keep pipeline identity, got %+v %+v", release, freight)
+	if release.PipelineID != "pipeline_main" || release.PipelineName != "main" || release.ImageRepository != "registry.example/paas/user-api" || release.ImageTag != "abcdef" {
+		t.Fatalf("release should keep pipeline and image identity, got %+v", release)
 	}
-	items, err := env.repo.ListFreightItems(context.Background(), freight.ID)
-	if err != nil || len(items) != 1 || items[0].URI == "" {
-		t.Fatalf("unexpected freight items: %+v, %v", items, err)
+	freights, err := env.repo.ListFreightsByApplication(context.Background(), "app_user", shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil || len(freights.Items) != 0 {
+		t.Fatalf("BuildSucceeded must not auto-create freight, got %+v, %v", freights.Items, err)
 	}
 	flow, err := env.repo.FindDeliveryFlowByApplication(context.Background(), "app_user")
 	if err != nil {
@@ -204,12 +242,140 @@ func TestBuildSucceededCreatesReleaseFreightAndDefaultFlow(t *testing.T) {
 	if err != nil || len(stages) != 4 || stages[3].Name != "prod" || !stages[3].RequiresApproval {
 		t.Fatalf("unexpected stages: %+v, %v", stages, err)
 	}
-	if len(env.events.events) == 0 || env.events.events[0].EventType != "FreightCreated" {
-		t.Fatalf("expected FreightCreated, got %+v", env.events.events)
+	if len(env.events.events) != 0 {
+		t.Fatalf("BuildSucceeded should not publish FreightCreated, got %+v", env.events.events)
 	}
-	againRelease, againFreight, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"})
-	if err != nil || againRelease.ID != release.ID || againFreight.ID != freight.ID {
-		t.Fatalf("idempotent build succeeded failed: %+v %+v %v", againRelease, againFreight, err)
+	againRelease, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"})
+	if err != nil || againRelease.ID != release.ID {
+		t.Fatalf("idempotent build succeeded failed: %+v %v", againRelease, err)
+	}
+}
+
+func TestManualFreightValidatesWorkloadCoverageSourcesAndCustomImageRisk(t *testing.T) {
+	env := newDeliveryEnv(t)
+	env.svc.workloads = fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {
+		{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"},
+		{ID: "workload_worker", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "worker", DisplayName: "后台任务", Status: "enabled"},
+	}}}
+	env.svc.builds = fakeBuildQuery{
+		runs: map[shared.ID]BuildRunRef{
+			"build_1": {ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: "pipeline_api", PipelineName: "api", CommitSHA: "abcdef1234567890"},
+		},
+		artifacts: map[shared.ID]BuildArtifactRef{
+			"artifact_1": {ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:abcdef", Digest: "sha256:abc", IsPrimary: true},
+		},
+	}
+	release, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"})
+	if err != nil {
+		t.Fatalf("HandleBuildSucceeded() error = %v", err)
+	}
+	if _, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{Actor: actor("usr_dev"), ApplicationID: "app_user", Items: []CreateFreightItemInput{{WorkloadID: "workload_api", SourceType: FreightItemPipelineArtifact, ReleaseID: release.ID}}}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("missing workload should fail, got %v", err)
+	}
+	_, err = env.svc.CreateFreight(context.Background(), CreateFreightInput{Actor: actor("usr_dev"), ApplicationID: "app_user", Items: []CreateFreightItemInput{
+		{WorkloadID: "workload_api", SourceType: FreightItemPipelineArtifact, ReleaseID: release.ID},
+		{WorkloadID: "workload_api", SourceType: FreightItemCustomImage, ImageRef: "registry.example/paas/worker:1.0"},
+	}})
+	if shared.CodeOf(err) != shared.CodeConflict {
+		t.Fatalf("duplicate workload should fail, got %v", err)
+	}
+	_, err = env.svc.CreateFreight(context.Background(), CreateFreightInput{Actor: actor("usr_dev"), ApplicationID: "app_user", Items: []CreateFreightItemInput{
+		{WorkloadID: "workload_worker", SourceType: FreightItemPipelineArtifact, ReleaseID: release.ID},
+		{WorkloadID: "workload_api", SourceType: FreightItemCustomImage, ImageRef: "registry.example/paas/user-api:1.0"},
+	}})
+	if shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("pipeline artifact for wrong workload should fail, got %v", err)
+	}
+	_, err = env.svc.CreateFreight(context.Background(), CreateFreightInput{Actor: actor("usr_dev"), ApplicationID: "app_user", Items: []CreateFreightItemInput{
+		{WorkloadID: "workload_api", SourceType: FreightItemPipelineArtifact, ReleaseID: release.ID},
+		{WorkloadID: "workload_worker", SourceType: FreightItemCustomImage, ImageRef: "not a valid image"},
+	}})
+	if shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("invalid custom image should fail, got %v", err)
+	}
+	freight, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{Actor: actor("usr_dev"), ApplicationID: "app_user", Name: "complete", Items: []CreateFreightItemInput{
+		{WorkloadID: "workload_api", SourceType: FreightItemPipelineArtifact, ReleaseID: release.ID},
+		{WorkloadID: "workload_worker", SourceType: FreightItemCustomImage, ImageRef: "registry.example/paas/worker:1.0"},
+	}})
+	if err != nil {
+		t.Fatalf("CreateFreight() error = %v", err)
+	}
+	items, err := env.repo.ListFreightItems(context.Background(), freight.ID)
+	if err != nil || len(items) != 2 || items[1].SourceType != FreightItemCustomImage || items[1].ImageTag != "1.0" {
+		t.Fatalf("unexpected freight items: %+v, %v", items, err)
+	}
+	if len(env.audit.events) == 0 || env.audit.events[len(env.audit.events)-1].Action != "freight.custom_image_risk" {
+		t.Fatalf("custom image tag risk should be audited, got %+v", env.audit.events)
+	}
+}
+
+func TestManualFreightRejectsDirectPipelineArtifactWithoutDigestOrCommit(t *testing.T) {
+	tests := []struct {
+		name     string
+		run      BuildRunRef
+		artifact BuildArtifactRef
+	}{
+		{
+			name:     "missing digest",
+			run:      BuildRunRef{ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", CommitSHA: "abcdef1234567890"},
+			artifact: BuildArtifactRef{ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:abcdef"},
+		},
+		{
+			name:     "missing commit",
+			run:      BuildRunRef{ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user"},
+			artifact: BuildArtifactRef{ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:abcdef", Digest: "sha256:abc"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := newDeliveryEnv(t)
+			env.svc.builds = fakeBuildQuery{
+				runs:      map[shared.ID]BuildRunRef{tt.run.ID: tt.run},
+				artifacts: map[shared.ID]BuildArtifactRef{tt.artifact.ID: tt.artifact},
+			}
+			_, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{
+				Actor:         actor("usr_dev"),
+				ApplicationID: "app_user",
+				Items: []CreateFreightItemInput{{
+					WorkloadID:      "workload_api",
+					SourceType:      FreightItemPipelineArtifact,
+					BuildArtifactID: tt.artifact.ID,
+				}},
+			})
+			if shared.CodeOf(err) != shared.CodeFailedPrecondition {
+				t.Fatalf("CreateFreight() error = %v, want failed_precondition", err)
+			}
+		})
+	}
+}
+
+func TestEligibleFreightsAndPromotionValidateStageOrder(t *testing.T) {
+	env := newDeliveryEnv(t)
+	freight := seedFreight(t, env)
+	flow, err := env.repo.FindDeliveryFlowByApplication(context.Background(), "app_user")
+	if err != nil {
+		t.Fatalf("FindDeliveryFlowByApplication() error = %v", err)
+	}
+	stages, err := env.repo.ListDeliveryStages(context.Background(), flow.ID)
+	if err != nil {
+		t.Fatalf("ListDeliveryStages() error = %v", err)
+	}
+	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_test"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("test stage should require dev first, got %v", err)
+	}
+	eligible, err := env.svc.ListEligibleFreights(context.Background(), "app_user", stages[0].ID)
+	if err != nil || len(eligible) != 1 || eligible[0].ID != freight.ID {
+		t.Fatalf("dev should have eligible freight, got %+v %v", eligible, err)
+	}
+	eligible, err = env.svc.ListEligibleFreights(context.Background(), "app_user", stages[1].ID)
+	if err != nil || len(eligible) != 0 {
+		t.Fatalf("test should not be eligible before dev, got %+v %v", eligible, err)
+	}
+	promoteFreightThrough(t, env, freight, "env_dev")
+	eligible, err = env.svc.ListEligibleFreights(context.Background(), "app_user", stages[1].ID)
+	if err != nil || len(eligible) != 1 || eligible[0].ID != freight.ID {
+		t.Fatalf("test should be eligible after dev, got %+v %v", eligible, err)
 	}
 }
 
@@ -223,11 +389,12 @@ func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
 	if dev.Status != PromotionManifestUpdated || dev.ManifestRevision != "rev-1" || len(env.gitops.specs) != 1 {
 		t.Fatalf("dev promotion should apply gitops, got %+v specs=%+v", dev, env.gitops.specs)
 	}
+	promoteFreightThrough(t, env, freight, "env_test", "env_staging")
 	prod, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
 	if err != nil {
 		t.Fatalf("CreatePromotion(prod) error = %v", err)
 	}
-	if prod.Status != PromotionPendingApproval || len(env.gitops.specs) != 1 {
+	if prod.Status != PromotionPendingApproval || len(env.gitops.specs) != 3 {
 		t.Fatalf("prod should wait approval, got %+v specs=%+v", prod, env.gitops.specs)
 	}
 	if _, err := env.svc.ApprovePromotion(context.Background(), ApprovalInput{Actor: actor("usr_dev"), PromotionID: prod.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
@@ -237,7 +404,7 @@ func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApprovePromotion() error = %v", err)
 	}
-	if approved.Status != PromotionManifestUpdated || approved.ApprovedBy != "usr_ops" || len(env.gitops.specs) != 2 {
+	if approved.Status != PromotionManifestUpdated || approved.ApprovedBy != "usr_ops" || len(env.gitops.specs) != 4 {
 		t.Fatalf("approved prod should apply gitops, got %+v specs=%+v", approved, env.gitops.specs)
 	}
 }
@@ -248,6 +415,7 @@ func TestRejectAbortPendingEnvironmentRollbackAndGitOpsFailure(t *testing.T) {
 	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_pending"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("pending cluster binding should block promotion, got %v", err)
 	}
+	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_staging")
 	prod, _ := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
 	rejected, err := env.svc.RejectPromotion(context.Background(), ApprovalInput{Actor: actor("usr_ops"), PromotionID: prod.ID, Comment: "no"})
 	if err != nil || rejected.Status != PromotionRejected || rejected.CompletedAt == nil {
@@ -272,18 +440,24 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	env := newDeliveryEnv(t)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
-	body, _ := json.Marshal(BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"})
+	body, _ := json.Marshal(BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"})
 	rec := serveJSON(mux, http.MethodPost, "/api/delivery/build-succeeded", body)
 	assertStatus(t, rec, http.StatusCreated)
 	var created struct {
-		Freight Freight `json:"freight"`
+		Release Release `json:"release"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
-		t.Fatalf("decode freight: %v", err)
+		t.Fatalf("decode release: %v", err)
 	}
+	freightBody, _ := json.Marshal(CreateFreightInput{Actor: actor("usr_dev"), Name: "freight-main", Items: []CreateFreightItemInput{{WorkloadID: "workload_api", SourceType: FreightItemPipelineArtifact, ReleaseID: created.Release.ID}}})
+	freightRec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/freights", freightBody)
+	assertStatus(t, freightRec, http.StatusCreated)
+	var freight Freight
+	_ = json.NewDecoder(freightRec.Body).Decode(&freight)
+	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights/creation-context", nil), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights?page=1&page_size=5", nil), http.StatusOK)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/freights/"+created.Freight.ID.String(), nil), http.StatusOK)
-	promoBody, _ := json.Marshal(CreatePromotionInput{Actor: actor("usr_dev"), FreightID: created.Freight.ID, TargetEnvironmentID: "env_dev"})
+	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/freights/"+freight.ID.String(), nil), http.StatusOK)
+	promoBody, _ := json.Marshal(CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
 	promoRec := serveJSON(mux, http.MethodPost, "/api/promotions", promoBody)
 	assertStatus(t, promoRec, http.StatusCreated)
 	var promotion Promotion
@@ -294,9 +468,11 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 		Actor identityaccess.Subject `json:"actor"`
 	}{Actor: actor("usr_dev")})
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions/"+promotion.ID.String()+"/abort", abortBody), http.StatusOK)
-	rollbackBody, _ := json.Marshal(CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: created.Freight.ID, TargetEnvironmentID: "env_dev"})
+	rollbackBody, _ := json.Marshal(CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: freight.ID, TargetEnvironmentID: "env_dev"})
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions/rollback", rollbackBody), http.StatusCreated)
-	prodBody, _ := json.Marshal(CreatePromotionInput{Actor: actor("usr_dev"), FreightID: created.Freight.ID, TargetEnvironmentID: "env_prod"})
+	prodBody, _ := json.Marshal(CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
+	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions", mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_test"})), http.StatusCreated)
+	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions", mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_staging"})), http.StatusCreated)
 	prodRec := serveJSON(mux, http.MethodPost, "/api/promotions", prodBody)
 	assertStatus(t, prodRec, http.StatusCreated)
 	var prod Promotion
@@ -333,25 +509,25 @@ func TestFailureBranchesAndRepositoryContracts(t *testing.T) {
 	if err := (NoopEventPublisher{}).Publish(ctx, shared.DomainEvent{}); err != nil {
 		t.Fatalf("noop publisher: %v", err)
 	}
-	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+	if _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("empty build payload should fail, got %v", err)
 	}
 	env.svc.builds = nil
-	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+	if _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing build query should fail, got %v", err)
 	}
 	env = newDeliveryEnv(t)
 	env.svc.apps = nil
-	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("missing app query should fail, got %v", err)
+	if _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("missing app query should fail while ensuring default flow, got %v", err)
 	}
 	env = newDeliveryEnv(t)
 	env.svc.envs = nil
-	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("missing env query should fail, got %v", err)
+	if _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("missing env query should fail while ensuring default flow, got %v", err)
 	}
 	env = newDeliveryEnv(t)
-	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "other", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+	if _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "other", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("ownership mismatch should fail, got %v", err)
 	}
 	env = newDeliveryEnv(t)
@@ -442,6 +618,7 @@ func TestPromotionFailureBranches(t *testing.T) {
 	}
 	env = newDeliveryEnv(t)
 	freight = seedFreight(t, env)
+	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_staging")
 	prod, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
 	if _, err := env.svc.RejectPromotion(ctx, ApprovalInput{Actor: actor("usr_dev"), PromotionID: prod.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("self reject should fail, got %v", err)
@@ -475,6 +652,7 @@ func TestMoreRepositoryAndDefaultBranches(t *testing.T) {
 	}
 	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
+	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_staging")
 	promo, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
 	if err := env.repo.CreatePromotion(ctx, promo); shared.CodeOf(err) != shared.CodeConflict {
 		t.Fatalf("duplicate promotion should conflict, got %v", err)
@@ -527,7 +705,7 @@ func TestRemainingServiceBranches(t *testing.T) {
 		runs:      map[shared.ID]BuildRunRef{"build_1": {ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user"}},
 		artifacts: map[shared.ID]BuildArtifactRef{},
 	}
-	if _, _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", BuildArtifactID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
+	if _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("missing build artifact should fail, got %v", err)
 	}
 	env = newDeliveryEnv(t)
@@ -538,6 +716,7 @@ func TestRemainingServiceBranches(t *testing.T) {
 	if _, err := env.svc.CreateRollbackPromotion(ctx, CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: freight.ID, CurrentFreightID: "missing", TargetEnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("rollback missing current freight should fail, got %v", err)
 	}
+	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_staging")
 	prod, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
 	env.svc.permission = &recordingPermission{err: shared.NewError(shared.CodePermissionDenied, "denied")}
 	if _, err := env.svc.ApprovePromotion(ctx, ApprovalInput{Actor: actor("usr_ops"), PromotionID: prod.ID}); shared.CodeOf(err) != shared.CodePermissionDenied {
@@ -551,6 +730,63 @@ func TestRemainingServiceBranches(t *testing.T) {
 	again, err := env.svc.AbortPromotion(ctx, actor("usr_ops"), rejected.ID)
 	if err != nil || again.Status != PromotionRejected {
 		t.Fatalf("abort terminal should be no-op, got %+v %v", again, err)
+	}
+}
+
+func TestMigrationsAddWorkloadColumnsWithoutBlockingLegacyMultiItemFreight(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.MySQLDB(t)
+	migrator := database.NewMigrator(db)
+
+	oldCore := Migrations[0]
+	replacements := []string{
+		"  workload_id VARCHAR(64) NOT NULL DEFAULT '',\n",
+		"  image_repository VARCHAR(1024) NOT NULL DEFAULT '',\n",
+		"  image_tag VARCHAR(255) NOT NULL DEFAULT '',\n",
+		"  source_type VARCHAR(64) NOT NULL DEFAULT 'pipeline_artifact',\n",
+		"  workload_id VARCHAR(64) NOT NULL DEFAULT '',\n",
+		"  source_type VARCHAR(64) NOT NULL DEFAULT 'pipeline_artifact',\n",
+		"  image_ref VARCHAR(1024) NOT NULL DEFAULT '',\n",
+		"  image_repository VARCHAR(1024) NOT NULL DEFAULT '',\n",
+		"  image_tag VARCHAR(255) NOT NULL DEFAULT '',\n",
+		"  UNIQUE KEY uk_freight_items_workload (freight_id, workload_id),\n",
+	}
+	for _, replacement := range replacements {
+		oldCore.Up = strings.Replace(oldCore.Up, replacement, "", 1)
+	}
+	oldCore.Up = strings.Replace(oldCore.Up, "  KEY idx_releases_application (application_id),\n  KEY idx_releases_workload_created (application_id, workload_id, created_at)\n", "  KEY idx_releases_application (application_id)\n", 1)
+	if oldCore.Up == Migrations[0].Up {
+		t.Fatalf("test setup did not remove workload v2 columns from old core migration")
+	}
+	if err := migrator.Up(ctx, []database.Migration{oldCore}); err != nil {
+		t.Fatalf("apply old core migration: %v", err)
+	}
+
+	now := time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC)
+	if _, err := db.ExecContext(ctx, `INSERT INTO freights (id, tenant_id, project_id, application_id, pipeline_id, pipeline_name, pipeline_display_name, name, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "freight_legacy", "tenant_a", "project_payment", "app_user", "pipeline_main", "main", "主流水线", "legacy", "ready", now); err != nil {
+		t.Fatalf("insert legacy freight: %v", err)
+	}
+	for _, itemID := range []shared.ID{"item_1", "item_2"} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO freight_items (id, tenant_id, project_id, freight_id, application_id, release_id, build_artifact_id, source_key, type, name, uri, digest, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, itemID, "tenant_a", "project_payment", "freight_legacy", "app_user", "release_"+string(itemID), "artifact_"+string(itemID), "main", string(FreightItemApplicationRelease), "main", "registry.example/paas/app:legacy", "sha256:abc", now); err != nil {
+			t.Fatalf("insert legacy freight item %s: %v", itemID, err)
+		}
+	}
+
+	if err := migrator.Up(ctx, Migrations[1:]); err != nil {
+		t.Fatalf("apply workload v2 follow-up migrations: %v", err)
+	}
+
+	repo, err := NewMySQLRepository(ctx, db)
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	freight, err := repo.GetFreight(ctx, "freight_legacy")
+	if err != nil || freight.ID != "freight_legacy" {
+		t.Fatalf("GetFreight() = %+v, %v", freight, err)
+	}
+	items, err := repo.ListFreightItems(ctx, "freight_legacy")
+	if err != nil || len(items) != 2 {
+		t.Fatalf("ListFreightItems() = %+v, %v", items, err)
 	}
 }
 
@@ -568,4 +804,13 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, status int) {
 	if rec.Code != status {
 		t.Fatalf("status=%d want=%d body=%s", rec.Code, status, rec.Body.String())
 	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	return data
 }

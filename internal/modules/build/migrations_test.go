@@ -44,8 +44,9 @@ func TestMigrationsBackfillBuildCorePipelineColumns(t *testing.T) {
 	}
 
 	for table, columns := range map[string][]string{
-		"build_pipelines":        {"name", "display_name", "description", "template_id", "config_hash", "managed_by_platform"},
-		"build_runs":             {"pipeline_name", "pipeline_display_name"},
+		"build_pipelines":        {"name", "display_name", "description", "template_id", "config_hash", "managed_by_platform", "workload_id"},
+		"build_runs":             {"pipeline_name", "pipeline_display_name", "workload_id"},
+		"build_artifacts":        {"workload_id"},
 		"build_pipeline_sources": {"build_environment_id"},
 	} {
 		for _, column := range columns {

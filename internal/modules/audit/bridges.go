@@ -43,7 +43,7 @@ func (l BuildLogger) Log(ctx context.Context, event build.AuditEvent) error {
 }
 
 func (l DeliveryLogger) Log(ctx context.Context, event delivery.AuditEvent) error {
-	return logIfConfigured(ctx, l.Logger, AuditLog{ActorID: event.ActorID, ResourceType: event.ResourceType, ResourceID: event.ResourceID, Action: event.Action, Result: Result(event.Result), Summary: event.Summary, OccurredAt: event.OccurredAt})
+	return logIfConfigured(ctx, l.Logger, AuditLog{ActorID: event.ActorID, ResourceType: event.ResourceType, ResourceID: event.ResourceID, Action: event.Action, Result: Result(event.Result), Summary: event.Summary, Details: event.Details, OccurredAt: event.OccurredAt})
 }
 
 func (l GitOpsLogger) Log(ctx context.Context, event gitops.AuditEvent) error {

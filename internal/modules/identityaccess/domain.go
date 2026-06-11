@@ -117,22 +117,22 @@ func BuiltInRoles() map[RoleID]Role {
 		RoleTenantOwner: {
 			ID:          RoleTenantOwner,
 			Name:        "租户所有者",
-			Permissions: []Permission{"tenant:update", "project:update", "application:create", "application:read", "build:create", "build:read", "deployment:create", "deployment:approve", "audit:read"},
+			Permissions: []Permission{"tenant:update", "project:update", "application:create", "application:read", "build:create", "build:read", "freight:create", "deployment:create", "deployment:approve", "audit:read"},
 		},
 		RoleTenantAdmin: {
 			ID:          RoleTenantAdmin,
 			Name:        "租户管理员",
-			Permissions: []Permission{"tenant:update", "project:update", "application:create", "application:read", "build:create", "build:read", "deployment:create"},
+			Permissions: []Permission{"tenant:update", "project:update", "application:create", "application:read", "build:create", "build:read", "freight:create", "deployment:create"},
 		},
 		RoleProjectAdmin: {
 			ID:          RoleProjectAdmin,
 			Name:        "项目管理员",
-			Permissions: []Permission{"project:update", "application:create", "application:read", "application:update", "build:create", "build:read", "deployment:create"},
+			Permissions: []Permission{"project:update", "application:create", "application:read", "application:update", "build:create", "build:read", "freight:create", "deployment:create"},
 		},
 		RoleDeveloper: {
 			ID:          RoleDeveloper,
 			Name:        "开发者",
-			Permissions: []Permission{"application:create", "application:read", "application:update", "build:create", "build:read", "deployment:create"},
+			Permissions: []Permission{"application:create", "application:read", "application:update", "build:create", "build:read", "freight:create", "deployment:create"},
 		},
 		RoleViewer: {
 			ID:          RoleViewer,

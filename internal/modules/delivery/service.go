@@ -14,6 +14,7 @@ type Service struct {
 	repo       Repository
 	builds     BuildQuery
 	apps       ApplicationQuery
+	workloads  WorkloadQuery
 	envs       EnvironmentQuery
 	gitops     GitOpsDeploymentCommand
 	permission PermissionChecker
@@ -27,6 +28,7 @@ type Options struct {
 	Repository        Repository
 	BuildQuery        BuildQuery
 	ApplicationQuery  ApplicationQuery
+	WorkloadQuery     WorkloadQuery
 	EnvironmentQuery  EnvironmentQuery
 	GitOpsDeployment  GitOpsDeploymentCommand
 	PermissionChecker PermissionChecker
@@ -53,7 +55,7 @@ func NewService(opts Options) *Service {
 	if clock == nil {
 		clock = shared.SystemClock{}
 	}
-	return &Service{repo: opts.Repository, builds: opts.BuildQuery, apps: opts.ApplicationQuery, envs: opts.EnvironmentQuery, gitops: opts.GitOpsDeployment, permission: opts.PermissionChecker, audit: audit, events: events, ids: ids, clock: clock}
+	return &Service{repo: opts.Repository, builds: opts.BuildQuery, apps: opts.ApplicationQuery, workloads: opts.WorkloadQuery, envs: opts.EnvironmentQuery, gitops: opts.GitOpsDeployment, permission: opts.PermissionChecker, audit: audit, events: events, ids: ids, clock: clock}
 }
 
 type CreatePromotionInput struct {
@@ -77,19 +79,39 @@ type ApprovalInput struct {
 	Comment     string                 `json:"comment"`
 }
 
-func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceededPayload) (Release, Freight, error) {
-	if payload.BuildRunID.IsZero() || payload.ApplicationID.IsZero() {
-		return Release{}, Freight{}, shared.NewError(shared.CodeInvalidArgument, "build_run_id and application_id are required")
+type CreateFreightInput struct {
+	Actor         identityaccess.Subject   `json:"actor"`
+	ApplicationID shared.ID                `json:"application_id"`
+	Name          string                   `json:"name"`
+	Description   string                   `json:"description"`
+	Items         []CreateFreightItemInput `json:"items"`
+}
+
+type CreateFreightItemInput struct {
+	WorkloadID      shared.ID       `json:"workload_id"`
+	SourceType      FreightItemType `json:"source_type"`
+	ReleaseID       shared.ID       `json:"release_id"`
+	BuildArtifactID shared.ID       `json:"build_artifact_id"`
+	ImageRef        string          `json:"image_ref"`
+}
+
+type FreightCreationContext struct {
+	EnabledWorkloads          []WorkloadRef                  `json:"enabled_workloads"`
+	LatestReleasesByWorkload  map[shared.ID]Release          `json:"latest_releases_by_workload"`
+	LatestArtifactsByWorkload map[shared.ID]BuildArtifactRef `json:"latest_artifacts_by_workload"`
+	StageEligibility          map[shared.ID][]shared.ID      `json:"stage_eligibility"`
+}
+
+func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceededPayload) (Release, error) {
+	if payload.BuildRunID.IsZero() || payload.ApplicationID.IsZero() || payload.WorkloadID.IsZero() {
+		return Release{}, shared.NewError(shared.CodeInvalidArgument, "build_run_id, application_id and workload_id are required")
 	}
 	if existing, err := s.repo.FindReleaseByBuildRun(ctx, payload.BuildRunID); err == nil {
-		freights, _ := s.repo.ListFreightsByApplication(ctx, existing.ApplicationID, shared.PageRequest{Page: 1, PageSize: 1})
-		if len(freights.Items) > 0 {
-			return existing, freights.Items[0], nil
-		}
+		return existing, nil
 	}
 	run, err := s.buildsOrError().GetBuildRun(ctx, payload.BuildRunID)
 	if err != nil {
-		return Release{}, Freight{}, err
+		return Release{}, err
 	}
 	artifactIDs := payload.BuildArtifactIDs
 	if len(artifactIDs) == 0 && !payload.BuildArtifactID.IsZero() {
@@ -97,25 +119,24 @@ func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceed
 	}
 	artifacts, err := s.resolveBuildArtifacts(ctx, payload.BuildRunID, artifactIDs)
 	if err != nil {
-		return Release{}, Freight{}, err
+		return Release{}, err
 	}
 	if run.ApplicationID != payload.ApplicationID {
-		return Release{}, Freight{}, shared.NewError(shared.CodeInvalidArgument, "build payload ownership mismatch")
+		return Release{}, shared.NewError(shared.CodeInvalidArgument, "build payload ownership mismatch")
 	}
 	for _, artifact := range artifacts {
-		if artifact.BuildRunID != run.ID || artifact.ApplicationID != run.ApplicationID {
-			return Release{}, Freight{}, shared.NewError(shared.CodeInvalidArgument, "build payload ownership mismatch")
+		if artifact.BuildRunID != run.ID || artifact.ApplicationID != run.ApplicationID || artifact.WorkloadID != payload.WorkloadID {
+			return Release{}, shared.NewError(shared.CodeInvalidArgument, "build payload ownership mismatch")
 		}
 	}
 	primary := primaryArtifact(artifacts)
+	if strings.TrimSpace(primary.Digest) == "" || strings.TrimSpace(run.CommitSHA) == "" {
+		return Release{}, shared.NewError(shared.CodeFailedPrecondition, "pipeline artifact requires digest and commit")
+	}
 	now := s.clock.Now()
 	releaseID, err := s.ids.NewID("release")
 	if err != nil {
-		return Release{}, Freight{}, err
-	}
-	freightID, err := s.ids.NewID("freight")
-	if err != nil {
-		return Release{}, Freight{}, err
+		return Release{}, err
 	}
 	commit := firstNonEmpty(payload.CommitSHA, run.CommitSHA)
 	imageURI := firstNonEmpty(payload.ImageURI, primary.URI)
@@ -126,38 +147,15 @@ func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceed
 	}
 	pipelineName := firstNonEmpty(run.PipelineName, payload.PipelineName)
 	pipelineDisplayName := firstNonEmpty(run.PipelineDisplayName, payload.PipelineDisplayName)
-	release := Release{ID: releaseID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, PipelineID: pipelineID, PipelineName: pipelineName, PipelineDisplayName: pipelineDisplayName, BuildRunID: run.ID, BuildArtifactID: primary.ID, Version: releaseVersion(commit, run.ID), CommitSHA: commit, ImageURI: imageURI, ImageDigest: imageDigest, Status: ReleaseReady, CreatedAt: now}
-	freight := Freight{ID: freightID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, PipelineID: pipelineID, PipelineName: pipelineName, PipelineDisplayName: pipelineDisplayName, Name: release.Version, Status: FreightAvailable, CreatedAt: now}
+	imageRepository, imageTag := splitImageRepositoryTag(imageURI)
+	release := Release{ID: releaseID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, WorkloadID: payload.WorkloadID, PipelineID: pipelineID, PipelineName: pipelineName, PipelineDisplayName: pipelineDisplayName, BuildRunID: run.ID, BuildArtifactID: primary.ID, Version: releaseVersion(commit, run.ID), CommitSHA: commit, ImageURI: imageURI, ImageRepository: imageRepository, ImageTag: imageTag, ImageDigest: imageDigest, SourceType: ReleaseSourcePipelineArtifact, Status: ReleaseReady, CreatedAt: now}
 	if err := s.repo.CreateRelease(ctx, release); err != nil {
-		return Release{}, Freight{}, err
-	}
-	if err := s.repo.CreateFreight(ctx, freight); err != nil {
-		return Release{}, Freight{}, err
-	}
-	for _, artifact := range artifacts {
-		itemID, err := s.ids.NewID("freight_item")
-		if err != nil {
-			return Release{}, Freight{}, err
-		}
-		itemType := FreightItemImage
-		if artifact.ID == primary.ID {
-			itemType = FreightItemApplicationRelease
-		}
-		name := artifact.SourceKey
-		if name == "" {
-			name = release.Version
-		}
-		item := FreightItem{ID: itemID, TenantID: run.TenantID, ProjectID: run.ProjectID, FreightID: freight.ID, ApplicationID: run.ApplicationID, ReleaseID: release.ID, BuildArtifactID: artifact.ID, SourceKey: artifact.SourceKey, Type: itemType, Name: name, URI: artifact.URI, Digest: artifact.Digest, CreatedAt: now}
-		if err := s.repo.CreateFreightItem(ctx, item); err != nil {
-			return Release{}, Freight{}, err
-		}
+		return Release{}, err
 	}
 	if _, err := s.ensureDefaultFlow(ctx, run.ApplicationID); err != nil {
-		return Release{}, Freight{}, err
+		return Release{}, err
 	}
-	_ = s.audit.Log(ctx, AuditEvent{Action: "freight.create", ResourceType: "freight", ResourceID: freight.ID, Result: "succeeded", Summary: "创建可交付变更包", OccurredAt: now})
-	_ = s.publish(ctx, "FreightCreated", now, map[string]any{"freight_id": freight.ID, "release_id": release.ID, "application_id": run.ApplicationID})
-	return release, freight, nil
+	return release, nil
 }
 
 func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInput) (Promotion, error) {
@@ -172,6 +170,12 @@ func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInpu
 	if err := s.check(ctx, input.Actor, app, "deployment:create"); err != nil {
 		return Promotion{}, err
 	}
+	if err := s.validateFreightComplete(ctx, freight.ApplicationID, freight.ID); err != nil {
+		return Promotion{}, err
+	}
+	if err := s.validateStageOrder(ctx, freight, stage); err != nil {
+		return Promotion{}, err
+	}
 	promotion, err := s.newPromotion(ctx, freight, stage, env, input.Actor.ID, strings.TrimSpace(input.Message), false, "")
 	if err != nil {
 		return Promotion{}, err
@@ -180,6 +184,173 @@ func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInpu
 		return s.createApproval(ctx, promotion)
 	}
 	return s.applyPromotion(ctx, promotion)
+}
+
+func (s *Service) CreateFreight(ctx context.Context, input CreateFreightInput) (Freight, error) {
+	app, err := s.appsOrError().GetApplication(ctx, input.ApplicationID)
+	if err != nil {
+		return Freight{}, err
+	}
+	if err := s.check(ctx, input.Actor, app, "freight:create"); err != nil {
+		return Freight{}, err
+	}
+	workloads, err := s.workloadsOrError().ListEnabledWorkloads(ctx, app.ID)
+	if err != nil {
+		return Freight{}, err
+	}
+	if len(workloads) == 0 {
+		return Freight{}, shared.NewError(shared.CodeFailedPrecondition, "enabled workload is required")
+	}
+	if len(input.Items) != len(workloads) {
+		return Freight{}, shared.NewError(shared.CodeFailedPrecondition, "freight must include every enabled workload")
+	}
+	enabled := map[shared.ID]WorkloadRef{}
+	for _, workload := range workloads {
+		enabled[workload.ID] = workload
+	}
+	seen := map[shared.ID]struct{}{}
+	now := s.clock.Now()
+	freightID, err := s.ids.NewID("freight")
+	if err != nil {
+		return Freight{}, err
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		name = freightID.String()
+	}
+	freight := Freight{ID: freightID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, Name: name, Status: FreightAvailable, CreatedAt: now}
+	items := make([]FreightItem, 0, len(input.Items))
+	tagRisk := false
+	for _, itemInput := range input.Items {
+		if itemInput.WorkloadID.IsZero() {
+			return Freight{}, shared.NewError(shared.CodeInvalidArgument, "workload_id is required")
+		}
+		workload, ok := enabled[itemInput.WorkloadID]
+		if !ok {
+			return Freight{}, shared.NewError(shared.CodeInvalidArgument, "freight item workload is not enabled")
+		}
+		if _, ok := seen[itemInput.WorkloadID]; ok {
+			return Freight{}, shared.NewError(shared.CodeConflict, "freight item workload is duplicated")
+		}
+		seen[itemInput.WorkloadID] = struct{}{}
+		itemID, err := s.ids.NewID("freight_item")
+		if err != nil {
+			return Freight{}, err
+		}
+		item := FreightItem{ID: itemID, TenantID: app.TenantID, ProjectID: app.ProjectID, FreightID: freight.ID, ApplicationID: app.ID, WorkloadID: workload.ID, SourceType: itemInput.SourceType, Type: itemInput.SourceType, Name: firstNonEmpty(workload.DisplayName, workload.Name), CreatedAt: now}
+		switch itemInput.SourceType {
+		case FreightItemPipelineArtifact, "":
+			pipelineItem, err := s.pipelineFreightItem(ctx, item, itemInput)
+			if err != nil {
+				return Freight{}, err
+			}
+			items = append(items, pipelineItem)
+		case FreightItemCustomImage:
+			image, err := parseCustomImageRef(itemInput.ImageRef)
+			if err != nil {
+				return Freight{}, err
+			}
+			item.URI = image.ref
+			item.ImageRef = image.ref
+			item.ImageRepository = image.repository
+			item.ImageTag = image.tag
+			item.Digest = image.digest
+			if image.digest == "" {
+				tagRisk = true
+			}
+			items = append(items, item)
+		default:
+			return Freight{}, shared.NewError(shared.CodeInvalidArgument, "freight item source_type is not supported")
+		}
+	}
+	if len(seen) != len(enabled) {
+		return Freight{}, shared.NewError(shared.CodeFailedPrecondition, "freight must include every enabled workload")
+	}
+	if err := s.repo.CreateFreight(ctx, freight); err != nil {
+		return Freight{}, err
+	}
+	for _, item := range items {
+		if err := s.repo.CreateFreightItem(ctx, item); err != nil {
+			return Freight{}, err
+		}
+	}
+	details := map[string]string{"item_count": fmt.Sprintf("%d", len(items))}
+	if tagRisk {
+		details["custom_image_tag_risk"] = "true"
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "freight.create", ResourceType: "freight", ResourceID: freight.ID, Result: "succeeded", Summary: "创建可交付变更包", Details: details, OccurredAt: now})
+	if tagRisk {
+		_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "freight.custom_image_risk", ResourceType: "freight", ResourceID: freight.ID, Result: "succeeded", Summary: "记录自定义镜像 tag 漂移风险", Details: map[string]string{"custom_image_tag_risk": "true"}, OccurredAt: now})
+	}
+	_ = s.publish(ctx, "FreightCreated", now, map[string]any{"freight_id": freight.ID, "application_id": app.ID})
+	return freight, nil
+}
+
+func (s *Service) GetFreightCreationContext(ctx context.Context, applicationID shared.ID) (FreightCreationContext, error) {
+	workloads, err := s.workloadsOrError().ListEnabledWorkloads(ctx, applicationID)
+	if err != nil {
+		return FreightCreationContext{}, err
+	}
+	releases, err := s.repo.ListReleasesByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
+	if err != nil {
+		return FreightCreationContext{}, err
+	}
+	ctxOut := FreightCreationContext{
+		EnabledWorkloads:          workloads,
+		LatestReleasesByWorkload:  map[shared.ID]Release{},
+		LatestArtifactsByWorkload: map[shared.ID]BuildArtifactRef{},
+		StageEligibility:          map[shared.ID][]shared.ID{},
+	}
+	for _, release := range releases.Items {
+		if _, ok := ctxOut.LatestReleasesByWorkload[release.WorkloadID]; ok {
+			continue
+		}
+		ctxOut.LatestReleasesByWorkload[release.WorkloadID] = release
+		if artifact, err := s.buildsOrError().GetBuildArtifact(ctx, release.BuildArtifactID); err == nil {
+			ctxOut.LatestArtifactsByWorkload[release.WorkloadID] = artifact
+		}
+	}
+	if flow, err := s.ensureDefaultFlow(ctx, applicationID); err == nil {
+		if stages, err := s.repo.ListDeliveryStages(ctx, flow.ID); err == nil {
+			for _, stage := range stages {
+				freights, err := s.ListEligibleFreights(ctx, applicationID, stage.ID)
+				if err != nil {
+					continue
+				}
+				ids := make([]shared.ID, 0, len(freights))
+				for _, freight := range freights {
+					ids = append(ids, freight.ID)
+				}
+				ctxOut.StageEligibility[stage.ID] = ids
+			}
+		}
+	}
+	return ctxOut, nil
+}
+
+func (s *Service) ListEligibleFreights(ctx context.Context, applicationID shared.ID, stageID shared.ID) ([]Freight, error) {
+	stage, err := s.repo.GetDeliveryStage(ctx, stageID)
+	if err != nil {
+		return nil, err
+	}
+	if stage.ApplicationID != applicationID {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "stage does not belong to application")
+	}
+	result, err := s.repo.ListFreightsByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
+	if err != nil {
+		return nil, err
+	}
+	out := []Freight{}
+	for _, freight := range result.Items {
+		if err := s.validateFreightComplete(ctx, applicationID, freight.ID); err != nil {
+			continue
+		}
+		if err := s.validateStageOrder(ctx, freight, stage); err != nil {
+			continue
+		}
+		out = append(out, freight)
+	}
+	return out, nil
 }
 
 func (s *Service) CreateRollbackPromotion(ctx context.Context, input CreateRollbackPromotionInput) (Promotion, error) {
@@ -475,6 +646,124 @@ func (s *Service) applyPromotion(ctx context.Context, promotion Promotion) (Prom
 	return promotion, nil
 }
 
+func (s *Service) pipelineFreightItem(ctx context.Context, item FreightItem, input CreateFreightItemInput) (FreightItem, error) {
+	if input.ReleaseID.IsZero() && input.BuildArtifactID.IsZero() {
+		return FreightItem{}, shared.NewError(shared.CodeInvalidArgument, "release_id or build_artifact_id is required")
+	}
+	var release Release
+	var err error
+	if !input.ReleaseID.IsZero() {
+		release, err = s.repo.GetRelease(ctx, input.ReleaseID)
+		if err != nil {
+			return FreightItem{}, err
+		}
+		if release.ApplicationID != item.ApplicationID || release.WorkloadID != item.WorkloadID {
+			return FreightItem{}, shared.NewError(shared.CodeInvalidArgument, "pipeline artifact does not belong to workload")
+		}
+		item.ReleaseID = release.ID
+		item.BuildArtifactID = release.BuildArtifactID
+		item.URI = release.ImageURI
+		item.ImageRef = release.ImageURI
+		item.ImageRepository = release.ImageRepository
+		item.ImageTag = release.ImageTag
+		item.Digest = release.ImageDigest
+		item.SourceKey = release.PipelineName
+		return item, nil
+	}
+	artifact, err := s.buildsOrError().GetBuildArtifact(ctx, input.BuildArtifactID)
+	if err != nil {
+		return FreightItem{}, err
+	}
+	if artifact.ApplicationID != item.ApplicationID || artifact.WorkloadID != item.WorkloadID {
+		return FreightItem{}, shared.NewError(shared.CodeInvalidArgument, "pipeline artifact does not belong to workload")
+	}
+	if strings.TrimSpace(artifact.Digest) == "" {
+		return FreightItem{}, shared.NewError(shared.CodeFailedPrecondition, "pipeline artifact requires digest and commit")
+	}
+	run, err := s.buildsOrError().GetBuildRun(ctx, artifact.BuildRunID)
+	if err != nil {
+		return FreightItem{}, err
+	}
+	if strings.TrimSpace(run.CommitSHA) == "" {
+		return FreightItem{}, shared.NewError(shared.CodeFailedPrecondition, "pipeline artifact requires digest and commit")
+	}
+	repository, tag := splitImageRepositoryTag(artifact.URI)
+	item.BuildArtifactID = artifact.ID
+	item.URI = artifact.URI
+	item.ImageRef = artifact.URI
+	item.ImageRepository = repository
+	item.ImageTag = tag
+	item.Digest = artifact.Digest
+	item.SourceKey = artifact.SourceKey
+	return item, nil
+}
+
+func (s *Service) validateFreightComplete(ctx context.Context, applicationID shared.ID, freightID shared.ID) error {
+	workloads, err := s.workloadsOrError().ListEnabledWorkloads(ctx, applicationID)
+	if err != nil {
+		return err
+	}
+	enabled := map[shared.ID]struct{}{}
+	for _, workload := range workloads {
+		enabled[workload.ID] = struct{}{}
+	}
+	items, err := s.repo.ListFreightItems(ctx, freightID)
+	if err != nil {
+		return err
+	}
+	if len(items) != len(enabled) {
+		return shared.NewError(shared.CodeFailedPrecondition, "freight must include every enabled workload")
+	}
+	seen := map[shared.ID]struct{}{}
+	for _, item := range items {
+		if _, ok := enabled[item.WorkloadID]; !ok {
+			return shared.NewError(shared.CodeFailedPrecondition, "freight item workload is not enabled")
+		}
+		if _, ok := seen[item.WorkloadID]; ok {
+			return shared.NewError(shared.CodeFailedPrecondition, "freight item workload is duplicated")
+		}
+		seen[item.WorkloadID] = struct{}{}
+	}
+	if len(seen) != len(enabled) {
+		return shared.NewError(shared.CodeFailedPrecondition, "freight must include every enabled workload")
+	}
+	return nil
+}
+
+func (s *Service) validateStageOrder(ctx context.Context, freight Freight, target DeliveryStage) error {
+	if target.Order <= 0 {
+		return nil
+	}
+	flow, err := s.repo.FindDeliveryFlowByApplication(ctx, freight.ApplicationID)
+	if err != nil {
+		return err
+	}
+	stages, err := s.repo.ListDeliveryStages(ctx, flow.ID)
+	if err != nil {
+		return err
+	}
+	for _, stage := range stages {
+		if stage.Order >= target.Order {
+			continue
+		}
+		promotions, err := s.repo.ListPromotionsByApplication(ctx, freight.ApplicationID, shared.PageRequest{Page: 1, PageSize: 1000})
+		if err != nil {
+			return err
+		}
+		found := false
+		for _, promotion := range promotions.Items {
+			if promotion.FreightID == freight.ID && promotion.TargetStageID == stage.ID && (promotion.Status == PromotionManifestUpdated || promotion.Status == PromotionHealthy || promotion.Status == PromotionSyncing) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return shared.NewError(shared.CodeFailedPrecondition, "freight has not passed previous stage")
+		}
+	}
+	return nil
+}
+
 func (s *Service) check(ctx context.Context, actor identityaccess.Subject, app ApplicationRef, action identityaccess.Permission) error {
 	if actor.ID.IsZero() {
 		return shared.NewError(shared.CodeUnauthenticated, "actor is required")
@@ -508,6 +797,12 @@ func (s *Service) appsOrError() ApplicationQuery {
 		return failingAppQuery{}
 	}
 	return s.apps
+}
+func (s *Service) workloadsOrError() WorkloadQuery {
+	if s.workloads == nil {
+		return failingWorkloadQuery{}
+	}
+	return s.workloads
 }
 func (s *Service) envsOrError() EnvironmentQuery {
 	if s.envs == nil {
@@ -578,6 +873,50 @@ func releaseVersion(commit string, fallback shared.ID) string {
 	return fmt.Sprintf("build-%s", fallback)
 }
 
+type parsedImageRef struct {
+	ref        string
+	repository string
+	tag        string
+	digest     string
+}
+
+func parseCustomImageRef(value string) (parsedImageRef, error) {
+	ref := strings.TrimSpace(value)
+	if ref == "" || strings.ContainsAny(ref, " \t\r\n") || strings.HasPrefix(ref, "-") {
+		return parsedImageRef{}, shared.NewError(shared.CodeInvalidArgument, "custom image ref is invalid")
+	}
+	repository, tag := splitImageRepositoryTag(ref)
+	digest := ""
+	if at := strings.LastIndex(ref, "@"); at >= 0 {
+		repository = ref[:at]
+		digest = ref[at+1:]
+		tag = ""
+		if !strings.HasPrefix(digest, "sha256:") || len(strings.TrimPrefix(digest, "sha256:")) < 16 {
+			return parsedImageRef{}, shared.NewError(shared.CodeInvalidArgument, "custom image digest is invalid")
+		}
+	}
+	if repository == "" || strings.Contains(repository, "://") || strings.HasPrefix(repository, "/") || strings.HasSuffix(repository, "/") {
+		return parsedImageRef{}, shared.NewError(shared.CodeInvalidArgument, "custom image ref is invalid")
+	}
+	if digest == "" && tag == "" {
+		return parsedImageRef{}, shared.NewError(shared.CodeInvalidArgument, "custom image tag or digest is required")
+	}
+	return parsedImageRef{ref: ref, repository: repository, tag: tag, digest: digest}, nil
+}
+
+func splitImageRepositoryTag(image string) (string, string) {
+	image = strings.TrimSpace(image)
+	if at := strings.LastIndex(image, "@"); at >= 0 {
+		return image[:at], ""
+	}
+	lastSlash := strings.LastIndex(image, "/")
+	lastColon := strings.LastIndex(image, ":")
+	if lastColon > lastSlash {
+		return image[:lastColon], image[lastColon+1:]
+	}
+	return image, ""
+}
+
 type failingBuildQuery struct{}
 
 func (failingBuildQuery) GetBuildRun(context.Context, shared.ID) (BuildRunRef, error) {
@@ -594,6 +933,12 @@ type failingAppQuery struct{}
 
 func (failingAppQuery) GetApplication(context.Context, shared.ID) (ApplicationRef, error) {
 	return ApplicationRef{}, shared.NewError(shared.CodeFailedPrecondition, "application query port is required")
+}
+
+type failingWorkloadQuery struct{}
+
+func (failingWorkloadQuery) ListEnabledWorkloads(context.Context, shared.ID) ([]WorkloadRef, error) {
+	return nil, shared.NewError(shared.CodeFailedPrecondition, "workload query port is required")
 }
 
 type failingEnvQuery struct{}
