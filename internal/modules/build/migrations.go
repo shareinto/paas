@@ -501,4 +501,46 @@ DEALLOCATE PREPARE build_artifacts_workload_index_stmt;
 `,
 		Down: `SELECT 1;`,
 	},
+	{
+		Version: 202606110901,
+		Name:    "backfill_build_artifact_binding_columns",
+		Up: `
+SET @build_artifacts_workload_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_artifacts'
+    AND column_name = 'workload_id'
+);
+SET @build_artifacts_workload_ddl := IF(@build_artifacts_workload_missing, 'ALTER TABLE build_artifacts ADD COLUMN workload_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER application_id', 'SELECT 1');
+PREPARE build_artifacts_workload_stmt FROM @build_artifacts_workload_ddl;
+EXECUTE build_artifacts_workload_stmt;
+DEALLOCATE PREPARE build_artifacts_workload_stmt;
+
+SET @build_artifacts_source_key_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_artifacts'
+    AND column_name = 'source_key'
+);
+SET @build_artifacts_source_key_ddl := IF(@build_artifacts_source_key_missing, 'ALTER TABLE build_artifacts ADD COLUMN source_key VARCHAR(64) NOT NULL DEFAULT '''' AFTER workload_id', 'SELECT 1');
+PREPARE build_artifacts_source_key_stmt FROM @build_artifacts_source_key_ddl;
+EXECUTE build_artifacts_source_key_stmt;
+DEALLOCATE PREPARE build_artifacts_source_key_stmt;
+
+SET @build_artifacts_workload_index_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.statistics
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_artifacts'
+    AND index_name = 'idx_build_artifacts_workload_created'
+);
+SET @build_artifacts_workload_index_ddl := IF(@build_artifacts_workload_index_missing, 'ALTER TABLE build_artifacts ADD KEY idx_build_artifacts_workload_created (application_id, workload_id, created_at)', 'SELECT 1');
+PREPARE build_artifacts_workload_index_stmt FROM @build_artifacts_workload_index_ddl;
+EXECUTE build_artifacts_workload_index_stmt;
+DEALLOCATE PREPARE build_artifacts_workload_index_stmt;
+`,
+		Down: `SELECT 1;`,
+	},
 }

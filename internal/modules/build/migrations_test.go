@@ -230,6 +230,90 @@ CREATE TABLE build_run_sources (
 	}
 }
 
+func TestMigrationsBackfillBuildArtifactSourceKeyForExistingTables(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.MySQLDB(t)
+	migrator := database.NewMigrator(db)
+
+	oldCore := Migrations[0]
+	oldCore.Up = strings.Replace(oldCore.Up, "  source_key VARCHAR(64) NOT NULL DEFAULT '',\n", "", 1)
+	if oldCore.Up == Migrations[0].Up {
+		t.Fatalf("test setup did not remove build_artifacts.source_key from old core migration")
+	}
+	if err := migrator.Up(ctx, []database.Migration{oldCore}); err != nil {
+		t.Fatalf("apply old core migration: %v", err)
+	}
+
+	if err := migrator.Up(ctx, Migrations[1:]); err != nil {
+		t.Fatalf("apply current follow-up migrations: %v", err)
+	}
+	assertMySQLColumnExists(t, ctx, db, "build_artifacts", "source_key")
+
+	repo, err := NewMySQLRepository(ctx, db)
+	if err != nil {
+		t.Fatalf("NewMySQLRepository() error = %v", err)
+	}
+	now := time.Now().UTC()
+	pipeline := BuildPipeline{
+		ID:                "pipeline_1",
+		TenantID:          "tenant_1",
+		ProjectID:         "project_1",
+		ApplicationID:     "app_1",
+		Name:              "main",
+		DisplayName:       "主流水线",
+		Provider:          "jenkins",
+		ExternalJobName:   "paas/project/app/main",
+		TemplateID:        "template_1",
+		Status:            BuildPipelineStatusActive,
+		ManagedByPlatform: true,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if err := repo.CreatePipeline(ctx, pipeline); err != nil {
+		t.Fatalf("CreatePipeline() error = %v", err)
+	}
+	run := BuildRun{
+		ID:                  "build_run_1",
+		TenantID:            pipeline.TenantID,
+		ProjectID:           pipeline.ProjectID,
+		PipelineID:          pipeline.ID,
+		PipelineName:        pipeline.Name,
+		PipelineDisplayName: pipeline.DisplayName,
+		ApplicationID:       pipeline.ApplicationID,
+		SourceRepositoryID:  "repo_1",
+		GitRef:              "main",
+		Status:              BuildRunQueued,
+		RequestedBy:         "usr_builder",
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	if err := repo.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	if err := repo.CreateArtifact(ctx, BuildArtifact{
+		ID:            "artifact_1",
+		TenantID:      pipeline.TenantID,
+		ProjectID:     pipeline.ProjectID,
+		BuildRunID:    run.ID,
+		ApplicationID: pipeline.ApplicationID,
+		SourceKey:     "main",
+		Type:          BuildArtifactImage,
+		Name:          "主镜像",
+		URI:           "registry.example/log-receiver:main",
+		IsPrimary:     true,
+		CreatedAt:     now,
+	}); err != nil {
+		t.Fatalf("CreateArtifact() error = %v", err)
+	}
+	artifacts, err := repo.ListArtifactsByRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("ListArtifactsByRun() error = %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].SourceKey != "main" {
+		t.Fatalf("unexpected artifacts: %+v", artifacts)
+	}
+}
+
 func TestMigrationsBackfillBuildPipelineIdentityColumnsAfterCoreBackfillWasApplied(t *testing.T) {
 	ctx := context.Background()
 	db := testsupport.MySQLDB(t)
