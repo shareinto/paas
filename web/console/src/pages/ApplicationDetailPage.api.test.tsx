@@ -69,7 +69,7 @@ test('真实 API 创建流水线后即使列表接口暂未返回也立即显示
 
   await userEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
 
-  await userEvent.click(await screen.findByRole('tab', { name: '构建' }));
+  await userEvent.click(await screen.findByRole('tab', { name: '镜像构建' }));
   const pipelinePanel = screen.getByText('构建流水线').closest('.ant-card') as HTMLElement;
   expect(await within(pipelinePanel).findByText('主流水线')).toBeInTheDocument();
   expect(within(pipelinePanel).getByText('主代码源')).toBeInTheDocument();
@@ -109,6 +109,7 @@ test('真实 API 创建 Workload 后使用服务端镜像来源展示', async ()
 
   renderApp('/apps/app_1', App);
 
+  await userEvent.click(await screen.findByRole('tab', { name: '工作负载' }));
   await userEvent.click(await screen.findByRole('button', { name: /创建 Workload/ }));
   const drawer = await screen.findByRole('dialog', { name: '创建 Workload' });
   await userEvent.type(within(drawer).getByLabelText('Workload 标识'), 'order-worker');

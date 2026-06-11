@@ -2,10 +2,12 @@ import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Card, Form, Input, Modal, Popconfirm, Select, Space, Table, Tag, Typography, message } from 'antd';
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { createProject, deleteProject, listProjects, listTenants, type Project } from '../api';
 import { PageHeader } from '../components/PageHeader';
 
 export function ProjectsPage() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [open, setOpen] = useState(false);
@@ -56,7 +58,7 @@ export function ProjectsPage() {
       </div>
       <Card className="compact-card">
         <Table<Project> rowKey="id" loading={isLoading} dataSource={filteredProjects} pagination={false} columns={[
-          { title: '项目名称', dataIndex: 'displayName', render: (_, record) => <Space direction="vertical" size={0}><Typography.Text strong>{record.displayName}</Typography.Text>{record.description && <Typography.Text className="muted">{record.description}</Typography.Text>}</Space> },
+          { title: '项目名称', dataIndex: 'displayName', render: (_, record) => <Space direction="vertical" size={0}><a onClick={() => navigate(`/projects/${record.id}`)}>{record.displayName}</a>{record.description && <Typography.Text className="muted">{record.description}</Typography.Text>}</Space> },
           { title: '标识', dataIndex: 'name' },
           { title: '租户', dataIndex: 'tenant', render: (v) => <Tag>{v}</Tag> },
           { title: '负责人', dataIndex: 'owner' },

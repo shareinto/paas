@@ -20,6 +20,7 @@ function renderFlow(path: string) {
 
 afterEach(() => {
   cleanup();
+  document.body.innerHTML = '';
   window.localStorage.clear();
   useSession.setState({ token: '', userName: '平台用户' });
 });
@@ -96,7 +97,7 @@ test('应用详情中创建流水线后列表展示新流水线', async () => {
   window.localStorage.setItem('paas_token', 'test');
   useSession.setState({ token: 'test', userName: '测试用户' });
   renderFlow('/apps/app_1');
-  await userEvent.click(await screen.findByRole('tab', { name: '构建' }));
+  await userEvent.click(await screen.findByRole('tab', { name: '镜像构建' }));
   expect(await screen.findByText('主流水线')).toBeInTheDocument();
 
   await userEvent.click(await screen.findByRole('button', { name: /创建流水线/ }));
@@ -108,6 +109,15 @@ test('应用详情中创建流水线后列表展示新流水线', async () => {
 
   const pipelinePanel = screen.getByText('构建流水线').closest('.ant-card') as HTMLElement;
   expect(await within(pipelinePanel).findByText('流水线 2')).toBeInTheDocument();
+
+  const pipelineRow = within(pipelinePanel).getByText('流水线 2').closest('tr') as HTMLElement;
+  await userEvent.click(within(pipelineRow).getByRole('button', { name: /编\s*辑/ }));
+  const editDialog = (await screen.findByText('编辑构建流水线')).closest('.ant-modal') as HTMLElement;
+  const displayName = within(editDialog).getAllByLabelText('显示名称')[0];
+  await userEvent.clear(displayName);
+  await userEvent.type(displayName, '流水线 2 编辑');
+  await userEvent.click(within(editDialog).getByRole('button', { name: /保\s*存/ }));
+  expect(await within(pipelinePanel).findByText('流水线 2 编辑')).toBeInTheDocument();
 });
 
 test('构建管理支持编辑构建环境和运行时环境', async () => {
@@ -188,7 +198,7 @@ test('核心控制台页面可以通过 mock API 独立渲染', async () => {
   renderFlow('/apps/app_1');
   expect(await screen.findByRole('heading', { name: '订单服务' })).toBeInTheDocument();
   expect(await screen.findByText('应用标识')).toBeInTheDocument();
-  await userEvent.click(await screen.findByRole('tab', { name: '构建' }));
+  await userEvent.click(await screen.findByRole('tab', { name: '镜像构建' }));
   expect(await screen.findByText('构建流水线')).toBeInTheDocument();
 
   cleanup();
@@ -259,15 +269,18 @@ test('租户管理页面支持创建、搜索和编辑租户', async () => {
   expect(await screen.findByText('统一运维租户')).toBeInTheDocument();
 });
 
-test('源码仓库管理页面支持创建、筛选和删除仓库', async () => {
+test('项目详情源码仓库支持创建、筛选和删除仓库', async () => {
   window.localStorage.setItem('paas_token', 'test');
   useSession.setState({ token: 'test', userName: '测试用户' });
-  renderFlow('/source-repositories');
-  expect(await screen.findByRole('heading', { name: '源码仓库' })).toBeInTheDocument();
-  expect((await screen.findAllByText('订单平台')).length).toBeGreaterThan(0);
+  renderFlow('/projects');
+  await userEvent.click(await screen.findByText('订单平台'));
+  expect(await screen.findByRole('heading', { name: '订单平台' })).toBeInTheDocument();
+  expect(await screen.findByRole('tab', { name: '源码仓库' })).toBeInTheDocument();
+  expect(screen.queryByPlaceholderText('所属项目')).not.toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('button', { name: /创建仓库/ }));
   const dialog = screen.getByRole('dialog', { name: '创建平台托管源码仓库' });
+  expect(within(dialog).queryByLabelText('所属项目')).not.toBeInTheDocument();
   await userEvent.type(screen.getByPlaceholderText('order-api'), 'test-repo');
   await userEvent.type(screen.getByPlaceholderText('订单服务仓库'), '测试源码仓库');
   await userEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));

@@ -15,6 +15,15 @@ const statusText: Record<string, string> = {
 };
 
 export function SourceRepositoriesPage() {
+  return (
+    <>
+      <PageHeader title="源码仓库" />
+      <SourceRepositoryList />
+    </>
+  );
+}
+
+export function SourceRepositoryList({ projectId: fixedProjectId, hideProjectFilter = false }: { projectId?: string; hideProjectFilter?: boolean }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [projectId, setProjectId] = useState<string>();
@@ -23,7 +32,8 @@ export function SourceRepositoriesPage() {
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm();
   const { data: projects = [] } = useQuery({ queryKey: ['projects'], queryFn: listProjects });
-  const { data = [], isLoading } = useQuery({ queryKey: ['source-repositories', projectId], queryFn: () => listSourceRepositories(projectId) });
+  const effectiveProjectId = fixedProjectId || projectId;
+  const { data = [], isLoading } = useQuery({ queryKey: ['source-repositories', effectiveProjectId], queryFn: () => listSourceRepositories(effectiveProjectId) });
   const projectOptions = useMemo(() => projects.map((project) => ({ value: project.id, label: project.displayName })), [projects]);
   const filteredData = useMemo(() => data.filter((repo) => {
     const text = `${repo.displayName} ${repo.name} ${repo.httpUrl} ${repo.sshUrl}`.toLowerCase();
@@ -50,19 +60,16 @@ export function SourceRepositoriesPage() {
 
   const openCreateModal = () => {
     setOpen(true);
-    form.setFieldsValue({ defaultBranch: 'main', projectId: projectId || projectOptions[0]?.value });
+    form.setFieldsValue({ defaultBranch: 'main', projectId: fixedProjectId || projectId || projectOptions[0]?.value });
   };
 
   return (
     <>
-      <PageHeader
-        title="源码仓库"
-        extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>创建仓库</Button>}
-      />
       <div className="toolbar">
         <Input.Search placeholder="搜索仓库名称" value={keyword} onChange={(event) => setKeyword(event.target.value)} allowClear />
-        <Select allowClear placeholder="所属项目" options={projectOptions} value={projectId} onChange={setProjectId} />
+        {!hideProjectFilter && <Select allowClear placeholder="所属项目" options={projectOptions} value={projectId} onChange={setProjectId} />}
         <Select allowClear placeholder="状态" options={[{ value: 'ready', label: '可用' }, { value: 'failed', label: '失败' }, { value: 'migrating', label: '迁移中' }, { value: 'provisioning', label: '创建中' }]} value={status} onChange={setStatus} />
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>创建仓库</Button>
       </div>
       <Card className="compact-card">
         <Table<SourceRepository>
@@ -100,10 +107,12 @@ export function SourceRepositoriesPage() {
         />
       </Card>
       <Modal title="创建平台托管源码仓库" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={createMutation.isPending} okText="创建" cancelText="取消">
-        <Form layout="vertical" form={form} onFinish={(values) => createMutation.mutate(values)} initialValues={{ defaultBranch: 'main', projectId: projectOptions[0]?.value }}>
-          <Form.Item label="所属项目" name="projectId" rules={[{ required: true, message: '请选择所属项目' }]}>
-            <Select options={projectOptions} placeholder="选择项目" />
-          </Form.Item>
+        <Form layout="vertical" form={form} onFinish={(values) => createMutation.mutate({ ...values, projectId: fixedProjectId || values.projectId })} initialValues={{ defaultBranch: 'main', projectId: fixedProjectId || projectOptions[0]?.value }}>
+          {!fixedProjectId && (
+            <Form.Item label="所属项目" name="projectId" rules={[{ required: true, message: '请选择所属项目' }]}>
+              <Select options={projectOptions} placeholder="选择项目" />
+            </Form.Item>
+          )}
           <Form.Item label="仓库名称" name="name" rules={[{ required: true, message: '请输入仓库名称' }, { pattern: /^[a-z][a-z0-9-]{1,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
             <Input placeholder="order-api" />
           </Form.Item>

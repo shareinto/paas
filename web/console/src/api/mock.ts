@@ -767,6 +767,37 @@ export async function createBuildPipeline(applicationId: string, input: Omit<Bui
   return { ...pipeline };
 }
 
+export async function updateBuildPipeline(pipelineId: string, input: Partial<Omit<BuildPipeline, 'id' | 'applicationId' | 'status' | 'updatedAt' | 'runtimeEnvironments'>> & { runtimeEnvironmentIds?: string[]; sources?: BuildPipelineSource[] }) {
+  await wait();
+  for (const pipelines of Object.values(buildPipelines)) {
+    const index = pipelines.findIndex((pipeline) => pipeline.id === pipelineId);
+    if (index >= 0) {
+      const existing = pipelines[index];
+      const runtimeSnapshots = (input.runtimeEnvironmentIds || existing.runtimeEnvironments?.map((runtime) => runtime.id) || [])
+        .map((runtimeId) => runtimeEnvironments.find((item) => item.id === runtimeId))
+        .filter(Boolean) as RuntimeEnvironment[];
+      const sources = (input.sources || existing.sources || []).map((source, sourceIndex) => ({
+        ...source,
+        id: source.id || `pipeline_source_${Date.now()}_${sourceIndex}`,
+        pipelineId,
+        displayName: source.displayName || source.key,
+        isPrimary: sourceIndex === 0,
+        buildSpec: { ...source.buildSpec }
+      }));
+      pipelines[index] = {
+        ...existing,
+        displayName: input.displayName || existing.displayName,
+        description: input.description || '',
+        runtimeEnvironments: runtimeSnapshots.map((runtime) => ({ ...runtime })),
+        sources,
+        updatedAt: '刚刚'
+      };
+      return { ...pipelines[index], runtimeEnvironments: pipelines[index].runtimeEnvironments?.map((runtime) => ({ ...runtime })), sources: pipelines[index].sources?.map((source) => ({ ...source, buildSpec: { ...source.buildSpec } })) };
+    }
+  }
+  throw new Error('流水线不存在');
+}
+
 export async function listBuildPipelineSources(pipelineId: string): Promise<BuildPipelineSource[]> {
   await wait();
   const pipeline = Object.values(buildPipelines).flat().find((item) => item.id === pipelineId);

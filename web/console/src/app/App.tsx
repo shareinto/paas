@@ -4,6 +4,7 @@ import { ConsoleLayout } from '../components/ConsoleLayout';
 import { LoginPage } from '../pages/LoginPage';
 import { OIDCCallbackPage } from '../pages/OIDCCallbackPage';
 import { ProjectsPage } from '../pages/ProjectsPage';
+import { ProjectDetailPage } from '../pages/ProjectDetailPage';
 import { ApplicationsPage } from '../pages/ApplicationsPage';
 import { CreateApplicationPage } from '../pages/CreateApplicationPage';
 import { EditApplicationPage } from '../pages/EditApplicationPage';
@@ -32,6 +33,7 @@ export function App() {
       <Route path="/" element={<Guard><ConsoleLayout /></Guard>}>
         <Route index element={<Navigate to="/apps" replace />} />
         <Route path="projects" element={<ProjectsPage />} />
+        <Route path="projects/:id" element={<ProjectDetailPage />} />
         <Route path="source-repositories" element={<SourceRepositoriesPage />} />
         <Route path="source-repositories/:id" element={<SourceRepositoryDetailPage />} />
         <Route path="apps" element={<ApplicationsPage />} />

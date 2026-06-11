@@ -192,6 +192,21 @@ export async function createBuildPipeline(applicationId: string, input: { name: 
   return mapBuildPipeline(item);
 }
 
+export async function updateBuildPipeline(pipelineId: string, input: { displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
+  if (!hasAPIBaseURL()) return mock.updateBuildPipeline(pipelineId, input as any);
+  const item = await request<any>(`/api/build-pipelines/${encodeURIComponent(pipelineId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      actor: { type: 'user', id: 'usr_admin' },
+      display_name: input.displayName,
+      description: input.description || '',
+      runtime_environment_ids: input.runtimeEnvironmentIds || [],
+      sources: input.sources.map(pipelineSourcePayload)
+    })
+  });
+  return mapBuildPipeline(item);
+}
+
 export async function deleteBuildPipeline(pipelineId: string) {
   if (!hasAPIBaseURL()) return mock.deleteBuildPipeline(pipelineId);
   await request<void>(`/api/build-pipelines/${encodeURIComponent(pipelineId)}`, {

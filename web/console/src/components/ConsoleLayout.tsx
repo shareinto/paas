@@ -1,4 +1,4 @@
-import { AppstoreOutlined, BellOutlined, BuildOutlined, CloudServerOutlined, CodeOutlined, DeploymentUnitOutlined, DownOutlined, FileSearchOutlined, FolderOpenOutlined, MenuOutlined, PlusCircleOutlined, QuestionCircleOutlined, SearchOutlined, SettingOutlined, TagsOutlined, TeamOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, BellOutlined, BuildOutlined, DeploymentUnitOutlined, DownOutlined, FileSearchOutlined, FolderOpenOutlined, MenuOutlined, QuestionCircleOutlined, SearchOutlined, SettingOutlined, TagsOutlined, TeamOutlined } from '@ant-design/icons';
 import { Avatar, Badge, Input, Layout, Menu, Space, Typography } from 'antd';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSession } from '../app/store';
@@ -7,19 +7,14 @@ const { Header, Sider, Content } = Layout;
 
 const platformItems = [
   { key: '/projects', icon: <FolderOpenOutlined />, label: '项目' },
-  { key: '/source-repositories', icon: <CodeOutlined />, label: '源码仓库' },
   { key: '/apps', icon: <DeploymentUnitOutlined />, label: '应用' },
-  { key: '/apps/new', icon: <PlusCircleOutlined />, label: '创建应用' },
-  { key: '/builds', icon: <BuildOutlined />, label: '构建' },
-  { key: '/freights', icon: <TagsOutlined />, label: '版本' },
-  { key: '/promotions', icon: <CloudServerOutlined />, label: '发布晋级' },
-  { key: '/templates', icon: <CodeOutlined />, label: '部署模板' },
-  { key: '/audit', icon: <FileSearchOutlined />, label: '审计日志' }
+  { key: '/freights', icon: <TagsOutlined />, label: '版本' }
 ];
 
 const adminItems = [
   { key: '/tenants', icon: <TeamOutlined />, label: '租户管理' },
   { key: '/jenkins-templates', icon: <BuildOutlined />, label: '构建管理' },
+  { key: '/audit', icon: <FileSearchOutlined />, label: '审计日志' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' }
 ];
 
@@ -66,11 +61,14 @@ export function ConsoleLayout() {
 }
 
 function selectedKey(pathname: string) {
-  if (pathname.startsWith('/apps/new')) return '/apps/new';
-  if (pathname.startsWith('/source-repositories')) return '/source-repositories';
+  if (pathname.startsWith('/projects')) return '/projects';
+  if (pathname.startsWith('/source-repositories')) return '/projects';
+  if (pathname.startsWith('/apps/new')) return '/apps';
   if (pathname.startsWith('/apps')) return '/apps';
-  if (pathname.startsWith('/builds')) return '/builds';
+  if (pathname.startsWith('/freights')) return '/freights';
+  if (pathname.startsWith('/audit')) return '/audit';
   if (pathname.startsWith('/tenants')) return '/tenants';
   if (pathname.startsWith('/jenkins-templates')) return '/jenkins-templates';
+  if (pathname.startsWith('/settings')) return '/settings';
   return pathname;
 }

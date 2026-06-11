@@ -1,6 +1,6 @@
 import { DeleteOutlined, EditOutlined, PlusOutlined, PlayCircleOutlined, SettingOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Badge, Button, Card, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Segmented, Space, Table, Tabs, Tag, Timeline, Typography, message } from 'antd';
+import { Alert, Badge, Button, Card, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Segmented, Space, Table, Tabs, Tag, Typography, message } from 'antd';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
@@ -16,6 +16,7 @@ import {
   listWorkloadEnvironmentConfigs,
   listWorkloads,
   triggerBuildPipeline,
+  updateBuildPipeline,
   type BuildPipeline,
   type RuntimeEnvironment,
   type Workload,
@@ -38,7 +39,7 @@ const IMAGE_SOURCE_OPTIONS = [
 export function ApplicationDetailPage() {
   const { id = 'app_1' } = useParams();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState('workloads');
+  const [activeTab, setActiveTab] = useState('builds');
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
   const [createdPipelines, setCreatedPipelines] = useState<BuildPipeline[]>([]);
   const { data: app } = useQuery({ queryKey: ['application', id], queryFn: () => getApplication(id), enabled: !!id });
@@ -73,23 +74,16 @@ export function ApplicationDetailPage() {
         }}
         className="detail-tabs"
         items={[
-        { key: 'workloads', label: '应用 Workload', children: <WorkloadPanel applicationId={id} /> },
-        { key: 'promotion', label: '发布晋级', children: null },
-        { key: 'overview', label: '总览', children: <Overview /> },
-        { key: 'env', label: '环境', children: <EnvironmentPanel /> },
-        { key: 'versions', label: '版本', children: <Table pagination={false} dataSource={[{ id: 'v1.8.2', digest: 'sha256:91ab', commit: '8c1a09f' }]} columns={[{ title: '版本', dataIndex: 'id' }, { title: '镜像 digest', dataIndex: 'digest' }, { title: '提交', dataIndex: 'commit' }]} /> },
-        { key: 'builds', label: '构建', children: <BuildPipelinePanel applicationId={id} localPipelines={createdPipelines} /> },
-        { key: 'config', label: '配置', children: '环境变量和密钥只展示元数据。' },
-        { key: 'logs', label: '日志', children: '请从构建详情或环境事件查看日志。' },
-        { key: 'monitor', label: '监控', children: '实例趋势和健康状态。' },
-        { key: 'settings', label: '设置', children: '应用基础设置。' }
+        { key: 'builds', label: '镜像构建', children: <BuildPipelinePanel applicationId={id} projectId={app?.projectId} localPipelines={createdPipelines} onPipelineChanged={(pipeline) => setCreatedPipelines((current) => [pipeline, ...current.filter((item) => item.id !== pipeline.id)])} onPipelineDeleted={(pipelineId) => setCreatedPipelines((current) => current.filter((item) => item.id !== pipelineId))} /> },
+        { key: 'workloads', label: '工作负载', children: <WorkloadPanel applicationId={id} /> },
+        { key: 'promotion', label: '发布晋级', children: null }
       ]} />
       <CreatePipelineModal
         applicationId={id}
         projectId={app?.projectId}
         open={pipelineModalOpen}
         onClose={() => setPipelineModalOpen(false)}
-        onCreated={(pipeline) => {
+        onSaved={(pipeline) => {
           setCreatedPipelines((current) => [pipeline, ...current.filter((item) => item.id !== pipeline.id)]);
           setActiveTab('builds');
         }}
@@ -367,9 +361,10 @@ function summaryText(content?: string) {
   return normalized.length > 40 ? `${normalized.slice(0, 40)}...` : normalized;
 }
 
-function BuildPipelinePanel({ applicationId, localPipelines = [] }: { applicationId: string; localPipelines?: BuildPipeline[] }) {
+function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onPipelineChanged, onPipelineDeleted }: { applicationId: string; projectId?: string; localPipelines?: BuildPipeline[]; onPipelineChanged?: (pipeline: BuildPipeline) => void; onPipelineDeleted?: (pipelineId: string) => void }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [editingPipeline, setEditingPipeline] = useState<BuildPipeline | null>(null);
   const { data: pipelines = EMPTY_LIST, isLoading } = useQuery({ queryKey: ['build-pipelines', applicationId], queryFn: () => listBuildPipelines(applicationId), enabled: !!applicationId, staleTime: 1000 });
   const visiblePipelines = mergePipelines(localPipelines, pipelines as BuildPipeline[]);
   const triggerMutation = useMutation({
@@ -379,8 +374,10 @@ function BuildPipelinePanel({ applicationId, localPipelines = [] }: { applicatio
   });
   const deleteMutation = useMutation({
     mutationFn: deleteBuildPipeline,
-    onSuccess: () => {
+    onSuccess: (_, pipelineId) => {
       message.success('流水线已删除');
+      onPipelineDeleted?.(pipelineId);
+      queryClient.setQueryData<BuildPipeline[]>(['build-pipelines', applicationId], (current = []) => current.filter((item) => item.id !== pipelineId));
       queryClient.invalidateQueries({ queryKey: ['build-pipelines', applicationId] });
     },
     onError: (error) => message.error(error instanceof Error ? error.message : '删除流水线失败')
@@ -409,6 +406,7 @@ function BuildPipelinePanel({ applicationId, localPipelines = [] }: { applicatio
               render: (_: unknown, item: BuildPipeline) => (
                 <Space>
                   <Button icon={<PlayCircleOutlined />} loading={triggerMutation.isPending} onClick={() => triggerMutation.mutate(item)}>触发构建</Button>
+                  <Button icon={<EditOutlined />} onClick={() => setEditingPipeline(item)}>编辑</Button>
                   <Button danger icon={<DeleteOutlined />} loading={deleteMutation.isPending} onClick={() => deleteMutation.mutate(item.id)}>删除</Button>
                 </Space>
               )
@@ -416,15 +414,27 @@ function BuildPipelinePanel({ applicationId, localPipelines = [] }: { applicatio
           ]}
         />
       </Card>
+      <CreatePipelineModal
+        applicationId={applicationId}
+        projectId={projectId}
+        open={!!editingPipeline}
+        editingPipeline={editingPipeline}
+        onClose={() => setEditingPipeline(null)}
+        onSaved={(pipeline) => {
+          onPipelineChanged?.(pipeline);
+          setEditingPipeline(null);
+        }}
+      />
     </>
   );
 }
 
-function CreatePipelineModal({ applicationId, projectId, open, onClose, onCreated }: { applicationId: string; projectId?: string; open: boolean; onClose: () => void; onCreated?: (pipeline: BuildPipeline) => void }) {
+function CreatePipelineModal({ applicationId, projectId, open, onClose, editingPipeline, onSaved }: { applicationId: string; projectId?: string; open: boolean; onClose: () => void; editingPipeline?: BuildPipeline | null; onSaved?: (pipeline: BuildPipeline) => void }) {
   const [form] = Form.useForm();
   const queryClient = useQueryClient();
   const initializedRef = useRef(false);
-  const { data: repositories = EMPTY_LIST } = useQuery({ queryKey: ['source-repositories', projectId], queryFn: () => listSourceRepositories(projectId), enabled: open && !!projectId });
+  const isEditing = !!editingPipeline;
+  const { data: repositories = EMPTY_LIST } = useQuery({ queryKey: ['source-repositories', projectId], queryFn: () => listSourceRepositories(projectId), enabled: open });
   const { data: buildEnvironments = EMPTY_LIST } = useQuery({ queryKey: ['build-environments'], queryFn: listBuildEnvironments, enabled: open });
   const { data: runtimeEnvironments = EMPTY_LIST } = useQuery({ queryKey: ['runtime-environments'], queryFn: listRuntimeEnvironments, enabled: open });
   const { data: pipelines = EMPTY_LIST, isFetched: pipelinesFetched } = useQuery({ queryKey: ['build-pipelines', applicationId], queryFn: () => listBuildPipelines(applicationId), enabled: open && !!applicationId });
@@ -439,7 +449,28 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, onCreate
       form.resetFields();
       return;
     }
-    if (initializedRef.current || !pipelinesFetched || !repositories.length || !buildEnvironments.length || !runtimeEnvironments.length) return;
+    if (initializedRef.current || !repositories.length || !buildEnvironments.length || !runtimeEnvironments.length) return;
+    if (editingPipeline) {
+      form.setFieldsValue({
+        name: editingPipeline.name,
+        displayName: editingPipeline.displayName || editingPipeline.name,
+        description: editingPipeline.description,
+        runtimeEnvironmentIds: editingPipeline.runtimeEnvironments?.map((runtime) => runtime.id) || [],
+        sources: (editingPipeline.sources || []).map((source) => ({
+          key: source.key,
+          displayName: source.displayName,
+          sourceRepositoryId: source.sourceRepositoryId,
+          buildEnvironmentId: source.buildEnvironmentId,
+          sourcePath: source.sourcePath || source.buildSpec?.sourcePath || '.',
+          defaultRef: source.defaultRef || source.buildSpec?.defaultRef || 'main',
+          buildCommand: source.buildSpec?.buildCommand || '',
+          artifactCopyCommand: source.buildSpec?.artifactCopyCommand || ''
+        }))
+      });
+      initializedRef.current = true;
+      return;
+    }
+    if (!pipelinesFetched) return;
     const runtime = runtimeEnvironments.find((item: any) => item.isDefault) || runtimeEnvironments[0];
     const buildEnv = buildEnvironments.find((item: any) => item.isDefault) || buildEnvironments[0];
     const repo = repositories.find((item: any) => item.status === 'ready') || repositories[0];
@@ -460,7 +491,7 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, onCreate
       }]
     });
     initializedRef.current = true;
-  }, [buildEnvironments, form, open, pipelines, pipelinesFetched, repositories, runtimeEnvironments]);
+  }, [buildEnvironments, editingPipeline, form, open, pipelines, pipelinesFetched, repositories, runtimeEnvironments]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -486,12 +517,14 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, onCreate
           }
         };
       });
-      const pipeline = await createBuildPipeline(applicationId, { name: values.name, displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources });
+      const pipeline = editingPipeline
+        ? await updateBuildPipeline(editingPipeline.id, { displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources })
+        : await createBuildPipeline(applicationId, { name: values.name, displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources });
       return { ...pipeline, sources };
     },
     onSuccess: (pipeline) => {
-      message.success('流水线已创建');
-      onCreated?.(pipeline);
+      message.success(editingPipeline ? '流水线已保存' : '流水线已创建');
+      onSaved?.(pipeline);
       queryClient.setQueryData<BuildPipeline[]>(['build-pipelines', applicationId], (current = []) => {
         const existing = current.filter((item) => item.id !== pipeline.id);
         return [pipeline, ...existing];
@@ -499,14 +532,14 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, onCreate
       queryClient.invalidateQueries({ queryKey: ['build-pipelines', applicationId], refetchType: 'none' });
       onClose();
     },
-    onError: (error) => message.error(error instanceof Error ? error.message : '创建流水线失败')
+    onError: (error) => message.error(error instanceof Error ? error.message : (editingPipeline ? '保存流水线失败' : '创建流水线失败'))
   });
 
   return (
-    <Modal title="创建构建流水线" open={open} onCancel={onClose} onOk={() => mutation.mutate()} confirmLoading={mutation.isPending} width={760} okText="创建" cancelText="取消">
+    <Modal title={isEditing ? '编辑构建流水线' : '创建构建流水线'} open={open} onCancel={onClose} onOk={() => mutation.mutate()} confirmLoading={mutation.isPending} width={760} okText={isEditing ? '保存' : '创建'} cancelText="取消">
       <Form form={form} layout="vertical">
         <Form.Item label="流水线标识" name="name" rules={[{ required: true, message: '请输入流水线标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
-          <Input placeholder="main" />
+          <Input placeholder="main" disabled={isEditing} />
         </Form.Item>
         <Form.Item label="显示名称" name="displayName" rules={[{ required: true, message: '请输入显示名称' }]}>
           <Input placeholder="主流水线" />
@@ -585,10 +618,3 @@ function nextPipelineDefaults(pipelines: BuildPipeline[]) {
   return { name: `pipeline-${index}`, displayName: `流水线 ${index}` };
 }
 
-function Overview() {
-  return <Card className="summary-card"><Timeline items={[{ color: 'green', children: 'dev 已同步' }, { color: 'blue', children: 'test 正在部署' }, { color: 'gray', children: 'prod 等待审批' }]} /></Card>;
-}
-
-function EnvironmentPanel() {
-  return <Table pagination={false} dataSource={[{ env: 'dev', state: '运行中', desired: '3', ready: '3', sync: 'Synced', health: 'Healthy' }]} columns={[{ title: '环境', dataIndex: 'env' }, { title: '状态', dataIndex: 'state' }, { title: '期望实例', dataIndex: 'desired' }, { title: '可用实例', dataIndex: 'ready' }, { title: '同步状态', dataIndex: 'sync' }, { title: '健康状态', dataIndex: 'health' }]} />;
-}

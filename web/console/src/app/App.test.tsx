@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { ConfigProvider } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -22,7 +22,16 @@ function renderApp(path: string) {
 test('显示中文控制台导航', async () => {
   renderApp('/apps');
   expect(await screen.findByText('平台控制台')).toBeInTheDocument();
-  expect(screen.getAllByText('创建应用').length).toBeGreaterThan(0);
-  expect(screen.getByText('构建')).toBeInTheDocument();
+  const sider = document.querySelector('.ant-layout-sider') as HTMLElement;
+  expect(within(sider).getByText('项目')).toBeInTheDocument();
+  expect(within(sider).getByText('应用')).toBeInTheDocument();
+  expect(within(sider).getByText('版本')).toBeInTheDocument();
+  expect(within(sider).getByText('构建管理')).toBeInTheDocument();
+  expect(within(sider).getByText('审计日志')).toBeInTheDocument();
+  expect(within(sider).queryByText('源码仓库')).not.toBeInTheDocument();
+  expect(within(sider).queryByText('创建应用')).not.toBeInTheDocument();
+  expect(within(sider).queryByText('构建')).not.toBeInTheDocument();
+  expect(within(sider).queryByText('发布晋级')).not.toBeInTheDocument();
+  expect(within(sider).queryByText('部署模板')).not.toBeInTheDocument();
   expect(screen.getByPlaceholderText('搜索应用、资源、文档')).toBeInTheDocument();
 });
