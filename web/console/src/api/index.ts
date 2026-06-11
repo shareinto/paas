@@ -287,6 +287,15 @@ export async function createWorkload(applicationId: string, input: { name: strin
   return mapWorkload(item);
 }
 
+export async function deleteWorkload(applicationId: string, workloadId: string) {
+  if (!hasAPIBaseURL()) return mock.deleteWorkload(applicationId, workloadId);
+  const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' } })
+  });
+  return mapWorkload(item);
+}
+
 export async function listWorkloadEnvironmentConfigs(applicationId: string, workloadId: string) {
   if (!hasAPIBaseURL()) return mock.listWorkloadEnvironmentConfigs(applicationId, workloadId);
   const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/environment-configs`);
