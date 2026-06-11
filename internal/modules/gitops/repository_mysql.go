@@ -113,12 +113,12 @@ func (r *MySQLRepository) CreateDeployment(ctx context.Context, deployment Deplo
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO deployments (
   id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
-  freight_id, manifest_revision_id, image_repository, image_tag, image_digest, status, message,
+  freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
   created_at, updated_at, completed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		deployment.ID, deployment.TenantID, deployment.ProjectID, deployment.ApplicationID, deployment.EnvironmentID,
 		deployment.ClusterBindingID, deployment.PromotionID, deployment.FreightID, deployment.ManifestRevisionID,
-		deployment.ImageRepository, deployment.ImageTag, deployment.ImageDigest, deployment.Status, deployment.Message,
+		deployment.ImageRepository, deployment.ImageTag, deployment.ImageDigest, deployment.WorkloadSummary, deployment.Status, deployment.Message,
 		mysqlTime(deployment.CreatedAt), mysqlTime(deployment.UpdatedAt), mysqlTimePtr(deployment.CompletedAt))
 	return database.ConflictOrUnavailable(err, "deployment already exists", "create deployment failed")
 }
@@ -126,11 +126,11 @@ INSERT INTO deployments (
 func (r *MySQLRepository) UpdateDeployment(ctx context.Context, deployment Deployment) error {
 	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE deployments
-SET manifest_revision_id = ?, image_repository = ?, image_tag = ?, image_digest = ?,
+SET manifest_revision_id = ?, image_repository = ?, image_tag = ?, image_digest = ?, workload_summary = ?,
     status = ?, message = ?, updated_at = ?, completed_at = ?
 WHERE id = ?`,
 		deployment.ManifestRevisionID, deployment.ImageRepository, deployment.ImageTag, deployment.ImageDigest,
-		deployment.Status, deployment.Message, mysqlTime(deployment.UpdatedAt), mysqlTimePtr(deployment.CompletedAt), deployment.ID)
+		deployment.WorkloadSummary, deployment.Status, deployment.Message, mysqlTime(deployment.UpdatedAt), mysqlTimePtr(deployment.CompletedAt), deployment.ID)
 	if err != nil {
 		return database.WrapUnavailable(err, "update deployment failed")
 	}
@@ -140,7 +140,7 @@ WHERE id = ?`,
 func (r *MySQLRepository) GetDeployment(ctx context.Context, id shared.ID) (Deployment, error) {
 	deployment, err := scanDeployment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
 SELECT id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
-       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, status, message,
+       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
        created_at, updated_at, completed_at
 FROM deployments WHERE id = ?`, id))
 	if err != nil {
@@ -152,7 +152,7 @@ FROM deployments WHERE id = ?`, id))
 func (r *MySQLRepository) FindDeploymentByPromotion(ctx context.Context, promotionID shared.ID) (Deployment, error) {
 	deployment, err := scanDeployment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
 SELECT id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
-       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, status, message,
+       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
        created_at, updated_at, completed_at
 FROM deployments WHERE promotion_id = ?`, promotionID))
 	if err != nil {
@@ -169,7 +169,7 @@ func (r *MySQLRepository) ListDeployments(ctx context.Context, applicationID sha
 	page, limit, offset := database.LimitOffset(page)
 	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
 SELECT id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
-       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, status, message,
+       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
        created_at, updated_at, completed_at
 FROM deployments
 WHERE application_id = ?
@@ -224,7 +224,7 @@ func scanManifestRevision(scanner gitopsScanner) (ManifestRevision, error) {
 
 func scanDeployment(scanner gitopsScanner) (Deployment, error) {
 	var deployment Deployment
-	err := scanner.Scan(&deployment.ID, &deployment.TenantID, &deployment.ProjectID, &deployment.ApplicationID, &deployment.EnvironmentID, &deployment.ClusterBindingID, &deployment.PromotionID, &deployment.FreightID, &deployment.ManifestRevisionID, &deployment.ImageRepository, &deployment.ImageTag, &deployment.ImageDigest, &deployment.Status, &deployment.Message, &deployment.CreatedAt, &deployment.UpdatedAt, &deployment.CompletedAt)
+	err := scanner.Scan(&deployment.ID, &deployment.TenantID, &deployment.ProjectID, &deployment.ApplicationID, &deployment.EnvironmentID, &deployment.ClusterBindingID, &deployment.PromotionID, &deployment.FreightID, &deployment.ManifestRevisionID, &deployment.ImageRepository, &deployment.ImageTag, &deployment.ImageDigest, &deployment.WorkloadSummary, &deployment.Status, &deployment.Message, &deployment.CreatedAt, &deployment.UpdatedAt, &deployment.CompletedAt)
 	return deployment, err
 }
 

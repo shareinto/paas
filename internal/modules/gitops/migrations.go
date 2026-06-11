@@ -101,4 +101,37 @@ ALTER TABLE deployment_templates DROP INDEX uk_deployment_templates_application;
 ALTER TABLE deployment_templates DROP INDEX uk_deployment_templates_platform_name;
 `,
 	},
+	{
+		Version: 202606110301,
+		Name:    "gitops_deployment_workload_summary",
+		Up: `
+SET @deployments_workload_summary_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'deployments'
+    AND column_name = 'workload_summary'
+);
+SET @deployments_workload_summary_ddl := IF(@deployments_workload_summary_missing, 'ALTER TABLE deployments ADD COLUMN workload_summary VARCHAR(2048) NULL AFTER image_digest', 'SELECT 1');
+PREPARE deployments_workload_summary_stmt FROM @deployments_workload_summary_ddl;
+EXECUTE deployments_workload_summary_stmt;
+DEALLOCATE PREPARE deployments_workload_summary_stmt;
+
+UPDATE deployments SET workload_summary = '' WHERE workload_summary IS NULL;
+ALTER TABLE deployments MODIFY COLUMN workload_summary VARCHAR(2048) NOT NULL DEFAULT '';
+`,
+		Down: `
+SET @deployments_workload_summary_exists := (
+  SELECT COUNT(*) > 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'deployments'
+    AND column_name = 'workload_summary'
+);
+SET @drop_deployments_workload_summary_ddl := IF(@deployments_workload_summary_exists, 'ALTER TABLE deployments DROP COLUMN workload_summary', 'SELECT 1');
+PREPARE drop_deployments_workload_summary_stmt FROM @drop_deployments_workload_summary_ddl;
+EXECUTE drop_deployments_workload_summary_stmt;
+DEALLOCATE PREPARE drop_deployments_workload_summary_stmt;
+`,
+	},
 }

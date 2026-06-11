@@ -145,7 +145,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	deliveryRepo := repos.delivery
 	gitopsRepo := repos.gitops
 	manifestRepo := gitlab.NewFakeManifestRepositoryAdapter()
-	gitopsSvc := gitops.NewService(gitops.Options{Repository: gitopsRepo, ManifestRepo: manifestRepo, Application: appForGitOps{service: appSvc}, Environment: envForGitOps{service: appSvc, repo: appRepo}, Audit: audit.GitOpsLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	gitopsSvc := gitops.NewService(gitops.Options{Repository: gitopsRepo, ManifestRepo: manifestRepo, Application: appForGitOps{service: appSvc}, Environment: envForGitOps{service: appSvc, repo: appRepo}, Workload: workloadForGitOps{service: appSvc}, Audit: audit.GitOpsLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	clusterRepo := repos.cluster
@@ -820,6 +820,61 @@ func (q envForGitOps) GetActiveBinding(ctx context.Context, environmentID shared
 		return gitops.ClusterBindingRef{}, err
 	}
 	return gitops.ClusterBindingRef{ID: binding.ID, ClusterID: binding.ClusterID, ClusterName: binding.ClusterName, Namespace: binding.Namespace}, nil
+}
+
+type workloadForGitOps struct{ service *appenv.Service }
+
+func (q workloadForGitOps) GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (gitops.WorkloadRef, error) {
+	workload, err := q.service.GetWorkload(ctx, applicationID, workloadID)
+	if err != nil {
+		return gitops.WorkloadRef{}, err
+	}
+	return gitops.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, Name: workload.Name, DisplayName: workload.DisplayName, WorkloadType: string(workload.WorkloadType)}, nil
+}
+
+func (q workloadForGitOps) GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (gitops.WorkloadEnvironmentConfigRef, error) {
+	config, err := q.service.GetWorkloadEnvironmentConfig(ctx, workloadID, environmentID)
+	if err != nil {
+		return gitops.WorkloadEnvironmentConfigRef{}, err
+	}
+	return toGitOpsWorkloadEnvironmentConfig(config), nil
+}
+
+func toGitOpsWorkloadEnvironmentConfig(config appenv.WorkloadEnvironmentConfig) gitops.WorkloadEnvironmentConfigRef {
+	out := gitops.WorkloadEnvironmentConfigRef{
+		Replicas:         config.Replicas,
+		ResourceRequests: gitops.WorkloadResourceListRef{CPU: config.ResourceRequests.CPU, Memory: config.ResourceRequests.Memory},
+		ResourceLimits:   gitops.WorkloadResourceListRef{CPU: config.ResourceLimits.CPU, Memory: config.ResourceLimits.Memory},
+		ValuesOverride:   config.ValuesOverride,
+	}
+	for _, port := range config.ServicePorts {
+		out.ServicePorts = append(out.ServicePorts, gitops.WorkloadServicePortRef{Name: port.Name, Port: port.Port, TargetPort: port.TargetPort, Protocol: port.Protocol})
+	}
+	for _, probe := range config.Probes {
+		out.Probes = append(out.Probes, gitops.WorkloadProbeRef{Name: probe.Name, Type: probe.Type, Path: probe.Path, Port: probe.Port, Command: probe.Command, InitialDelaySeconds: probe.InitialDelaySeconds, PeriodSeconds: probe.PeriodSeconds})
+	}
+	for _, env := range config.EnvVars {
+		out.EnvVars = append(out.EnvVars, gitops.WorkloadEnvVarRef{Name: env.Name, Value: env.Value})
+	}
+	for _, host := range config.IngressHosts {
+		out.IngressHosts = append(out.IngressHosts, gitops.WorkloadIngressHostRef{Host: host.Host, Path: host.Path})
+	}
+	for _, secret := range config.SecretRefs {
+		out.SecretRefs = append(out.SecretRefs, gitops.WorkloadSecretRef{Name: secret.Name, SecretRef: secret.SecretRef})
+	}
+	for _, file := range config.ConfigFiles {
+		out.ConfigFiles = append(out.ConfigFiles, gitops.WorkloadConfigFileRef{MountPath: file.MountPath, Content: file.Content})
+	}
+	for _, dir := range config.WritableDirs {
+		out.WritableDirs = append(out.WritableDirs, gitops.WorkloadWritableDirRef{MountPath: dir.MountPath, SizeLimit: dir.SizeLimit})
+	}
+	for _, mount := range config.VolumeMounts {
+		out.VolumeMounts = append(out.VolumeMounts, gitops.WorkloadVolumeMountRef{Name: mount.Name, MountPath: mount.MountPath})
+	}
+	for _, init := range config.InitContainers {
+		out.InitContainers = append(out.InitContainers, gitops.WorkloadInitContainerRef{Name: init.Name, Image: init.Image, Command: init.Command})
+	}
+	return out
 }
 
 type envUpdater struct{ service *appenv.Service }

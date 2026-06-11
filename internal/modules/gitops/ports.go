@@ -85,6 +85,11 @@ type EnvironmentQuery interface {
 	GetActiveBinding(ctx context.Context, environmentID shared.ID) (ClusterBindingRef, error)
 }
 
+type WorkloadQuery interface {
+	GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error)
+	GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfigRef, error)
+}
+
 type AuditLogger interface {
 	Log(ctx context.Context, event AuditEvent) error
 }
