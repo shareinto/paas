@@ -78,7 +78,7 @@ func (h *Handler) handleEligibleFreights(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, freights)
 }
 func (h *Handler) handleGetFreight(w http.ResponseWriter, r *http.Request) {
-	freight, err := h.service.GetFreight(r.Context(), shared.ID(r.PathValue("freightId")))
+	freight, err := h.service.GetFreightDetail(r.Context(), shared.ID(r.PathValue("freightId")))
 	if err != nil {
 		writeError(w, err)
 		return

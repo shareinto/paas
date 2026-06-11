@@ -7,7 +7,8 @@ export type BuildPipelineSource = ApplicationSource & { pipelineId?: string };
 export type BuildPipeline = { id: string; applicationId: string; name: string; displayName: string; description?: string; status: string; externalJobName?: string; runtimeEnvironments?: RuntimeEnvironment[]; sources?: BuildPipelineSource[]; updatedAt: string };
 export type BuildRun = { id: string; application: string; pipeline?: string; pipelineId?: string; status: string; ref: string; commit: string; startedAt: string; duration: string };
 export type AuditLog = { id: string; actor: string; action: string; resource: string; result: string; summary: string; time: string };
-export type Freight = { id: string; version: string; image: string; digest: string; commit: string; createdAt: string };
+export type FreightItem = { id: string; workloadId: string; workloadName: string; workloadDisplayName: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; image: string; digest?: string; commit?: string };
+export type Freight = { id: string; version: string; image: string; digest: string; commit: string; createdAt: string; items?: FreightItem[] };
 export type WorkloadType = 'deployment' | 'statefulset';
 export type WorkloadImageSourceMode = 'pipeline_artifact' | 'custom_image' | 'mixed' | 'none';
 export type WorkloadEnvironmentStatus = { envName: string; releaseVersion: string; syncStatus: string; healthStatus: string };
@@ -47,6 +48,11 @@ export type WorkloadEnvironmentConfig = {
   configFiles: WorkloadConfigFile[];
   writableDirs: WorkloadWritableDir[];
 };
+export type ReleaseCandidate = { id: string; workloadId: string; version: string; image: string; digest: string; commit: string; buildArtifactId?: string; createdAt: string };
+export type BuildArtifactCandidate = { id: string; workloadId: string; image: string; digest: string; createdAt: string };
+export type StageDefinition = { id: string; name: 'dev' | 'test' | 'staging' | 'prod'; environmentId: string; approvalRequired?: boolean; approvalCount?: number; approverScope?: string; selfApprovalForbidden?: boolean };
+export type FreightCreationContext = { enabledWorkloads: Workload[]; latestReleasesByWorkload: Record<string, ReleaseCandidate>; latestArtifactsByWorkload: Record<string, BuildArtifactCandidate>; stageEligibility: Record<string, string[]>; stages: StageDefinition[] };
+export type CreateFreightInput = { name: string; items: { workloadId: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageRef?: string }[] };
 export type SourceRepository = { id: string; projectId: string; projectName: string; name: string; displayName: string; description: string; gitProvider: string; httpUrl: string; sshUrl: string; defaultBranch: string; status: string; associatedApplications: number; updatedAt: string };
 export type RepositoryBranch = { name: string; default: boolean };
 export type RepositoryTreeItem = { name: string; path: string; type: 'tree' | 'blob' };
@@ -94,6 +100,82 @@ const applications: Application[] = [
 ];
 const applicationSources: Record<string, ApplicationSource[]> = {
   app_1: [{ id: 'app_source_1', key: 'main', displayName: '主代码源', sourceRepositoryId: 'repo_1', buildEnvironmentId: 'build_env_java_springboot', sourcePath: 'services/order-api', defaultRef: 'main', isPrimary: true, buildSpec: { sourcePath: 'services/order-api', buildCommand: 'mvn clean package -DskipTests', artifactCopyCommand: 'cp -ar target/order-api.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"', defaultRef: 'main' } }]
+};
+const promotionStages: StageDefinition[] = [
+  { id: 'stage_dev', name: 'dev', environmentId: 'env_dev' },
+  { id: 'stage_test', name: 'test', environmentId: 'env_test' },
+  { id: 'stage_staging', name: 'staging', environmentId: 'env_staging' },
+  { id: 'stage_prod', name: 'prod', environmentId: 'env_prod', approvalRequired: true, approvalCount: 2, approverScope: '生产审批人', selfApprovalForbidden: true }
+];
+const enabledWorkloads: Workload[] = [
+  {
+    id: 'workload_frontend',
+    applicationId: 'app_1',
+    name: 'frontend',
+    displayName: '前端入口',
+    description: '前端入口服务',
+    workloadType: 'deployment',
+    imageSourceMode: 'pipeline_artifact',
+    imageSourceName: '前端流水线',
+    latestRelease: '20260611.1',
+    status: 'enabled',
+    envStatuses: [],
+    updatedAt: '2026-06-11 09:00'
+  },
+  {
+    id: 'workload_api',
+    applicationId: 'app_1',
+    name: 'api',
+    displayName: '订单接口',
+    description: '订单接口服务',
+    workloadType: 'deployment',
+    imageSourceMode: 'pipeline_artifact',
+    imageSourceName: '主流水线',
+    latestRelease: '20260611.1',
+    status: 'enabled',
+    envStatuses: [],
+    updatedAt: '2026-06-11 09:02'
+  },
+  {
+    id: 'workload_worker',
+    applicationId: 'app_1',
+    name: 'worker',
+    displayName: '异步任务',
+    description: '异步任务处理',
+    workloadType: 'statefulset',
+    imageSourceMode: 'pipeline_artifact',
+    imageSourceName: '任务流水线',
+    latestRelease: '20260611.1',
+    status: 'enabled',
+    envStatuses: [],
+    updatedAt: '2026-06-11 09:04'
+  }
+];
+const latestReleasesByWorkload: Record<string, ReleaseCandidate> = {
+  workload_frontend: { id: 'release_frontend_20260611', workloadId: 'workload_frontend', version: '20260611.1', image: 'registry.local/order-frontend:20260611.1', digest: 'sha256:front111', commit: 'a11b22c', buildArtifactId: 'artifact_frontend_20260611', createdAt: '2026-06-11 09:00' },
+  workload_api: { id: 'release_api_20260611', workloadId: 'workload_api', version: '20260611.1', image: 'registry.local/order-api:20260611.1', digest: 'sha256:api111', commit: 'd33e44f', buildArtifactId: 'artifact_api_20260611', createdAt: '2026-06-11 09:02' },
+  workload_worker: { id: 'release_worker_20260611', workloadId: 'workload_worker', version: '20260611.1', image: 'registry.local/order-worker:20260611.1', digest: 'sha256:worker111', commit: 'g55h66i', buildArtifactId: 'artifact_worker_20260611', createdAt: '2026-06-11 09:04' }
+};
+const latestArtifactsByWorkload: Record<string, BuildArtifactCandidate> = {
+  workload_frontend: { id: 'artifact_frontend_20260611', workloadId: 'workload_frontend', image: 'registry.local/order-frontend:20260611.1', digest: 'sha256:front111', createdAt: '2026-06-11 09:00' },
+  workload_api: { id: 'artifact_api_20260611', workloadId: 'workload_api', image: 'registry.local/order-api:20260611.1', digest: 'sha256:api111', createdAt: '2026-06-11 09:02' },
+  workload_worker: { id: 'artifact_worker_20260611', workloadId: 'workload_worker', image: 'registry.local/order-worker:20260611.1', digest: 'sha256:worker111', createdAt: '2026-06-11 09:04' }
+};
+const freightItems = (version: string): FreightItem[] => [
+  { id: `item_frontend_${version}`, workloadId: 'workload_frontend', workloadName: 'frontend', workloadDisplayName: '前端入口', sourceType: 'pipeline_artifact', releaseId: `release_frontend_${version}`, buildArtifactId: `artifact_frontend_${version}`, image: `registry.local/order-frontend:${version}`, digest: `sha256:front${version.replace(/\D/g, '').slice(-3)}`, commit: 'a11b22c' },
+  { id: `item_api_${version}`, workloadId: 'workload_api', workloadName: 'api', workloadDisplayName: '订单接口', sourceType: 'pipeline_artifact', releaseId: `release_api_${version}`, buildArtifactId: `artifact_api_${version}`, image: `registry.local/order-api:${version}`, digest: `sha256:api${version.replace(/\D/g, '').slice(-3)}`, commit: 'd33e44f' },
+  { id: `item_worker_${version}`, workloadId: 'workload_worker', workloadName: 'worker', workloadDisplayName: '异步任务', sourceType: version === '20260610.1' ? 'custom_image' : 'pipeline_artifact', releaseId: `release_worker_${version}`, buildArtifactId: `artifact_worker_${version}`, image: `registry.local/order-worker:${version}`, digest: `sha256:worker${version.replace(/\D/g, '').slice(-3)}`, commit: 'g55h66i' }
+];
+const freights: Freight[] = [
+  { id: 'freight_20260611_1', version: '20260611.1', image: '3 个 Workload', digest: '-', commit: 'a11b22c', createdAt: '2026-06-11 09:12', items: freightItems('20260611.1') },
+  { id: 'freight_20260609_1', version: '20260609.1', image: '3 个 Workload', digest: '-', commit: 'z98y87x', createdAt: '2026-06-09 14:20', items: freightItems('20260609.1') },
+  { id: 'freight_20260610_1', version: '20260610.1', image: '3 个 Workload', digest: '-', commit: 'm12n34o', createdAt: '2026-06-10 18:05', items: freightItems('20260610.1') }
+];
+const stageEligibility: Record<string, string[]> = {
+  stage_dev: ['freight_20260609_1'],
+  stage_test: ['freight_20260610_1'],
+  stage_staging: ['freight_20260611_1'],
+  stage_prod: ['freight_20260611_1']
 };
 const buildPipelines: Record<string, BuildPipeline[]> = {
   app_1: [{
@@ -317,12 +399,71 @@ export async function listAuditLogs(): Promise<AuditLog[]> {
   ];
 }
 
-export async function listFreights(): Promise<Freight[]> {
+export async function listFreights(applicationId?: string): Promise<Freight[]> {
   await wait();
-  return [
-    { id: 'freight_18', version: 'v1.8.2', image: 'registry.local/order-api:v1.8.2', digest: 'sha256:91ab', commit: '8c1a09f', createdAt: '2026-05-30 10:08' },
-    { id: 'freight_17', version: 'v1.8.1', image: 'registry.local/order-api:v1.8.1', digest: 'sha256:7f02', commit: '61b9120', createdAt: '2026-05-29 16:45' }
-  ];
+  if (!applicationId) {
+    return [
+      { id: 'freight_18', version: 'v1.8.2', image: 'registry.local/order-api:v1.8.2', digest: 'sha256:91ab', commit: '8c1a09f', createdAt: '2026-05-30 10:08' },
+      { id: 'freight_17', version: 'v1.8.1', image: 'registry.local/order-api:v1.8.1', digest: 'sha256:7f02', commit: '61b9120', createdAt: '2026-05-29 16:45' }
+    ];
+  }
+  return freights.map(cloneFreight);
+}
+
+export async function getFreightCreationContext(): Promise<FreightCreationContext> {
+  await wait();
+  return {
+    enabledWorkloads: enabledWorkloads.map((item) => ({ ...item })),
+    latestReleasesByWorkload: cloneRecord(latestReleasesByWorkload),
+    latestArtifactsByWorkload: cloneRecord(latestArtifactsByWorkload),
+    stageEligibility: Object.fromEntries(Object.entries(stageEligibility).map(([key, value]) => [key, [...value]])),
+    stages: promotionStages.map((item) => ({ ...item }))
+  };
+}
+
+export async function listEligibleFreights(_applicationId: string, stageId: string): Promise<Freight[]> {
+  await wait();
+  const ids = new Set(stageEligibility[stageId] || []);
+  return freights.filter((item) => ids.has(item.id)).map(cloneFreight);
+}
+
+export async function getFreight(freightId: string): Promise<Freight> {
+  await wait();
+  const freight = freights.find((item) => item.id === freightId);
+  if (!freight) throw new Error('Freight 不存在');
+  return cloneFreight(freight);
+}
+
+export async function createFreight(_applicationId: string, input: CreateFreightInput): Promise<Freight> {
+  await wait();
+  if (input.items.length !== enabledWorkloads.length) throw new Error('Freight 必须覆盖所有启用 Workload');
+  const version = input.name || `manual-${Date.now()}`;
+  const items = input.items.map((item) => {
+    const workload = enabledWorkloads.find((candidate) => candidate.id === item.workloadId);
+    if (!workload) throw new Error('Workload 不存在');
+    const release = latestReleasesByWorkload[item.workloadId];
+    return {
+      id: `item_${Date.now()}_${item.workloadId}`,
+      workloadId: item.workloadId,
+      workloadName: workload.name,
+      workloadDisplayName: workload.displayName,
+      sourceType: item.sourceType,
+      releaseId: item.releaseId,
+      buildArtifactId: item.buildArtifactId,
+      image: item.sourceType === 'custom_image' ? item.imageRef || '' : release.image,
+      digest: item.sourceType === 'custom_image' ? undefined : release.digest,
+      commit: item.sourceType === 'custom_image' ? undefined : release.commit
+    };
+  });
+  const freight = { id: `freight_${Date.now()}`, version, image: `${items.length} 个 Workload`, digest: '-', commit: '-', createdAt: '刚刚', items };
+  freights.unshift(freight);
+  return cloneFreight(freight);
+}
+
+export async function createPromotion(input: { freightId: string; targetEnvironmentId: string; message?: string }) {
+  await wait();
+  if (!input.freightId || !input.targetEnvironmentId) throw new Error('请选择 Freight 和目标环境');
+  return { id: `promotion_${Date.now()}`, freightId: input.freightId, targetEnvironmentId: input.targetEnvironmentId, status: input.targetEnvironmentId === 'env_prod' ? '待审批' : '发布中', message: input.message || '' };
 }
 
 export async function listWorkloads(applicationId: string): Promise<Workload[]> {
@@ -663,4 +804,12 @@ function cloneWorkloadEnvironmentConfig(config: WorkloadEnvironmentConfig): Work
     configFiles: config.configFiles.map((item) => ({ ...item })),
     writableDirs: config.writableDirs.map((item) => ({ ...item }))
   };
+}
+
+function cloneFreight(item: Freight): Freight {
+  return { ...item, items: item.items?.map((freightItem) => ({ ...freightItem })) };
+}
+
+function cloneRecord<T extends object>(record: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, { ...value }]));
 }

@@ -309,6 +309,26 @@ func TestManualFreightValidatesWorkloadCoverageSourcesAndCustomImageRisk(t *test
 	}
 }
 
+func TestGetFreightDetailIncludesItems(t *testing.T) {
+	env := newDeliveryEnv(t)
+	freight := seedFreight(t, env)
+
+	detail, err := env.svc.GetFreightDetail(context.Background(), freight.ID)
+	if err != nil {
+		t.Fatalf("GetFreightDetail() error = %v", err)
+	}
+	if detail.Freight.ID != freight.ID || len(detail.Items) != 1 {
+		t.Fatalf("unexpected freight detail: %+v", detail)
+	}
+	item := detail.Items[0]
+	if item.WorkloadID != "workload_api" || item.SourceType != FreightItemPipelineArtifact || item.ReleaseID == "" || item.BuildArtifactID == "" {
+		t.Fatalf("detail item should keep workload/source/release/artifact identity: %+v", item)
+	}
+	if item.URI != "registry.example/paas/user-api:abcdef" || item.ImageRef != "registry.example/paas/user-api:abcdef" || item.ImageRepository != "registry.example/paas/user-api" || item.ImageTag != "abcdef" || item.Digest != "sha256:abc" {
+		t.Fatalf("detail item should keep image fields: %+v", item)
+	}
+}
+
 func TestManualFreightRejectsDirectPipelineArtifactWithoutDigestOrCommit(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -376,6 +396,36 @@ func TestEligibleFreightsAndPromotionValidateStageOrder(t *testing.T) {
 	eligible, err = env.svc.ListEligibleFreights(context.Background(), "app_user", stages[1].ID)
 	if err != nil || len(eligible) != 1 || eligible[0].ID != freight.ID {
 		t.Fatalf("test should be eligible after dev, got %+v %v", eligible, err)
+	}
+}
+
+func TestFreightCreationContextIncludesRealDeliveryStages(t *testing.T) {
+	env := newDeliveryEnv(t)
+	freight := seedFreight(t, env)
+	flow, err := env.repo.FindDeliveryFlowByApplication(context.Background(), "app_user")
+	if err != nil {
+		t.Fatalf("FindDeliveryFlowByApplication() error = %v", err)
+	}
+	stages, err := env.repo.ListDeliveryStages(context.Background(), flow.ID)
+	if err != nil {
+		t.Fatalf("ListDeliveryStages() error = %v", err)
+	}
+
+	contextOut, err := env.svc.GetFreightCreationContext(context.Background(), "app_user")
+	if err != nil {
+		t.Fatalf("GetFreightCreationContext() error = %v", err)
+	}
+	if len(contextOut.Stages) != len(stages) {
+		t.Fatalf("context should include real delivery stages, got %+v want %+v", contextOut.Stages, stages)
+	}
+	for i, stage := range stages {
+		got := contextOut.Stages[i]
+		if got.ID != stage.ID || got.Name != stage.Name || got.EnvironmentID != stage.EnvironmentID || got.ApprovalRequired != stage.RequiresApproval {
+			t.Fatalf("context stage[%d] = %+v, want %+v", i, got, stage)
+		}
+	}
+	if got := contextOut.StageEligibility[stages[0].ID]; len(got) != 1 || got[0] != freight.ID {
+		t.Fatalf("stage eligibility should use real stage id %s, got %+v", stages[0].ID, contextOut.StageEligibility)
 	}
 }
 
@@ -457,9 +507,29 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	assertStatus(t, freightRec, http.StatusCreated)
 	var freight Freight
 	_ = json.NewDecoder(freightRec.Body).Decode(&freight)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights/creation-context", nil), http.StatusOK)
+	contextRec := serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights/creation-context", nil)
+	assertStatus(t, contextRec, http.StatusOK)
+	var contextOut FreightCreationContext
+	if err := json.NewDecoder(contextRec.Body).Decode(&contextOut); err != nil {
+		t.Fatalf("decode freight creation context: %v", err)
+	}
+	firstStageEligible := []shared.ID(nil)
+	if len(contextOut.Stages) > 0 {
+		firstStageEligible = contextOut.StageEligibility[contextOut.Stages[0].ID]
+	}
+	if len(contextOut.Stages) != 4 || contextOut.Stages[0].ID.IsZero() || len(firstStageEligible) != 1 || firstStageEligible[0] != freight.ID {
+		t.Fatalf("creation context should include real stages and eligibility, got %+v", contextOut)
+	}
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights?page=1&page_size=5", nil), http.StatusOK)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/freights/"+freight.ID.String(), nil), http.StatusOK)
+	detailRec := serveJSON(mux, http.MethodGet, "/api/freights/"+freight.ID.String(), nil)
+	assertStatus(t, detailRec, http.StatusOK)
+	var detail FreightDetail
+	if err := json.NewDecoder(detailRec.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode freight detail: %v", err)
+	}
+	if detail.Freight.ID != freight.ID || len(detail.Items) != 1 || detail.Items[0].WorkloadID != "workload_api" || detail.Items[0].ImageRef == "" {
+		t.Fatalf("GET freight detail should include items, got %+v", detail)
+	}
 	promoBody, _ := json.Marshal(CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
 	promoRec := serveJSON(mux, http.MethodPost, "/api/promotions", promoBody)
 	assertStatus(t, promoRec, http.StatusCreated)
