@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "paas-agent.fullname" . }}
+  labels:
+    {{- include "paas-agent.labels" . | nindent 4 }}
+data:
+  PAAS_CLUSTER_ID: {{ required "config.clusterID is required" .Values.config.clusterID | quote }}
+  PAAS_CONTROL_PLANE_URL: {{ required "config.controlPlaneURL is required" .Values.config.controlPlaneURL | quote }}
+  PAAS_AGENT_NAMESPACES: {{ .Values.config.agentNamespaces | default "" | quote }}
+  PAAS_ARGOCD_NAMESPACE: {{ .Values.config.argocdNamespace | default "argocd" | quote }}
+  PAAS_HEARTBEAT_INTERVAL: {{ .Values.config.heartbeatInterval | default "10s" | quote }}
+  PAAS_SNAPSHOT_INTERVAL: {{ .Values.config.snapshotInterval | default "30s" | quote }}

@@ -46,3 +46,10 @@
 - 涉及权限、发布、部署、回滚和审计的逻辑应补充测试。
 - 涉及用户可见流程时，应同时考虑失败状态、重试和审计记录。
 - 不要在日志或返回值中暴露凭据、token、secret 或 kubeconfig。
+
+## 测试执行约束
+
+- 不要直接裸跑 `go test ./...`。该命令会让多个 package 并发执行，可能为 MySQL 集成测试同时拉起多个 testcontainers MySQL 容器。
+- 需要执行后端全量测试时，优先使用 `scripts/test-full.sh`。该脚本会启动或复用 1 个测试 MySQL，并默认用 `go test -p 1 -count=1 ./...` 串行运行 Go package。
+- 如果只执行 Go 全量测试且不运行前端测试，应先设置共享 `PAAS_TEST_MYSQL_DSN`，再执行 `go test -p 1 -count=1 ./...`。
+- 如需调整 Go package 并发度，只能通过 `PAAS_GO_TEST_P` 显式设置，并确认共享 MySQL 下不同 package 的测试库不会互相影响。

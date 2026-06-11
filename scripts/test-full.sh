@@ -35,7 +35,7 @@ wait_for_mysql() {
 
   echo "等待测试 MySQL 启动..."
   for _ in $(seq 1 90); do
-    if docker exec "$container_id" mysqladmin ping -uroot -p"$password" --silent >/dev/null 2>&1; then
+    if docker exec "$container_id" mysqladmin ping -h127.0.0.1 -P3306 -uroot -p"$password" --silent >/dev/null 2>&1; then
       ready=1
       break
     fi
