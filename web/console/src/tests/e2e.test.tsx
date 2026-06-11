@@ -96,6 +96,7 @@ test('应用详情中创建流水线后列表展示新流水线', async () => {
   window.localStorage.setItem('paas_token', 'test');
   useSession.setState({ token: 'test', userName: '测试用户' });
   renderFlow('/apps/app_1');
+  await userEvent.click(await screen.findByRole('tab', { name: '构建' }));
   expect(await screen.findByText('主流水线')).toBeInTheDocument();
 
   await userEvent.click(await screen.findByRole('button', { name: /创建流水线/ }));
@@ -187,6 +188,7 @@ test('核心控制台页面可以通过 mock API 独立渲染', async () => {
   renderFlow('/apps/app_1');
   expect(await screen.findByRole('heading', { name: '订单服务' })).toBeInTheDocument();
   expect(await screen.findByText('应用标识')).toBeInTheDocument();
+  await userEvent.click(await screen.findByRole('tab', { name: '构建' }));
   expect(await screen.findByText('构建流水线')).toBeInTheDocument();
 
   cleanup();
