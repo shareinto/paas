@@ -65,9 +65,9 @@ test('真实 API 列表无 items 时点击 Freight 会加载详情并展示 Work
   await userEvent.click(within(devCard).getByRole('button', { name: '发布' }));
   await userEvent.click(await screen.findByRole('button', { name: /选择 Freight 20260612\.1/ }));
 
-  const dialog = await screen.findByRole('dialog', { name: '确认发布' });
-  expect(within(dialog).getByText('订单接口')).toBeInTheDocument();
-  expect(within(dialog).getByText('registry.local/order-api:20260612.1')).toBeInTheDocument();
+  const panel = await screen.findByTestId('promotion-confirm-panel');
+  expect(within(panel).getByText('订单接口')).toBeInTheDocument();
+  expect(within(panel).getByText('registry.local/order-api:20260612.1')).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/freights/freight_1', expect.any(Object));
 });
 
@@ -128,9 +128,8 @@ test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID',
 
   await userEvent.click(await screen.findByRole('button', { name: '创建 Freight' }));
   const drawer = await screen.findByRole('dialog', { name: '创建 Freight' });
-  await userEvent.click(within(drawer).getByLabelText('外部订单接口流水线产物'));
-  await userEvent.click(await screen.findByTitle('registry.local/other-api:20260613.1'));
-  await userEvent.click(within(drawer).getByRole('button', { name: '创建' }));
+  await userEvent.click(within(drawer).getByRole('button', { name: '从最新成功版本填充' }));
+  await userEvent.click(within(drawer).getByRole('button', { name: '创建 Freight' }));
 
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/freights?page=1&page_size=50', expect.any(Object));
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/freights/creation-context', expect.any(Object));

@@ -67,7 +67,8 @@ test('真实 API 创建 Workload 使用服务端响应作为缓存数据来源',
     displayName: '订单任务',
     workloadType: 'statefulset',
     imageSourceMode: 'custom_image',
-    customImage: 'registry.example.com/order/worker:20260611'
+    customImage: 'registry.example.com/order/worker:20260611',
+    replicas: 2
   })).resolves.toMatchObject({
     id: 'workload_worker',
     imageSourceMode: 'pipeline_artifact',
@@ -76,12 +77,13 @@ test('真实 API 创建 Workload 使用服务端响应作为缓存数据来源',
   expect(postBody).toMatchObject({
     name: 'order-worker',
     display_name: '订单任务',
-    workload_type: 'statefulset'
+    workload_type: 'statefulset',
+    image_source_mode: 'custom_image',
+    custom_image: 'registry.example.com/order/worker:20260611',
+    replicas: 2
   });
   expect(postBody).not.toHaveProperty('imageSourceMode');
-  expect(postBody).not.toHaveProperty('image_source_mode');
   expect(postBody).not.toHaveProperty('customImage');
-  expect(postBody).not.toHaveProperty('custom_image');
 });
 
 test('真实 API 删除 Workload 提交软删除请求', async () => {

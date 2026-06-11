@@ -289,7 +289,7 @@ export async function listWorkloads(applicationId: string) {
   return data.items.map(mapWorkload);
 }
 
-export async function createWorkload(applicationId: string, input: { name: string; displayName: string; description?: string; workloadType: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode; customImage?: string }) {
+export async function createWorkload(applicationId: string, input: { name: string; displayName: string; description?: string; workloadType: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode; customImage?: string; pipelineName?: string; replicas?: number }) {
   if (!hasAPIBaseURL()) return mock.createWorkload(applicationId, input);
   const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads`, {
     method: 'POST',
@@ -298,7 +298,11 @@ export async function createWorkload(applicationId: string, input: { name: strin
       name: input.name,
       display_name: input.displayName,
       description: input.description || '',
-      workload_type: input.workloadType
+      workload_type: input.workloadType,
+      image_source_mode: input.imageSourceMode || 'pipeline_artifact',
+      custom_image: input.customImage || '',
+      pipeline_name: input.pipelineName || '',
+      replicas: input.replicas
     })
   });
   return mapWorkload(item);
@@ -738,7 +742,11 @@ function mapStageDefinition(item: any): mock.StageDefinition {
     approvalRequired: !!(item.approvalRequired || item.approval_required || item.requires_approval),
     approvalCount: item.approvalCount || item.approval_count,
     approverScope: item.approverScope || item.approver_scope,
-    selfApprovalForbidden: item.selfApprovalForbidden || item.self_approval_forbidden
+    selfApprovalForbidden: item.selfApprovalForbidden || item.self_approval_forbidden,
+    currentFreightVersion: item.currentFreightVersion || item.current_freight_version || item.current_freight || '',
+    replicasSummary: item.replicasSummary || item.replicas_summary || '',
+    domainSummary: item.domainSummary || item.domain_summary || '',
+    configSummary: item.configSummary || item.config_summary || ''
   };
 }
 

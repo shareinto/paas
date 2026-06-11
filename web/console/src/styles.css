@@ -138,6 +138,15 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 .source-tabs-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .source-tabs-row .ant-tabs { flex: 1; min-width: 0; }
 .detail-tabs { margin-top: 14px; }
+.delivery-flow { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; overflow-x: auto; }
+.delivery-flow-step { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.delivery-flow-node { min-width: 118px; height: 32px; padding: 0 10px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-soft); border-radius: var(--radius); background: #fbfdff; color: var(--text-muted); white-space: nowrap; }
+.delivery-flow-node.active { color: var(--primary); border-color: #8eb8ff; background: #eaf2ff; font-weight: 650; }
+.delivery-flow-arrow { color: #98a2b3; font-weight: 700; }
+.workload-create-grid { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 18px; margin-top: 18px; align-items: start; }
+.workload-create-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+.workload-create-form .ant-alert { grid-column: 1 / -1; }
+.workload-check-panel { display: grid; gap: 10px; border: 1px solid var(--border-soft); border-radius: var(--radius); padding: 14px; background: #fff; }
 .build-detail-summary { margin-bottom: 10px; }
 .build-log-card { height: calc(100vh - 210px); min-height: 520px; display: flex; flex-direction: column; }
 .build-log-card .ant-card-body { flex: 1; min-height: 0; padding: 0; display: flex; }
@@ -153,6 +162,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 .full-width { width: 100%; }
 .hidden-file-input { display: none; }
 .promotion-layout { display: grid; gap: 16px; }
+.promotion-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; }
+.promotion-main-column { display: grid; gap: 16px; min-width: 0; }
 .promotion-timeline-card .ant-card-body { padding: 16px; }
 .freight-timeline { display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 10px; min-height: 184px; }
 .freight-timeline-card { width: 260px; flex: 0 0 260px; display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; color: var(--text); text-align: left; cursor: pointer; opacity: .95; }
@@ -163,6 +174,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 .freight-card-item { display: grid; gap: 2px; color: var(--text-muted); font-size: 12px; min-width: 0; }
 .stage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .stage-card.active { border-color: #8eb8ff; box-shadow: 0 0 0 3px rgba(21, 91, 212, 0.08); }
+.stage-card .ant-descriptions { margin: 12px 0; }
+.stage-card .ant-descriptions-item { padding-bottom: 4px !important; }
+.promotion-confirm-panel { border: 1px solid var(--border); border-radius: var(--radius); background: #fff; padding: 16px; position: sticky; top: 80px; display: grid; gap: 12px; }
 .confirm-workload-list { display: grid; gap: 10px; }
 .confirm-workload-row { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--border-soft); border-radius: var(--radius); }
 .promotion-history-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; }
@@ -174,6 +188,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 
 @media (max-width: 1180px) {
   .wizard-grid, .create-app-grid, .template-grid, .stage-grid { grid-template-columns: 1fr; }
+  .promotion-workspace { grid-template-columns: 1fr; }
+  .promotion-confirm-panel { position: static; }
+  .workload-create-grid, .workload-create-form { grid-template-columns: 1fr; }
   .create-app-side { position: static; }
   .toolbar { grid-template-columns: 1fr; }
   .global-search { width: 260px; }
