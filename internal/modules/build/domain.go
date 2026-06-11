@@ -105,6 +105,7 @@ type BuildPipeline struct {
 	TenantID            shared.ID               `json:"tenant_id"`
 	ProjectID           shared.ID               `json:"project_id"`
 	ApplicationID       shared.ID               `json:"application_id"`
+	WorkloadID          shared.ID               `json:"workload_id"`
 	Name                string                  `json:"name"`
 	DisplayName         string                  `json:"display_name"`
 	Description         string                  `json:"description"`
@@ -166,6 +167,7 @@ type BuildRun struct {
 	PipelineName        string         `json:"pipeline_name"`
 	PipelineDisplayName string         `json:"pipeline_display_name"`
 	ApplicationID       shared.ID      `json:"application_id"`
+	WorkloadID          shared.ID      `json:"workload_id"`
 	SourceRepositoryID  shared.ID      `json:"source_repository_id"`
 	GitRef              string         `json:"git_ref"`
 	CommitSHA           string         `json:"commit_sha"`
@@ -212,6 +214,7 @@ type BuildArtifact struct {
 	ProjectID     shared.ID         `json:"project_id"`
 	BuildRunID    shared.ID         `json:"build_run_id"`
 	ApplicationID shared.ID         `json:"application_id"`
+	WorkloadID    shared.ID         `json:"workload_id"`
 	SourceKey     string            `json:"source_key"`
 	Type          BuildArtifactType `json:"type"`
 	Name          string            `json:"name"`
@@ -231,9 +234,11 @@ type BuildStartedPayload struct {
 type BuildSucceededPayload struct {
 	BuildRunID          shared.ID   `json:"build_run_id"`
 	ApplicationID       shared.ID   `json:"application_id"`
+	WorkloadID          shared.ID   `json:"workload_id"`
 	PipelineID          shared.ID   `json:"pipeline_id"`
 	PipelineName        string      `json:"pipeline_name"`
 	PipelineDisplayName string      `json:"pipeline_display_name"`
+	BuildArtifactID     shared.ID   `json:"build_artifact_id"`
 	BuildArtifactIDs    []shared.ID `json:"build_artifact_ids"`
 	CommitSHA           string      `json:"commit_sha"`
 }

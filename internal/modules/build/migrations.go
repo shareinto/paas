@@ -50,6 +50,7 @@ CREATE TABLE build_pipelines (
   tenant_id VARCHAR(64) NOT NULL,
   project_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
+  workload_id VARCHAR(64) NOT NULL DEFAULT '',
   name VARCHAR(64) NOT NULL DEFAULT '',
   display_name VARCHAR(128) NOT NULL DEFAULT '',
   description VARCHAR(1024) NOT NULL DEFAULT '',
@@ -73,6 +74,7 @@ CREATE TABLE build_runs (
   pipeline_name VARCHAR(64) NOT NULL DEFAULT '',
   pipeline_display_name VARCHAR(128) NOT NULL DEFAULT '',
   application_id VARCHAR(64) NOT NULL,
+  workload_id VARCHAR(64) NOT NULL DEFAULT '',
   source_repository_id VARCHAR(64) NOT NULL,
   git_ref VARCHAR(128) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
@@ -149,6 +151,7 @@ CREATE TABLE build_artifacts (
   project_id VARCHAR(64) NOT NULL,
   build_run_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
+  workload_id VARCHAR(64) NOT NULL DEFAULT '',
   source_key VARCHAR(64) NOT NULL DEFAULT '',
   type VARCHAR(32) NOT NULL,
   name VARCHAR(128) NOT NULL,
@@ -159,6 +162,7 @@ CREATE TABLE build_artifacts (
   created_at DATETIME(6) NOT NULL,
   KEY idx_build_artifacts_run (build_run_id),
   KEY idx_build_artifacts_application (application_id),
+  KEY idx_build_artifacts_workload_created (application_id, workload_id, created_at),
   CONSTRAINT fk_build_artifacts_run FOREIGN KEY (build_run_id) REFERENCES build_runs(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `,
@@ -440,6 +444,60 @@ CREATE TABLE IF NOT EXISTS build_run_sources (
   KEY idx_build_run_sources_run (build_run_id),
   CONSTRAINT fk_build_run_sources_run FOREIGN KEY (build_run_id) REFERENCES build_runs(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+		Down: `SELECT 1;`,
+	},
+	{
+		Version: 202606100301,
+		Name:    "workload_binding_columns",
+		Up: `
+SET @build_pipelines_workload_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipelines'
+    AND column_name = 'workload_id'
+);
+SET @build_pipelines_workload_ddl := IF(@build_pipelines_workload_missing, 'ALTER TABLE build_pipelines ADD COLUMN workload_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER application_id', 'SELECT 1');
+PREPARE build_pipelines_workload_stmt FROM @build_pipelines_workload_ddl;
+EXECUTE build_pipelines_workload_stmt;
+DEALLOCATE PREPARE build_pipelines_workload_stmt;
+
+SET @build_runs_workload_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_runs'
+    AND column_name = 'workload_id'
+);
+SET @build_runs_workload_ddl := IF(@build_runs_workload_missing, 'ALTER TABLE build_runs ADD COLUMN workload_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER application_id', 'SELECT 1');
+PREPARE build_runs_workload_stmt FROM @build_runs_workload_ddl;
+EXECUTE build_runs_workload_stmt;
+DEALLOCATE PREPARE build_runs_workload_stmt;
+
+SET @build_artifacts_workload_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_artifacts'
+    AND column_name = 'workload_id'
+);
+SET @build_artifacts_workload_ddl := IF(@build_artifacts_workload_missing, 'ALTER TABLE build_artifacts ADD COLUMN workload_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER application_id', 'SELECT 1');
+PREPARE build_artifacts_workload_stmt FROM @build_artifacts_workload_ddl;
+EXECUTE build_artifacts_workload_stmt;
+DEALLOCATE PREPARE build_artifacts_workload_stmt;
+
+SET @build_artifacts_workload_index_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.statistics
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_artifacts'
+    AND index_name = 'idx_build_artifacts_workload_created'
+);
+SET @build_artifacts_workload_index_ddl := IF(@build_artifacts_workload_index_missing, 'ALTER TABLE build_artifacts ADD KEY idx_build_artifacts_workload_created (application_id, workload_id, created_at)', 'SELECT 1');
+PREPARE build_artifacts_workload_index_stmt FROM @build_artifacts_workload_index_ddl;
+EXECUTE build_artifacts_workload_index_stmt;
+DEALLOCATE PREPARE build_artifacts_workload_index_stmt;
 `,
 		Down: `SELECT 1;`,
 	},

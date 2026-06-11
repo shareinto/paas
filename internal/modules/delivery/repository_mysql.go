@@ -18,11 +18,11 @@ func NewMySQLRepository(_ context.Context, db *sql.DB) (*MySQLRepository, error)
 
 func (r *MySQLRepository) CreateRelease(ctx context.Context, release Release) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO releases (id, tenant_id, project_id, application_id, pipeline_id, pipeline_name, pipeline_display_name, build_run_id, build_artifact_id, version, commit_sha, image_uri, image_digest, status, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		release.ID, release.TenantID, release.ProjectID, release.ApplicationID, release.PipelineID, release.PipelineName,
+INSERT INTO releases (id, tenant_id, project_id, application_id, workload_id, pipeline_id, pipeline_name, pipeline_display_name, build_run_id, build_artifact_id, version, commit_sha, image_uri, image_repository, image_tag, image_digest, source_type, status, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		release.ID, release.TenantID, release.ProjectID, release.ApplicationID, release.WorkloadID, release.PipelineID, release.PipelineName,
 		release.PipelineDisplayName, release.BuildRunID, release.BuildArtifactID, release.Version, release.CommitSHA,
-		release.ImageURI, release.ImageDigest, release.Status, release.CreatedAt)
+		release.ImageURI, release.ImageRepository, release.ImageTag, release.ImageDigest, release.SourceType, release.Status, release.CreatedAt)
 	return database.ConflictOrUnavailable(err, "release already exists", "create release failed")
 }
 
@@ -40,6 +40,10 @@ func (r *MySQLRepository) FindReleaseByBuildRun(ctx context.Context, buildRunID 
 		return Release{}, database.NotFound(err, "release not found")
 	}
 	return release, nil
+}
+
+func (r *MySQLRepository) ListReleasesByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Release], error) {
+	return listByApplication(ctx, r.db, applicationID, page, "releases", releaseSelect(), scanRelease)
 }
 
 func (r *MySQLRepository) CreateFreight(ctx context.Context, freight Freight) error {
@@ -68,10 +72,10 @@ func (r *MySQLRepository) CreateFreightItem(ctx context.Context, item FreightIte
 		return err
 	}
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO freight_items (id, tenant_id, project_id, freight_id, application_id, release_id, build_artifact_id, source_key, type, name, uri, digest, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.TenantID, item.ProjectID, item.FreightID, item.ApplicationID, item.ReleaseID,
-		item.BuildArtifactID, item.SourceKey, item.Type, item.Name, item.URI, item.Digest, item.CreatedAt)
+INSERT INTO freight_items (id, tenant_id, project_id, freight_id, application_id, workload_id, release_id, build_artifact_id, source_type, source_key, type, name, uri, image_ref, image_repository, image_tag, digest, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.TenantID, item.ProjectID, item.FreightID, item.ApplicationID, item.WorkloadID, item.ReleaseID,
+		item.BuildArtifactID, item.SourceType, item.SourceKey, item.Type, item.Name, item.URI, item.ImageRef, item.ImageRepository, item.ImageTag, item.Digest, item.CreatedAt)
 	return database.ConflictOrUnavailable(err, "freight item already exists", "create freight item failed")
 }
 
@@ -258,7 +262,7 @@ type deliveryScanner interface {
 }
 
 func releaseSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, pipeline_id, pipeline_name, pipeline_display_name, build_run_id, build_artifact_id, version, commit_sha, image_uri, image_digest, status, created_at FROM releases"
+	return "SELECT id, tenant_id, project_id, application_id, workload_id, pipeline_id, pipeline_name, pipeline_display_name, build_run_id, build_artifact_id, version, commit_sha, image_uri, image_repository, image_tag, image_digest, source_type, status, created_at FROM releases"
 }
 
 func freightSelect() string {
@@ -266,7 +270,7 @@ func freightSelect() string {
 }
 
 func freightItemSelect() string {
-	return "SELECT id, tenant_id, project_id, freight_id, application_id, release_id, build_artifact_id, source_key, type, name, uri, digest, created_at FROM freight_items"
+	return "SELECT id, tenant_id, project_id, freight_id, application_id, workload_id, release_id, build_artifact_id, source_type, source_key, type, name, uri, image_ref, image_repository, image_tag, digest, created_at FROM freight_items"
 }
 
 func deliveryFlowSelect() string {
@@ -283,7 +287,7 @@ func promotionSelect() string {
 
 func scanRelease(scanner deliveryScanner) (Release, error) {
 	var v Release
-	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.PipelineID, &v.PipelineName, &v.PipelineDisplayName, &v.BuildRunID, &v.BuildArtifactID, &v.Version, &v.CommitSHA, &v.ImageURI, &v.ImageDigest, &v.Status, &v.CreatedAt)
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.WorkloadID, &v.PipelineID, &v.PipelineName, &v.PipelineDisplayName, &v.BuildRunID, &v.BuildArtifactID, &v.Version, &v.CommitSHA, &v.ImageURI, &v.ImageRepository, &v.ImageTag, &v.ImageDigest, &v.SourceType, &v.Status, &v.CreatedAt)
 	return v, err
 }
 
@@ -295,7 +299,7 @@ func scanFreight(scanner deliveryScanner) (Freight, error) {
 
 func scanFreightItem(scanner deliveryScanner) (FreightItem, error) {
 	var v FreightItem
-	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.FreightID, &v.ApplicationID, &v.ReleaseID, &v.BuildArtifactID, &v.SourceKey, &v.Type, &v.Name, &v.URI, &v.Digest, &v.CreatedAt)
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.FreightID, &v.ApplicationID, &v.WorkloadID, &v.ReleaseID, &v.BuildArtifactID, &v.SourceType, &v.SourceKey, &v.Type, &v.Name, &v.URI, &v.ImageRef, &v.ImageRepository, &v.ImageTag, &v.Digest, &v.CreatedAt)
 	return v, err
 }
 

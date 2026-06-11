@@ -139,13 +139,14 @@ func newApplication(ctx context.Context) (*application, error) {
 	})
 	buildSvc.SetRuntimeEnvironmentSyncer(runtimeEnvironmentSyncerForAppEnv{service: appSvc})
 	buildSvc.SetApplicationQuery(appForBuild{service: appSvc, projects: tenantSvc})
+	buildSvc.SetWorkloadQuery(workloadForBuild{service: appSvc})
 	tenantSvc.SetProjectDeletionGuard(projectDeletionGuard{sourceSvc: sourceSvc, sourceRepo: sourceRepo, appSvc: appSvc})
 
 	deliveryRepo := repos.delivery
 	gitopsRepo := repos.gitops
 	manifestRepo := gitlab.NewFakeManifestRepositoryAdapter()
 	gitopsSvc := gitops.NewService(gitops.Options{Repository: gitopsRepo, ManifestRepo: manifestRepo, Application: appForGitOps{service: appSvc}, Environment: envForGitOps{service: appSvc, repo: appRepo}, Audit: audit.GitOpsLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
-	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	clusterRepo := repos.cluster
 	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, EnvironmentState: envUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
@@ -608,6 +609,42 @@ func (q appForBuild) ListApplicationSources(ctx context.Context, applicationID s
 	return out, nil
 }
 
+type workloadForBuild struct{ service *appenv.Service }
+
+func (q workloadForBuild) GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (build.WorkloadRef, error) {
+	workload, err := q.service.GetWorkload(ctx, applicationID, workloadID)
+	if err != nil {
+		return build.WorkloadRef{}, err
+	}
+	return build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)}, nil
+}
+
+func (q workloadForBuild) ListEnabledWorkloads(ctx context.Context, applicationID shared.ID) ([]build.WorkloadRef, error) {
+	workloads, err := q.service.ListEnabledWorkloads(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]build.WorkloadRef, 0, len(workloads))
+	for _, workload := range workloads {
+		out = append(out, build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)})
+	}
+	return out, nil
+}
+
+type workloadForDelivery struct{ service *appenv.Service }
+
+func (q workloadForDelivery) ListEnabledWorkloads(ctx context.Context, applicationID shared.ID) ([]delivery.WorkloadRef, error) {
+	workloads, err := q.service.ListEnabledWorkloads(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]delivery.WorkloadRef, 0, len(workloads))
+	for _, workload := range workloads {
+		out = append(out, delivery.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)})
+	}
+	return out, nil
+}
+
 type jenkinsTemplateForAppEnv struct{ repo build.Repository }
 
 func (q jenkinsTemplateForAppEnv) GetJenkinsJobTemplate(ctx context.Context, id shared.ID) (appenv.JenkinsTemplateRef, error) {
@@ -826,7 +863,7 @@ func toBuildRuntimeEnvironments(environments []appenv.ApplicationRuntimeEnvironm
 }
 
 func toDeliveryBuildArtifactRef(artifact build.BuildArtifact) delivery.BuildArtifactRef {
-	return delivery.BuildArtifactRef{ID: artifact.ID, BuildRunID: artifact.BuildRunID, ApplicationID: artifact.ApplicationID, SourceKey: artifact.SourceKey, URI: artifact.URI, Digest: artifact.Digest, IsPrimary: artifact.IsPrimary}
+	return delivery.BuildArtifactRef{ID: artifact.ID, BuildRunID: artifact.BuildRunID, ApplicationID: artifact.ApplicationID, WorkloadID: artifact.WorkloadID, SourceKey: artifact.SourceKey, URI: artifact.URI, Digest: artifact.Digest, IsPrimary: artifact.IsPrimary}
 }
 
 func applicationType(spec appenv.BuildSpec) string {

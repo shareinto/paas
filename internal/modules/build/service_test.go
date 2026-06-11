@@ -66,6 +66,24 @@ func (q fakeSourceRepositoryQuery) GetSourceRepository(_ context.Context, id sha
 	return repo, nil
 }
 
+type fakeWorkloadQuery struct{ workloads map[shared.ID][]WorkloadRef }
+
+func (q fakeWorkloadQuery) GetWorkload(_ context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error) {
+	for _, workload := range q.workloads[applicationID] {
+		if workload.ID == workloadID {
+			return workload, nil
+		}
+	}
+	return WorkloadRef{}, shared.NewError(shared.CodeNotFound, "workload not found")
+}
+
+func (q fakeWorkloadQuery) ListEnabledWorkloads(_ context.Context, applicationID shared.ID) ([]WorkloadRef, error) {
+	if workloads, ok := q.workloads[applicationID]; ok {
+		return workloads, nil
+	}
+	return nil, shared.NewError(shared.CodeNotFound, "workload not found")
+}
+
 type fakeRunner struct {
 	jobs        []BuildJobSpec
 	deletedJobs []string
@@ -209,6 +227,7 @@ func newBuildTestEnv(t *testing.T) buildTestEnv {
 		SourceRepositoryQuery: fakeSourceRepositoryQuery{repos: map[shared.ID]SourceRepositoryRef{
 			"repo_user": {ID: "repo_user", HTTPURL: "https://gitlab.example/payment/user-api.git", SSHURL: "git@gitlab.example:payment/user-api.git"},
 		}},
+		WorkloadQuery:     fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"}}}},
 		BuildRunner:       runner,
 		PermissionChecker: permission,
 		Audit:             audit,
@@ -304,6 +323,7 @@ func createDefaultPipeline(t *testing.T, env buildTestEnv) BuildPipeline {
 	pipeline, err := env.svc.CreateBuildPipeline(context.Background(), CreateBuildPipelineInput{
 		Actor:                 buildActor(),
 		ApplicationID:         "app_user",
+		WorkloadID:            "workload_api",
 		Name:                  "main",
 		DisplayName:           "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
@@ -318,6 +338,9 @@ func createDefaultPipeline(t *testing.T, env buildTestEnv) BuildPipeline {
 	})
 	if err != nil {
 		t.Fatalf("CreateBuildPipeline() error = %v", err)
+	}
+	if pipeline.WorkloadID != "workload_api" {
+		t.Fatalf("pipeline should bind workload_id, got %+v", pipeline)
 	}
 	env.runner.jobs = nil
 	env.runner.triggers = nil
@@ -490,6 +513,9 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	}
 	if run.ID == "" || run.Status != BuildRunQueued || run.JenkinsQueueID != "queue-1" {
 		t.Fatalf("unexpected run: %+v", run)
+	}
+	if run.WorkloadID != "workload_api" {
+		t.Fatalf("build run should bind workload_id, got %+v", run)
 	}
 	if len(env.runner.jobs) != 1 || env.runner.jobs[0].JobName != "paas/rnd/payment/user-api/main" || env.runner.jobs[0].TemplateID != "global-build-template" {
 		t.Fatalf("unexpected jobs: %+v", env.runner.jobs)
@@ -1194,8 +1220,18 @@ func TestQueueSyncLogsCancelAndCallback(t *testing.T) {
 	if err != nil || len(artifacts) != 1 || !artifacts[0].IsPrimary {
 		t.Fatalf("unexpected artifacts: %+v, %v", artifacts, err)
 	}
+	if artifacts[0].WorkloadID != "workload_api" {
+		t.Fatalf("artifact should bind workload_id, got %+v", artifacts[0])
+	}
 	if len(env.events.events) < 2 || env.events.events[len(env.events.events)-1].EventType != "BuildSucceeded" {
 		t.Fatalf("expected BuildSucceeded, got %+v", env.events.events)
+	}
+	var payload BuildSucceededPayload
+	if err := json.Unmarshal(env.events.events[len(env.events.events)-1].Payload, &payload); err != nil {
+		t.Fatalf("decode BuildSucceeded payload: %v", err)
+	}
+	if payload.ApplicationID != "app_user" || payload.WorkloadID != "workload_api" || payload.BuildRunID != run.ID || payload.BuildArtifactID != artifacts[0].ID {
+		t.Fatalf("BuildSucceeded payload should include app/workload/run/artifact ids, got %+v", payload)
 	}
 	again, err := env.svc.HandleBuildCallback(ctx, BuildCallbackInput{BuildRunID: run.ID, Status: BuildRunFailed, ErrorMessage: "late failure"})
 	if err != nil || again.Status != BuildRunSucceeded {

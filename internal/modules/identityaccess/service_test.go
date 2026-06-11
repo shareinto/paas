@@ -280,6 +280,9 @@ func TestPermissionCheckerDirectGroupAndServiceAccount(t *testing.T) {
 	if err := svc.Check(ctx, Subject{Type: SubjectUser, ID: user.ID}, ResourceScope{Kind: ScopeProject, TenantID: "tenant_1", ProjectID: "project_1"}, "build:create"); err != nil {
 		t.Fatalf("tenant scoped developer should create builds: %v", err)
 	}
+	if err := svc.Check(ctx, Subject{Type: SubjectUser, ID: user.ID}, ResourceScope{Kind: ScopeProject, TenantID: "tenant_1", ProjectID: "project_1"}, "freight:create"); err != nil {
+		t.Fatalf("tenant scoped developer should create freights: %v", err)
+	}
 	if err := svc.Check(ctx, Subject{Type: SubjectUser, ID: user.ID}, ResourceScope{Kind: ScopeProject, TenantID: "tenant_2", ProjectID: "project_2"}, "build:create"); shared.CodeOf(err) != shared.CodePermissionDenied {
 		t.Fatalf("different tenant should be denied, got %v", err)
 	}
@@ -306,9 +309,31 @@ func TestPermissionCheckerDirectGroupAndServiceAccount(t *testing.T) {
 	if err := svc.Check(ctx, Subject{Type: SubjectServiceAccount, ID: "sa_1"}, ResourceScope{Kind: ScopeEnvironment, TenantID: "tenant_1", ProjectID: "project_1", EnvironmentID: "env_prod"}, "deployment:rollback"); err != nil {
 		t.Fatalf("service account operator should rollback deployment: %v", err)
 	}
+	if err := svc.Check(ctx, Subject{Type: SubjectServiceAccount, ID: "sa_1"}, ResourceScope{Kind: ScopeEnvironment, TenantID: "tenant_1", ProjectID: "project_1", EnvironmentID: "env_prod"}, "freight:create"); shared.CodeOf(err) != shared.CodePermissionDenied {
+		t.Fatalf("operator should not create freight by default, got %v", err)
+	}
 	account, err := repo.GetServiceAccount(ctx, "sa_1")
 	if err != nil || account.Name != "deploy-bot" {
 		t.Fatalf("GetServiceAccount() = %+v, %v", account, err)
+	}
+}
+
+func TestBuiltInProjectRolesAllowFreightCreate(t *testing.T) {
+	for _, roleID := range []RoleID{RoleTenantOwner, RoleTenantAdmin, RoleProjectAdmin, RoleDeveloper} {
+		t.Run(string(roleID), func(t *testing.T) {
+			svc, _, _ := newTestService(t, nil)
+			ctx := context.Background()
+			user, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "user_" + string(roleID), Password: "secret"})
+			if err != nil {
+				t.Fatalf("CreateLocalUser() error = %v", err)
+			}
+			if _, err := svc.CreateRoleBinding(ctx, RoleBinding{SubjectType: SubjectUser, SubjectID: user.ID, RoleID: roleID, ScopeKind: ScopeProject, ScopeID: "project_1"}); err != nil {
+				t.Fatalf("CreateRoleBinding() error = %v", err)
+			}
+			if err := svc.Check(ctx, Subject{Type: SubjectUser, ID: user.ID}, ResourceScope{Kind: ScopeProject, TenantID: "tenant_1", ProjectID: "project_1"}, "freight:create"); err != nil {
+				t.Fatalf("%s should create freight: %v", roleID, err)
+			}
+		})
 	}
 }
 

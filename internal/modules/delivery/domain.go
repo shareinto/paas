@@ -19,6 +19,7 @@ type Release struct {
 	TenantID            shared.ID     `json:"tenant_id"`
 	ProjectID           shared.ID     `json:"project_id"`
 	ApplicationID       shared.ID     `json:"application_id"`
+	WorkloadID          shared.ID     `json:"workload_id"`
 	PipelineID          shared.ID     `json:"pipeline_id"`
 	PipelineName        string        `json:"pipeline_name"`
 	PipelineDisplayName string        `json:"pipeline_display_name"`
@@ -27,7 +28,10 @@ type Release struct {
 	Version             string        `json:"version"`
 	CommitSHA           string        `json:"commit_sha"`
 	ImageURI            string        `json:"image_uri"`
+	ImageRepository     string        `json:"image_repository"`
+	ImageTag            string        `json:"image_tag"`
 	ImageDigest         string        `json:"image_digest"`
+	SourceType          string        `json:"source_type"`
 	Status              ReleaseStatus `json:"status"`
 	CreatedAt           time.Time     `json:"created_at"`
 }
@@ -55,6 +59,8 @@ type Freight struct {
 type FreightItemType string
 
 const (
+	FreightItemPipelineArtifact   FreightItemType = "pipeline_artifact"
+	FreightItemCustomImage        FreightItemType = "custom_image"
 	FreightItemApplicationRelease FreightItemType = "application_release"
 	FreightItemImage              FreightItemType = "image"
 	FreightItemConfig             FreightItemType = "config"
@@ -67,12 +73,17 @@ type FreightItem struct {
 	ProjectID       shared.ID       `json:"project_id"`
 	FreightID       shared.ID       `json:"freight_id"`
 	ApplicationID   shared.ID       `json:"application_id"`
+	WorkloadID      shared.ID       `json:"workload_id"`
 	ReleaseID       shared.ID       `json:"release_id"`
 	BuildArtifactID shared.ID       `json:"build_artifact_id"`
+	SourceType      FreightItemType `json:"source_type"`
 	SourceKey       string          `json:"source_key"`
 	Type            FreightItemType `json:"type"`
 	Name            string          `json:"name"`
 	URI             string          `json:"uri"`
+	ImageRef        string          `json:"image_ref"`
+	ImageRepository string          `json:"image_repository"`
+	ImageTag        string          `json:"image_tag"`
 	Digest          string          `json:"digest"`
 	CreatedAt       time.Time       `json:"created_at"`
 }
@@ -172,6 +183,7 @@ type PromotionApproval struct {
 type BuildSucceededPayload struct {
 	BuildRunID          shared.ID   `json:"build_run_id"`
 	ApplicationID       shared.ID   `json:"application_id"`
+	WorkloadID          shared.ID   `json:"workload_id"`
 	PipelineID          shared.ID   `json:"pipeline_id"`
 	PipelineName        string      `json:"pipeline_name"`
 	PipelineDisplayName string      `json:"pipeline_display_name"`
@@ -181,6 +193,8 @@ type BuildSucceededPayload struct {
 	ImageURI            string      `json:"image_uri,omitempty"`
 	ImageDigest         string      `json:"image_digest,omitempty"`
 }
+
+const ReleaseSourcePipelineArtifact = "pipeline_artifact"
 
 func terminalPromotion(status PromotionStatus) bool {
 	return status == PromotionHealthy || status == PromotionFailed || status == PromotionAborted || status == PromotionRejected

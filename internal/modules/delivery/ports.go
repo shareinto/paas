@@ -12,6 +12,7 @@ type Repository interface {
 	CreateRelease(ctx context.Context, release Release) error
 	GetRelease(ctx context.Context, id shared.ID) (Release, error)
 	FindReleaseByBuildRun(ctx context.Context, buildRunID shared.ID) (Release, error)
+	ListReleasesByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Release], error)
 
 	CreateFreight(ctx context.Context, freight Freight) error
 	GetFreight(ctx context.Context, id shared.ID) (Freight, error)
@@ -68,10 +69,25 @@ type BuildArtifactRef struct {
 	ID            shared.ID
 	BuildRunID    shared.ID
 	ApplicationID shared.ID
+	WorkloadID    shared.ID
 	SourceKey     string
 	URI           string
 	Digest        string
 	IsPrimary     bool
+}
+
+type WorkloadRef struct {
+	ID            shared.ID `json:"id"`
+	TenantID      shared.ID `json:"tenant_id"`
+	ProjectID     shared.ID `json:"project_id"`
+	ApplicationID shared.ID `json:"application_id"`
+	Name          string    `json:"name"`
+	DisplayName   string    `json:"display_name"`
+	Status        string    `json:"status"`
+}
+
+type WorkloadQuery interface {
+	ListEnabledWorkloads(ctx context.Context, applicationID shared.ID) ([]WorkloadRef, error)
 }
 
 type BuildQuery interface {
@@ -131,6 +147,7 @@ type AuditEvent struct {
 	ResourceID   shared.ID
 	Result       string
 	Summary      string
+	Details      map[string]string
 	OccurredAt   time.Time
 }
 

@@ -16,6 +16,7 @@ type Service struct {
 	repo            Repository
 	apps            ApplicationQuery
 	sourceRepos     SourceRepositoryQuery
+	workloads       WorkloadQuery
 	runner          BuildRunnerPort
 	permission      PermissionChecker
 	audit           AuditLogger
@@ -42,6 +43,7 @@ type Options struct {
 	Repository            Repository
 	ApplicationQuery      ApplicationQuery
 	SourceRepositoryQuery SourceRepositoryQuery
+	WorkloadQuery         WorkloadQuery
 	BuildRunner           BuildRunnerPort
 	PermissionChecker     PermissionChecker
 	Audit                 AuditLogger
@@ -87,6 +89,7 @@ func NewService(opts Options) *Service {
 		repo:            opts.Repository,
 		apps:            opts.ApplicationQuery,
 		sourceRepos:     opts.SourceRepositoryQuery,
+		workloads:       opts.WorkloadQuery,
 		runner:          opts.BuildRunner,
 		permission:      opts.PermissionChecker,
 		audit:           audit,
@@ -104,6 +107,10 @@ func NewService(opts Options) *Service {
 
 func (s *Service) SetApplicationQuery(query ApplicationQuery) {
 	s.apps = query
+}
+
+func (s *Service) SetWorkloadQuery(query WorkloadQuery) {
+	s.workloads = query
 }
 
 func (s *Service) SetRuntimeEnvironmentSyncer(syncer RuntimeEnvironmentSyncer) {
@@ -128,6 +135,7 @@ type TriggerBuildSourceInput struct {
 type CreateBuildPipelineInput struct {
 	Actor                 identityaccess.Subject     `json:"actor"`
 	ApplicationID         shared.ID                  `json:"application_id"`
+	WorkloadID            shared.ID                  `json:"workload_id"`
 	Name                  string                     `json:"name"`
 	DisplayName           string                     `json:"display_name"`
 	Description           string                     `json:"description"`
@@ -138,6 +146,7 @@ type CreateBuildPipelineInput struct {
 type UpdateBuildPipelineInput struct {
 	Actor                 identityaccess.Subject     `json:"actor"`
 	PipelineID            shared.ID                  `json:"pipeline_id"`
+	WorkloadID            shared.ID                  `json:"workload_id"`
 	DisplayName           string                     `json:"display_name"`
 	Description           string                     `json:"description"`
 	RuntimeEnvironmentIDs []shared.ID                `json:"runtime_environment_ids"`
@@ -846,6 +855,33 @@ func (s *Service) DeleteBuildPipeline(ctx context.Context, applicationID shared.
 	return nil
 }
 
+func (s *Service) resolvePipelineWorkloadID(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (shared.ID, error) {
+	if workloadID.IsZero() {
+		if s.workloads == nil {
+			return "", nil
+		}
+		workloads, err := s.workloads.ListEnabledWorkloads(ctx, applicationID)
+		if err != nil {
+			return "", err
+		}
+		if len(workloads) != 1 {
+			return "", shared.NewError(shared.CodeInvalidArgument, "workload_id is required")
+		}
+		return workloads[0].ID, nil
+	}
+	if s.workloads == nil {
+		return workloadID, nil
+	}
+	workload, err := s.workloads.GetWorkload(ctx, applicationID, workloadID)
+	if err != nil {
+		return "", err
+	}
+	if workload.ApplicationID != applicationID {
+		return "", shared.NewError(shared.CodeInvalidArgument, "workload does not belong to application")
+	}
+	return workload.ID, nil
+}
+
 func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipelineInput) (BuildPipeline, error) {
 	app, err := s.requireApplication(ctx, input.ApplicationID)
 	if err != nil {
@@ -867,6 +903,10 @@ func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipe
 	if err != nil {
 		return BuildPipeline{}, err
 	}
+	workloadID, err := s.resolvePipelineWorkloadID(ctx, app.ID, input.WorkloadID)
+	if err != nil {
+		return BuildPipeline{}, err
+	}
 	sources, err := s.preparePipelineSources(ctx, app, "", input.Sources, runtimes)
 	if err != nil {
 		return BuildPipeline{}, err
@@ -881,6 +921,7 @@ func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipe
 		TenantID:            app.TenantID,
 		ProjectID:           app.ProjectID,
 		ApplicationID:       app.ID,
+		WorkloadID:          workloadID,
 		Name:                name,
 		DisplayName:         normalizeDisplayName(input.DisplayName, name),
 		Description:         strings.TrimSpace(input.Description),
@@ -969,6 +1010,13 @@ func (s *Service) UpdateBuildPipeline(ctx context.Context, input UpdateBuildPipe
 			return BuildPipeline{}, err
 		}
 	}
+	if !input.WorkloadID.IsZero() && input.WorkloadID != pipeline.WorkloadID {
+		workloadID, err := s.resolvePipelineWorkloadID(ctx, app.ID, input.WorkloadID)
+		if err != nil {
+			return BuildPipeline{}, err
+		}
+		pipeline.WorkloadID = workloadID
+	}
 	pipeline.DisplayName = normalizeDisplayName(input.DisplayName, pipeline.Name)
 	pipeline.Description = strings.TrimSpace(input.Description)
 	pipeline.RuntimeEnvironments = runtimes
@@ -1046,6 +1094,7 @@ func (s *Service) TriggerBuild(ctx context.Context, input TriggerBuildInput) (Bu
 		TenantID:            app.TenantID,
 		ProjectID:           app.ProjectID,
 		ApplicationID:       app.ID,
+		WorkloadID:          pipeline.WorkloadID,
 		PipelineName:        pipeline.Name,
 		PipelineDisplayName: pipeline.DisplayName,
 		SourceRepositoryID:  primary.SourceRepositoryID,
@@ -1396,7 +1445,7 @@ func (s *Service) HandleBuildCallback(ctx context.Context, input BuildCallbackIn
 		for _, artifact := range artifacts {
 			artifactIDs = append(artifactIDs, artifact.ID)
 		}
-		_ = s.publish(ctx, "BuildSucceeded", now, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, PipelineID: run.PipelineID, PipelineName: run.PipelineName, PipelineDisplayName: run.PipelineDisplayName, BuildArtifactIDs: artifactIDs, CommitSHA: run.CommitSHA})
+		_ = s.publish(ctx, "BuildSucceeded", now, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, PipelineID: run.PipelineID, PipelineName: run.PipelineName, PipelineDisplayName: run.PipelineDisplayName, BuildArtifactID: run.PrimaryArtifactID, BuildArtifactIDs: artifactIDs, CommitSHA: run.CommitSHA})
 	} else if terminalStatus(input.Status) {
 		_ = s.publish(ctx, "BuildFailed", now, BuildFailedPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, Status: string(run.Status), Message: run.ErrorMessage})
 	}
@@ -1783,7 +1832,7 @@ func (s *Service) createBuildArtifacts(ctx context.Context, run BuildRun, input 
 		for k, v := range item.Metadata {
 			metadata[k] = v
 		}
-		artifact := BuildArtifact{ID: id, TenantID: run.TenantID, ProjectID: run.ProjectID, BuildRunID: run.ID, ApplicationID: run.ApplicationID, SourceKey: source.SourceKey, Type: artifactType, Name: name, URI: strings.TrimSpace(item.URI), Digest: strings.TrimSpace(item.Digest), IsPrimary: isPrimary, Metadata: metadata, CreatedAt: s.clock.Now()}
+		artifact := BuildArtifact{ID: id, TenantID: run.TenantID, ProjectID: run.ProjectID, BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, SourceKey: source.SourceKey, Type: artifactType, Name: name, URI: strings.TrimSpace(item.URI), Digest: strings.TrimSpace(item.Digest), IsPrimary: isPrimary, Metadata: metadata, CreatedAt: s.clock.Now()}
 		if err := s.repo.CreateArtifact(ctx, artifact); err != nil {
 			return nil, err
 		}
