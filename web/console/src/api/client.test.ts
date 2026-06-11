@@ -58,7 +58,7 @@ test('真实 API 分支使用 VITE_API_BASE_URL', async () => {
   await expect(api.createTenant({ name: 'ops', displayName: '运维中心', description: '平台运维' })).resolves.toMatchObject({ id: 'tenant_2', name: 'ops', displayName: '运维中心' });
   await expect(api.updateTenant('tenant_2', { displayName: '平台运维', description: '统一运维租户' })).resolves.toMatchObject({ id: 'tenant_2', displayName: '平台运维', description: '统一运维租户' });
   await expect(api.listProjects()).resolves.toEqual([{ id: 'project_1' }]);
-  await expect(api.listApplications()).resolves.toEqual([{ id: 'app_1' }]);
+  await expect(api.listApplications()).resolves.toMatchObject([{ id: 'app_1' }]);
   await expect(api.listBuilds()).resolves.toEqual([{ id: 'build_1' }]);
   await expect(api.buildLog()).resolves.toBe('日志');
   await expect(api.buildLog('build_129')).resolves.toBe('新日志');
@@ -123,6 +123,47 @@ test('真实 API 更新流水线时过滤空运行时环境 ID', async () => {
     }]
   });
   expect(patchBody.runtime_environment_ids).toEqual(['runtime_env_java17']);
+});
+
+test('真实 API 创建流水线提交绑定的 Workload ID', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  let postBody: any;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/apps/app_1/build-pipelines') && init?.method === 'POST') {
+      postBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ id: 'pipeline_1', application_id: 'app_1', workload_id: 'workload_api', name: 'main', display_name: '主流水线', status: 'active' }), { status: 201 });
+    }
+    return new Response('', { status: 404 });
+  }));
+
+  const api = await import('./index');
+  await expect(api.createBuildPipeline('app_1', {
+    workloadId: 'workload_api',
+    name: 'main',
+    displayName: '主流水线',
+    runtimeEnvironmentIds: ['runtime_env_java17'],
+    sources: [{
+      id: 'source_1',
+      applicationId: 'app_1',
+      pipelineId: 'pipeline_1',
+      key: 'main',
+      displayName: '主代码源',
+      sourceRepositoryId: 'repo_1',
+      buildEnvironmentId: 'build_env_maven',
+      sourcePath: '.',
+      defaultRef: 'main',
+      isPrimary: true,
+      buildSpec: {
+        sourcePath: '.',
+        buildCommand: 'mvn clean package -DskipTests',
+        artifactCopyCommand: 'cp target/*.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"',
+        runtimeBaseImage: 'registry.example/runtime/java17:1.0',
+        artifactDeployPath: '/app/',
+        defaultRef: 'main'
+      }
+    }]
+  })).resolves.toMatchObject({ id: 'pipeline_1', workloadId: 'workload_api' });
+  expect(postBody.workload_id).toBe('workload_api');
 });
 
 test('streamBuildLog 使用 fetch 流式读取 SSE 并携带 token', async () => {

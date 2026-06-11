@@ -2,7 +2,7 @@ import { SaveOutlined } from '@ant-design/icons';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Alert, Button, Card, Form, Input, Select, Typography } from 'antd';
 import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { createApplication, listProjects } from '../api';
 
 const EMPTY_LIST: any[] = [];
@@ -10,13 +10,20 @@ const EMPTY_LIST: any[] = [];
 export function CreateApplicationPage() {
   const [form] = Form.useForm();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const fixedProjectId = searchParams.get('projectId') || '';
   const { data: projects = EMPTY_LIST } = useQuery({ queryKey: ['projects'], queryFn: listProjects });
+  const fixedProject = fixedProjectId ? projects.find((project: any) => project.id === fixedProjectId) : undefined;
 
   useEffect(() => {
+    if (fixedProjectId) {
+      form.setFieldValue('projectId', fixedProjectId);
+      return;
+    }
     if (!form.getFieldValue('projectId') && projects[0]) {
       form.setFieldValue('projectId', projects[0].id);
     }
-  }, [form, projects]);
+  }, [fixedProjectId, form, projects]);
 
   const createMutation = useMutation({
     mutationFn: createApplication,
@@ -56,9 +63,21 @@ export function CreateApplicationPage() {
         <div className="create-app-grid">
           <div className="create-app-main">
             <Card title="基础信息">
-              <Form.Item label="所属项目" name="projectId" rules={[{ required: true, message: '请选择项目' }]}>
-                <Select options={projects.map((project: any) => ({ value: project.id, label: project.displayName || project.name }))} />
-              </Form.Item>
+              {fixedProjectId ? (
+                <>
+                  <Form.Item hidden name="projectId" rules={[{ required: true, message: '请选择项目' }]}>
+                    <Input />
+                  </Form.Item>
+                  <div className="fixed-context-row">
+                    <Typography.Text type="secondary">所属项目</Typography.Text>
+                    <Typography.Text strong>{fixedProject?.displayName || fixedProject?.name || fixedProjectId}</Typography.Text>
+                  </div>
+                </>
+              ) : (
+                <Form.Item label="所属项目" name="projectId" rules={[{ required: true, message: '请选择项目' }]}>
+                  <Select options={projects.map((project: any) => ({ value: project.id, label: project.displayName || project.name }))} />
+                </Form.Item>
+              )}
               <Form.Item label="应用标识" name="name" rules={[{ required: true, message: '请输入应用标识' }, { pattern: /^[a-z][a-z0-9-]{1,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
                 <Input placeholder="order-api" />
               </Form.Item>
@@ -86,7 +105,7 @@ export function CreateApplicationPage() {
           </div>
         </div>
         <div className="wizard-actions">
-          <Button onClick={() => navigate('/apps')}>取消</Button>
+          <Button onClick={() => navigate(fixedProjectId ? `/projects/${fixedProjectId}` : '/apps')}>取消</Button>
           <Button type="primary" icon={<SaveOutlined />} loading={createMutation.isPending} onClick={submit}>创建应用</Button>
         </div>
       </Form>

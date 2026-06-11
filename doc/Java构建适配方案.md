@@ -6,7 +6,7 @@
 
 平台采用“PaaS 固化构建规格，Jenkins 执行统一模板”的方式：
 
-- PaaS 在创建或编辑 Application 时生成并保存 `BuildSpec`。
+- PaaS 在创建或编辑 BuildPipeline 时生成并保存 `BuildSpec`。
 - Jenkins 只运行平台托管的统一 Job 模板。
 - Jenkins 根据 `BuildSpec` 执行受限构建命令、收集构建产物，并使用平台标准运行时镜像打包容器镜像。
 
@@ -38,7 +38,7 @@ nginx1221 cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1
 
 ## 3. BuildSpec
 
-`BuildSpec` 是 PaaS 固化后的单代码源构建规格，应保存在对应 `ApplicationSource` 中。一个 Application 可以包含多个 ApplicationSource，一次 Build 会按各代码源的 BuildSpec 检出、构建并收集产物。
+`BuildSpec` 是 PaaS 固化后的单代码源构建规格，应保存在 BuildPipeline 的代码源配置中。一个 BuildPipeline 可以包含多个代码源，一次 Build 会按各代码源的 BuildSpec 检出、构建并收集产物。现有 `ApplicationSource` 只作为历史兼容模型保留。
 
 字段：
 
@@ -62,7 +62,7 @@ default_ref
 
 产物规则：
 
-- 每个 ApplicationSource 至少声明一个产物拷贝命令。
+- 每个流水线代码源至少声明一个产物拷贝命令。
 - 一次 Build 可以产生多个 BuildArtifact，产物通过 `source_key` 关联到代码源。
 - 构建成功回调使用 `artifacts` 数组上报多个产物；`is_primary=true` 的产物作为主产物展示。
 

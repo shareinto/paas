@@ -1,4 +1,4 @@
-import { AppstoreOutlined, BellOutlined, BuildOutlined, DeploymentUnitOutlined, DownOutlined, FileSearchOutlined, FolderOpenOutlined, MenuOutlined, QuestionCircleOutlined, SearchOutlined, SettingOutlined, TagsOutlined, TeamOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, BellOutlined, BuildOutlined, DeploymentUnitOutlined, DownOutlined, FileSearchOutlined, FolderOpenOutlined, MenuOutlined, QuestionCircleOutlined, SearchOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons';
 import { Avatar, Badge, Input, Layout, Menu, Space, Typography } from 'antd';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSession } from '../app/store';
@@ -7,8 +7,7 @@ const { Header, Sider, Content } = Layout;
 
 const platformItems = [
   { key: '/projects', icon: <FolderOpenOutlined />, label: '项目' },
-  { key: '/apps', icon: <DeploymentUnitOutlined />, label: '应用' },
-  { key: '/freights', icon: <TagsOutlined />, label: '版本' }
+  { key: '/apps', icon: <DeploymentUnitOutlined />, label: '应用' }
 ];
 
 const adminItems = [

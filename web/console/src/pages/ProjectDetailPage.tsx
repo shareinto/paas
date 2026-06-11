@@ -3,6 +3,7 @@ import { Card, Descriptions, Tabs, Tag } from 'antd';
 import { useParams } from 'react-router-dom';
 import { listProjects } from '../api';
 import { PageHeader } from '../components/PageHeader';
+import { ApplicationsPage } from './ApplicationsPage';
 import { SourceRepositoryList } from './SourceRepositoriesPage';
 
 export function ProjectDetailPage() {
@@ -22,6 +23,7 @@ export function ProjectDetailPage() {
         ]} />
       </Card>
       <Tabs className="detail-tabs" items={[
+        { key: 'applications', label: '应用', children: <ApplicationsPage projectId={id} embedded /> },
         { key: 'source-repositories', label: '源码仓库', children: <SourceRepositoryList projectId={id} hideProjectFilter /> }
       ]} />
     </>

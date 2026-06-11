@@ -12,7 +12,7 @@ export function LoginPage() {
     mutationFn: (values: { account: string; password: string }) => login(values.account, values.password),
     onSuccess: (data) => {
       setSession(data.token, data.userName);
-      navigate('/apps');
+      navigate('/projects');
     }
   });
   const oidc = useMutation({

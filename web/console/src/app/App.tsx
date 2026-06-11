@@ -31,7 +31,7 @@ export function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/oidc/callback" element={<OIDCCallbackPage />} />
       <Route path="/" element={<Guard><ConsoleLayout /></Guard>}>
-        <Route index element={<Navigate to="/apps" replace />} />
+        <Route index element={<Navigate to="/projects" replace />} />
         <Route path="projects" element={<ProjectsPage />} />
         <Route path="projects/:id" element={<ProjectDetailPage />} />
         <Route path="source-repositories" element={<SourceRepositoriesPage />} />
@@ -44,7 +44,7 @@ export function App() {
         <Route path="builds" element={<BuildsPage />} />
         <Route path="builds/:id" element={<BuildDetailPage />} />
         <Route path="freights" element={<FreightsPage />} />
-        <Route path="promotions" element={<PromotionPage />} />
+        <Route path="promotions" element={<Navigate to="/apps" replace />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="templates" element={<TemplateConfigPage />} />
         <Route path="tenants" element={<TenantsPage />} />

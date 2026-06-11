@@ -38,6 +38,9 @@ test('真实 API 创建流水线后即使列表接口暂未返回也立即显示
     if (method === 'GET' && url.endsWith('/api/applications/app_1')) {
       return jsonResponse({ id: 'app_1', name: 'order-api', display_name: '订单服务', project_id: 'project_1', status: 'active' });
     }
+    if (method === 'GET' && url.endsWith('/api/applications/app_1/workloads')) {
+      return jsonResponse({ items: [{ id: 'workload_api', application_id: 'app_1', name: 'order-api', display_name: '订单接口', workload_type: 'deployment', status: 'enabled' }] });
+    }
     if (method === 'GET' && url.endsWith('/api/projects?page=1&page_size=50')) {
       return jsonResponse({ items: [{ id: 'project_1', display_name: '订单平台' }], total: 1, page: 1, page_size: 50 });
     }
@@ -55,7 +58,9 @@ test('真实 API 创建流水线后即使列表接口暂未返回也立即显示
       return jsonResponse({ items: [], total: 0, page: 1, page_size: 50 });
     }
     if (method === 'POST' && url.endsWith('/api/apps/app_1/build-pipelines')) {
-      return jsonResponse({ id: 'build_pipeline_2', application_id: 'app_1', name: 'main', display_name: '主流水线', status: 'active', updated_at: '2026-06-09T10:00:00Z' }, 201);
+      const body = JSON.parse(String(init?.body || '{}'));
+      expect(body.workload_id).toBe('workload_api');
+      return jsonResponse({ id: 'build_pipeline_2', application_id: 'app_1', workload_id: 'workload_api', name: 'main', display_name: '主流水线', status: 'active', updated_at: '2026-06-09T10:00:00Z' }, 201);
     }
     return jsonResponse({ error: { code: 'not_found', message: `未处理请求 ${method} ${url}` } }, 404);
   });
@@ -66,6 +71,7 @@ test('真实 API 创建流水线后即使列表接口暂未返回也立即显示
   await userEvent.click(await screen.findByRole('button', { name: /创建流水线/ }));
   const dialog = await screen.findByRole('dialog', { name: '创建构建流水线' });
   expect(await within(dialog).findByText('主代码源')).toBeInTheDocument();
+  expect(within(dialog).getByText('订单接口 (order-api)')).toBeInTheDocument();
 
   await userEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
 

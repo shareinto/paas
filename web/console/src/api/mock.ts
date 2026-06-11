@@ -4,7 +4,7 @@ export type Application = { id: string; name: string; displayName: string; proje
 export type ApplicationRuntimeEnvironment = { id: string; name: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string };
 export type ApplicationSource = { id?: string; key: string; displayName: string; sourceRepositoryId: string; jenkinsTemplateId?: string; buildEnvironmentId?: string; sourcePath: string; defaultRef: string; isPrimary: boolean; buildSpec: { sourcePath: string; buildCommand: string; artifactCopyCommand: string; runtimeBaseImage?: string; artifactDeployPath?: string; defaultRef: string } };
 export type BuildPipelineSource = ApplicationSource & { pipelineId?: string };
-export type BuildPipeline = { id: string; applicationId: string; name: string; displayName: string; description?: string; status: string; externalJobName?: string; runtimeEnvironments?: RuntimeEnvironment[]; sources?: BuildPipelineSource[]; updatedAt: string };
+export type BuildPipeline = { id: string; applicationId: string; workloadId?: string; name: string; displayName: string; description?: string; status: string; externalJobName?: string; runtimeEnvironments?: RuntimeEnvironment[]; sources?: BuildPipelineSource[]; updatedAt: string };
 export type BuildRun = { id: string; application: string; pipeline?: string; pipelineId?: string; status: string; ref: string; commit: string; startedAt: string; duration: string };
 export type AuditLog = { id: string; actor: string; action: string; resource: string; result: string; summary: string; time: string };
 export type FreightItem = { id: string; workloadId: string; workloadName: string; workloadDisplayName: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; image: string; digest?: string; commit?: string };
@@ -184,6 +184,7 @@ const buildPipelines: Record<string, BuildPipeline[]> = {
   app_1: [{
     id: 'pipeline_1',
     applicationId: 'app_1',
+    workloadId: 'workload_api',
     name: 'main',
     displayName: '主流水线',
     description: '后端服务构建',
@@ -336,9 +337,9 @@ export async function deleteProject(id: string) {
   projects.splice(index, 1);
 }
 
-export async function listApplications(): Promise<Application[]> {
+export async function listApplications(projectId?: string): Promise<Application[]> {
   await wait();
-  return applications.map((item) => ({ ...item }));
+  return applications.filter((item) => !projectId || item.projectId === projectId).map((item) => ({ ...item }));
 }
 
 export async function getApplication(id: string): Promise<Application> {
@@ -751,6 +752,7 @@ export async function createBuildPipeline(applicationId: string, input: Omit<Bui
   const pipeline: BuildPipeline = {
     id,
     applicationId,
+    workloadId: input.workloadId,
     name: input.name,
     displayName: input.displayName || input.name,
     description: input.description || '',
@@ -783,6 +785,7 @@ export async function updateBuildPipeline(pipelineId: string, input: Partial<Omi
       }));
       pipelines[index] = {
         ...existing,
+        workloadId: input.workloadId || existing.workloadId,
         displayName: input.displayName || existing.displayName,
         description: input.description || '',
         runtimeEnvironments: runtimeSnapshots.map((runtime) => ({ ...runtime })),

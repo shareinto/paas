@@ -2,7 +2,7 @@ import { DeleteOutlined, EditOutlined, PlusOutlined, PlayCircleOutlined, Setting
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Badge, Button, Card, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Segmented, Space, Steps, Table, Tabs, Tag, Typography, message } from 'antd';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   createBuildPipeline,
   createWorkload,
@@ -49,6 +49,11 @@ export function ApplicationDetailPage() {
     <>
       <PageHeader
         title={app?.displayName || '应用详情'}
+        breadcrumb={[
+          { title: <Link to="/projects">项目</Link> },
+          { title: app?.projectId ? <Link to={`/projects/${app.projectId}`}>{app?.project || app.projectId}</Link> : (app?.project || '-') },
+          { title: app?.displayName || '应用详情' }
+        ]}
         extra={(
           <Space>
             <Button icon={<EditOutlined />} onClick={() => navigate(`/apps/${id}/edit`)}>编辑应用</Button>
@@ -501,6 +506,7 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
   const initializedRef = useRef(false);
   const isEditing = !!editingPipeline;
   const { data: repositories = EMPTY_LIST } = useQuery({ queryKey: ['source-repositories', projectId], queryFn: () => listSourceRepositories(projectId), enabled: open });
+  const { data: workloads = EMPTY_LIST } = useQuery({ queryKey: ['workloads', applicationId, 'pipeline-modal'], queryFn: () => listWorkloads(applicationId), enabled: open && !!applicationId });
   const { data: buildEnvironments = EMPTY_LIST } = useQuery({ queryKey: ['build-environments'], queryFn: listBuildEnvironments, enabled: open });
   const { data: runtimeEnvironments = EMPTY_LIST } = useQuery({ queryKey: ['runtime-environments'], queryFn: listRuntimeEnvironments, enabled: open });
   const { data: pipelines = EMPTY_LIST, isFetched: pipelinesFetched } = useQuery({ queryKey: ['build-pipelines', applicationId], queryFn: () => listBuildPipelines(applicationId), enabled: open && !!applicationId });
@@ -515,9 +521,10 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
       form.resetFields();
       return;
     }
-    if (initializedRef.current || !repositories.length || !buildEnvironments.length || !runtimeEnvironments.length) return;
+    if (initializedRef.current || !repositories.length || !buildEnvironments.length || !runtimeEnvironments.length || !workloads.length) return;
     if (editingPipeline) {
       form.setFieldsValue({
+        workloadId: editingPipeline.workloadId,
         name: editingPipeline.name,
         displayName: editingPipeline.displayName || editingPipeline.name,
         description: editingPipeline.description,
@@ -540,8 +547,10 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
     const runtime = runtimeEnvironments.find((item: any) => item.isDefault) || runtimeEnvironments[0];
     const buildEnv = buildEnvironments.find((item: any) => item.isDefault) || buildEnvironments[0];
     const repo = repositories.find((item: any) => item.status === 'ready') || repositories[0];
+    const workload = workloads.find((item: any) => item.status === 'enabled') || workloads[0];
     const defaultPipeline = nextPipelineDefaults(pipelines as BuildPipeline[]);
     form.setFieldsValue({
+      workloadId: workload?.id,
       name: defaultPipeline.name,
       displayName: defaultPipeline.displayName,
       runtimeEnvironmentIds: runtime?.id ? [runtime.id] : [],
@@ -557,7 +566,7 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
       }]
     });
     initializedRef.current = true;
-  }, [buildEnvironments, editingPipeline, form, open, pipelines, pipelinesFetched, repositories, runtimeEnvironments]);
+  }, [buildEnvironments, editingPipeline, form, open, pipelines, pipelinesFetched, repositories, runtimeEnvironments, workloads]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -584,8 +593,8 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
         };
       });
       const pipeline = editingPipeline
-        ? await updateBuildPipeline(editingPipeline.id, { displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources })
-        : await createBuildPipeline(applicationId, { name: values.name, displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources });
+        ? await updateBuildPipeline(editingPipeline.id, { workloadId: values.workloadId, displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources })
+        : await createBuildPipeline(applicationId, { workloadId: values.workloadId, name: values.name, displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources });
       return { ...pipeline, sources };
     },
     onSuccess: (pipeline) => {
@@ -604,6 +613,9 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
   return (
     <Modal title={isEditing ? '编辑构建流水线' : '创建构建流水线'} open={open} onCancel={onClose} onOk={() => mutation.mutate()} confirmLoading={mutation.isPending} width={760} okText={isEditing ? '保存' : '创建'} cancelText="取消">
       <Form form={form} layout="vertical">
+        <Form.Item label="绑定 Workload" name="workloadId" rules={[{ required: true, message: '请选择绑定 Workload' }]}>
+          <Select options={workloads.map((item: Workload) => ({ value: item.id, label: `${item.displayName || item.name} (${item.name})`, disabled: item.status !== 'enabled' }))} />
+        </Form.Item>
         <Form.Item label="流水线标识" name="name" rules={[{ required: true, message: '请输入流水线标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
           <Input placeholder="main" disabled={isEditing} />
         </Form.Item>

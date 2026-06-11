@@ -51,6 +51,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 .page-subtitle { margin-top: 4px; color: var(--text-muted); }
 .toolbar { display: grid; grid-template-columns: minmax(240px, 340px) 180px 220px; gap: 10px; margin-bottom: 12px; align-items: center; }
 .toolbar .ant-input-search .ant-input, .toolbar .ant-select-selector { height: var(--control-height) !important; }
+.embedded-actions { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.fixed-context-row { min-height: 36px; display: grid; grid-template-columns: 140px minmax(0, 1fr); align-items: center; margin-bottom: 20px; }
 .muted { color: var(--text-muted); font-size: 12px; }
 .ant-card { border-color: var(--border); border-radius: var(--radius); box-shadow: none; }
 .ant-card .ant-card-head { min-height: 46px; padding: 0 18px; border-bottom-color: var(--border-soft); }

@@ -2,6 +2,7 @@ import { BranchesOutlined, CodeOutlined, SyncOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Badge, Button, Card, Descriptions, Input, Space, Table, Tabs, Tag, Typography, message } from 'antd';
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useParams } from 'react-router-dom';
 import { getSourceRepository, listRepositoryApplications, scanRepositoryJava, syncRepositoryPermissions } from '../api';
 import { PageHeader } from '../components/PageHeader';
@@ -25,12 +26,17 @@ export function SourceRepositoryDetailPage() {
     <>
       <PageHeader
         title={repo?.displayName || '源码仓库'}
+        breadcrumb={[
+          { title: <Link to="/projects">项目</Link> },
+          { title: repo?.projectId ? <Link to={`/projects/${repo.projectId}`}>{repo?.projectName || repo.projectId}</Link> : (repo?.projectName || '-') },
+          { title: repo?.displayName || '源码仓库' }
+        ]}
         extra={<Button icon={<SyncOutlined />} loading={syncMutation.isPending} onClick={() => syncMutation.mutate()}>同步权限</Button>}
       />
       <Card className="summary-card" loading={isLoading}>
         <Descriptions column={3} size="small" items={[
           { key: 'name', label: '仓库标识', children: repo?.name || '-' },
-          { key: 'project', label: '所属项目', children: repo?.projectName || repo?.projectId || '-' },
+          { key: 'project', label: '所属项目', children: repo?.projectId ? <Link to={`/projects/${repo.projectId}`}>{repo?.projectName || repo.projectId}</Link> : '-' },
           { key: 'provider', label: 'Provider', children: <Tag color="blue">{repo?.gitProvider || 'gitlab'}</Tag> },
           { key: 'branch', label: '默认分支', children: <Tag icon={<BranchesOutlined />}>{repo?.defaultBranch || 'main'}</Tag> },
           { key: 'status', label: '状态', children: <Badge status={repo?.status === 'ready' ? 'success' : 'warning'} text={repo?.status === 'ready' ? '可用' : repo?.status || '-'} /> },
@@ -39,7 +45,7 @@ export function SourceRepositoryDetailPage() {
       </Card>
       <Tabs className="detail-tabs" items={[
         { key: 'overview', label: '总览', children: <Overview repo={repo} /> },
-        { key: 'applications', label: '关联应用', children: <Table rowKey="id" dataSource={applications} pagination={false} columns={[{ title: '应用名称', dataIndex: 'displayName' }, { title: '标识', dataIndex: 'name' }]} /> },
+        { key: 'applications', label: '关联应用', children: <Table rowKey="id" dataSource={applications} pagination={false} columns={[{ title: '应用名称', dataIndex: 'displayName', render: (text, record: any) => <Link to={`/apps/${record.id}`}>{text}</Link> }, { title: '标识', dataIndex: 'name' }]} /> },
         { key: 'scan', label: 'Java 扫描', children: <ScanPanel refName={ref} setRefName={setRef} loading={isFetching} suggestions={suggestions} /> }
       ]} />
     </>

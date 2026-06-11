@@ -74,10 +74,13 @@ export async function deleteProject(id: string) {
   });
 }
 
-export async function listApplications() {
-  if (!hasAPIBaseURL()) return mock.listApplications();
-  const data = await request<PageResult<mock.Application>>('/api/applications?page=1&page_size=50');
-  return data.items;
+export async function listApplications(projectId?: string) {
+  if (!hasAPIBaseURL()) return mock.listApplications(projectId);
+  const path = projectId
+    ? `/api/projects/${encodeURIComponent(projectId)}/applications?page=1&page_size=50`
+    : '/api/applications?page=1&page_size=50';
+  const data = await request<PageResult<mock.Application>>(path);
+  return data.items.map(mapApplication);
 }
 
 export async function getApplication(id: string) {
@@ -176,13 +179,14 @@ export async function listBuildPipelineSources(pipelineId: string) {
   return data.items.map(mapBuildPipelineSource);
 }
 
-export async function createBuildPipeline(applicationId: string, input: { name: string; displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
+export async function createBuildPipeline(applicationId: string, input: { workloadId?: string; name: string; displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
   if (!hasAPIBaseURL()) return mock.createBuildPipeline(applicationId, input as any);
   const runtimeEnvironmentIds = cleanRuntimeEnvironmentIds(input.runtimeEnvironmentIds);
   const item = await request<any>(`/api/apps/${encodeURIComponent(applicationId)}/build-pipelines`, {
     method: 'POST',
     body: JSON.stringify({
       actor: { type: 'user', id: 'usr_admin' },
+      workload_id: input.workloadId || '',
       name: input.name,
       display_name: input.displayName,
       description: input.description || '',
@@ -193,13 +197,14 @@ export async function createBuildPipeline(applicationId: string, input: { name: 
   return mapBuildPipeline(item);
 }
 
-export async function updateBuildPipeline(pipelineId: string, input: { displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
+export async function updateBuildPipeline(pipelineId: string, input: { workloadId?: string; displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
   if (!hasAPIBaseURL()) return mock.updateBuildPipeline(pipelineId, input as any);
   const runtimeEnvironmentIds = cleanRuntimeEnvironmentIds(input.runtimeEnvironmentIds);
   const item = await request<any>(`/api/build-pipelines/${encodeURIComponent(pipelineId)}`, {
     method: 'PATCH',
     body: JSON.stringify({
       actor: { type: 'user', id: 'usr_admin' },
+      workload_id: input.workloadId || '',
       display_name: input.displayName,
       description: input.description || '',
       runtime_environment_ids: runtimeEnvironmentIds,
@@ -904,6 +909,7 @@ function mapBuildPipeline(item: any): mock.BuildPipeline {
   return {
     id: item.id,
     applicationId: item.application_id || item.applicationId || '',
+    workloadId: item.workload_id || item.workloadId || '',
     name: item.name || '',
     displayName: item.display_name || item.displayName || item.name || '',
     description: item.description || '',
