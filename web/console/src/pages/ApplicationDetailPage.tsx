@@ -1,12 +1,13 @@
 import { DeleteOutlined, EditOutlined, PlusOutlined, PlayCircleOutlined, SettingOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Badge, Button, Card, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Select, Segmented, Space, Table, Tabs, Tag, Timeline, Typography, message } from 'antd';
+import { Alert, Badge, Button, Card, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Segmented, Space, Table, Tabs, Tag, Timeline, Typography, message } from 'antd';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   createBuildPipeline,
   createWorkload,
   deleteBuildPipeline,
+  deleteWorkload,
   getApplication,
   listBuildEnvironments,
   listBuildPipelines,
@@ -100,7 +101,18 @@ export function ApplicationDetailPage() {
 function WorkloadPanel({ applicationId }: { applicationId: string }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [configWorkload, setConfigWorkload] = useState<Workload | null>(null);
+  const queryClient = useQueryClient();
   const { data: workloads = EMPTY_LIST, isLoading } = useQuery({ queryKey: ['workloads', applicationId], queryFn: () => listWorkloads(applicationId), enabled: !!applicationId });
+  const deleteMutation = useMutation({
+    mutationFn: (workloadId: string) => deleteWorkload(applicationId, workloadId),
+    onSuccess: (workload) => {
+      message.success('Workload 已删除');
+      queryClient.setQueryData<Workload[]>(['workloads', applicationId], (current = []) => current.filter((item) => item.id !== workload.id));
+      queryClient.invalidateQueries({ queryKey: ['workloads', applicationId], refetchType: 'none' });
+      if (configWorkload?.id === workload.id) setConfigWorkload(null);
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '删除 Workload 失败')
+  });
 
   return (
     <div data-testid="workload-panel">
@@ -157,14 +169,27 @@ function WorkloadPanel({ applicationId }: { applicationId: string }) {
             {
               title: '操作',
               key: 'actions',
-              width: 120,
-              render: (_: unknown, item: Workload) => <Button aria-label="部署配置" icon={<SettingOutlined />} onClick={() => setConfigWorkload(item)}>部署配置</Button>
+              width: 210,
+              render: (_: unknown, item: Workload) => (
+                <Space>
+                  <Button aria-label="部署配置" icon={<SettingOutlined />} onClick={() => setConfigWorkload(item)}>部署配置</Button>
+                  <Popconfirm
+                    title="删除 Workload"
+                    description={`确认删除 ${item.name}？删除后不会进入新的 Freight。`}
+                    okText="确认删除"
+                    cancelText="取消"
+                    onConfirm={() => deleteMutation.mutate(item.id)}
+                  >
+                    <Button danger aria-label="删除 Workload" icon={<DeleteOutlined />} loading={deleteMutation.isPending}>删除</Button>
+                  </Popconfirm>
+                </Space>
+              )
             }
           ]}
         />
       </Card>
       <CreateWorkloadDrawer applicationId={applicationId} open={createOpen} onClose={() => setCreateOpen(false)} />
-      <DeployConfigDrawer applicationId={applicationId} workload={configWorkload} onClose={() => setConfigWorkload(null)} />
+      <DeployConfigModal applicationId={applicationId} workload={configWorkload} onClose={() => setConfigWorkload(null)} />
     </div>
   );
 }
@@ -234,7 +259,7 @@ function CreateWorkloadDrawer({ applicationId, open, onClose }: { applicationId:
   );
 }
 
-function DeployConfigDrawer({ applicationId, workload, onClose }: { applicationId: string; workload: Workload | null; onClose: () => void }) {
+function DeployConfigModal({ applicationId, workload, onClose }: { applicationId: string; workload: Workload | null; onClose: () => void }) {
   const { data: configs = EMPTY_LIST, isLoading } = useQuery({
     queryKey: ['workload-environment-configs', applicationId, workload?.id],
     queryFn: () => listWorkloadEnvironmentConfigs(applicationId, workload!.id),
@@ -243,7 +268,14 @@ function DeployConfigDrawer({ applicationId, workload, onClose }: { applicationI
   const config = (configs as WorkloadEnvironmentConfig[])[0];
 
   return (
-    <Drawer title={`${workload?.name || ''} 部署配置`} open={!!workload} onClose={onClose} width={820} destroyOnClose extra={<Button onClick={onClose}>关闭</Button>}>
+    <Modal
+      title={`${workload?.name || ''} 部署配置`}
+      open={!!workload}
+      onCancel={onClose}
+      width={960}
+      destroyOnHidden
+      footer={<Button onClick={onClose}>关闭</Button>}
+    >
       <Space direction="vertical" size={18} style={{ width: '100%' }}>
         <Descriptions bordered size="small" column={2} items={[
           { key: 'environment', label: '环境', children: config?.envName || 'prod' },
@@ -300,7 +332,7 @@ function DeployConfigDrawer({ applicationId, workload, onClose }: { applicationI
           ]} />
         </ConfigSection>
       </Space>
-    </Drawer>
+    </Modal>
   );
 }
 

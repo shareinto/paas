@@ -84,6 +84,48 @@ test('真实 API 创建 Workload 使用服务端响应作为缓存数据来源',
   expect(postBody).not.toHaveProperty('custom_image');
 });
 
+test('真实 API 删除 Workload 提交软删除请求', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  let deleteBody: Record<string, unknown> = {};
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/applications/app_1/workloads/workload_api') && init?.method === 'DELETE') {
+      deleteBody = JSON.parse(String(init.body));
+      return jsonResponse({
+        id: 'workload_api',
+        application_id: 'app_1',
+        name: 'order-api',
+        display_name: '订单接口',
+        workload_type: 'Deployment',
+        status: 'deleted'
+      });
+    }
+    return jsonResponse({ error: { code: 'not_found', message: '未处理请求' } }, 404);
+  }));
+
+  const api = await import('./index');
+  await expect(api.deleteWorkload('app_1', 'workload_api')).resolves.toMatchObject({
+    id: 'workload_api',
+    status: 'deleted'
+  });
+  expect(fetch).toHaveBeenCalledWith('https://paas.example/api/applications/app_1/workloads/workload_api', expect.objectContaining({ method: 'DELETE' }));
+  expect(deleteBody).toMatchObject({ actor: { type: 'user', id: 'usr_admin' } });
+});
+
+test('mock 删除 Workload 后列表不再返回该项', async () => {
+  const api = await import('./index');
+
+  await expect(api.listWorkloads('app_1')).resolves.toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: 'workload_api' })
+  ]));
+  await expect(api.deleteWorkload('app_1', 'workload_api')).resolves.toMatchObject({
+    id: 'workload_api',
+    status: 'deleted'
+  });
+  await expect(api.listWorkloads('app_1')).resolves.not.toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: 'workload_api' })
+  ]));
+});
+
 test('真实 API 查询 Workload 环境配置映射配置文件和可写目录真实字段', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {

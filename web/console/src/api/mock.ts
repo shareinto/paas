@@ -499,6 +499,15 @@ export async function createWorkload(applicationId: string, input: { name: strin
   return cloneWorkload(workload);
 }
 
+export async function deleteWorkload(applicationId: string, workloadId: string): Promise<Workload> {
+  await wait();
+  const workload = (workloads[applicationId] || []).find((item) => item.id === workloadId);
+  if (!workload || workload.status === 'deleted') throw new Error('Workload 不存在');
+  workload.status = 'deleted';
+  workload.updatedAt = '刚刚';
+  return cloneWorkload(workload);
+}
+
 export async function listWorkloadEnvironmentConfigs(_applicationId: string, workloadId: string): Promise<WorkloadEnvironmentConfig[]> {
   await wait();
   return (workloadEnvironmentConfigs[workloadId] || []).map(cloneWorkloadEnvironmentConfig);
