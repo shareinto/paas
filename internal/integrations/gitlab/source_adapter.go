@@ -24,19 +24,16 @@ func NewSourceRepositoryAdapterWithNamespace(client *Client, rootGroupPath strin
 }
 
 func (a *SourceRepositoryAdapter) CreateProject(ctx context.Context, spec sourcerepository.GitProjectSpec) (sourcerepository.GitProject, error) {
-	var out struct {
-		ID            int64  `json:"id"`
-		HTTPURLToRepo string `json:"http_url_to_repo"`
-		SSHURLToRepo  string `json:"ssh_url_to_repo"`
-		WebURL        string `json:"web_url"`
-	}
+	var out gitProjectResponse
 	body := map[string]any{"name": spec.RepositoryName, "path": spec.RepositoryName, "default_branch": spec.DefaultBranch}
+	var namespaceFullPath string
 	if a.rootGroupPath != "" {
-		namespaceID, err := a.ensureRepositoryNamespace(ctx, spec)
+		namespace, err := a.ensureRepositoryNamespace(ctx, spec)
 		if err != nil {
 			return sourcerepository.GitProject{}, err
 		}
-		body["namespace_id"] = namespaceID
+		body["namespace_id"] = namespace.ID
+		namespaceFullPath = namespace.FullPath
 	}
 	req, err := a.client.newRequest(http.MethodPost, "/api/v4/projects", body)
 	if err != nil {
@@ -44,27 +41,41 @@ func (a *SourceRepositoryAdapter) CreateProject(ctx context.Context, spec source
 	}
 	req = req.WithContext(ctx)
 	if err := a.do(req, &out); err != nil {
+		if namespaceFullPath != "" && isAlreadyExistsError(err) {
+			return a.getProject(ctx, namespaceFullPath+"/"+normalizePath(spec.RepositoryName))
+		}
 		return sourcerepository.GitProject{}, err
 	}
-	return sourcerepository.GitProject{ID: fmt.Sprint(out.ID), HTTPURL: firstNonEmpty(out.HTTPURLToRepo, out.WebURL), SSHURL: out.SSHURLToRepo}, nil
+	return out.toDomain(), nil
 }
 
-func (a *SourceRepositoryAdapter) ensureRepositoryNamespace(ctx context.Context, spec sourcerepository.GitProjectSpec) (int64, error) {
+func (a *SourceRepositoryAdapter) ensureRepositoryNamespace(ctx context.Context, spec sourcerepository.GitProjectSpec) (gitGroup, error) {
 	root, err := a.ensureGroup(ctx, gitGroupSpec{Name: a.rootGroupPath, Path: a.rootGroupPath, FullPath: a.rootGroupPath})
 	if err != nil {
-		return 0, err
+		return gitGroup{}, err
 	}
 	tenantPath := normalizePath(firstNonEmpty(spec.TenantName, spec.TenantID.String()))
 	tenant, err := a.ensureGroup(ctx, gitGroupSpec{Name: tenantPath, Path: tenantPath, FullPath: root.FullPath + "/" + tenantPath, ParentID: root.ID})
 	if err != nil {
-		return 0, err
+		return gitGroup{}, err
 	}
 	projectPath := normalizePath(firstNonEmpty(spec.ProjectName, spec.ProjectID.String()))
 	project, err := a.ensureGroup(ctx, gitGroupSpec{Name: projectPath, Path: projectPath, FullPath: tenant.FullPath + "/" + projectPath, ParentID: tenant.ID})
 	if err != nil {
-		return 0, err
+		return gitGroup{}, err
 	}
-	return project.ID, nil
+	return project, nil
+}
+
+type gitProjectResponse struct {
+	ID            int64  `json:"id"`
+	HTTPURLToRepo string `json:"http_url_to_repo"`
+	SSHURLToRepo  string `json:"ssh_url_to_repo"`
+	WebURL        string `json:"web_url"`
+}
+
+func (p gitProjectResponse) toDomain() sourcerepository.GitProject {
+	return sourcerepository.GitProject{ID: fmt.Sprint(p.ID), HTTPURL: firstNonEmpty(p.HTTPURLToRepo, p.WebURL), SSHURL: p.SSHURLToRepo}
 }
 
 type gitGroupSpec struct {
@@ -119,6 +130,18 @@ func (a *SourceRepositoryAdapter) getGroup(ctx context.Context, fullPath string)
 	return group, nil
 }
 
+func (a *SourceRepositoryAdapter) getProject(ctx context.Context, fullPath string) (sourcerepository.GitProject, error) {
+	var project gitProjectResponse
+	req, err := a.client.newRequest(http.MethodGet, "/api/v4/projects/"+url.PathEscape(fullPath), nil)
+	if err != nil {
+		return sourcerepository.GitProject{}, err
+	}
+	if err := a.do(req.WithContext(ctx), &project); err != nil {
+		return sourcerepository.GitProject{}, err
+	}
+	return project.toDomain(), nil
+}
+
 func (a *SourceRepositoryAdapter) InitializeRepository(context.Context, string, string) error {
 	return nil
 }
@@ -136,7 +159,13 @@ func (a *SourceRepositoryAdapter) ProtectBranch(ctx context.Context, gitProjectI
 	if err != nil {
 		return err
 	}
-	return a.do(req.WithContext(ctx), nil)
+	if err := a.do(req.WithContext(ctx), nil); err != nil {
+		if isAlreadyExistsError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (a *SourceRepositoryAdapter) ConfigureWebhook(ctx context.Context, gitProjectID string, callbackURL string) error {

@@ -115,6 +115,52 @@ func TestSourceRepositoryAdapterCreatesProjectInEnsuredNamespace(t *testing.T) {
 	}
 }
 
+func TestSourceRepositoryAdapterAdoptsExistingProjectInExpectedNamespace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/api/v4/groups/paas-root":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 10, "full_path": "paas-root"})
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/api/v4/groups/paas-root%2Frnd":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 11, "full_path": "paas-root/rnd"})
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/api/v4/groups/paas-root%2Frnd%2Forder":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 12, "full_path": "paas-root/rnd/order"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v4/projects":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]any{"project_namespace.name": []string{"has already been taken"}, "name": []string{"has already been taken"}, "path": []string{"has already been taken"}}})
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/api/v4/projects/paas-root%2Frnd%2Forder%2Forder-api":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 30, "http_url_to_repo": "https://gitlab.example/paas-root/rnd/order/order-api.git", "ssh_url_to_repo": "git@gitlab.example:paas-root/rnd/order/order-api.git"})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	adapter := NewSourceRepositoryAdapterWithNamespace(NewClient(Config{BaseURL: server.URL, Token: "secret"}), "paas-root")
+	project, err := adapter.CreateProject(context.Background(), sourcerepository.GitProjectSpec{TenantName: "rnd", ProjectName: "order", RepositoryName: "order-api", DefaultBranch: "main"})
+	if err != nil {
+		t.Fatalf("create project should adopt existing project: %v", err)
+	}
+	if project.ID != "30" || project.HTTPURL == "" || project.SSHURL == "" {
+		t.Fatalf("unexpected adopted project: %#v", project)
+	}
+}
+
+func TestSourceRepositoryAdapterProtectBranchTreatsAlreadyProtectedAsSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v4/projects/12/protected_branches":
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Protected branch 'main' already exists"})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	adapter := NewSourceRepositoryAdapter(NewClient(Config{BaseURL: server.URL, Token: "secret"}))
+	if err := adapter.ProtectBranch(context.Background(), "12", "main"); err != nil {
+		t.Fatalf("already protected branch should be successful: %v", err)
+	}
+}
+
 func TestGitLabClientRetriesUnavailableStatus(t *testing.T) {
 	var calls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

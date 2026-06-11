@@ -3,6 +3,7 @@ package gitlab
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,4 +68,16 @@ func gitLabErrorMessage(status int, body []byte) string {
 		return fmt.Sprintf("gitlab request failed: status=%d", status)
 	}
 	return fmt.Sprintf("gitlab request failed: status=%d body=%s", status, text)
+}
+
+func isAlreadyExistsError(err error) bool {
+	var appErr *shared.AppError
+	if !errors.As(err, &appErr) {
+		return false
+	}
+	if appErr.Code != shared.CodeConflict && appErr.Code != shared.CodeFailedPrecondition {
+		return false
+	}
+	message := strings.ToLower(appErr.Message)
+	return strings.Contains(message, "has already been taken") || strings.Contains(message, "already exists")
 }
