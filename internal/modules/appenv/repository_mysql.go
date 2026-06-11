@@ -219,7 +219,7 @@ func (r *MySQLRepository) GetWorkload(ctx context.Context, id shared.ID) (Worklo
 }
 
 func (r *MySQLRepository) FindWorkloadByApplicationAndName(ctx context.Context, applicationID shared.ID, name string) (Workload, error) {
-	workload, err := scanWorkload(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, workloadSelect()+" WHERE application_id = ? AND name = ?", applicationID, name))
+	workload, err := scanWorkload(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, workloadSelect()+" WHERE application_id = ? AND name = ? AND status <> ?", applicationID, name, WorkloadStatusDeleted))
 	if err != nil {
 		return Workload{}, database.NotFound(err, "workload not found")
 	}

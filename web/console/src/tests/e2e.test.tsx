@@ -20,7 +20,6 @@ function renderFlow(path: string) {
 
 afterEach(() => {
   cleanup();
-  document.body.innerHTML = '';
   window.localStorage.clear();
   useSession.setState({ token: '', userName: '平台用户' });
 });

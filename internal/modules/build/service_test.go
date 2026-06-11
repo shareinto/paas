@@ -401,6 +401,35 @@ func TestCreateBuildPipelinePersistsRuntimeSnapshots(t *testing.T) {
 	}
 }
 
+func TestBuildPipelineRuntimeEnvironmentJSONUsesConsoleFieldNames(t *testing.T) {
+	pipeline := BuildPipeline{
+		ID:            "pipeline_1",
+		ApplicationID: "app_user",
+		Name:          "main",
+		RuntimeEnvironments: []RuntimeEnvironmentRef{{
+			ID:                 "runtime_env_java17",
+			Name:               "java17",
+			RuntimeBaseImage:   "registry.example/runtime/java17:1.0",
+			ArtifactDeployPath: "/app/",
+			DockerfilePath:     "java/jar/Dockerfile",
+		}},
+	}
+
+	payload, err := json.Marshal(pipeline)
+	if err != nil {
+		t.Fatalf("Marshal(BuildPipeline) error = %v", err)
+	}
+	jsonText := string(payload)
+	for _, field := range []string{`"id":"runtime_env_java17"`, `"runtime_base_image":"registry.example/runtime/java17:1.0"`, `"artifact_deploy_path":"/app/"`, `"dockerfile_path":"java/jar/Dockerfile"`} {
+		if !strings.Contains(jsonText, field) {
+			t.Fatalf("runtime snapshot JSON missing %s: %s", field, jsonText)
+		}
+	}
+	if strings.Contains(jsonText, `"ID"`) || strings.Contains(jsonText, `"RuntimeBaseImage"`) {
+		t.Fatalf("runtime snapshot JSON should not rely on Go field names: %s", jsonText)
+	}
+}
+
 func TestEnsureDefaultBuildConfigurationDoesNotRecreateDeletedEnvironments(t *testing.T) {
 	env := newBuildTestEnv(t)
 	ctx := context.Background()

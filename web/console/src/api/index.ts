@@ -178,6 +178,7 @@ export async function listBuildPipelineSources(pipelineId: string) {
 
 export async function createBuildPipeline(applicationId: string, input: { name: string; displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
   if (!hasAPIBaseURL()) return mock.createBuildPipeline(applicationId, input as any);
+  const runtimeEnvironmentIds = cleanRuntimeEnvironmentIds(input.runtimeEnvironmentIds);
   const item = await request<any>(`/api/apps/${encodeURIComponent(applicationId)}/build-pipelines`, {
     method: 'POST',
     body: JSON.stringify({
@@ -185,7 +186,7 @@ export async function createBuildPipeline(applicationId: string, input: { name: 
       name: input.name,
       display_name: input.displayName,
       description: input.description || '',
-      runtime_environment_ids: input.runtimeEnvironmentIds || [],
+      runtime_environment_ids: runtimeEnvironmentIds,
       sources: input.sources.map(pipelineSourcePayload)
     })
   });
@@ -194,13 +195,14 @@ export async function createBuildPipeline(applicationId: string, input: { name: 
 
 export async function updateBuildPipeline(pipelineId: string, input: { displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
   if (!hasAPIBaseURL()) return mock.updateBuildPipeline(pipelineId, input as any);
+  const runtimeEnvironmentIds = cleanRuntimeEnvironmentIds(input.runtimeEnvironmentIds);
   const item = await request<any>(`/api/build-pipelines/${encodeURIComponent(pipelineId)}`, {
     method: 'PATCH',
     body: JSON.stringify({
       actor: { type: 'user', id: 'usr_admin' },
       display_name: input.displayName,
       description: input.description || '',
-      runtime_environment_ids: input.runtimeEnvironmentIds || [],
+      runtime_environment_ids: runtimeEnvironmentIds,
       sources: input.sources.map(pipelineSourcePayload)
     })
   });
@@ -906,16 +908,20 @@ function mapBuildPipeline(item: any): mock.BuildPipeline {
 
 function mapRuntimeEnvironmentSnapshot(runtime: any): mock.RuntimeEnvironment {
   return {
-    id: runtime.id || runtime.runtime_environment_id || runtime.runtimeEnvironmentId || '',
-    name: runtime.name || '',
+    id: runtime.id || runtime.runtime_environment_id || runtime.runtimeEnvironmentId || runtime.ID || '',
+    name: runtime.name || runtime.Name || '',
     description: runtime.description || '',
-    runtimeBaseImage: runtime.runtime_base_image || runtime.runtimeBaseImage || '',
-    artifactDeployPath: runtime.artifact_deploy_path || runtime.artifactDeployPath || '',
-    dockerfilePath: runtime.dockerfile_path || runtime.dockerfilePath || '',
+    runtimeBaseImage: runtime.runtime_base_image || runtime.runtimeBaseImage || runtime.RuntimeBaseImage || '',
+    artifactDeployPath: runtime.artifact_deploy_path || runtime.artifactDeployPath || runtime.ArtifactDeployPath || '',
+    dockerfilePath: runtime.dockerfile_path || runtime.dockerfilePath || runtime.DockerfilePath || '',
     status: runtime.status || 'enabled',
     isDefault: !!(runtime.is_default || runtime.isDefault),
     updatedAt: runtime.updatedAt || formatTime(runtime.updated_at || runtime.updatedAt)
   };
+}
+
+function cleanRuntimeEnvironmentIds(ids?: string[]) {
+  return (ids || []).map((id) => id.trim()).filter(Boolean);
 }
 
 function mapBuildPipelineSource(item: any): mock.BuildPipelineSource {

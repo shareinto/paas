@@ -296,11 +296,12 @@ CREATE TABLE workloads (
   workload_type VARCHAR(32) NOT NULL,
   description VARCHAR(512) NOT NULL DEFAULT '',
   status VARCHAR(32) NOT NULL,
+  active_name VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN status = 'deleted' THEN NULL ELSE name END) STORED,
   image_source_mode VARCHAR(32) NOT NULL DEFAULT 'pipeline_artifact',
   created_by VARCHAR(64) NOT NULL DEFAULT '',
   created_at DATETIME(6) NOT NULL,
   updated_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_workloads_application_name (application_id, name),
+  UNIQUE KEY uk_workloads_application_active_name (application_id, active_name),
   KEY idx_workloads_application_status (application_id, status),
   KEY idx_workloads_project_application (project_id, application_id),
   CONSTRAINT fk_workloads_application FOREIGN KEY (application_id) REFERENCES applications(id)
@@ -338,6 +339,35 @@ CREATE TABLE workload_environment_configs (
 		Down: `
 DROP TABLE IF EXISTS workload_environment_configs;
 DROP TABLE IF EXISTS workloads;
+`,
+	},
+	{
+		Version: 202606110201,
+		Name:    "workload_active_name_unique_key",
+		Up: `
+SELECT IF(COUNT(*) = 0, 'ALTER TABLE workloads ADD COLUMN active_name VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN status = ''deleted'' THEN NULL ELSE name END) STORED AFTER status', 'SELECT 1') INTO @add_workloads_active_name
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'workloads' AND column_name = 'active_name';
+PREPARE add_workloads_active_name_stmt FROM @add_workloads_active_name;
+EXECUTE add_workloads_active_name_stmt;
+DEALLOCATE PREPARE add_workloads_active_name_stmt;
+
+SELECT IF(COUNT(*) > 0, 'ALTER TABLE workloads DROP INDEX uk_workloads_application_name', 'SELECT 1') INTO @drop_workloads_application_name
+  FROM information_schema.statistics
+  WHERE table_schema = DATABASE() AND table_name = 'workloads' AND index_name = 'uk_workloads_application_name';
+PREPARE drop_workloads_application_name_stmt FROM @drop_workloads_application_name;
+EXECUTE drop_workloads_application_name_stmt;
+DEALLOCATE PREPARE drop_workloads_application_name_stmt;
+
+SELECT IF(COUNT(*) = 0, 'ALTER TABLE workloads ADD UNIQUE KEY uk_workloads_application_active_name (application_id, active_name)', 'SELECT 1') INTO @add_workloads_application_active_name
+  FROM information_schema.statistics
+  WHERE table_schema = DATABASE() AND table_name = 'workloads' AND index_name = 'uk_workloads_application_active_name';
+PREPARE add_workloads_application_active_name_stmt FROM @add_workloads_application_active_name;
+EXECUTE add_workloads_application_active_name_stmt;
+DEALLOCATE PREPARE add_workloads_application_active_name_stmt;
+`,
+		Down: `
+SELECT 1;
 `,
 	},
 }

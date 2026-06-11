@@ -71,7 +71,7 @@ test('真实 API 分支查询流水线时同时加载代码源', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
   const fetchMock = vi.fn(async (url: string) => {
     if (url.endsWith('/api/apps/app_1/build-pipelines?page=1&page_size=50')) {
-      return new Response(JSON.stringify({ items: [{ id: 'pipeline_1', application_id: 'app_1', name: 'main', display_name: '主流水线', status: 'active' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
+      return new Response(JSON.stringify({ items: [{ id: 'pipeline_1', application_id: 'app_1', name: 'main', display_name: '主流水线', status: 'active', runtime_environments: [{ ID: 'runtime_env_java17', Name: 'java17', RuntimeBaseImage: 'registry.example/runtime/java17:1.0', ArtifactDeployPath: '/app/', DockerfilePath: 'java/jar/Dockerfile' }] }], total: 1, page: 1, page_size: 50 }), { status: 200 });
     }
     if (url.endsWith('/api/build-pipelines/pipeline_1/sources')) {
       return new Response(JSON.stringify({ items: [{ id: 'source_1', pipeline_id: 'pipeline_1', key: 'main', display_name: '主代码源', source_repository_id: 'repo_1', source_path: '.', build_spec: { source_path: '.', build_command: 'mvn clean package -DskipTests', artifact_copy_command: 'cp target/*.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"', runtime_base_image: 'registry.example/runtime/java17:1.0', artifact_deploy_path: '/app/', default_ref: 'main' } }] }), { status: 200 });
@@ -82,8 +82,47 @@ test('真实 API 分支查询流水线时同时加载代码源', async () => {
 
   const api = await import('./index');
   await expect(api.listBuildPipelines('app_1')).resolves.toMatchObject([
-    { id: 'pipeline_1', name: 'main', displayName: '主流水线', sources: [{ key: 'main', displayName: '主代码源', pipelineId: 'pipeline_1' }] }
+    { id: 'pipeline_1', name: 'main', displayName: '主流水线', runtimeEnvironments: [{ id: 'runtime_env_java17', runtimeBaseImage: 'registry.example/runtime/java17:1.0', artifactDeployPath: '/app/' }], sources: [{ key: 'main', displayName: '主代码源', pipelineId: 'pipeline_1' }] }
   ]);
+});
+
+test('真实 API 更新流水线时过滤空运行时环境 ID', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  let patchBody: any;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/build-pipelines/pipeline_1') && init?.method === 'PATCH') {
+      patchBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ id: 'pipeline_1', application_id: 'app_1', name: 'main', display_name: '主流水线', runtime_environments: [{ id: 'runtime_env_java17', name: 'java17' }] }), { status: 200 });
+    }
+    return new Response('', { status: 404 });
+  }));
+
+  const api = await import('./index');
+  await api.updateBuildPipeline('pipeline_1', {
+    displayName: '主流水线',
+    runtimeEnvironmentIds: ['', 'runtime_env_java17', '  '],
+    sources: [{
+      id: 'source_1',
+      applicationId: 'app_1',
+      pipelineId: 'pipeline_1',
+      key: 'main',
+      displayName: '主代码源',
+      sourceRepositoryId: 'repo_1',
+      buildEnvironmentId: 'build_env_maven',
+      sourcePath: '.',
+      defaultRef: 'main',
+      isPrimary: true,
+      buildSpec: {
+        sourcePath: '.',
+        buildCommand: 'mvn clean package -DskipTests',
+        artifactCopyCommand: 'cp target/*.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"',
+        runtimeBaseImage: 'registry.example/runtime/java17:1.0',
+        artifactDeployPath: '/app/',
+        defaultRef: 'main'
+      }
+    }]
+  });
+  expect(patchBody.runtime_environment_ids).toEqual(['runtime_env_java17']);
 });
 
 test('streamBuildLog 使用 fetch 流式读取 SSE 并携带 token', async () => {

@@ -73,11 +73,11 @@ type ApplicationRef struct {
 }
 
 type RuntimeEnvironmentRef struct {
-	ID                 shared.ID
-	Name               string
-	RuntimeBaseImage   string
-	ArtifactDeployPath string
-	DockerfilePath     string
+	ID                 shared.ID `json:"id"`
+	Name               string    `json:"name"`
+	RuntimeBaseImage   string    `json:"runtime_base_image"`
+	ArtifactDeployPath string    `json:"artifact_deploy_path"`
+	DockerfilePath     string    `json:"dockerfile_path"`
 }
 
 type ApplicationSourceRef struct {

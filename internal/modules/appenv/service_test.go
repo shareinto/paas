@@ -721,6 +721,46 @@ func TestWorkloadLifecycleValidationEnabledListAndAudit(t *testing.T) {
 	}
 }
 
+func TestWorkloadNameCanBeReusedAfterSoftDelete(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "reuse-api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+	first, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeDeployment})
+	if err != nil {
+		t.Fatalf("CreateWorkload(first) error = %v", err)
+	}
+	if _, err := env.svc.DeleteWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: first.ID}); err != nil {
+		t.Fatalf("DeleteWorkload() error = %v", err)
+	}
+
+	second, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeDeployment})
+	if err != nil {
+		t.Fatalf("CreateWorkload(second) should allow deleted name reuse: %v", err)
+	}
+	if second.ID == first.ID || second.Name != "api" || second.Status != WorkloadStatusEnabled {
+		t.Fatalf("recreated workload should be a new enabled record with same name, first=%+v second=%+v", first, second)
+	}
+	workloads, err := env.svc.ListWorkloads(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("ListWorkloads() error = %v", err)
+	}
+	if len(workloads) != 1 || workloads[0].ID != second.ID {
+		t.Fatalf("list should hide deleted workload and include recreated workload, got %+v", workloads)
+	}
+	if _, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeStatefulSet}); shared.CodeOf(err) != shared.CodeConflict {
+		t.Fatalf("active workload should still reserve name, got %v", err)
+	}
+	if _, err := env.svc.DisableWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: second.ID}); err != nil {
+		t.Fatalf("DisableWorkload() error = %v", err)
+	}
+	if _, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeStatefulSet}); shared.CodeOf(err) != shared.CodeConflict {
+		t.Fatalf("disabled workload should still reserve name, got %v", err)
+	}
+}
+
 func TestWorkloadEnvironmentConfigSaveQueryAndAudit(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
