@@ -452,6 +452,19 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	if err != nil {
 		t.Fatalf("create application: %v", err)
 	}
+	now := time.Now().UTC()
+	if err := app.state.clusterRepo.CreateCluster(ctx, clusteragent.Cluster{
+		ID:             "cluster_test_" + shared.ID(suffix),
+		TenantID:       tenant.ID,
+		Name:           "测试集群",
+		Region:         "cn",
+		Status:         clusteragent.ClusterReady,
+		AgentTokenHash: "test-token-hash",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil && shared.CodeOf(err) != shared.CodeConflict {
+		t.Fatalf("create test cluster: %v", err)
+	}
 	workload, err := app.apps.CreateWorkload(ctx, appenv.CreateWorkloadInput{Actor: actor, ApplicationID: created.ID, Name: "api", DisplayName: "测试服务", WorkloadType: appenv.WorkloadTypeDeployment})
 	if err != nil {
 		t.Fatalf("create workload: %v", err)
@@ -461,7 +474,7 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 		t.Fatalf("list environments: %v", err)
 	}
 	for _, env := range envs {
-		if _, err := app.apps.BindEnvironmentCluster(ctx, appenv.BindEnvironmentClusterInput{Actor: actor, EnvironmentID: env.ID, ClusterID: "cluster_test", ClusterName: "测试集群", Namespace: "test-" + env.Name}); err != nil {
+		if _, err := app.apps.BindEnvironmentCluster(ctx, appenv.BindEnvironmentClusterInput{Actor: actor, EnvironmentID: env.ID, ClusterID: "cluster_test_" + shared.ID(suffix), ClusterName: "测试集群", Namespace: "test-" + env.Name}); err != nil {
 			t.Fatalf("bind environment %s: %v", env.Name, err)
 		}
 	}

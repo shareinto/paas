@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
 )
 
@@ -40,7 +41,8 @@ func (h *Handler) handleRegisterCluster(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) handleListClusters(w http.ResponseWriter, r *http.Request) {
-	result, err := h.service.ListClusters(r.Context(), pageFromRequest(r))
+	actor := identityaccess.Subject{Type: identityaccess.SubjectUser, ID: shared.ID(r.URL.Query().Get("actor_id"))}
+	result, err := h.service.ListClusters(r.Context(), actor, shared.ID(r.URL.Query().Get("tenant_id")), pageFromRequest(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -49,7 +51,11 @@ func (h *Handler) handleListClusters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleDisableCluster(w http.ResponseWriter, r *http.Request) {
-	cluster, err := h.service.UpdateClusterStatus(r.Context(), shared.ID(r.PathValue("clusterId")), ClusterDisabled)
+	actor, ok := decodeActor(w, r)
+	if !ok {
+		return
+	}
+	cluster, err := h.service.UpdateClusterStatus(r.Context(), actor, shared.ID(r.PathValue("clusterId")), ClusterDisabled)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -59,7 +65,11 @@ func (h *Handler) handleDisableCluster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleDrainCluster(w http.ResponseWriter, r *http.Request) {
-	cluster, err := h.service.UpdateClusterStatus(r.Context(), shared.ID(r.PathValue("clusterId")), ClusterDraining)
+	actor, ok := decodeActor(w, r)
+	if !ok {
+		return
+	}
+	cluster, err := h.service.UpdateClusterStatus(r.Context(), actor, shared.ID(r.PathValue("clusterId")), ClusterDraining)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -69,7 +79,11 @@ func (h *Handler) handleDrainCluster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleRotateAgentToken(w http.ResponseWriter, r *http.Request) {
-	token, err := h.service.RotateAgentToken(r.Context(), shared.ID(r.PathValue("clusterId")))
+	actor, ok := decodeActor(w, r)
+	if !ok {
+		return
+	}
+	token, err := h.service.RotateAgentToken(r.Context(), actor, shared.ID(r.PathValue("clusterId")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -145,6 +159,16 @@ func agentAuth(r *http.Request) (shared.ID, string) {
 	clusterID := shared.ID(r.Header.Get("X-PaaS-Cluster-ID"))
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	return clusterID, token
+}
+
+func decodeActor(w http.ResponseWriter, r *http.Request) (identityaccess.Subject, bool) {
+	var req struct {
+		Actor identityaccess.Subject `json:"actor"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return identityaccess.Subject{}, false
+	}
+	return req.Actor, true
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {

@@ -103,6 +103,22 @@ func (p *fakeClusterPlacement) SelectCluster(_ context.Context, environment Envi
 	return p.candidate, p.ok, p.err
 }
 
+type fakeClusterQuery struct {
+	clusters map[shared.ID]ClusterRef
+	err      error
+}
+
+func (q fakeClusterQuery) GetCluster(_ context.Context, id shared.ID) (ClusterRef, error) {
+	if q.err != nil {
+		return ClusterRef{}, q.err
+	}
+	cluster, ok := q.clusters[id]
+	if !ok {
+		return ClusterRef{}, shared.NewError(shared.CodeNotFound, "cluster not found")
+	}
+	return cluster, nil
+}
+
 type recordingGitOps struct {
 	specs []GitOpsEnvironmentSpec
 	err   error
@@ -153,6 +169,7 @@ type appenvTestEnv struct {
 	repo       Repository
 	permission *recordingPermission
 	clusters   *fakeClusterPlacement
+	clusterQ   fakeClusterQuery
 	gitops     *recordingGitOps
 	pipelines  *recordingBuildPipelineProvisioner
 	audit      *recordingAudit
@@ -182,6 +199,12 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 		candidate: ClusterCandidate{ClusterID: "cluster_dev", ClusterName: "dev-cluster", Namespace: "payment"},
 		ok:        clusterAvailable,
 	}
+	clusterQ := fakeClusterQuery{clusters: map[shared.ID]ClusterRef{
+		"cluster_dev":    {ID: "cluster_dev", TenantID: "tenant_a", Name: "dev-cluster"},
+		"cluster_manual": {ID: "cluster_manual", TenantID: "tenant_a", Name: "真实集群名称"},
+		"cluster_2":      {ID: "cluster_2", TenantID: "tenant_a", Name: "二号集群"},
+		"cluster_other":  {ID: "cluster_other", TenantID: "tenant_b", Name: "其他租户集群"},
+	}}
 	gitops := &recordingGitOps{}
 	pipelines := &recordingBuildPipelineProvisioner{}
 	audit := &recordingAudit{}
@@ -197,6 +220,7 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 			"repo_busy":  {ID: "repo_busy", TenantID: "tenant_a", ProjectID: "project_payment", DefaultBranch: "main", Status: "migrating"},
 		}},
 		ClusterPlacementQuery:        clusters,
+		ClusterQuery:                 clusterQ,
 		GitOpsEnvironmentProvisioner: gitops,
 		BuildPipelineProvisioner:     pipelines,
 		PermissionChecker:            permission,
@@ -205,7 +229,7 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 		IDGenerator:                  testutil.NewFakeIDGenerator(1),
 		Clock:                        testutil.NewFakeClock(time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)),
 	})
-	return appenvTestEnv{svc: svc, repo: repo, permission: permission, clusters: clusters, gitops: gitops, pipelines: pipelines, audit: audit, events: events}
+	return appenvTestEnv{svc: svc, repo: repo, permission: permission, clusters: clusters, clusterQ: clusterQ, gitops: gitops, pipelines: pipelines, audit: audit, events: events}
 }
 
 func TestNoopAuditAndEventPublisher(t *testing.T) {
@@ -990,7 +1014,7 @@ func TestApplicationQueriesUpdateDeleteAndManualBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BindEnvironmentCluster() error = %v", err)
 	}
-	if binding.EnvironmentID != gotEnv.ID || binding.Namespace != "api-dev" {
+	if binding.EnvironmentID != gotEnv.ID || binding.Namespace != "api-dev" || binding.ClusterName != "真实集群名称" {
 		t.Fatalf("unexpected binding: %+v", binding)
 	}
 	state, err := env.svc.GetEnvironmentState(ctx, gotEnv.ID)
@@ -1002,6 +1026,9 @@ func TestApplicationQueriesUpdateDeleteAndManualBinding(t *testing.T) {
 	}
 	if _, err := env.svc.BindEnvironmentCluster(ctx, BindEnvironmentClusterInput{Actor: appenvActor(), EnvironmentID: environments[1].ID, ClusterName: "manual", Namespace: "api-test"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("incomplete binding should fail, got %v", err)
+	}
+	if _, err := env.svc.BindEnvironmentCluster(ctx, BindEnvironmentClusterInput{Actor: appenvActor(), EnvironmentID: environments[1].ID, ClusterID: "cluster_other", ClusterName: "other", Namespace: "api-test"}); shared.CodeOf(err) != shared.CodePermissionDenied {
+		t.Fatalf("cross-tenant cluster binding should fail, got %v", err)
 	}
 	if _, err := env.svc.BindEnvironmentCluster(ctx, BindEnvironmentClusterInput{Actor: identityaccess.Subject{}, EnvironmentID: environments[1].ID, ClusterID: "cluster_2", ClusterName: "manual", Namespace: "api-test"}); shared.CodeOf(err) != shared.CodeUnauthenticated {
 		t.Fatalf("binding without actor should fail, got %v", err)

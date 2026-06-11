@@ -49,6 +49,7 @@ type serverState struct {
 	deliveryRepo delivery.Repository
 	auditRepo    audit.Repository
 	gitopsRepo   gitops.Repository
+	clusterRepo  clusteragent.Repository
 }
 
 type projectDeletionGuard struct {
@@ -133,6 +134,7 @@ func newApplication(ctx context.Context) (*application, error) {
 		BuildEnvironmentQuery:    buildEnvironmentForAppEnv{repo: buildRepo},
 		RuntimeEnvironmentQuery:  runtimeEnvironmentForAppEnv{repo: buildRepo},
 		BuildPipelineProvisioner: buildSvc,
+		ClusterQuery:             clusterForAppEnv{repo: repos.cluster},
 		Audit:                    audit.ApplicationEnvironmentLogger{Logger: auditSvc},
 		IDGenerator:              ids,
 		Clock:                    clock,
@@ -149,7 +151,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	clusterRepo := repos.cluster
-	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, EnvironmentState: envUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, TenantQuery: tenantForClusterAgent{service: tenantSvc}, PermissionChecker: identitySvc, EnvironmentState: envUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	notificationSvc := notification.NewService(notification.Options{Repository: repos.notification, IDGenerator: ids, Clock: clock})
 	if err := notificationSvc.EnsureDefaults(ctx); err != nil {
@@ -157,7 +159,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	}
 
 	mux := http.NewServeMux()
-	state := serverState{tenantRepo: tenantRepo, sourceRepo: sourceRepo, appRepo: appRepo, buildRepo: buildRepo, deliveryRepo: deliveryRepo, auditRepo: auditRepo, gitopsRepo: gitopsRepo}
+	state := serverState{tenantRepo: tenantRepo, sourceRepo: sourceRepo, appRepo: appRepo, buildRepo: buildRepo, deliveryRepo: deliveryRepo, auditRepo: auditRepo, gitopsRepo: gitopsRepo, clusterRepo: clusterRepo}
 	registerDevelopmentRoutes(mux, developmentAPI{identity: identitySvc, tenants: tenantSvc, apps: appSvc, builds: buildSvc, delivery: deliverySvc, state: state})
 	tenantproject.NewHandler(tenantSvc).Register(mux)
 	identityaccess.NewHandler(identitySvc).Register(mux)
@@ -705,6 +707,26 @@ func (q runtimeEnvironmentForAppEnv) FindDefaultRuntimeEnvironment(ctx context.C
 
 func toAppenvRuntimeEnvironmentRef(environment build.RuntimeEnvironment) appenv.RuntimeEnvironmentRef {
 	return appenv.RuntimeEnvironmentRef{ID: environment.ID, Name: environment.Name, Status: string(environment.Status), RuntimeBaseImage: environment.RuntimeBaseImage, ArtifactDeployPath: environment.ArtifactDeployPath, DockerfilePath: environment.DockerfilePath}
+}
+
+type clusterForAppEnv struct{ repo clusteragent.Repository }
+
+func (q clusterForAppEnv) GetCluster(ctx context.Context, id shared.ID) (appenv.ClusterRef, error) {
+	cluster, err := q.repo.GetCluster(ctx, id)
+	if err != nil {
+		return appenv.ClusterRef{}, err
+	}
+	return appenv.ClusterRef{ID: cluster.ID, TenantID: cluster.TenantID, Name: cluster.Name, Status: string(cluster.Status)}, nil
+}
+
+type tenantForClusterAgent struct{ service *tenantproject.Service }
+
+func (q tenantForClusterAgent) GetTenant(ctx context.Context, id shared.ID) (clusteragent.TenantRef, error) {
+	tenant, err := q.service.GetTenant(ctx, id)
+	if err != nil {
+		return clusteragent.TenantRef{}, err
+	}
+	return clusteragent.TenantRef{ID: tenant.ID}, nil
 }
 
 type runtimeEnvironmentSyncerForAppEnv struct{ service *appenv.Service }

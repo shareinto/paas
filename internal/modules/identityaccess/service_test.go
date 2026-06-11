@@ -337,6 +337,33 @@ func TestBuiltInProjectRolesAllowFreightCreate(t *testing.T) {
 	}
 }
 
+func TestTenantAdminRolesManageTenantClusters(t *testing.T) {
+	for _, roleID := range []RoleID{RoleTenantOwner, RoleTenantAdmin} {
+		t.Run(string(roleID), func(t *testing.T) {
+			svc, _, _ := newTestService(t, nil)
+			ctx := context.Background()
+			user, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "cluster_" + string(roleID), Password: "secret"})
+			if err != nil {
+				t.Fatalf("CreateLocalUser() error = %v", err)
+			}
+			if _, err := svc.CreateRoleBinding(ctx, RoleBinding{SubjectType: SubjectUser, SubjectID: user.ID, RoleID: roleID, ScopeKind: ScopeTenant, ScopeID: "tenant_1"}); err != nil {
+				t.Fatalf("CreateRoleBinding() error = %v", err)
+			}
+			subject := Subject{Type: SubjectUser, ID: user.ID}
+			resource := ResourceScope{Kind: ScopeTenant, TenantID: "tenant_1"}
+			if err := svc.Check(ctx, subject, resource, "cluster:manage"); err != nil {
+				t.Fatalf("%s should manage tenant clusters: %v", roleID, err)
+			}
+			if err := svc.Check(ctx, subject, resource, "cluster:read"); err != nil {
+				t.Fatalf("%s should read tenant clusters: %v", roleID, err)
+			}
+			if err := svc.Check(ctx, subject, ResourceScope{Kind: ScopeTenant, TenantID: "tenant_2"}, "cluster:manage"); shared.CodeOf(err) != shared.CodePermissionDenied {
+				t.Fatalf("%s should not manage another tenant cluster, got %v", roleID, err)
+			}
+		})
+	}
+}
+
 func TestTokenAuthenticateRefreshAndLogout(t *testing.T) {
 	svc, _, _ := newTestService(t, nil)
 	ctx := context.Background()

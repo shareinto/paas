@@ -77,6 +77,33 @@ FROM clusters ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, limit, offset
 	return shared.NewPageResult(items, total, page), nil
 }
 
+func (r *MySQLRepository) ListClustersByTenant(ctx context.Context, tenantID shared.ID, page shared.PageRequest) (shared.PageResult[Cluster], error) {
+	var total int64
+	if err := database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, "SELECT COUNT(*) FROM clusters WHERE tenant_id = ?", tenantID).Scan(&total); err != nil {
+		return shared.PageResult[Cluster]{}, database.WrapUnavailable(err, "count tenant clusters failed")
+	}
+	page, limit, offset := database.LimitOffset(page)
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
+SELECT id, tenant_id, name, region, server_version, status, agent_token_hash, last_heartbeat_at, created_at, updated_at
+FROM clusters WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, tenantID, limit, offset)
+	if err != nil {
+		return shared.PageResult[Cluster]{}, database.WrapUnavailable(err, "list tenant clusters failed")
+	}
+	defer rows.Close()
+	items := []Cluster{}
+	for rows.Next() {
+		cluster, err := scanCluster(rows)
+		if err != nil {
+			return shared.PageResult[Cluster]{}, err
+		}
+		items = append(items, cluster)
+	}
+	if err := rows.Err(); err != nil {
+		return shared.PageResult[Cluster]{}, database.WrapUnavailable(err, "list tenant clusters failed")
+	}
+	return shared.NewPageResult(items, total, page), nil
+}
+
 func (r *MySQLRepository) CreateHeartbeat(ctx context.Context, heartbeat ClusterHeartbeat) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO cluster_heartbeats (id, cluster_id, agent_version, observed_at, message, control_plane_url)

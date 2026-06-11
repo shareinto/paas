@@ -122,6 +122,17 @@ type ClusterPlacementQuery interface {
 	SelectCluster(ctx context.Context, environment Environment) (ClusterCandidate, bool, error)
 }
 
+type ClusterRef struct {
+	ID       shared.ID
+	TenantID shared.ID
+	Name     string
+	Status   string
+}
+
+type ClusterQuery interface {
+	GetCluster(ctx context.Context, id shared.ID) (ClusterRef, error)
+}
+
 type GitOpsEnvironmentProvisioner interface {
 	ProvisionEnvironment(ctx context.Context, spec GitOpsEnvironmentSpec) error
 }

@@ -18,6 +18,7 @@ CREATE TABLE clusters (
   last_heartbeat_at DATETIME(6) NULL,
   created_at DATETIME(6) NOT NULL,
   updated_at DATETIME(6) NOT NULL,
+  KEY idx_clusters_tenant_status_created (tenant_id, status, created_at),
   KEY idx_clusters_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -72,5 +73,23 @@ DROP TABLE IF EXISTS cluster_resource_snapshots;
 DROP TABLE IF EXISTS cluster_heartbeats;
 DROP TABLE IF EXISTS clusters;
 `,
+	},
+	{
+		Version: 202606111201,
+		Name:    "cluster_tenant_status_index",
+		Up: `
+SET @clusters_tenant_index_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.statistics
+  WHERE table_schema = DATABASE()
+    AND table_name = 'clusters'
+    AND index_name = 'idx_clusters_tenant_status_created'
+);
+SET @clusters_tenant_index_ddl := IF(@clusters_tenant_index_missing, 'ALTER TABLE clusters ADD KEY idx_clusters_tenant_status_created (tenant_id, status, created_at)', 'SELECT 1');
+PREPARE clusters_tenant_index_stmt FROM @clusters_tenant_index_ddl;
+EXECUTE clusters_tenant_index_stmt;
+DEALLOCATE PREPARE clusters_tenant_index_stmt;
+`,
+		Down: `SELECT 1;`,
 	},
 }

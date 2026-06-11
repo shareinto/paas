@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
 	"github.com/shareinto/paas/internal/testsupport"
 )
@@ -36,6 +37,49 @@ type failingReportUpdater struct{ err error }
 
 func (u failingReportUpdater) UpdateFromAgent(context.Context, StatusReport) error {
 	return u.err
+}
+
+type fakeTenantQuery struct {
+	tenants map[shared.ID]struct{}
+	err     error
+}
+
+func (q fakeTenantQuery) GetTenant(_ context.Context, id shared.ID) (TenantRef, error) {
+	if q.err != nil {
+		return TenantRef{}, q.err
+	}
+	if _, ok := q.tenants[id]; !ok {
+		return TenantRef{}, shared.NewError(shared.CodeNotFound, "tenant not found")
+	}
+	return TenantRef{ID: id}, nil
+}
+
+type recordingClusterPermission struct {
+	calls []clusterPermissionCall
+	err   error
+}
+
+type clusterPermissionCall struct {
+	subject  identityaccess.Subject
+	resource identityaccess.ResourceScope
+	action   identityaccess.Permission
+}
+
+func (p *recordingClusterPermission) Check(_ context.Context, subject identityaccess.Subject, resource identityaccess.ResourceScope, action identityaccess.Permission) error {
+	p.calls = append(p.calls, clusterPermissionCall{subject: subject, resource: resource, action: action})
+	return p.err
+}
+
+func tenantQuery(ids ...shared.ID) fakeTenantQuery {
+	tenants := make(map[shared.ID]struct{}, len(ids))
+	for _, id := range ids {
+		tenants[id] = struct{}{}
+	}
+	return fakeTenantQuery{tenants: tenants}
+}
+
+func clusterActor() identityaccess.Subject {
+	return identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_cluster_admin"}
 }
 
 type clusterRepoWithErrors struct {
@@ -69,6 +113,13 @@ func (r *clusterRepoWithErrors) ListClusters(ctx context.Context, page shared.Pa
 		return shared.PageResult[Cluster]{}, r.listErr
 	}
 	return r.Repository.ListClusters(ctx, page)
+}
+
+func (r *clusterRepoWithErrors) ListClustersByTenant(ctx context.Context, tenantID shared.ID, page shared.PageRequest) (shared.PageResult[Cluster], error) {
+	if r.listErr != nil {
+		return shared.PageResult[Cluster]{}, r.listErr
+	}
+	return r.Repository.ListClustersByTenant(ctx, tenantID, page)
 }
 
 func (r *clusterRepoWithErrors) CreateHeartbeat(ctx context.Context, heartbeat ClusterHeartbeat) error {
@@ -121,8 +172,8 @@ func TestAgentTokenBindingHeartbeatTimeoutAndStatusForward(t *testing.T) {
 	env := &reportRecorder{}
 	deployments := &reportRecorder{}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "heartbeat_1", "snapshot_1"}}
-	svc := NewService(Options{Repository: repo, EnvironmentState: env, DeploymentStatus: deployments, IDGenerator: ids, Clock: clock, HeartbeatTimeout: time.Minute})
-	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Name: "生产集群"})
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), EnvironmentState: env, DeploymentStatus: deployments, IDGenerator: ids, Clock: clock, HeartbeatTimeout: time.Minute})
+	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "生产集群"})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -155,8 +206,8 @@ func TestTaskPullAndResultAreScopedToCluster(t *testing.T) {
 	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "cluster_task_1", "cluster_task_result_1"}}
-	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})
-	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Name: "测试集群"})
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock})
+	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "测试集群"})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -184,12 +235,12 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "cluster_task_1", "heartbeat_1", "snapshot_1", "snapshot_2", "cluster_task_result_1"}}
-	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock})
 	mux := http.NewServeMux()
 	NewHandler(svc).Register(mux)
 
 	register := httptest.NewRecorder()
-	mux.ServeHTTP(register, httptest.NewRequest(http.MethodPost, "/api/clusters", bytes.NewBufferString(`{"tenant_id":"tenant_1","name":"生产集群","region":"cn"}`)))
+	mux.ServeHTTP(register, httptest.NewRequest(http.MethodPost, "/api/clusters", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"},"tenant_id":"tenant_1","name":"生产集群","region":"cn"}`)))
 	if register.Code != http.StatusCreated {
 		t.Fatalf("register status = %d body=%s", register.Code, register.Body.String())
 	}
@@ -201,7 +252,7 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 		t.Fatalf("token should be returned once and hash hidden: %#v", registered)
 	}
 	rotate := httptest.NewRecorder()
-	mux.ServeHTTP(rotate, httptest.NewRequest(http.MethodPost, "/api/clusters/"+registered.Cluster.ID.String()+"/rotate-token", nil))
+	mux.ServeHTTP(rotate, httptest.NewRequest(http.MethodPost, "/api/clusters/"+registered.Cluster.ID.String()+"/rotate-token", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"}}`)))
 	if rotate.Code != http.StatusOK || bytes.Contains(rotate.Body.Bytes(), []byte("AgentTokenHash")) {
 		t.Fatalf("rotate status=%d body=%s", rotate.Code, rotate.Body.String())
 	}
@@ -250,17 +301,17 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 		t.Fatalf("task result = %d body=%s", result.Code, result.Body.String())
 	}
 	list := httptest.NewRecorder()
-	mux.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/clusters?page=1&page_size=10", nil))
+	mux.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/clusters?tenant_id=tenant_1&page=1&page_size=10", nil))
 	if list.Code != http.StatusOK || bytes.Contains(list.Body.Bytes(), []byte("AgentTokenHash")) {
 		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
 	}
 	drain := httptest.NewRecorder()
-	mux.ServeHTTP(drain, httptest.NewRequest(http.MethodPost, "/api/clusters/cluster_1/drain", nil))
+	mux.ServeHTTP(drain, httptest.NewRequest(http.MethodPost, "/api/clusters/cluster_1/drain", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"}}`)))
 	if drain.Code != http.StatusOK {
 		t.Fatalf("drain status=%d body=%s", drain.Code, drain.Body.String())
 	}
 	disable := httptest.NewRecorder()
-	mux.ServeHTTP(disable, httptest.NewRequest(http.MethodPost, "/api/clusters/cluster_1/disable", nil))
+	mux.ServeHTTP(disable, httptest.NewRequest(http.MethodPost, "/api/clusters/cluster_1/disable", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"}}`)))
 	if disable.Code != http.StatusOK {
 		t.Fatalf("disable status=%d body=%s", disable.Code, disable.Body.String())
 	}
@@ -275,19 +326,19 @@ func TestClusterServiceValidationRotationAndScopedFailures(t *testing.T) {
 	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_bad", "cluster_1", "cluster_2", "cluster_task_1"}}
-	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})
-	if _, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Name: " "}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock})
+	if _, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: " "}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("blank cluster name should fail, got %v", err)
 	}
-	first, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Name: "开发集群"})
+	first, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群"})
 	if err != nil {
 		t.Fatalf("register first: %v", err)
 	}
-	second, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Name: "生产集群"})
+	second, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "生产集群"})
 	if err != nil {
 		t.Fatalf("register second: %v", err)
 	}
-	rotated, err := svc.RotateAgentToken(context.Background(), first.Cluster.ID)
+	rotated, err := svc.RotateAgentToken(context.Background(), clusterActor(), first.Cluster.ID)
 	if err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
@@ -297,10 +348,10 @@ func TestClusterServiceValidationRotationAndScopedFailures(t *testing.T) {
 	if _, err := svc.Authenticate(context.Background(), first.Cluster.ID, first.AgentToken); shared.CodeOf(err) != shared.CodeUnauthenticated {
 		t.Fatalf("old token should fail, got %v", err)
 	}
-	if _, err := svc.UpdateClusterStatus(context.Background(), first.Cluster.ID, ClusterStatus("bad")); shared.CodeOf(err) != shared.CodeInvalidArgument {
+	if _, err := svc.UpdateClusterStatus(context.Background(), clusterActor(), first.Cluster.ID, ClusterStatus("bad")); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("invalid status should fail, got %v", err)
 	}
-	if _, err := svc.UpdateClusterStatus(context.Background(), first.Cluster.ID, ClusterDisabled); err != nil {
+	if _, err := svc.UpdateClusterStatus(context.Background(), clusterActor(), first.Cluster.ID, ClusterDisabled); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 	if _, err := svc.Authenticate(context.Background(), first.Cluster.ID, rotated); shared.CodeOf(err) != shared.CodePermissionDenied {
@@ -363,12 +414,12 @@ func TestClusterServiceStatusForwardingHeartbeatAndUnreachableBranches(t *testin
 	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "heartbeat_1", "snapshot_1", "snapshot_2", "snapshot_3"}}
-	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock, EnvironmentState: failingReportUpdater{err: shared.NewError(shared.CodeInternal, "env failed")}, HeartbeatTimeout: time.Minute})
-	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Name: "开发集群"})
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock, EnvironmentState: failingReportUpdater{err: shared.NewError(shared.CodeInternal, "env failed")}, HeartbeatTimeout: time.Minute})
+	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群"})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := svc.UpdateClusterStatus(context.Background(), registered.Cluster.ID, ClusterUnreachable); err != nil {
+	if _, err := svc.UpdateClusterStatus(context.Background(), clusterActor(), registered.Cluster.ID, ClusterUnreachable); err != nil {
 		t.Fatalf("mark unreachable manually: %v", err)
 	}
 	observed := clock.now.Add(-time.Second)
@@ -404,8 +455,8 @@ func TestClusterAgentHTTPHandlerAuthenticationFailures(t *testing.T) {
 	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1"}}
-	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})
-	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Name: "开发集群"})
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock})
+	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群"})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -441,14 +492,14 @@ func TestClusterServicePropagatesRepositoryErrors(t *testing.T) {
 	repo := &clusterRepoWithErrors{Repository: base}
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "heartbeat_1", "heartbeat_2", "snapshot_1", "cluster_task_1", "cluster_task_result_1", "cluster_task_result_2", "cluster_2"}}
-	svc := NewService(Options{Repository: repo, IDGenerator: ids, Clock: clock})
-	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Name: "开发集群"})
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock})
+	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群"})
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
 	repo.listErr = shared.NewError(shared.CodeInternal, "list failed")
-	if _, err := svc.ListClusters(context.Background(), shared.PageRequest{}); shared.CodeOf(err) != shared.CodeInternal {
+	if _, err := svc.ListClusters(context.Background(), clusterActor(), "tenant_1", shared.PageRequest{}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("list error should propagate, got %v", err)
 	}
 	if _, err := svc.MarkUnreachable(context.Background()); shared.CodeOf(err) != shared.CodeInternal {
@@ -465,7 +516,7 @@ func TestClusterServicePropagatesRepositoryErrors(t *testing.T) {
 	if err := svc.Heartbeat(context.Background(), registered.Cluster.ID, registered.AgentToken, ClusterHeartbeat{}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("heartbeat update error should propagate, got %v", err)
 	}
-	if _, err := svc.UpdateClusterStatus(context.Background(), registered.Cluster.ID, ClusterReady); shared.CodeOf(err) != shared.CodeInternal {
+	if _, err := svc.UpdateClusterStatus(context.Background(), clusterActor(), registered.Cluster.ID, ClusterReady); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("status update error should propagate, got %v", err)
 	}
 	repo.updateClusterErr = nil
@@ -502,7 +553,29 @@ func TestClusterServicePropagatesRepositoryErrors(t *testing.T) {
 	}
 
 	repo.createClusterErr = shared.NewError(shared.CodeInternal, "create cluster failed")
-	if _, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Name: "生产集群"}); shared.CodeOf(err) != shared.CodeInternal {
+	if _, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "生产集群"}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("cluster create error should propagate, got %v", err)
+	}
+}
+
+func TestClusterRegistrationRequiresTenantAndPermission(t *testing.T) {
+	repo := newTestRepository(t)
+	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
+	permission := &recordingClusterPermission{}
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), PermissionChecker: permission, IDGenerator: &staticIDs{ids: []shared.ID{"cluster_1"}}, Clock: clock})
+
+	if _, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), Name: "开发集群"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("missing tenant should fail, got %v", err)
+	}
+	if _, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "missing", Name: "开发集群"}); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("unknown tenant should fail, got %v", err)
+	}
+
+	permission.err = shared.NewError(shared.CodePermissionDenied, "permission denied")
+	if _, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群"}); shared.CodeOf(err) != shared.CodePermissionDenied {
+		t.Fatalf("permission denial should fail, got %v", err)
+	}
+	if len(permission.calls) != 1 || permission.calls[0].resource.Kind != identityaccess.ScopeTenant || permission.calls[0].resource.TenantID != "tenant_1" || permission.calls[0].action != "cluster:manage" {
+		t.Fatalf("unexpected permission calls: %+v", permission.calls)
 	}
 }

@@ -21,6 +21,7 @@ type Service struct {
 	runtimeEnvironments RuntimeEnvironmentQuery
 	buildPipelines      BuildPipelineProvisioner
 	clusters            ClusterPlacementQuery
+	clusterQuery        ClusterQuery
 	gitops              GitOpsEnvironmentProvisioner
 	permission          PermissionChecker
 	audit               AuditLogger
@@ -38,6 +39,7 @@ type Options struct {
 	RuntimeEnvironmentQuery      RuntimeEnvironmentQuery
 	BuildPipelineProvisioner     BuildPipelineProvisioner
 	ClusterPlacementQuery        ClusterPlacementQuery
+	ClusterQuery                 ClusterQuery
 	GitOpsEnvironmentProvisioner GitOpsEnvironmentProvisioner
 	PermissionChecker            PermissionChecker
 	Audit                        AuditLogger
@@ -72,6 +74,7 @@ func NewService(opts Options) *Service {
 		runtimeEnvironments: opts.RuntimeEnvironmentQuery,
 		buildPipelines:      opts.BuildPipelineProvisioner,
 		clusters:            opts.ClusterPlacementQuery,
+		clusterQuery:        opts.ClusterQuery,
 		gitops:              opts.GitOpsEnvironmentProvisioner,
 		permission:          opts.PermissionChecker,
 		audit:               audit,
@@ -784,6 +787,16 @@ func (s *Service) BindEnvironmentCluster(ctx context.Context, input BindEnvironm
 	candidate := ClusterCandidate{ClusterID: input.ClusterID, ClusterName: strings.TrimSpace(input.ClusterName), Namespace: strings.TrimSpace(input.Namespace)}
 	if candidate.ClusterID.IsZero() || candidate.ClusterName == "" || candidate.Namespace == "" {
 		return EnvironmentClusterBinding{}, shared.NewError(shared.CodeInvalidArgument, "cluster_id, cluster_name and namespace are required")
+	}
+	if s.clusterQuery != nil {
+		cluster, err := s.clusterQuery.GetCluster(ctx, candidate.ClusterID)
+		if err != nil {
+			return EnvironmentClusterBinding{}, err
+		}
+		if cluster.TenantID != env.TenantID {
+			return EnvironmentClusterBinding{}, shared.NewError(shared.CodePermissionDenied, "cluster belongs to another tenant")
+		}
+		candidate.ClusterName = strings.TrimSpace(cluster.Name)
 	}
 	return s.createBindingAndProvision(ctx, env, candidate)
 }

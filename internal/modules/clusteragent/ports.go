@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
 )
 
@@ -12,6 +13,7 @@ type Repository interface {
 	UpdateCluster(ctx context.Context, cluster Cluster) error
 	GetCluster(ctx context.Context, id shared.ID) (Cluster, error)
 	ListClusters(ctx context.Context, page shared.PageRequest) (shared.PageResult[Cluster], error)
+	ListClustersByTenant(ctx context.Context, tenantID shared.ID, page shared.PageRequest) (shared.PageResult[Cluster], error)
 
 	CreateHeartbeat(ctx context.Context, heartbeat ClusterHeartbeat) error
 	CreateSnapshot(ctx context.Context, snapshot ClusterResourceSnapshot) error
@@ -33,6 +35,18 @@ type DeploymentStatusUpdater interface {
 
 type AuditLogger interface {
 	Log(ctx context.Context, event AuditEvent) error
+}
+
+type PermissionChecker interface {
+	Check(ctx context.Context, subject identityaccess.Subject, resource identityaccess.ResourceScope, action identityaccess.Permission) error
+}
+
+type TenantRef struct {
+	ID shared.ID
+}
+
+type TenantQuery interface {
+	GetTenant(ctx context.Context, id shared.ID) (TenantRef, error)
 }
 
 type AuditEvent struct {

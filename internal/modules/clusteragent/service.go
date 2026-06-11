@@ -4,12 +4,15 @@ import (
 	"context"
 	"time"
 
+	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type Service struct {
 	repo        Repository
+	tenants     TenantQuery
+	permission  PermissionChecker
 	envUpdater  EnvironmentStateUpdater
 	deployments DeploymentStatusUpdater
 	audit       AuditLogger
@@ -19,13 +22,15 @@ type Service struct {
 }
 
 type Options struct {
-	Repository       Repository
-	EnvironmentState EnvironmentStateUpdater
-	DeploymentStatus DeploymentStatusUpdater
-	Audit            AuditLogger
-	IDGenerator      shared.IDGenerator
-	Clock            shared.Clock
-	HeartbeatTimeout time.Duration
+	Repository        Repository
+	TenantQuery       TenantQuery
+	PermissionChecker PermissionChecker
+	EnvironmentState  EnvironmentStateUpdater
+	DeploymentStatus  DeploymentStatusUpdater
+	Audit             AuditLogger
+	IDGenerator       shared.IDGenerator
+	Clock             shared.Clock
+	HeartbeatTimeout  time.Duration
 }
 
 func NewService(opts Options) *Service {
@@ -45,13 +50,14 @@ func NewService(opts Options) *Service {
 	if audit == nil {
 		audit = NoopAuditLogger{}
 	}
-	return &Service{repo: opts.Repository, envUpdater: opts.EnvironmentState, deployments: opts.DeploymentStatus, audit: audit, ids: ids, clock: clock, timeout: timeout}
+	return &Service{repo: opts.Repository, tenants: opts.TenantQuery, permission: opts.PermissionChecker, envUpdater: opts.EnvironmentState, deployments: opts.DeploymentStatus, audit: audit, ids: ids, clock: clock, timeout: timeout}
 }
 
 type RegisterClusterInput struct {
-	TenantID shared.ID `json:"tenant_id"`
-	Name     string    `json:"name"`
-	Region   string    `json:"region"`
+	Actor    identityaccess.Subject `json:"actor"`
+	TenantID shared.ID              `json:"tenant_id"`
+	Name     string                 `json:"name"`
+	Region   string                 `json:"region"`
 }
 
 type RegisterClusterResult struct {
@@ -60,6 +66,17 @@ type RegisterClusterResult struct {
 }
 
 func (s *Service) RegisterCluster(ctx context.Context, input RegisterClusterInput) (RegisterClusterResult, error) {
+	if input.TenantID.IsZero() {
+		return RegisterClusterResult{}, shared.NewError(shared.CodeInvalidArgument, "tenant_id is required")
+	}
+	if s.tenants != nil {
+		if _, err := s.tenants.GetTenant(ctx, input.TenantID); err != nil {
+			return RegisterClusterResult{}, err
+		}
+	}
+	if err := s.check(ctx, input.Actor, input.TenantID, "cluster:manage"); err != nil {
+		return RegisterClusterResult{}, err
+	}
 	id, err := s.ids.NewID("cluster")
 	if err != nil {
 		return RegisterClusterResult{}, err
@@ -84,9 +101,12 @@ func (s *Service) RegisterCluster(ctx context.Context, input RegisterClusterInpu
 	return RegisterClusterResult{Cluster: cluster, AgentToken: token}, nil
 }
 
-func (s *Service) RotateAgentToken(ctx context.Context, clusterID shared.ID) (string, error) {
+func (s *Service) RotateAgentToken(ctx context.Context, actor identityaccess.Subject, clusterID shared.ID) (string, error) {
 	cluster, err := s.repo.GetCluster(ctx, clusterID)
 	if err != nil {
+		return "", err
+	}
+	if err := s.check(ctx, actor, cluster.TenantID, "cluster:manage"); err != nil {
 		return "", err
 	}
 	token, err := newAgentToken()
@@ -116,9 +136,12 @@ func (s *Service) Authenticate(ctx context.Context, clusterID shared.ID, token s
 	return cluster, nil
 }
 
-func (s *Service) UpdateClusterStatus(ctx context.Context, id shared.ID, status ClusterStatus) (Cluster, error) {
+func (s *Service) UpdateClusterStatus(ctx context.Context, actor identityaccess.Subject, id shared.ID, status ClusterStatus) (Cluster, error) {
 	cluster, err := s.repo.GetCluster(ctx, id)
 	if err != nil {
+		return Cluster{}, err
+	}
+	if err := s.check(ctx, actor, cluster.TenantID, "cluster:manage"); err != nil {
 		return Cluster{}, err
 	}
 	if status != ClusterReady && status != ClusterDegraded && status != ClusterDraining && status != ClusterDisabled && status != ClusterUnreachable {
@@ -141,8 +164,19 @@ func (s *Service) UpdateClusterStatus(ctx context.Context, id shared.ID, status 
 	return cluster, nil
 }
 
-func (s *Service) ListClusters(ctx context.Context, page shared.PageRequest) (shared.PageResult[Cluster], error) {
-	result, err := s.repo.ListClusters(ctx, page)
+func (s *Service) ListClusters(ctx context.Context, actor identityaccess.Subject, tenantID shared.ID, page shared.PageRequest) (shared.PageResult[Cluster], error) {
+	if tenantID.IsZero() {
+		return shared.PageResult[Cluster]{}, shared.NewError(shared.CodeInvalidArgument, "tenant_id is required")
+	}
+	if s.tenants != nil {
+		if _, err := s.tenants.GetTenant(ctx, tenantID); err != nil {
+			return shared.PageResult[Cluster]{}, err
+		}
+	}
+	if err := s.check(ctx, actor, tenantID, "cluster:read"); err != nil {
+		return shared.PageResult[Cluster]{}, err
+	}
+	result, err := s.repo.ListClustersByTenant(ctx, tenantID, page)
 	if err != nil {
 		return result, err
 	}
@@ -150,6 +184,25 @@ func (s *Service) ListClusters(ctx context.Context, page shared.PageRequest) (sh
 		result.Items[i].AgentTokenHash = ""
 	}
 	return result, nil
+}
+
+func (s *Service) GetCluster(ctx context.Context, id shared.ID) (Cluster, error) {
+	cluster, err := s.repo.GetCluster(ctx, id)
+	if err != nil {
+		return Cluster{}, err
+	}
+	cluster.AgentTokenHash = ""
+	return cluster, nil
+}
+
+func (s *Service) check(ctx context.Context, actor identityaccess.Subject, tenantID shared.ID, action identityaccess.Permission) error {
+	if s.permission == nil {
+		return nil
+	}
+	if actor.ID.IsZero() {
+		return shared.NewError(shared.CodeUnauthenticated, "actor is required")
+	}
+	return s.permission.Check(ctx, actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeTenant, TenantID: tenantID}, action)
 }
 
 func (s *Service) Heartbeat(ctx context.Context, clusterID shared.ID, token string, heartbeat ClusterHeartbeat) error {
