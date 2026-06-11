@@ -50,7 +50,7 @@ export type WorkloadEnvironmentConfig = {
 };
 export type ReleaseCandidate = { id: string; workloadId: string; version: string; image: string; digest: string; commit: string; buildArtifactId?: string; createdAt: string };
 export type BuildArtifactCandidate = { id: string; workloadId: string; image: string; digest: string; createdAt: string };
-export type StageDefinition = { id: string; name: 'dev' | 'test' | 'staging' | 'prod'; environmentId: string; approvalRequired?: boolean; approvalCount?: number; approverScope?: string; selfApprovalForbidden?: boolean };
+export type StageDefinition = { id: string; name: 'dev' | 'test' | 'staging' | 'prod'; environmentId: string; approvalRequired?: boolean; approvalCount?: number; approverScope?: string; selfApprovalForbidden?: boolean; currentFreightVersion?: string; replicasSummary?: string; domainSummary?: string; configSummary?: string };
 export type FreightCreationContext = { enabledWorkloads: Workload[]; latestReleasesByWorkload: Record<string, ReleaseCandidate>; latestArtifactsByWorkload: Record<string, BuildArtifactCandidate>; stageEligibility: Record<string, string[]>; stages: StageDefinition[] };
 export type CreateFreightInput = { name: string; items: { workloadId: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageRef?: string }[] };
 export type SourceRepository = { id: string; projectId: string; projectName: string; name: string; displayName: string; description: string; gitProvider: string; httpUrl: string; sshUrl: string; defaultBranch: string; status: string; associatedApplications: number; updatedAt: string };
@@ -105,10 +105,10 @@ const applicationSources: Record<string, ApplicationSource[]> = {
   app_1: [{ id: 'app_source_1', key: 'main', displayName: '主代码源', sourceRepositoryId: 'repo_1', buildEnvironmentId: 'build_env_java_springboot', sourcePath: 'services/order-api', defaultRef: 'main', isPrimary: true, buildSpec: { sourcePath: 'services/order-api', buildCommand: 'mvn clean package -DskipTests', artifactCopyCommand: 'cp -ar target/order-api.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"', defaultRef: 'main' } }]
 };
 const promotionStages: StageDefinition[] = [
-  { id: 'stage_dev', name: 'dev', environmentId: 'env_dev' },
-  { id: 'stage_test', name: 'test', environmentId: 'env_test' },
-  { id: 'stage_staging', name: 'staging', environmentId: 'env_staging' },
-  { id: 'stage_prod', name: 'prod', environmentId: 'env_prod', approvalRequired: true, approvalCount: 2, approverScope: '生产审批人', selfApprovalForbidden: true }
+  { id: 'stage_dev', name: 'dev', environmentId: 'env_dev', currentFreightVersion: '20260611.1', replicasSummary: '1 / 1 / 1', domainSummary: 'dev-order.example.com', configSummary: 'dev values' },
+  { id: 'stage_test', name: 'test', environmentId: 'env_test', currentFreightVersion: '20260610.1', replicasSummary: '1 / 1 / 1', domainSummary: 'test-order.example.com', configSummary: 'test values' },
+  { id: 'stage_staging', name: 'staging', environmentId: 'env_staging', currentFreightVersion: '20260609.1', replicasSummary: '2 / 2 / 1', domainSummary: 'staging-order.example.com', configSummary: 'staging values' },
+  { id: 'stage_prod', name: 'prod', environmentId: 'env_prod', approvalRequired: true, approvalCount: 2, approverScope: '生产审批人', selfApprovalForbidden: true, currentFreightVersion: '20260609.1', replicasSummary: '2 / 4 / 2', domainSummary: 'order.example.com', configSummary: 'prod values' }
 ];
 const enabledWorkloads: Workload[] = [
   {
@@ -405,10 +405,7 @@ export async function listAuditLogs(): Promise<AuditLog[]> {
 export async function listFreights(applicationId?: string): Promise<Freight[]> {
   await wait();
   if (!applicationId) {
-    return [
-      { id: 'freight_18', version: 'v1.8.2', image: 'registry.local/order-api:v1.8.2', digest: 'sha256:91ab', commit: '8c1a09f', createdAt: '2026-05-30 10:08' },
-      { id: 'freight_17', version: 'v1.8.1', image: 'registry.local/order-api:v1.8.1', digest: 'sha256:7f02', commit: '61b9120', createdAt: '2026-05-29 16:45' }
-    ];
+    return freights.map(cloneFreight);
   }
   return freights.map(cloneFreight);
 }
@@ -474,7 +471,7 @@ export async function listWorkloads(applicationId: string): Promise<Workload[]> 
   return (workloads[applicationId] || []).filter((item) => item.status !== 'deleted').map(cloneWorkload);
 }
 
-export async function createWorkload(applicationId: string, input: { name: string; displayName: string; description?: string; workloadType: WorkloadType; imageSourceMode?: WorkloadImageSourceMode; customImage?: string }) {
+export async function createWorkload(applicationId: string, input: { name: string; displayName: string; description?: string; workloadType: WorkloadType; imageSourceMode?: WorkloadImageSourceMode; customImage?: string; pipelineName?: string; replicas?: number }) {
   await wait();
   if ((workloads[applicationId] || []).some((item) => item.name === input.name && item.status !== 'deleted')) {
     throw new Error('Workload 标识已存在');
@@ -487,7 +484,7 @@ export async function createWorkload(applicationId: string, input: { name: strin
     description: input.description || '',
     workloadType: input.workloadType,
     imageSourceMode: input.imageSourceMode || 'pipeline_artifact',
-    imageSourceName: input.imageSourceMode === 'custom_image' ? (input.customImage || '自定义镜像') : '流水线产物',
+    imageSourceName: input.imageSourceMode === 'custom_image' ? (input.customImage || '自定义镜像') : (input.pipelineName || '流水线产物'),
     latestRelease: '-',
     status: 'enabled',
     envStatuses: [

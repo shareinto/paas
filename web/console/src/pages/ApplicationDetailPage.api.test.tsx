@@ -109,21 +109,21 @@ test('真实 API 创建 Workload 后使用服务端镜像来源展示', async ()
 
   renderApp('/apps/app_1', App);
 
-  await userEvent.click(await screen.findByRole('tab', { name: '工作负载' }));
+  expect(await screen.findByRole('tab', { name: '应用 Workload' })).toHaveAttribute('aria-selected', 'true');
   await userEvent.click(await screen.findByRole('button', { name: /创建 Workload/ }));
-  const drawer = await screen.findByRole('dialog', { name: '创建 Workload' });
-  await userEvent.type(within(drawer).getByLabelText('Workload 标识'), 'order-worker');
-  await userEvent.type(within(drawer).getByLabelText('显示名称'), '订单任务');
-  await userEvent.click(within(drawer).getByText('StatefulSet'));
-  await userEvent.click(within(drawer).getByLabelText('镜像来源偏好'));
+  const dialog = await screen.findByRole('dialog', { name: '创建 Workload' });
+  await userEvent.type(within(dialog).getByLabelText('Workload 标识'), 'order-worker');
+  await userEvent.type(within(dialog).getByLabelText('显示名称'), '订单任务');
+  await userEvent.click(within(dialog).getByText('StatefulSet'));
+  await userEvent.click(within(dialog).getByLabelText('镜像来源偏好'));
   await userEvent.click(await screen.findByTitle('发布时选择自定义镜像'));
-  await userEvent.type(within(drawer).getByLabelText('自定义镜像地址'), 'registry.example.com/order/worker:20260611');
-  await userEvent.click(within(drawer).getByRole('button', { name: /创\s*建/ }));
+  await userEvent.type(within(dialog).getByLabelText('自定义镜像地址'), 'registry.example.com/order/worker:20260611');
+  await userEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
 
   const row = (await screen.findByText('order-worker')).closest('tr') as HTMLElement;
   expect(within(row).getByText('流水线产物')).toBeInTheDocument();
-  expect(within(row).getByText('暂无 Release')).toBeInTheDocument();
-  expect(within(row).getByText('暂无环境状态')).toBeInTheDocument();
+  expect(within(row).getByText('暂无端口')).toBeInTheDocument();
+  expect(within(row).getByText('集群内访问')).toBeInTheDocument();
   expect(within(row).queryByText('自定义镜像')).not.toBeInTheDocument();
   expect(within(row).queryByText('registry.example.com/order/worker:20260611')).not.toBeInTheDocument();
 }, 10000);

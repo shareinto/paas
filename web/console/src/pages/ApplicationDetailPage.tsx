@@ -1,6 +1,6 @@
 import { DeleteOutlined, EditOutlined, PlusOutlined, PlayCircleOutlined, SettingOutlined } from '@ant-design/icons';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Badge, Button, Card, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Segmented, Space, Table, Tabs, Tag, Typography, message } from 'antd';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Alert, Badge, Button, Card, Descriptions, Divider, Drawer, Form, Input, InputNumber, Modal, Popconfirm, Select, Segmented, Space, Steps, Table, Tabs, Tag, Typography, message } from 'antd';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
@@ -35,11 +35,12 @@ const IMAGE_SOURCE_OPTIONS = [
   { label: '流水线产物', value: 'pipeline_artifact' },
   { label: '发布时选择自定义镜像', value: 'custom_image' }
 ];
+const DELIVERY_FLOW_STEPS = ['创建 Workload', '配置环境差异', '创建完整 Freight', '选择目标 Stage', '发布晋级', '回滚历史 Freight'];
 
 export function ApplicationDetailPage() {
   const { id = 'app_1' } = useParams();
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState('builds');
+  const [activeTab, setActiveTab] = useState('workloads');
   const [pipelineModalOpen, setPipelineModalOpen] = useState(false);
   const [createdPipelines, setCreatedPipelines] = useState<BuildPipeline[]>([]);
   const { data: app } = useQuery({ queryKey: ['application', id], queryFn: () => getApplication(id), enabled: !!id });
@@ -63,6 +64,7 @@ export function ApplicationDetailPage() {
           { key: 'status', label: '状态', children: <Badge status={app?.status === 'disabled' ? 'default' : 'success'} text={app?.status === 'disabled' ? '已禁用' : '启用'} /> }
         ]} />
       </Card>
+      <DeliveryFlow />
       <Tabs
         activeKey={activeTab}
         onChange={(key) => {
@@ -74,8 +76,8 @@ export function ApplicationDetailPage() {
         }}
         className="detail-tabs"
         items={[
+        { key: 'workloads', label: '应用 Workload', children: <WorkloadPanel applicationId={id} /> },
         { key: 'builds', label: '镜像构建', children: <BuildPipelinePanel applicationId={id} projectId={app?.projectId} localPipelines={createdPipelines} onPipelineChanged={(pipeline) => setCreatedPipelines((current) => [pipeline, ...current.filter((item) => item.id !== pipeline.id)])} onPipelineDeleted={(pipelineId) => setCreatedPipelines((current) => current.filter((item) => item.id !== pipelineId))} /> },
-        { key: 'workloads', label: '工作负载', children: <WorkloadPanel applicationId={id} /> },
         { key: 'promotion', label: '发布晋级', children: null }
       ]} />
       <CreatePipelineModal
@@ -92,11 +94,32 @@ export function ApplicationDetailPage() {
   );
 }
 
+function DeliveryFlow() {
+  return (
+    <div className="delivery-flow" aria-label="交付流程">
+      {DELIVERY_FLOW_STEPS.map((step, index) => (
+        <div key={step} className="delivery-flow-step">
+          <span className={index === 0 ? 'delivery-flow-node active' : 'delivery-flow-node'}>{step}</span>
+          {index < DELIVERY_FLOW_STEPS.length - 1 && <span className="delivery-flow-arrow">→</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function WorkloadPanel({ applicationId }: { applicationId: string }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [configWorkload, setConfigWorkload] = useState<Workload | null>(null);
   const queryClient = useQueryClient();
   const { data: workloads = EMPTY_LIST, isLoading } = useQuery({ queryKey: ['workloads', applicationId], queryFn: () => listWorkloads(applicationId), enabled: !!applicationId });
+  const configQueries = useQueries({
+    queries: (workloads as Workload[]).map((workload) => ({
+      queryKey: ['workload-environment-configs', applicationId, workload.id, 'summary'],
+      queryFn: () => listWorkloadEnvironmentConfigs(applicationId, workload.id),
+      enabled: !!applicationId && !!workload.id
+    }))
+  });
+  const configByWorkloadId = Object.fromEntries((workloads as Workload[]).map((workload, index) => [workload.id, (configQueries[index]?.data || []) as WorkloadEnvironmentConfig[]]));
   const deleteMutation = useMutation({
     mutationFn: (workloadId: string) => deleteWorkload(applicationId, workloadId),
     onSuccess: (workload) => {
@@ -135,7 +158,7 @@ function WorkloadPanel({ applicationId }: { applicationId: string }) {
             },
             { title: '类型', dataIndex: 'workloadType', width: 130, render: (type: WorkloadType) => <Tag color="blue">{workloadTypeText(type)}</Tag> },
             {
-              title: '镜像来源',
+              title: '默认镜像来源',
               dataIndex: 'imageSourceMode',
               width: 160,
               render: (mode: WorkloadImageSourceMode, item: Workload) => (
@@ -145,19 +168,17 @@ function WorkloadPanel({ applicationId }: { applicationId: string }) {
                 </Space>
               )
             },
-            { title: '最近 Release', dataIndex: 'latestRelease', width: 140, render: (value: string) => value || '暂无 Release' },
             {
-              title: '各环境状态',
-              dataIndex: 'envStatuses',
-              render: (statuses: Workload['envStatuses'] = []) => statuses.length > 0 ? (
-                <Space wrap size={[6, 6]}>
-                  {statuses.map((status) => (
-                    <Tag key={status.envName} color={status.healthStatus === '健康' ? 'green' : status.healthStatus === '未知' ? 'default' : 'orange'}>
-                      {status.envName} {status.syncStatus} / {status.healthStatus}
-                    </Tag>
-                  ))}
-                </Space>
-              ) : <Typography.Text type="secondary">暂无环境状态</Typography.Text>
+              title: '端口',
+              key: 'ports',
+              width: 120,
+              render: (_: unknown, item: Workload) => portSummary(configByWorkloadId[item.id])
+            },
+            {
+              title: '访问域名',
+              key: 'domains',
+              width: 220,
+              render: (_: unknown, item: Workload) => domainSummary(configByWorkloadId[item.id])
             },
             { title: '状态', dataIndex: 'status', width: 100, render: (status: string) => <Badge status={status === 'enabled' ? 'success' : 'default'} text={status === 'enabled' ? '启用' : '停用'} /> },
             {
@@ -182,13 +203,13 @@ function WorkloadPanel({ applicationId }: { applicationId: string }) {
           ]}
         />
       </Card>
-      <CreateWorkloadDrawer applicationId={applicationId} open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateWorkloadModal applicationId={applicationId} open={createOpen} onClose={() => setCreateOpen(false)} />
       <DeployConfigModal applicationId={applicationId} workload={configWorkload} onClose={() => setConfigWorkload(null)} />
     </div>
   );
 }
 
-function CreateWorkloadDrawer({ applicationId, open, onClose }: { applicationId: string; open: boolean; onClose: () => void }) {
+function CreateWorkloadModal({ applicationId, open, onClose }: { applicationId: string; open: boolean; onClose: () => void }) {
   const [form] = Form.useForm();
   const queryClient = useQueryClient();
   const imageSourceMode = Form.useWatch('imageSourceMode', form);
@@ -209,47 +230,57 @@ function CreateWorkloadDrawer({ applicationId, open, onClose }: { applicationId:
 
   useEffect(() => {
     if (open) {
-      form.setFieldsValue({ workloadType: 'deployment', imageSourceMode: 'pipeline_artifact', replicas: 1 });
+      form.setFieldsValue({ workloadType: 'deployment', imageSourceMode: 'pipeline_artifact', replicas: 1, containerPort: 8080, healthCheck: 'HTTP /health' });
     } else {
       form.resetFields();
     }
   }, [form, open]);
 
   return (
-    <Drawer title="创建 Workload" open={open} onClose={onClose} width={640} destroyOnClose extra={<Space><Button onClick={onClose}>取消</Button><Button type="primary" loading={mutation.isPending} onClick={() => mutation.mutate()}>创建</Button></Space>}>
-      <Form form={form} layout="vertical">
-        <Form.Item label="Workload 标识" name="name" rules={[{ required: true, message: '请输入 Workload 标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
-          <Input placeholder="order-api" />
-        </Form.Item>
-        <Form.Item label="显示名称" name="displayName" rules={[{ required: true, message: '请输入显示名称' }]}>
-          <Input placeholder="订单接口" />
-        </Form.Item>
-        <Form.Item label="描述" name="description">
-          <Input.TextArea rows={2} placeholder="说明该 Workload 的职责" />
-        </Form.Item>
-        <Form.Item label="Workload 类型" name="workloadType" rules={[{ required: true, message: '请选择 Workload 类型' }]}>
-          <Segmented aria-label="Workload 类型" options={WORKLOAD_TYPE_OPTIONS} />
-        </Form.Item>
-        <Form.Item label="镜像来源偏好" name="imageSourceMode" rules={[{ required: true, message: '请选择镜像来源偏好' }]}>
-          <Select options={IMAGE_SOURCE_OPTIONS} />
-        </Form.Item>
-        {imageSourceMode === 'custom_image' ? (
-          <>
+    <Modal title="创建 Workload" open={open} onCancel={onClose} width={980} destroyOnHidden footer={<Space><Button onClick={onClose}>取消</Button><Button>校验</Button><Button type="primary" loading={mutation.isPending} onClick={() => mutation.mutate()}>创建</Button></Space>}>
+      <Steps size="small" current={2} items={['基础信息', '镜像来源', '运行参数', '网络访问', '配置与目录', '预览校验'].map((title, index) => ({ title, status: index < 2 ? 'finish' : index === 2 ? 'process' : 'wait' }))} />
+      <div className="workload-create-grid">
+        <Form form={form} layout="vertical" className="workload-create-form">
+          <Form.Item label="Workload 标识" name="name" rules={[{ required: true, message: '请输入 Workload 标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
+            <Input placeholder="order-api" />
+          </Form.Item>
+          <Form.Item label="显示名称" name="displayName" rules={[{ required: true, message: '请输入显示名称' }]}>
+            <Input placeholder="订单接口" />
+          </Form.Item>
+          <Form.Item label="Workload 类型" name="workloadType" rules={[{ required: true, message: '请选择 Workload 类型' }]}>
+            <Segmented aria-label="Workload 类型" options={WORKLOAD_TYPE_OPTIONS} />
+          </Form.Item>
+          <Form.Item label="副本数" name="replicas">
+            <InputNumber min={0} precision={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="镜像来源偏好" name="imageSourceMode" rules={[{ required: true, message: '请选择镜像来源偏好' }]}>
+            <Select options={IMAGE_SOURCE_OPTIONS} />
+          </Form.Item>
+          {imageSourceMode === 'custom_image' ? (
             <Form.Item label="自定义镜像地址" name="customImage" rules={[{ required: true, message: '请输入自定义镜像地址' }]}>
               <Input aria-label="自定义镜像地址" placeholder="registry.example.com/order/api:v1" />
             </Form.Item>
-            <Alert showIcon type="warning" message="当前 Workload 创建只保存 Workload 基础信息，自定义镜像请在创建 Freight 时选择；镜像 tag 可能被覆盖，建议使用 digest。" />
-          </>
-        ) : (
-          <Form.Item label="绑定流水线" name="pipelineName">
-            <Input placeholder="主流水线" />
+          ) : (
+            <Form.Item label="绑定流水线" name="pipelineName">
+              <Input placeholder="主流水线" />
+            </Form.Item>
+          )}
+          <Form.Item label="容器端口" name="containerPort">
+            <InputNumber min={1} max={65535} precision={0} style={{ width: '100%' }} />
           </Form.Item>
-        )}
-        <Form.Item label="副本数" name="replicas">
-          <InputNumber min={0} precision={0} style={{ width: '100%' }} />
-        </Form.Item>
-      </Form>
-    </Drawer>
+          <Form.Item label="健康检查" name="healthCheck">
+            <Input placeholder="HTTP /health" />
+          </Form.Item>
+          {imageSourceMode === 'custom_image' && <Alert showIcon type="warning" message="当前 Workload 创建只保存 Workload 基础信息，自定义镜像请在创建 Freight 时选择；镜像 tag 可能被覆盖，建议使用 digest。" />}
+        </Form>
+        <aside className="workload-check-panel">
+          <Typography.Title level={5}>校验清单</Typography.Title>
+          <Alert showIcon type="success" message="名称可用" />
+          <Alert showIcon type="success" message="流水线属于当前应用" />
+          <Alert showIcon type="warning" message="尚未配置生产环境资源规格" />
+        </aside>
+      </div>
+    </Modal>
   );
 }
 
@@ -262,13 +293,13 @@ function DeployConfigModal({ applicationId, workload, onClose }: { applicationId
   const config = (configs as WorkloadEnvironmentConfig[])[0];
 
   return (
-    <Modal
+    <Drawer
       title={`${workload?.name || ''} 部署配置`}
       open={!!workload}
-      onCancel={onClose}
-      width={960}
-      destroyOnHidden
-      footer={<Button onClick={onClose}>关闭</Button>}
+      onClose={onClose}
+      width={820}
+      destroyOnClose
+      extra={<Space><Button onClick={onClose}>取消</Button><Button type="primary" onClick={() => message.success('配置已保存到当前视图')}>保存配置</Button></Space>}
     >
       <Space direction="vertical" size={18} style={{ width: '100%' }}>
         <Descriptions bordered size="small" column={2} items={[
@@ -285,7 +316,7 @@ function DeployConfigModal({ applicationId, workload, onClose }: { applicationId
             { title: '协议', dataIndex: 'protocol' }
           ]} />
         </ConfigSection>
-        <ConfigSection title="资源">
+        <ConfigSection title="资源规格">
           <Descriptions size="small" column={2} items={[
             { key: 'requests', label: '请求资源', children: resourceText(config?.resourceRequests) },
             { key: 'limits', label: '限制资源', children: resourceText(config?.resourceLimits) }
@@ -299,7 +330,7 @@ function DeployConfigModal({ applicationId, workload, onClose }: { applicationId
             { title: '端口', dataIndex: 'port' }
           ]} />
         </ConfigSection>
-        <ConfigSection title="域名">
+        <ConfigSection title="网络访问">
           <Table size="small" rowKey={(item) => item.host} pagination={false} locale={{ emptyText: '暂无域名' }} dataSource={config?.ingressHosts || []} columns={[
             { title: '域名', dataIndex: 'host' },
             { title: '路径', dataIndex: 'path' },
@@ -325,8 +356,11 @@ function DeployConfigModal({ applicationId, workload, onClose }: { applicationId
             { title: '容量限制', dataIndex: 'sizeLimit', render: (value: string) => value || '-' }
           ]} />
         </ConfigSection>
+        <ConfigSection title="values 预览">
+          <Input.TextArea readOnly rows={8} value={valuesPreview(workload, config)} />
+        </ConfigSection>
       </Space>
-    </Modal>
+    </Drawer>
   );
 }
 
@@ -348,6 +382,38 @@ function imageSourceText(mode: WorkloadImageSourceMode) {
   if (mode === 'mixed') return '混合来源';
   if (mode === 'none') return '暂不绑定';
   return '流水线产物';
+}
+
+function portSummary(configs: WorkloadEnvironmentConfig[] = []) {
+  const ports = configs.flatMap((config) => config.servicePorts || []);
+  if (ports.length === 0) return <Typography.Text type="secondary">暂无端口</Typography.Text>;
+  const unique = Array.from(new Set(ports.map((port) => `${port.targetPort || port.port}/${port.protocol || 'TCP'}`)));
+  return <Space wrap size={[4, 4]}>{unique.map((item) => <Tag key={item}>{item}</Tag>)}</Space>;
+}
+
+function domainSummary(configs: WorkloadEnvironmentConfig[] = []) {
+  const hosts = configs.flatMap((config) => config.ingressHosts || []).map((host) => host.host).filter(Boolean);
+  if (hosts.length === 0) return <Tag>集群内访问</Tag>;
+  return <Space wrap size={[4, 4]}>{Array.from(new Set(hosts)).map((host) => <Tag color="green" key={host}>{host}</Tag>)}</Space>;
+}
+
+function valuesPreview(workload: Workload | null, config?: WorkloadEnvironmentConfig) {
+  return [
+    'workload:',
+    `  name: ${workload?.name || '-'}`,
+    `  type: ${workload ? workloadTypeText(workload.workloadType) : 'Deployment'}`,
+    `  replicas: ${config?.replicas ?? 1}`,
+    'image:',
+    '  source: freight',
+    'service:',
+    `  enabled: ${(config?.servicePorts || []).length > 0}`,
+    'ingress:',
+    `  enabled: ${(config?.ingressHosts || []).length > 0}`,
+    'configFiles:',
+    ...((config?.configFiles || []).length ? (config?.configFiles || []).map((file) => `  - mountPath: ${file.mountPath}`) : ['  []']),
+    'writableDirs:',
+    ...((config?.writableDirs || []).length ? (config?.writableDirs || []).map((dir) => `  - mountPath: ${dir.mountPath}`) : ['  []'])
+  ].join('\n');
 }
 
 function resourceText(resource?: { cpu?: string; memory?: string }) {
@@ -617,4 +683,3 @@ function nextPipelineDefaults(pipelines: BuildPipeline[]) {
   while (used.has(`pipeline-${index}`)) index += 1;
   return { name: `pipeline-${index}`, displayName: `流水线 ${index}` };
 }
-
