@@ -37,6 +37,7 @@ export function App() {
         <Route path="apps" element={<ApplicationsPage />} />
         <Route path="apps/new" element={<CreateApplicationPage />} />
         <Route path="apps/:id/edit" element={<EditApplicationPage />} />
+        <Route path="apps/:id/promotions" element={<PromotionPage />} />
         <Route path="apps/:id" element={<ApplicationDetailPage />} />
         <Route path="builds" element={<BuildsPage />} />
         <Route path="builds/:id" element={<BuildDetailPage />} />

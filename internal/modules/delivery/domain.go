@@ -56,6 +56,11 @@ type Freight struct {
 	CreatedAt           time.Time     `json:"created_at"`
 }
 
+type FreightDetail struct {
+	Freight Freight       `json:"freight"`
+	Items   []FreightItem `json:"items"`
+}
+
 type FreightItemType string
 
 const (

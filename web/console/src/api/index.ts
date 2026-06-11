@@ -1,7 +1,7 @@
 import * as mock from './mock';
 import { hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
 
-export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, Workload, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, FreightCreationContext, CreateFreightInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -223,17 +223,60 @@ export async function listAuditLogs() {
   }));
 }
 
-export async function listFreights(applicationId = DEFAULT_APP_ID) {
-  if (!hasAPIBaseURL()) return mock.listFreights();
-  const data = await request<PageResult<any>>(`/api/apps/${encodeURIComponent(applicationId)}/freights?page=1&page_size=50`);
-  return data.items.map((item) => ({
-    id: item.id,
-    version: item.version || item.name || item.id,
-    image: item.image || item.image_uri || item.imageURI || item.uri || '-',
-    digest: item.digest || item.image_digest || item.imageDigest || '-',
-    commit: item.commit || item.commit_sha || item.commitSHA || '-',
-    createdAt: item.createdAt || formatTime(item.created_at || item.createdAt)
+export async function listFreights(applicationId?: string) {
+  if (!hasAPIBaseURL()) return mock.listFreights(applicationId);
+  const targetApplicationId = applicationId || DEFAULT_APP_ID;
+  const data = await request<PageResult<any>>(`/api/apps/${encodeURIComponent(targetApplicationId)}/freights?page=1&page_size=50`);
+  return data.items.map(mapFreight);
+}
+
+export async function getFreightCreationContext(applicationId = DEFAULT_APP_ID) {
+  if (!hasAPIBaseURL()) return mock.getFreightCreationContext();
+  const item = await request<any>(`/api/apps/${encodeURIComponent(applicationId)}/freights/creation-context`);
+  return mapFreightCreationContext(item);
+}
+
+export async function listEligibleFreights(applicationId: string, stageId: string) {
+  if (!hasAPIBaseURL()) return mock.listEligibleFreights(applicationId, stageId);
+  const items = await request<any[]>(`/api/apps/${encodeURIComponent(applicationId)}/delivery/stages/${encodeURIComponent(stageId)}/eligible-freights`);
+  return items.map(mapFreight);
+}
+
+export async function getFreight(freightId: string) {
+  if (!hasAPIBaseURL()) return mock.getFreight(freightId);
+  const detail = await request<any>(`/api/freights/${encodeURIComponent(freightId)}`);
+  return mapFreightDetail(detail);
+}
+
+export async function createFreight(applicationId: string, input: mock.CreateFreightInput) {
+  if (!hasAPIBaseURL()) return mock.createFreight(applicationId, input);
+  return mapFreight(await request<any>(`/api/apps/${encodeURIComponent(applicationId)}/freights`, {
+    method: 'POST',
+    body: JSON.stringify({
+      actor: { type: 'user', id: 'usr_admin' },
+      name: input.name,
+      items: input.items.map((item) => ({
+        workload_id: item.workloadId,
+        source_type: item.sourceType,
+        release_id: item.releaseId || '',
+        build_artifact_id: item.buildArtifactId || '',
+        image_ref: item.imageRef || ''
+      }))
+    })
   }));
+}
+
+export async function createPromotion(input: { freightId: string; targetEnvironmentId: string; message?: string }) {
+  if (!hasAPIBaseURL()) return mock.createPromotion(input);
+  return request<any>('/api/promotions', {
+    method: 'POST',
+    body: JSON.stringify({
+      actor: { type: 'user', id: 'usr_admin' },
+      freight_id: input.freightId,
+      target_environment_id: input.targetEnvironmentId,
+      message: input.message || ''
+    })
+  });
 }
 
 export async function listSourceRepositories(projectId?: string) {
@@ -560,6 +603,99 @@ function formatTime(value?: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function mapFreight(item: any): mock.Freight {
+  if (item.freight) return mapFreightDetail(item);
+  const items = item.items || item.freight_items || item.freightItems || [];
+  return {
+    id: item.id,
+    version: item.version || item.name || item.id,
+    image: item.image || item.image_uri || item.imageURI || item.uri || (items.length ? `${items.length} 个 Workload` : '-'),
+    digest: item.digest || item.image_digest || item.imageDigest || '-',
+    commit: item.commit || item.commit_sha || item.commitSHA || '-',
+    createdAt: item.createdAt || formatTime(item.created_at || item.createdAt),
+    items: items.map(mapFreightItem)
+  };
+}
+
+function mapFreightDetail(detail: any): mock.Freight {
+  const freight = mapFreight({ ...(detail.freight || detail), items: detail.items || detail.freight_items || detail.freightItems || [] });
+  return freight;
+}
+
+function mapFreightItem(item: any): mock.FreightItem {
+  return {
+    id: item.id,
+    workloadId: item.workloadId || item.workload_id || '',
+    workloadName: item.workloadName || item.workload_name || item.name || '',
+    workloadDisplayName: item.workloadDisplayName || item.workload_display_name || item.workload_name || item.name || item.workload_id || '',
+    sourceType: item.sourceType || item.source_type || 'pipeline_artifact',
+    releaseId: item.releaseId || item.release_id || '',
+    buildArtifactId: item.buildArtifactId || item.build_artifact_id || '',
+    image: item.image || item.imageRef || item.image_ref || item.uri || [item.image_repository, item.image_tag].filter(Boolean).join(':') || '-',
+    digest: item.digest || item.image_digest || item.imageDigest || '',
+    commit: item.commit || item.commit_sha || item.commitSHA || ''
+  };
+}
+
+function mapFreightCreationContext(item: any): mock.FreightCreationContext {
+  const stageEligibility = item.stageEligibility || item.stage_eligibility || {};
+  return {
+    enabledWorkloads: (item.enabledWorkloads || item.enabled_workloads || []).map(mapWorkload),
+    latestReleasesByWorkload: mapRecord(item.latestReleasesByWorkload || item.latest_releases_by_workload || {}, mapReleaseCandidate),
+    latestArtifactsByWorkload: mapRecord(item.latestArtifactsByWorkload || item.latest_artifacts_by_workload || {}, mapBuildArtifactCandidate),
+    stageEligibility: Object.fromEntries(Object.entries(stageEligibility).map(([key, value]) => [key, Array.isArray(value) ? value.map(String) : []])),
+    stages: (item.stages || []).map(mapStageDefinition)
+  };
+}
+
+function mapRecord<T>(record: Record<string, any>, mapper: (item: any) => T): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).map(([key, value]) => [key, mapper(value)]));
+}
+
+function mapWorkload(item: any): mock.Workload {
+  return {
+    id: item.id,
+    name: item.name || '',
+    displayName: item.displayName || item.display_name || item.name || '',
+    status: item.status || 'enabled'
+  };
+}
+
+function mapReleaseCandidate(item: any): mock.ReleaseCandidate {
+  return {
+    id: item.id,
+    workloadId: item.workloadId || item.workload_id || '',
+    version: item.version || item.name || item.image_tag || item.imageTag || '',
+    image: item.image || item.image_uri || item.imageURI || item.uri || [item.image_repository, item.image_tag].filter(Boolean).join(':') || '-',
+    digest: item.digest || item.image_digest || item.imageDigest || '',
+    commit: item.commit || item.commit_sha || item.commitSHA || '',
+    buildArtifactId: item.buildArtifactId || item.build_artifact_id || '',
+    createdAt: item.createdAt || formatTime(item.created_at || item.createdAt)
+  };
+}
+
+function mapBuildArtifactCandidate(item: any): mock.BuildArtifactCandidate {
+  return {
+    id: item.id,
+    workloadId: item.workloadId || item.workload_id || '',
+    image: item.image || item.uri || item.image_uri || '-',
+    digest: item.digest || item.image_digest || '',
+    createdAt: item.createdAt || formatTime(item.created_at || item.createdAt)
+  };
+}
+
+function mapStageDefinition(item: any): mock.StageDefinition {
+  return {
+    id: item.id,
+    name: item.name,
+    environmentId: item.environmentId || item.environment_id || '',
+    approvalRequired: !!(item.approvalRequired || item.approval_required || item.requires_approval),
+    approvalCount: item.approvalCount || item.approval_count,
+    approverScope: item.approverScope || item.approver_scope,
+    selfApprovalForbidden: item.selfApprovalForbidden || item.self_approval_forbidden
+  };
 }
 
 function mapTenant(item: any): mock.Tenant {

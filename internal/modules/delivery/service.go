@@ -100,6 +100,14 @@ type FreightCreationContext struct {
 	LatestReleasesByWorkload  map[shared.ID]Release          `json:"latest_releases_by_workload"`
 	LatestArtifactsByWorkload map[shared.ID]BuildArtifactRef `json:"latest_artifacts_by_workload"`
 	StageEligibility          map[shared.ID][]shared.ID      `json:"stage_eligibility"`
+	Stages                    []FreightCreationStage         `json:"stages"`
+}
+
+type FreightCreationStage struct {
+	ID               shared.ID `json:"id"`
+	Name             string    `json:"name"`
+	EnvironmentID    shared.ID `json:"environment_id"`
+	ApprovalRequired bool      `json:"approval_required"`
 }
 
 func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceededPayload) (Release, error) {
@@ -312,7 +320,9 @@ func (s *Service) GetFreightCreationContext(ctx context.Context, applicationID s
 	}
 	if flow, err := s.ensureDefaultFlow(ctx, applicationID); err == nil {
 		if stages, err := s.repo.ListDeliveryStages(ctx, flow.ID); err == nil {
+			ctxOut.Stages = make([]FreightCreationStage, 0, len(stages))
 			for _, stage := range stages {
+				ctxOut.Stages = append(ctxOut.Stages, FreightCreationStage{ID: stage.ID, Name: stage.Name, EnvironmentID: stage.EnvironmentID, ApprovalRequired: stage.RequiresApproval})
 				freights, err := s.ListEligibleFreights(ctx, applicationID, stage.ID)
 				if err != nil {
 					continue
@@ -492,6 +502,17 @@ func (s *Service) GetRelease(ctx context.Context, id shared.ID) (Release, error)
 }
 func (s *Service) GetFreight(ctx context.Context, id shared.ID) (Freight, error) {
 	return s.repo.GetFreight(ctx, id)
+}
+func (s *Service) GetFreightDetail(ctx context.Context, id shared.ID) (FreightDetail, error) {
+	freight, err := s.repo.GetFreight(ctx, id)
+	if err != nil {
+		return FreightDetail{}, err
+	}
+	items, err := s.repo.ListFreightItems(ctx, id)
+	if err != nil {
+		return FreightDetail{}, err
+	}
+	return FreightDetail{Freight: freight, Items: items}, nil
 }
 func (s *Service) ListFreights(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Freight], error) {
 	return s.repo.ListFreightsByApplication(ctx, applicationID, page)
