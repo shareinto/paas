@@ -8,16 +8,18 @@ import (
 	"github.com/shareinto/paas/internal/modules/clusteragent"
 	"github.com/shareinto/paas/internal/modules/delivery"
 	"github.com/shareinto/paas/internal/shared"
+	"gopkg.in/yaml.v3"
 )
 
 type Service struct {
-	repo     Repository
-	manifest ManifestRepositoryPort
-	apps     ApplicationQuery
-	envs     EnvironmentQuery
-	audit    AuditLogger
-	ids      shared.IDGenerator
-	clock    shared.Clock
+	repo      Repository
+	manifest  ManifestRepositoryPort
+	apps      ApplicationQuery
+	envs      EnvironmentQuery
+	workloads WorkloadQuery
+	audit     AuditLogger
+	ids       shared.IDGenerator
+	clock     shared.Clock
 }
 
 type Options struct {
@@ -25,6 +27,7 @@ type Options struct {
 	ManifestRepo ManifestRepositoryPort
 	Application  ApplicationQuery
 	Environment  EnvironmentQuery
+	Workload     WorkloadQuery
 	Audit        AuditLogger
 	IDGenerator  shared.IDGenerator
 	Clock        shared.Clock
@@ -43,7 +46,7 @@ func NewService(opts Options) *Service {
 	if audit == nil {
 		audit = NoopAuditLogger{}
 	}
-	return &Service{repo: opts.Repository, manifest: opts.ManifestRepo, apps: opts.Application, envs: opts.Environment, audit: audit, ids: ids, clock: clock}
+	return &Service{repo: opts.Repository, manifest: opts.ManifestRepo, apps: opts.Application, envs: opts.Environment, workloads: opts.Workload, audit: audit, ids: ids, clock: clock}
 }
 
 func (s *Service) EnsurePlatformTemplate(ctx context.Context, name string, content string) (DeploymentTemplate, error) {
@@ -188,16 +191,23 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	if err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
-	artifact := primaryPromotionArtifact(spec.Artifacts)
+	artifacts := normalizePromotionArtifacts(spec)
+	artifact := primaryPromotionArtifact(artifacts)
 	if artifact.URI == "" && strings.TrimSpace(spec.ImageURI) != "" {
 		artifact = delivery.GitOpsArtifactSpec{URI: spec.ImageURI, Digest: spec.ImageDigest, IsPrimary: true}
 	}
 	if artifact.URI == "" {
 		return delivery.GitOpsPromotionResult{}, shared.NewError(shared.CodeInvalidArgument, "promotion artifacts is required")
 	}
-	repository, tag := splitImage(artifact.URI)
+	if len(artifacts) == 0 {
+		artifacts = []delivery.GitOpsArtifactSpec{artifact}
+	}
+	repository, tag := imageRepositoryTag(artifact)
 	valuesPath := manifestPath(app.Name, env.Name)
-	values := renderValues(app, env, binding, repository, tag, artifact.Digest, template.Content)
+	values, workloadSummary, err := s.renderPromotionValues(ctx, app, env, binding, artifacts, template.Content)
+	if err != nil {
+		return delivery.GitOpsPromotionResult{}, err
+	}
 	argoPath := argoApplicationPath(app.Name, env.Name)
 	argo := renderArgoApplication(app, env, binding, valuesPath)
 	files := []CommitFile{{Path: valuesPath, Content: values}, {Path: argoPath, Content: argo}}
@@ -207,21 +217,25 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	if spec.IsRollback {
 		manifestRevision.ChangeType = "rollback"
 	}
+	deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: env.ID, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: artifact.Digest, WorkloadSummary: workloadSummary, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
 	if commitDirectly(env.Name) {
 		result, err := s.manifest.CommitFiles(ctx, CommitSpec{Branch: "main", Message: message, Files: files})
 		if err != nil {
+			deployment.ManifestRevisionID = ""
+			_ = s.recordFailedDeployment(ctx, deployment, eventID, "提交部署清单失败："+err.Error())
 			return delivery.GitOpsPromotionResult{}, err
 		}
 		manifestRevision.CommitSHA = result.CommitSHA
 	} else {
 		mr, err := s.manifest.CreateMergeRequest(ctx, MergeRequestSpec{SourceBranch: "paas/" + string(spec.PromotionID), TargetBranch: "main", Title: message, Files: files})
 		if err != nil {
+			deployment.ManifestRevisionID = ""
+			_ = s.recordFailedDeployment(ctx, deployment, eventID, "创建合并请求失败："+err.Error())
 			return delivery.GitOpsPromotionResult{}, err
 		}
 		manifestRevision.MergeRequestID = mr.ID
 		manifestRevision.CommitSHA = mr.CommitSHA
 	}
-	deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: env.ID, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: artifact.Digest, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
 	if err := s.repo.CreateDeployment(ctx, deployment); err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
@@ -278,6 +292,198 @@ func primaryPromotionArtifact(artifacts []delivery.GitOpsArtifactSpec) delivery.
 		return artifacts[0]
 	}
 	return delivery.GitOpsArtifactSpec{}
+}
+
+func normalizePromotionArtifacts(spec delivery.GitOpsPromotionSpec) []delivery.GitOpsArtifactSpec {
+	out := make([]delivery.GitOpsArtifactSpec, 0, len(spec.Artifacts))
+	for _, artifact := range spec.Artifacts {
+		artifact.URI = strings.TrimSpace(artifact.URI)
+		artifact.Repository = strings.TrimSpace(artifact.Repository)
+		artifact.Tag = strings.TrimSpace(artifact.Tag)
+		artifact.Digest = strings.TrimSpace(artifact.Digest)
+		if artifact.Repository == "" || artifact.Tag == "" {
+			repository, tag := splitImage(artifact.URI)
+			if artifact.Repository == "" {
+				artifact.Repository = repository
+			}
+			if artifact.Tag == "" {
+				artifact.Tag = tag
+			}
+		}
+		if artifact.URI == "" && artifact.Repository != "" {
+			artifact.URI = artifact.Repository
+			if artifact.Tag != "" {
+				artifact.URI += ":" + artifact.Tag
+			}
+		}
+		out = append(out, artifact)
+	}
+	if len(out) == 0 && strings.TrimSpace(spec.ImageURI) != "" {
+		repository, tag := splitImage(spec.ImageURI)
+		out = append(out, delivery.GitOpsArtifactSpec{URI: strings.TrimSpace(spec.ImageURI), Repository: repository, Tag: tag, Digest: strings.TrimSpace(spec.ImageDigest), IsPrimary: true})
+	}
+	return out
+}
+
+func imageRepositoryTag(artifact delivery.GitOpsArtifactSpec) (string, string) {
+	repository := strings.TrimSpace(artifact.Repository)
+	tag := strings.TrimSpace(artifact.Tag)
+	if repository == "" || tag == "" {
+		parsedRepository, parsedTag := splitImage(artifact.URI)
+		if repository == "" {
+			repository = parsedRepository
+		}
+		if tag == "" {
+			tag = parsedTag
+		}
+	}
+	return repository, tag
+}
+
+func (s *Service) renderPromotionValues(ctx context.Context, app ApplicationRef, env EnvironmentRef, binding ClusterBindingRef, artifacts []delivery.GitOpsArtifactSpec, template string) (string, string, error) {
+	primary := primaryPromotionArtifact(artifacts)
+	repository, tag := imageRepositoryTag(primary)
+	values := map[string]any{
+		"application": app.Name,
+		"environment": env.Name,
+		"namespace":   binding.Namespace,
+		"image":       imageValues(repository, tag, primary.Digest),
+		"template":    template,
+	}
+	workloadValues := map[string]any{}
+	summary := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if artifact.WorkloadID.IsZero() {
+			continue
+		}
+		workload, err := s.getWorkload(ctx, app.ID, artifact.WorkloadID)
+		if err != nil {
+			return "", "", err
+		}
+		config, err := s.getWorkloadEnvironmentConfig(ctx, artifact.WorkloadID, env.ID)
+		if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
+			return "", "", err
+		}
+		repository, tag := imageRepositoryTag(artifact)
+		name := strings.TrimSpace(workload.Name)
+		if name == "" {
+			name = artifact.WorkloadID.String()
+		}
+		workloadValues[name] = renderWorkloadValues(workload, config, repository, tag, artifact.Digest)
+		summary = append(summary, fmt.Sprintf("%s=%s", name, imageSummary(repository, tag, artifact.Digest)))
+	}
+	if len(workloadValues) > 0 {
+		values["workloads"] = workloadValues
+	}
+	raw, err := yaml.Marshal(values)
+	if err != nil {
+		return "", "", shared.NewError(shared.CodeInternal, "render values failed: "+err.Error())
+	}
+	return string(raw), strings.Join(summary, "\n"), nil
+}
+
+func (s *Service) getWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error) {
+	if s.workloads == nil {
+		return WorkloadRef{ID: workloadID, ApplicationID: applicationID, Name: workloadID.String(), WorkloadType: "Deployment"}, nil
+	}
+	return s.workloads.GetWorkload(ctx, applicationID, workloadID)
+}
+
+func (s *Service) getWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfigRef, error) {
+	if s.workloads == nil {
+		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload environment config not found")
+	}
+	return s.workloads.GetWorkloadEnvironmentConfig(ctx, workloadID, environmentID)
+}
+
+func imageValues(repository string, tag string, digest string) map[string]any {
+	return map[string]any{"repository": repository, "tag": tag, "digest": strings.TrimSpace(digest)}
+}
+
+func renderWorkloadValues(workload WorkloadRef, config WorkloadEnvironmentConfigRef, repository string, tag string, digest string) map[string]any {
+	values := map[string]any{
+		"kind":  normalizeWorkloadKind(workload.WorkloadType),
+		"image": imageValues(repository, tag, digest),
+	}
+	if config.Replicas > 0 {
+		values["replicas"] = config.Replicas
+	}
+	if len(config.ServicePorts) > 0 {
+		values["servicePorts"] = config.ServicePorts
+	}
+	resources := map[string]any{}
+	if config.ResourceRequests.CPU != "" || config.ResourceRequests.Memory != "" {
+		resources["requests"] = config.ResourceRequests
+	}
+	if config.ResourceLimits.CPU != "" || config.ResourceLimits.Memory != "" {
+		resources["limits"] = config.ResourceLimits
+	}
+	if len(resources) > 0 {
+		values["resources"] = resources
+	}
+	if len(config.Probes) > 0 {
+		values["probes"] = config.Probes
+	}
+	if len(config.EnvVars) > 0 {
+		values["env"] = config.EnvVars
+	}
+	if len(config.IngressHosts) > 0 {
+		values["ingressHosts"] = config.IngressHosts
+	}
+	if len(config.SecretRefs) > 0 {
+		values["secretRefs"] = config.SecretRefs
+	}
+	if len(config.ConfigFiles) > 0 {
+		values["configFiles"] = config.ConfigFiles
+	}
+	if len(config.WritableDirs) > 0 {
+		values["writableDirs"] = config.WritableDirs
+	}
+	if len(config.VolumeMounts) > 0 {
+		values["volumeMounts"] = config.VolumeMounts
+	}
+	if len(config.InitContainers) > 0 {
+		values["initContainers"] = config.InitContainers
+	}
+	for key, value := range config.ValuesOverride {
+		if strings.TrimSpace(key) == "" || key == "image" {
+			continue
+		}
+		values[key] = value
+	}
+	return values
+}
+
+func normalizeWorkloadKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "statefulset":
+		return "StatefulSet"
+	default:
+		return "Deployment"
+	}
+}
+
+func imageSummary(repository string, tag string, digest string) string {
+	image := strings.TrimSpace(repository)
+	if strings.TrimSpace(tag) != "" {
+		image += ":" + strings.TrimSpace(tag)
+	}
+	if strings.TrimSpace(digest) != "" {
+		image += "@" + strings.TrimSpace(digest)
+	}
+	return image
+}
+
+func (s *Service) recordFailedDeployment(ctx context.Context, deployment Deployment, eventID shared.ID, message string) error {
+	now := s.clock.Now()
+	deployment.Status = DeploymentFailed
+	deployment.Message = strings.TrimSpace(message)
+	deployment.UpdatedAt = now
+	deployment.CompletedAt = &now
+	if err := s.repo.CreateDeployment(ctx, deployment); err != nil {
+		return err
+	}
+	return s.repo.CreateDeploymentEvent(ctx, DeploymentEvent{ID: eventID, DeploymentID: deployment.ID, Status: DeploymentFailed, Message: deployment.Message, OccurredAt: now})
 }
 
 func (s *Service) GetDeployment(ctx context.Context, id shared.ID) (Deployment, error) {

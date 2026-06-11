@@ -1,10 +1,15 @@
 package migrations_test
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shareinto/paas/internal/migrations"
+	"github.com/shareinto/paas/internal/modules/gitops"
+	"github.com/shareinto/paas/internal/platform/database"
+	"github.com/shareinto/paas/internal/testsupport"
 )
 
 func TestAllMigrationsAreUniqueAndOrderedByVersion(t *testing.T) {
@@ -185,6 +190,56 @@ func TestBuildPipelineIdentityColumnsAreBackfilled(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("backfill_build_pipeline_identity_columns migration not found")
+	}
+}
+
+func TestGitOpsWorkloadSummaryMigrationBackfillsExistingDeployments(t *testing.T) {
+	ctx := context.Background()
+	base := gitops.Migrations[:2]
+	db := testsupport.MySQLDB(t, base...)
+	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO deployments (
+  id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
+  freight_id, manifest_revision_id, image_repository, image_tag, image_digest, status, message,
+  created_at, updated_at, completed_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"deployment_legacy", "tenant_1", "project_1", "app_1", "env_1", "binding_1", "promotion_1",
+		"freight_1", "manifest_1", "repo/app", "v1", "sha256:1", "pending", "", now, now, nil); err != nil {
+		t.Fatalf("insert legacy deployment: %v", err)
+	}
+	if err := database.NewMigrator(db).Up(ctx, gitops.Migrations[2:3]); err != nil {
+		t.Fatalf("workload summary migration: %v", err)
+	}
+	var summary string
+	if err := db.QueryRowContext(ctx, "SELECT workload_summary FROM deployments WHERE id = ?", "deployment_legacy").Scan(&summary); err != nil {
+		t.Fatalf("query workload summary: %v", err)
+	}
+	if summary != "" {
+		t.Fatalf("legacy deployment workload_summary = %q, want empty", summary)
+	}
+}
+
+func TestGitOpsWorkloadSummaryMigrationSkipsExistingColumnWhenVersionMissing(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.MySQLDB(t, gitops.Migrations[:2]...)
+	if _, err := db.ExecContext(ctx, "ALTER TABLE deployments ADD COLUMN workload_summary VARCHAR(2048) NOT NULL DEFAULT '' AFTER image_digest"); err != nil {
+		t.Fatalf("precreate workload_summary column: %v", err)
+	}
+	if err := database.NewMigrator(db).Up(ctx, gitops.Migrations[2:3]); err != nil {
+		t.Fatalf("workload summary migration with existing column should not fail: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM information_schema.columns
+WHERE table_schema = DATABASE()
+  AND table_name = 'deployments'
+  AND column_name = 'workload_summary'`).Scan(&count); err != nil {
+		t.Fatalf("count workload_summary columns: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("workload_summary column count = %d, want 1", count)
 	}
 }
 

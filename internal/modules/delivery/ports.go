@@ -121,11 +121,14 @@ type GitOpsPromotionSpec struct {
 }
 
 type GitOpsArtifactSpec struct {
-	Name      string
-	SourceKey string
-	URI       string
-	Digest    string
-	IsPrimary bool
+	WorkloadID shared.ID
+	Name       string
+	SourceKey  string
+	URI        string
+	Repository string
+	Tag        string
+	Digest     string
+	IsPrimary  bool
 }
 
 type GitOpsPromotionResult struct {

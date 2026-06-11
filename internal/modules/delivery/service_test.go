@@ -389,6 +389,9 @@ func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
 	if dev.Status != PromotionManifestUpdated || dev.ManifestRevision != "rev-1" || len(env.gitops.specs) != 1 {
 		t.Fatalf("dev promotion should apply gitops, got %+v specs=%+v", dev, env.gitops.specs)
 	}
+	if got := env.gitops.specs[0].Artifacts; len(got) != 1 || got[0].WorkloadID != "workload_api" || got[0].Repository != "registry.example/paas/user-api" || got[0].Tag != "abcdef" || got[0].Digest != "sha256:abc" {
+		t.Fatalf("gitops artifact should include workload image fields, got %+v", got)
+	}
 	promoteFreightThrough(t, env, freight, "env_test", "env_staging")
 	prod, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
 	if err != nil {

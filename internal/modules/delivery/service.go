@@ -624,7 +624,7 @@ func (s *Service) applyPromotion(ctx context.Context, promotion Promotion) (Prom
 	}
 	artifacts := make([]GitOpsArtifactSpec, 0, len(items))
 	for i, item := range items {
-		artifacts = append(artifacts, GitOpsArtifactSpec{Name: item.Name, SourceKey: item.SourceKey, URI: item.URI, Digest: item.Digest, IsPrimary: i == 0 || item.Type == FreightItemApplicationRelease})
+		artifacts = append(artifacts, GitOpsArtifactSpec{WorkloadID: item.WorkloadID, Name: item.Name, SourceKey: item.SourceKey, URI: item.URI, Repository: item.ImageRepository, Tag: item.ImageTag, Digest: item.Digest, IsPrimary: i == 0 || item.Type == FreightItemApplicationRelease})
 	}
 	result, err := s.gitopsOrError().ApplyPromotion(ctx, GitOpsPromotionSpec{PromotionID: promotion.ID, FreightID: promotion.FreightID, ApplicationID: promotion.ApplicationID, EnvironmentID: promotion.TargetEnvironmentID, Artifacts: artifacts, IsRollback: promotion.IsRollback})
 	if err != nil {

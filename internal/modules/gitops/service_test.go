@@ -110,6 +110,35 @@ func newTestRepository(t *testing.T) Repository {
 	return repo
 }
 
+func listDeploymentEventsForTest(t *testing.T, repo Repository, deploymentID shared.ID) []DeploymentEvent {
+	t.Helper()
+	mysqlRepo, ok := repo.(*MySQLRepository)
+	if !ok {
+		t.Fatalf("test repository type = %T, want *MySQLRepository", repo)
+	}
+	rows, err := mysqlRepo.db.QueryContext(context.Background(), `
+SELECT id, deployment_id, status, message, occurred_at
+FROM deployment_events
+WHERE deployment_id = ?
+ORDER BY occurred_at, id`, deploymentID)
+	if err != nil {
+		t.Fatalf("query deployment events: %v", err)
+	}
+	defer rows.Close()
+	events := []DeploymentEvent{}
+	for rows.Next() {
+		var event DeploymentEvent
+		if err := rows.Scan(&event.ID, &event.DeploymentID, &event.Status, &event.Message, &event.OccurredAt); err != nil {
+			t.Fatalf("scan deployment event: %v", err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate deployment events: %v", err)
+	}
+	return events
+}
+
 type gitopsErrManifest struct{ err error }
 
 func (m gitopsErrManifest) ReadFile(context.Context, string, string) (string, error) {
@@ -165,8 +194,18 @@ func newTestService(t *testing.T, ids []shared.ID) (*Service, *FakeManifestRepos
 	svc := NewService(Options{
 		Repository: newTestRepository(t), ManifestRepo: manifest,
 		Application: appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}},
-		Environment: envQuery{envs: map[shared.ID]EnvironmentRef{"env_dev": {ID: "env_dev", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "dev"}, "env_prod": {ID: "env_prod", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "prod"}}, bindings: map[shared.ID]ClusterBindingRef{"env_dev": {ID: "binding_dev", EnvironmentID: "env_dev", Namespace: "order-dev", Active: true}, "env_prod": {ID: "binding_prod", EnvironmentID: "env_prod", Namespace: "order-prod", Active: true}}},
-		Audit:       audit, IDGenerator: &staticIDs{ids: ids}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
+		Environment: envQuery{envs: map[shared.ID]EnvironmentRef{
+			"env_dev":     {ID: "env_dev", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "dev"},
+			"env_test":    {ID: "env_test", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "test"},
+			"env_staging": {ID: "env_staging", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "staging"},
+			"env_prod":    {ID: "env_prod", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "prod"},
+		}, bindings: map[shared.ID]ClusterBindingRef{
+			"env_dev":     {ID: "binding_dev", EnvironmentID: "env_dev", Namespace: "order-dev", Active: true},
+			"env_test":    {ID: "binding_test", EnvironmentID: "env_test", Namespace: "order-test", Active: true},
+			"env_staging": {ID: "binding_staging", EnvironmentID: "env_staging", Namespace: "order-staging", Active: true},
+			"env_prod":    {ID: "binding_prod", EnvironmentID: "env_prod", Namespace: "order-prod", Active: true},
+		}},
+		Audit: audit, IDGenerator: &staticIDs{ids: ids}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
 	})
 	return svc, manifest, audit
 }
@@ -207,7 +246,10 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 	ids := []shared.ID{
 		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
 		"deployment_1", "manifest_revision_1", "deployment_event_1",
-		"deployment_2", "manifest_revision_2", "deployment_event_2", "deployment_event_3",
+		"deployment_2", "manifest_revision_2", "deployment_event_2",
+		"deployment_3", "manifest_revision_3", "deployment_event_3",
+		"deployment_4", "manifest_revision_4", "deployment_event_4",
+		"deployment_event_5",
 	}
 	svc, manifest, audit := newTestService(t, ids)
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
@@ -216,14 +258,22 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 	if err != nil {
 		t.Fatalf("apply dev: %v", err)
 	}
+	testEnv, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_test", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_test", ImageURI: "registry/order-api:v1-test", ImageDigest: "sha256:test"})
+	if err != nil {
+		t.Fatalf("apply test: %v", err)
+	}
+	staging, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_staging", FreightID: "freight_2", ApplicationID: "app_1", EnvironmentID: "env_staging", ImageURI: "registry/order-api:v1-staging", ImageDigest: "sha256:staging"})
+	if err != nil {
+		t.Fatalf("apply staging: %v", err)
+	}
 	prod, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_2", ApplicationID: "app_1", EnvironmentID: "env_prod", ImageURI: "registry/order-api:v0", ImageDigest: "sha256:rollback", IsRollback: true})
 	if err != nil {
 		t.Fatalf("apply prod: %v", err)
 	}
-	if dev.ManifestRevision == "" || len(manifest.Commits) != 1 || len(manifest.MRs) != 1 || prod.ManifestRevision == "" {
+	if dev.ManifestRevision == "" || testEnv.ManifestRevision == "" || staging.ManifestRevision == "" || prod.ManifestRevision == "" || len(manifest.Commits) != 2 || len(manifest.MRs) != 2 {
 		t.Fatalf("unexpected manifest operations: commits=%d mrs=%d", len(manifest.Commits), len(manifest.MRs))
 	}
-	if !strings.Contains(manifest.Files["apps/order-api/dev/values.yaml"], "sha256:old") || !strings.Contains(manifest.Files["apps/order-api/prod/values.yaml"], "sha256:rollback") {
+	if !strings.Contains(manifest.Files["apps/order-api/dev/values.yaml"], "sha256:old") || !strings.Contains(manifest.Files["apps/order-api/test/values.yaml"], "sha256:test") || !strings.Contains(manifest.Files["apps/order-api/staging/values.yaml"], "sha256:staging") || !strings.Contains(manifest.Files["apps/order-api/prod/values.yaml"], "sha256:rollback") {
 		t.Fatalf("values files did not contain expected digests: %#v", manifest.Files)
 	}
 	if err := svc.UpdateFromAgent(context.Background(), clusteragent.StatusReport{Applications: []clusteragent.ApplicationStatus{{DeploymentID: "deployment_1", SyncStatus: "Synced", HealthStatus: "Healthy", Message: "ok"}}}); err != nil {
@@ -238,6 +288,193 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 	}
 	if audit.events[len(audit.events)-2].Action != "manifest_revision.create" || audit.events[len(audit.events)-1].Action != "deployment.create" {
 		t.Fatalf("unexpected final audit events: %#v", audit.events)
+	}
+}
+
+type workloadQuery struct {
+	workloads map[shared.ID]WorkloadRef
+	configs   map[string]WorkloadEnvironmentConfigRef
+}
+
+func (q workloadQuery) GetWorkload(_ context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error) {
+	workload, ok := q.workloads[workloadID]
+	if !ok || workload.ApplicationID != applicationID {
+		return WorkloadRef{}, shared.NewError(shared.CodeNotFound, "workload not found")
+	}
+	return workload, nil
+}
+
+func (q workloadQuery) GetWorkloadEnvironmentConfig(_ context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfigRef, error) {
+	config, ok := q.configs[string(workloadID)+"|"+string(environmentID)]
+	if !ok {
+		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload environment config not found")
+	}
+	return config, nil
+}
+
+func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing.T) {
+	ids := []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
+		"deployment_1", "manifest_revision_1", "deployment_event_1",
+		"deployment_2", "manifest_revision_2", "deployment_event_2",
+	}
+	svc, manifest, _ := newTestService(t, ids)
+	svc.workloads = workloadQuery{
+		workloads: map[shared.ID]WorkloadRef{
+			"workload_api":    {ID: "workload_api", ApplicationID: "app_1", Name: "user-api", DisplayName: "用户 API", WorkloadType: "Deployment"},
+			"workload_worker": {ID: "workload_worker", ApplicationID: "app_1", Name: "order-worker", DisplayName: "订单 Worker", WorkloadType: "StatefulSet"},
+		},
+		configs: map[string]WorkloadEnvironmentConfigRef{
+			"workload_api|env_dev": {
+				Replicas:         2,
+				ServicePorts:     []WorkloadServicePortRef{{Name: "http", Port: 8080, TargetPort: 8080, Protocol: "TCP"}},
+				ResourceRequests: WorkloadResourceListRef{CPU: "100m", Memory: "128Mi"},
+				ResourceLimits:   WorkloadResourceListRef{CPU: "500m", Memory: "512Mi"},
+				EnvVars:          []WorkloadEnvVarRef{{Name: "LOG_LEVEL", Value: "debug"}},
+				Probes:           []WorkloadProbeRef{{Name: "readiness", Type: "http", Path: "/ready", Port: 8080, InitialDelaySeconds: 5, PeriodSeconds: 10}},
+				IngressHosts:     []WorkloadIngressHostRef{{Host: "api.dev.example.com", Path: "/"}},
+				SecretRefs:       []WorkloadSecretRef{{Name: "DB_PASSWORD", SecretRef: "secret/db-password"}},
+				ConfigFiles:      []WorkloadConfigFileRef{{MountPath: "/etc/app/config.yaml", Content: "feature: true"}},
+				WritableDirs:     []WorkloadWritableDirRef{{MountPath: "/data", SizeLimit: "1Gi"}},
+				VolumeMounts:     []WorkloadVolumeMountRef{{Name: "config", MountPath: "/etc/app"}},
+				InitContainers:   []WorkloadInitContainerRef{{Name: "init-permission", Image: "busybox:1.36", Command: []string{"sh", "-c", "mkdir -p /data"}}},
+			},
+		},
+	}
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+
+	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev",
+		Artifacts: []delivery.GitOpsArtifactSpec{
+			{WorkloadID: "workload_api", URI: "registry/user-api:v2", Repository: "registry/user-api", Tag: "v2", Digest: "sha256:api", IsPrimary: true},
+			{WorkloadID: "workload_worker", URI: "registry/order-worker:v5", Repository: "registry/order-worker", Tag: "v5", Digest: "sha256:worker"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply multi-workload promotion: %v", err)
+	}
+	values := manifest.Files["apps/order-api/dev/values.yaml"]
+	for _, want := range []string{
+		"workloads:",
+		"user-api:",
+		"kind: Deployment",
+		"replicas: 2",
+		"repository: registry/user-api",
+		"tag: v2",
+		"digest: sha256:api",
+		"requests:",
+		"cpu: 100m",
+		"memory: 128Mi",
+		"limits:",
+		"cpu: 500m",
+		"memory: 512Mi",
+		"path: /ready",
+		"host: api.dev.example.com",
+		"secretRef: secret/db-password",
+		"mountPath: /etc/app/config.yaml",
+		"writableDirs:",
+		"mountPath: /data",
+		"sizeLimit: 1Gi",
+		"name: config",
+		"name: init-permission",
+		"order-worker:",
+		"kind: StatefulSet",
+		"repository: registry/order-worker",
+		"tag: v5",
+		"digest: sha256:worker",
+	} {
+		if !strings.Contains(values, want) {
+			t.Fatalf("values missing %q:\n%s", want, values)
+		}
+	}
+	deployment, err := svc.GetDeployment(context.Background(), "deployment_1")
+	if err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if !strings.Contains(deployment.WorkloadSummary, "user-api=registry/user-api:v2@sha256:api") || !strings.Contains(deployment.WorkloadSummary, "order-worker=registry/order-worker:v5@sha256:worker") {
+		t.Fatalf("deployment summary missing workload images: %#v", deployment)
+	}
+
+	_, err = svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_rollback", FreightID: "freight_history", ApplicationID: "app_1", EnvironmentID: "env_dev", IsRollback: true,
+		Artifacts: []delivery.GitOpsArtifactSpec{
+			{WorkloadID: "workload_api", URI: "registry/user-api:v1", Repository: "registry/user-api", Tag: "v1", Digest: "sha256:api-old", IsPrimary: true},
+			{WorkloadID: "workload_worker", URI: "registry/order-worker:v4", Repository: "registry/order-worker", Tag: "v4", Digest: "sha256:worker-old"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("rollback promotion: %v", err)
+	}
+	rollbackValues := manifest.Files["apps/order-api/dev/values.yaml"]
+	if !strings.Contains(rollbackValues, "tag: v1") || !strings.Contains(rollbackValues, "sha256:api-old") || !strings.Contains(rollbackValues, "tag: v4") || !strings.Contains(rollbackValues, "sha256:worker-old") {
+		t.Fatalf("rollback values did not use historical freight images:\n%s", rollbackValues)
+	}
+	revision, err := svc.repo.GetManifestRevision(context.Background(), "manifest_revision_2")
+	if err != nil || revision.ChangeType != "rollback" {
+		t.Fatalf("rollback manifest revision = %#v err=%v", revision, err)
+	}
+}
+
+func TestApplyPromotionRecordsFailedDeploymentWhenMergeRequestCreationFails(t *testing.T) {
+	errBoom := shared.NewError(shared.CodeInternal, "gitlab mr failed")
+	repo := newTestRepository(t)
+	svc := NewService(Options{
+		Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom},
+		Application: appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}},
+		Environment: envQuery{envs: map[shared.ID]EnvironmentRef{"env_prod": {ID: "env_prod", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "prod"}}, bindings: map[shared.ID]ClusterBindingRef{"env_prod": {ID: "binding_prod", EnvironmentID: "env_prod", Namespace: "order-prod", Active: true}}},
+		IDGenerator: &staticIDs{ids: []shared.ID{"template_1", "revision_1", "template_2", "revision_2", "deployment_failed", "manifest_failed", "event_failed"}},
+		Clock:       fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
+	})
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers: []")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_prod", ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
+		t.Fatalf("expected MR error, got %v", err)
+	}
+	deployment, err := repo.FindDeploymentByPromotion(context.Background(), "promotion_prod")
+	if err != nil {
+		t.Fatalf("failed deployment should be recorded: %v", err)
+	}
+	if deployment.Status != DeploymentFailed || !strings.Contains(deployment.Message, "创建合并请求失败") {
+		t.Fatalf("failed deployment should contain Chinese MR failure reason: %#v", deployment)
+	}
+	if !deployment.ManifestRevisionID.IsZero() {
+		t.Fatalf("failed deployment should not reference unsaved manifest revision: %#v", deployment)
+	}
+	events := listDeploymentEventsForTest(t, repo, deployment.ID)
+	if len(events) != 1 || events[0].Status != DeploymentFailed || !strings.Contains(events[0].Message, "创建合并请求失败") {
+		t.Fatalf("failed deployment event should contain Chinese MR failure reason: %#v", events)
+	}
+}
+
+func TestApplyPromotionRecordsFailedDeploymentWhenCommitFails(t *testing.T) {
+	errBoom := shared.NewError(shared.CodeInternal, "gitlab commit failed")
+	repo := newTestRepository(t)
+	svc := NewService(Options{
+		Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom},
+		Application: appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}},
+		Environment: envQuery{envs: map[shared.ID]EnvironmentRef{"env_dev": {ID: "env_dev", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "dev"}}, bindings: map[shared.ID]ClusterBindingRef{"env_dev": {ID: "binding_dev", EnvironmentID: "env_dev", Namespace: "order-dev", Active: true}}},
+		IDGenerator: &staticIDs{ids: []shared.ID{"template_1", "revision_1", "template_2", "revision_2", "deployment_failed", "manifest_failed", "event_failed"}},
+		Clock:       fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
+	})
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers: []")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev", ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
+		t.Fatalf("expected commit error, got %v", err)
+	}
+	deployment, err := repo.FindDeploymentByPromotion(context.Background(), "promotion_dev")
+	if err != nil {
+		t.Fatalf("failed deployment should be recorded: %v", err)
+	}
+	if deployment.Status != DeploymentFailed || !strings.Contains(deployment.Message, "提交部署清单失败") {
+		t.Fatalf("failed deployment should contain Chinese commit failure reason: %#v", deployment)
+	}
+	if !deployment.ManifestRevisionID.IsZero() {
+		t.Fatalf("failed deployment should not reference unsaved manifest revision: %#v", deployment)
+	}
+	events := listDeploymentEventsForTest(t, repo, deployment.ID)
+	if len(events) != 1 || events[0].Status != DeploymentFailed || !strings.Contains(events[0].Message, "提交部署清单失败") {
+		t.Fatalf("failed deployment event should contain Chinese commit failure reason: %#v", events)
 	}
 }
 

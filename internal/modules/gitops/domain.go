@@ -76,6 +76,7 @@ type Deployment struct {
 	ImageRepository    string           `json:"image_repository"`
 	ImageTag           string           `json:"image_tag"`
 	ImageDigest        string           `json:"image_digest"`
+	WorkloadSummary    string           `json:"workload_summary"`
 	Status             DeploymentStatus `json:"status"`
 	Message            string           `json:"message"`
 	CreatedAt          time.Time        `json:"created_at"`
@@ -112,6 +113,90 @@ type ClusterBindingRef struct {
 	ClusterName   string
 	Namespace     string
 	Active        bool
+}
+
+type WorkloadRef struct {
+	ID            shared.ID
+	TenantID      shared.ID
+	ProjectID     shared.ID
+	ApplicationID shared.ID
+	Name          string
+	DisplayName   string
+	WorkloadType  string
+}
+
+type WorkloadResourceListRef struct {
+	CPU    string `yaml:"cpu,omitempty"`
+	Memory string `yaml:"memory,omitempty"`
+}
+
+type WorkloadServicePortRef struct {
+	Name       string `yaml:"name"`
+	Port       int    `yaml:"port"`
+	TargetPort int    `yaml:"targetPort"`
+	Protocol   string `yaml:"protocol,omitempty"`
+}
+
+type WorkloadEnvVarRef struct {
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
+}
+
+type WorkloadProbeRef struct {
+	Name                string   `yaml:"name"`
+	Type                string   `yaml:"type"`
+	Path                string   `yaml:"path,omitempty"`
+	Port                int      `yaml:"port,omitempty"`
+	Command             []string `yaml:"command,omitempty"`
+	InitialDelaySeconds int      `yaml:"initialDelaySeconds,omitempty"`
+	PeriodSeconds       int      `yaml:"periodSeconds,omitempty"`
+}
+
+type WorkloadIngressHostRef struct {
+	Host string `yaml:"host"`
+	Path string `yaml:"path"`
+}
+
+type WorkloadSecretRef struct {
+	Name      string `yaml:"name"`
+	SecretRef string `yaml:"secretRef"`
+}
+
+type WorkloadConfigFileRef struct {
+	MountPath string `yaml:"mountPath"`
+	Content   string `yaml:"content"`
+}
+
+type WorkloadWritableDirRef struct {
+	MountPath string `yaml:"mountPath"`
+	SizeLimit string `yaml:"sizeLimit,omitempty"`
+}
+
+type WorkloadVolumeMountRef struct {
+	Name      string `yaml:"name"`
+	MountPath string `yaml:"mountPath"`
+}
+
+type WorkloadInitContainerRef struct {
+	Name    string   `yaml:"name"`
+	Image   string   `yaml:"image"`
+	Command []string `yaml:"command,omitempty"`
+}
+
+type WorkloadEnvironmentConfigRef struct {
+	Replicas         int
+	ServicePorts     []WorkloadServicePortRef
+	ResourceRequests WorkloadResourceListRef
+	ResourceLimits   WorkloadResourceListRef
+	Probes           []WorkloadProbeRef
+	EnvVars          []WorkloadEnvVarRef
+	IngressHosts     []WorkloadIngressHostRef
+	SecretRefs       []WorkloadSecretRef
+	ConfigFiles      []WorkloadConfigFileRef
+	WritableDirs     []WorkloadWritableDirRef
+	VolumeMounts     []WorkloadVolumeMountRef
+	InitContainers   []WorkloadInitContainerRef
+	ValuesOverride   map[string]any
 }
 
 func manifestPath(appName, envName string) string {
