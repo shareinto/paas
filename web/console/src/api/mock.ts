@@ -8,6 +8,45 @@ export type BuildPipeline = { id: string; applicationId: string; name: string; d
 export type BuildRun = { id: string; application: string; pipeline?: string; pipelineId?: string; status: string; ref: string; commit: string; startedAt: string; duration: string };
 export type AuditLog = { id: string; actor: string; action: string; resource: string; result: string; summary: string; time: string };
 export type Freight = { id: string; version: string; image: string; digest: string; commit: string; createdAt: string };
+export type WorkloadType = 'deployment' | 'statefulset';
+export type WorkloadImageSourceMode = 'pipeline_artifact' | 'custom_image' | 'mixed' | 'none';
+export type WorkloadEnvironmentStatus = { envName: string; releaseVersion: string; syncStatus: string; healthStatus: string };
+export type Workload = {
+  id: string;
+  applicationId: string;
+  name: string;
+  displayName: string;
+  description?: string;
+  workloadType: WorkloadType;
+  imageSourceMode: WorkloadImageSourceMode;
+  imageSourceName?: string;
+  latestRelease?: string;
+  status: 'enabled' | 'disabled' | 'deleted';
+  envStatuses: WorkloadEnvironmentStatus[];
+  updatedAt: string;
+};
+export type WorkloadServicePort = { name: string; port: number; targetPort: number; protocol?: string };
+export type WorkloadResourceList = { cpu?: string; memory?: string };
+export type WorkloadProbe = { name: string; type: string; path?: string; port?: number; initialDelaySeconds?: number };
+export type WorkloadIngressHost = { host: string; path: string; servicePort: string; tls: boolean };
+export type WorkloadEnvVar = { name: string; value: string };
+export type WorkloadConfigFile = { mountPath: string; content: string };
+export type WorkloadWritableDir = { mountPath: string; sizeLimit?: string };
+export type WorkloadEnvironmentConfig = {
+  id: string;
+  workloadId: string;
+  environmentId: string;
+  envName: string;
+  replicas: number;
+  servicePorts: WorkloadServicePort[];
+  resourceRequests: WorkloadResourceList;
+  resourceLimits: WorkloadResourceList;
+  probes: WorkloadProbe[];
+  ingressHosts: WorkloadIngressHost[];
+  envVars: WorkloadEnvVar[];
+  configFiles: WorkloadConfigFile[];
+  writableDirs: WorkloadWritableDir[];
+};
 export type SourceRepository = { id: string; projectId: string; projectName: string; name: string; displayName: string; description: string; gitProvider: string; httpUrl: string; sshUrl: string; defaultBranch: string; status: string; associatedApplications: number; updatedAt: string };
 export type RepositoryBranch = { name: string; default: boolean };
 export type RepositoryTreeItem = { name: string; path: string; type: 'tree' | 'blob' };
@@ -69,6 +108,82 @@ const buildPipelines: Record<string, BuildPipeline[]> = {
     runtimeEnvironments: [{ ...runtimeEnvironments[0] }],
     sources: [{ id: 'pipeline_source_1', pipelineId: 'pipeline_1', key: 'main', displayName: '主代码源', sourceRepositoryId: 'repo_1', buildEnvironmentId: 'build_env_java_springboot', sourcePath: 'services/order-api', defaultRef: 'main', isPrimary: true, buildSpec: { sourcePath: 'services/order-api', buildCommand: 'mvn clean package -DskipTests', artifactCopyCommand: 'cp -ar target/order-api.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"', runtimeBaseImage: 'registry.example/runtime/java17:1.0', artifactDeployPath: '/app/', defaultRef: 'main' } }]
   }]
+};
+const workloads: Record<string, Workload[]> = {
+  app_1: [
+    {
+      id: 'workload_api',
+      applicationId: 'app_1',
+      name: 'order-api',
+      displayName: '订单接口',
+      description: '订单后端服务',
+      workloadType: 'deployment',
+      imageSourceMode: 'pipeline_artifact',
+      imageSourceName: '主流水线',
+      latestRelease: 'v1.8.2',
+      status: 'enabled',
+      envStatuses: [
+        { envName: 'dev', releaseVersion: 'v1.8.2', syncStatus: '已同步', healthStatus: '健康' },
+        { envName: 'test', releaseVersion: 'v1.8.1', syncStatus: '已同步', healthStatus: '健康' },
+        { envName: 'prod', releaseVersion: 'v1.8.1', syncStatus: '已同步', healthStatus: '健康' }
+      ],
+      updatedAt: '2026-06-11 09:20'
+    },
+    {
+      id: 'workload_worker',
+      applicationId: 'app_1',
+      name: 'order-worker',
+      displayName: '订单任务',
+      description: '异步任务处理',
+      workloadType: 'statefulset',
+      imageSourceMode: 'custom_image',
+      imageSourceName: '手工维护',
+      latestRelease: 'worker-20260610',
+      status: 'enabled',
+      envStatuses: [
+        { envName: 'dev', releaseVersion: 'worker-20260610', syncStatus: '已同步', healthStatus: '健康' },
+        { envName: 'test', releaseVersion: 'worker-20260609', syncStatus: '待发布', healthStatus: '未知' },
+        { envName: 'prod', releaseVersion: 'worker-20260608', syncStatus: '已同步', healthStatus: '健康' }
+      ],
+      updatedAt: '2026-06-11 09:18'
+    }
+  ]
+};
+const workloadEnvironmentConfigs: Record<string, WorkloadEnvironmentConfig[]> = {
+  workload_api: [
+    {
+      id: 'workload_env_config_api_prod',
+      workloadId: 'workload_api',
+      environmentId: 'env_prod',
+      envName: 'prod',
+      replicas: 3,
+      servicePorts: [{ name: 'http', port: 8080, targetPort: 8080, protocol: 'TCP' }],
+      resourceRequests: { cpu: '250m', memory: '256Mi' },
+      resourceLimits: { cpu: '2', memory: '2Gi' },
+      probes: [{ name: 'readiness', type: 'HTTP', path: '/actuator/health', port: 8080, initialDelaySeconds: 30 }],
+      ingressHosts: [{ host: 'order.example.com', path: '/', servicePort: 'http:8080', tls: true }],
+      envVars: [{ name: 'SPRING_PROFILES_ACTIVE', value: 'prod' }],
+      configFiles: [{ mountPath: '/app/config/application.yaml', content: 'spring.profiles.active: prod' }],
+      writableDirs: [{ mountPath: '/logs', sizeLimit: '5Gi' }]
+    }
+  ],
+  workload_worker: [
+    {
+      id: 'workload_env_config_worker_prod',
+      workloadId: 'workload_worker',
+      environmentId: 'env_prod',
+      envName: 'prod',
+      replicas: 1,
+      servicePorts: [],
+      resourceRequests: { cpu: '500m', memory: '512Mi' },
+      resourceLimits: { cpu: '2', memory: '2Gi' },
+      probes: [{ name: 'liveness', type: 'COMMAND', path: 'pgrep worker', initialDelaySeconds: 60 }],
+      ingressHosts: [],
+      envVars: [{ name: 'QUEUE_NAME', value: 'order-prod' }],
+      configFiles: [{ mountPath: '/app/config/worker.yaml', content: 'queue: order-prod' }],
+      writableDirs: [{ mountPath: '/data', sizeLimit: '20Gi' }]
+    }
+  ]
 };
 
 export async function login(account: string, password: string) {
@@ -208,6 +323,44 @@ export async function listFreights(): Promise<Freight[]> {
     { id: 'freight_18', version: 'v1.8.2', image: 'registry.local/order-api:v1.8.2', digest: 'sha256:91ab', commit: '8c1a09f', createdAt: '2026-05-30 10:08' },
     { id: 'freight_17', version: 'v1.8.1', image: 'registry.local/order-api:v1.8.1', digest: 'sha256:7f02', commit: '61b9120', createdAt: '2026-05-29 16:45' }
   ];
+}
+
+export async function listWorkloads(applicationId: string): Promise<Workload[]> {
+  await wait();
+  return (workloads[applicationId] || []).filter((item) => item.status !== 'deleted').map(cloneWorkload);
+}
+
+export async function createWorkload(applicationId: string, input: { name: string; displayName: string; description?: string; workloadType: WorkloadType; imageSourceMode?: WorkloadImageSourceMode; customImage?: string }) {
+  await wait();
+  if ((workloads[applicationId] || []).some((item) => item.name === input.name && item.status !== 'deleted')) {
+    throw new Error('Workload 标识已存在');
+  }
+  const workload: Workload = {
+    id: `workload_${Date.now()}`,
+    applicationId,
+    name: input.name,
+    displayName: input.displayName || input.name,
+    description: input.description || '',
+    workloadType: input.workloadType,
+    imageSourceMode: input.imageSourceMode || 'pipeline_artifact',
+    imageSourceName: input.imageSourceMode === 'custom_image' ? (input.customImage || '自定义镜像') : '流水线产物',
+    latestRelease: '-',
+    status: 'enabled',
+    envStatuses: [
+      { envName: 'dev', releaseVersion: '-', syncStatus: '未发布', healthStatus: '未知' },
+      { envName: 'test', releaseVersion: '-', syncStatus: '未发布', healthStatus: '未知' },
+      { envName: 'prod', releaseVersion: '-', syncStatus: '未发布', healthStatus: '未知' }
+    ],
+    updatedAt: '刚刚'
+  };
+  workloads[applicationId] = [workload, ...(workloads[applicationId] || [])];
+  workloadEnvironmentConfigs[workload.id] = [];
+  return cloneWorkload(workload);
+}
+
+export async function listWorkloadEnvironmentConfigs(_applicationId: string, workloadId: string): Promise<WorkloadEnvironmentConfig[]> {
+  await wait();
+  return (workloadEnvironmentConfigs[workloadId] || []).map(cloneWorkloadEnvironmentConfig);
 }
 
 export async function listSourceRepositories(projectId?: string): Promise<SourceRepository[]> {
@@ -492,4 +645,22 @@ export async function triggerBuild(applicationId: string, input: { gitRef?: stri
   const pipeline = (buildPipelines[applicationId] || [])[0];
   if (!pipeline) throw new Error('请先创建构建流水线');
   return triggerBuildPipeline(pipeline.id, input);
+}
+
+function cloneWorkload(workload: Workload): Workload {
+  return { ...workload, envStatuses: workload.envStatuses.map((item) => ({ ...item })) };
+}
+
+function cloneWorkloadEnvironmentConfig(config: WorkloadEnvironmentConfig): WorkloadEnvironmentConfig {
+  return {
+    ...config,
+    servicePorts: config.servicePorts.map((item) => ({ ...item })),
+    resourceRequests: { ...config.resourceRequests },
+    resourceLimits: { ...config.resourceLimits },
+    probes: config.probes.map((item) => ({ ...item })),
+    ingressHosts: config.ingressHosts.map((item) => ({ ...item })),
+    envVars: config.envVars.map((item) => ({ ...item })),
+    configFiles: config.configFiles.map((item) => ({ ...item })),
+    writableDirs: config.writableDirs.map((item) => ({ ...item }))
+  };
 }

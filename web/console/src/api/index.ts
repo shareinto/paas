@@ -1,7 +1,7 @@
 import * as mock from './mock';
 import { hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
 
-export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -234,6 +234,33 @@ export async function listFreights(applicationId = DEFAULT_APP_ID) {
     commit: item.commit || item.commit_sha || item.commitSHA || '-',
     createdAt: item.createdAt || formatTime(item.created_at || item.createdAt)
   }));
+}
+
+export async function listWorkloads(applicationId: string) {
+  if (!hasAPIBaseURL()) return mock.listWorkloads(applicationId);
+  const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/workloads`);
+  return data.items.map(mapWorkload);
+}
+
+export async function createWorkload(applicationId: string, input: { name: string; displayName: string; description?: string; workloadType: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode; customImage?: string }) {
+  if (!hasAPIBaseURL()) return mock.createWorkload(applicationId, input);
+  const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads`, {
+    method: 'POST',
+    body: JSON.stringify({
+      actor: { type: 'user', id: 'usr_admin' },
+      name: input.name,
+      display_name: input.displayName,
+      description: input.description || '',
+      workload_type: input.workloadType
+    })
+  });
+  return mapWorkload(item);
+}
+
+export async function listWorkloadEnvironmentConfigs(applicationId: string, workloadId: string) {
+  if (!hasAPIBaseURL()) return mock.listWorkloadEnvironmentConfigs(applicationId, workloadId);
+  const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/environment-configs`);
+  return data.items.map(mapWorkloadEnvironmentConfig);
 }
 
 export async function listSourceRepositories(projectId?: string) {
@@ -614,6 +641,79 @@ function mapApplication(item: any): mock.Application {
     owner: item.owner || '-',
     updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
   };
+}
+
+function mapWorkload(item: any): mock.Workload {
+  const envStatuses = item.env_statuses || item.envStatuses || item.environments || [];
+  return {
+    id: item.id,
+    applicationId: item.application_id || item.applicationId || '',
+    name: item.name || '',
+    displayName: item.display_name || item.displayName || item.name || '',
+    description: item.description || '',
+    workloadType: normalizeWorkloadType(item.workload_type || item.workloadType),
+    imageSourceMode: normalizeImageSourceMode(item.image_source_mode || item.imageSourceMode),
+    imageSourceName: item.image_source_name || item.imageSourceName || '',
+    latestRelease: item.latest_release || item.latestRelease || item.release || '',
+    status: item.status || 'enabled',
+    envStatuses: envStatuses.map((env: any) => ({
+      envName: env.env_name || env.envName || env.name || env.environment || '-',
+      releaseVersion: env.release_version || env.releaseVersion || env.release || '-',
+      syncStatus: env.sync_status || env.syncStatus || env.sync || '未知',
+      healthStatus: env.health_status || env.healthStatus || env.health || '未知'
+    })),
+    updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
+  };
+}
+
+function mapWorkloadEnvironmentConfig(item: any): mock.WorkloadEnvironmentConfig {
+  return {
+    id: item.id || [item.workload_id || item.workloadId, item.environment_id || item.environmentId].filter(Boolean).join(':'),
+    workloadId: item.workload_id || item.workloadId || '',
+    environmentId: item.environment_id || item.environmentId || '',
+    envName: item.env_name || item.envName || item.environment_name || item.environmentName || item.environment_id || item.environmentId || '-',
+    replicas: item.replicas || 1,
+    servicePorts: (item.service_ports || item.servicePorts || []).map((port: any) => ({
+      name: port.name || 'http',
+      port: Number(port.port || 0),
+      targetPort: Number(port.target_port || port.targetPort || port.port || 0),
+      protocol: port.protocol || 'TCP'
+    })),
+    resourceRequests: mapResourceList(item.resource_requests || item.resourceRequests),
+    resourceLimits: mapResourceList(item.resource_limits || item.resourceLimits),
+    probes: (item.probes || []).map((probe: any) => ({
+      name: probe.name || probe.type || 'probe',
+      type: probe.type || 'HTTP',
+      path: probe.path || '',
+      port: probe.port ? Number(probe.port) : undefined,
+      initialDelaySeconds: probe.initial_delay_seconds || probe.initialDelaySeconds
+    })),
+    ingressHosts: (item.ingress_hosts || item.ingressHosts || []).map((host: any) => ({
+      host: host.host || '',
+      path: host.path || '/',
+      servicePort: host.service_port || host.servicePort || '',
+      tls: !!host.tls
+    })),
+    envVars: (item.env_vars || item.envVars || []).map((env: any) => ({ name: env.name || env.key || '', value: env.value || '' })),
+    configFiles: (item.config_files || item.configFiles || []).map((file: any) => ({ mountPath: file.mount_path || file.mountPath || '', content: file.content || '' })),
+    writableDirs: (item.writable_dirs || item.writableDirs || []).map((dir: any) => ({ mountPath: dir.mount_path || dir.mountPath || '', sizeLimit: dir.size_limit || dir.sizeLimit || '' }))
+  };
+}
+
+function mapResourceList(value: any): mock.WorkloadResourceList {
+  return { cpu: value?.cpu || '', memory: value?.memory || '' };
+}
+
+function normalizeWorkloadType(value: string): mock.WorkloadType {
+  return String(value || '').toLowerCase() === 'statefulset' ? 'statefulset' : 'deployment';
+}
+
+function normalizeImageSourceMode(value: string): mock.WorkloadImageSourceMode {
+  const mode = String(value || '').toLowerCase();
+  if (mode === 'custom_image') return 'custom_image';
+  if (mode === 'mixed') return 'mixed';
+  if (mode === 'none') return 'none';
+  return 'pipeline_artifact';
 }
 
 function mapApplicationSource(item: any): mock.ApplicationSource {
