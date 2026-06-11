@@ -61,9 +61,19 @@ export function ApplicationDetailPage() {
           { key: 'status', label: '状态', children: <Badge status={app?.status === 'disabled' ? 'default' : 'success'} text={app?.status === 'disabled' ? '已禁用' : '启用'} /> }
         ]} />
       </Card>
-      <Tabs activeKey={activeTab} onChange={setActiveTab} className="detail-tabs" items={[
+      <Tabs
+        activeKey={activeTab}
+        onChange={(key) => {
+          if (key === 'promotion') {
+            navigate(`/apps/${id}/promotions`);
+            return;
+          }
+          setActiveTab(key);
+        }}
+        className="detail-tabs"
+        items={[
         { key: 'workloads', label: '应用 Workload', children: <WorkloadPanel applicationId={id} /> },
-        { key: 'promotion', label: '发布晋级', children: <PromotionEntry /> },
+        { key: 'promotion', label: '发布晋级', children: null },
         { key: 'overview', label: '总览', children: <Overview /> },
         { key: 'env', label: '环境', children: <EnvironmentPanel /> },
         { key: 'versions', label: '版本', children: <Table pagination={false} dataSource={[{ id: 'v1.8.2', digest: 'sha256:91ab', commit: '8c1a09f' }]} columns={[{ title: '版本', dataIndex: 'id' }, { title: '镜像 digest', dataIndex: 'digest' }, { title: '提交', dataIndex: 'commit' }]} /> },
@@ -300,17 +310,6 @@ function ConfigSection({ title, children }: { title: string; children: ReactNode
       <Divider orientation="left" plain>{title}</Divider>
       {children}
     </section>
-  );
-}
-
-function PromotionEntry() {
-  return (
-    <Alert
-      type="info"
-      showIcon
-      message="发布晋级"
-      description="发布晋级入口已保留；完整发布晋级交互由后续任务实现。"
-    />
   );
 }
 

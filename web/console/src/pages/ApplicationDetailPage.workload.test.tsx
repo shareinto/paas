@@ -13,6 +13,7 @@ function renderPage() {
         <MemoryRouter initialEntries={['/apps/app_1']}>
           <Routes>
             <Route path="/apps/:id" element={<ApplicationDetailPage />} />
+            <Route path="/apps/:id/promotions" element={<div>应用发布晋级页面</div>} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>
@@ -38,6 +39,14 @@ test('应用详情展示应用 Workload 入口和 Workload 列表', async () => 
   expect(within(workloadPanel).getByText('v1.8.2')).toBeInTheDocument();
   expect(within(workloadPanel).getAllByText(/dev/).length).toBeGreaterThan(0);
   expect(within(workloadPanel).getAllByText(/prod/).length).toBeGreaterThan(0);
+});
+
+test('点击发布晋级入口进入当前应用发布晋级页', async () => {
+  renderPage();
+
+  await userEvent.click(await screen.findByRole('tab', { name: '发布晋级' }));
+
+  expect(await screen.findByText('应用发布晋级页面')).toBeInTheDocument();
 });
 
 test('创建 Workload 抽屉支持类型切换和自定义镜像输入', async () => {
