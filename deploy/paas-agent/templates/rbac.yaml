@@ -1,13 +1,10 @@
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: paas-agent
-  namespace: paas-system
----
+{{- if .Values.rbac.create }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: paas-agent
+  name: {{ include "paas-agent.fullname" . }}
+  labels:
+    {{- include "paas-agent.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
@@ -21,17 +18,19 @@ rules:
   - apiGroups: ["argoproj.io"]
     resources: ["applications"]
     verbs: ["patch"]
-    resourceNames: []
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: paas-agent
+  name: {{ include "paas-agent.fullname" . }}
+  labels:
+    {{- include "paas-agent.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: paas-agent
+  name: {{ include "paas-agent.fullname" . }}
 subjects:
   - kind: ServiceAccount
-    name: paas-agent
-    namespace: paas-system
+    name: {{ include "paas-agent.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
