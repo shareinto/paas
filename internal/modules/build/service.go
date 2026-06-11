@@ -2522,7 +2522,7 @@ func validateBuildEnvironment(environment BuildEnvironment) error {
 }
 
 func defaultBuildImage() string {
-	return "maven:3.9.9-eclipse-temurin-17"
+	return "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11"
 }
 
 func (s *Service) newRuntimeEnvironment(actorID shared.ID, name, description, runtimeBaseImage, artifactDeployPath, dockerfilePath string, isDefault bool) (RuntimeEnvironment, error) {
@@ -2625,8 +2625,8 @@ func (s *Service) ensureDefaultBuildEnvironments(ctx context.Context, actorID sh
 	}
 	seedMissingDefaults := existingPage.Total == 0
 	defaults := []BuildEnvironment{
-		{ID: "build_env_java_springboot", Name: "java-springboot", BuildImage: "maven:3.9.9-eclipse-temurin-17", Status: BuildEnvironmentEnabled, IsDefault: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
-		{ID: "build_env_java_tomcat", Name: "java-tomcat", BuildImage: "maven:3.8.8-eclipse-temurin-8", Status: BuildEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
+		{ID: "build_env_gradle7_jdk11", Name: "gradle7-jdk11", BuildImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11", Status: BuildEnvironmentEnabled, IsDefault: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
+		{ID: "build_env_node22", Name: "node22", BuildImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/node:22.14.0-bookworm", Status: BuildEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, environment := range defaults {
 		existing, err := s.repo.GetBuildEnvironment(ctx, environment.ID)
@@ -2675,8 +2675,11 @@ func (s *Service) ensureDefaultRuntimeEnvironments(ctx context.Context, actorID 
 	seedMissingDefaults := existingPage.Total == 0
 	now := s.clock.Now()
 	defaults := []RuntimeEnvironment{
-		{ID: "runtime_env_java17", Name: "java17", RuntimeBaseImage: "registry.example/runtime/java17:1.0", ArtifactDeployPath: "/app/", DockerfilePath: "java/jar/Dockerfile", Status: RuntimeEnvironmentEnabled, IsDefault: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
-		{ID: "runtime_env_tomcat8", Name: "tomcat8", RuntimeBaseImage: "registry.example/runtime/tomcat8:1.0", ArtifactDeployPath: "/usr/local/tomcat/webapps/", DockerfilePath: "java/tomcat/Dockerfile", Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
+		{ID: "runtime_env_springboot_jdk11_aliyun", Name: "springboot-jdk11-aliyun", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis", DockerfilePath: "java/jar/Dockerfile", Status: RuntimeEnvironmentEnabled, IsDefault: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
+		{ID: "runtime_env_tomcat_jdk11_aliyun", Name: "tomcat-jdk11-aliyun", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis", DockerfilePath: "java/tomcat/Dockerfile", Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
+		{ID: "runtime_env_tomcat_jdk11_aws", Name: "tomcat-jdk11-aws", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023", DockerfilePath: "java/tomcat/Dockerfile", Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
+		{ID: "runtime_env_springboot_jdk11_aws", Name: "springboot-jdk11-aws", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023", DockerfilePath: "java/jar/Dockerfile", Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
+		{ID: "runtime_env_nginx1221", Name: "nginx1221", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1", DockerfilePath: "nginx/Dockerfile", Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
 	}
 	for _, environment := range defaults {
 		existing, err := s.repo.GetRuntimeEnvironment(ctx, environment.ID)

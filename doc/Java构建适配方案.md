@@ -12,17 +12,22 @@
 
 ## 2. 测试可用版本支持范围
 
-当前测试可用版本支持 Java 应用构建，管理员通过构建环境维护构建镜像。默认构建环境如下：
+当前测试可用版本支持 Java/Node 相关构建预设，管理员通过构建环境维护构建镜像。初始化默认构建环境如下：
 
 ```text
-java-springboot
-java-tomcat
+gradle7-jdk11 cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11
+node22 cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/node:22.14.0-bookworm
 ```
 
-含义：
+初始化默认运行环境如下：
 
-- `java-springboot`：使用 Maven Java 构建镜像。
-- `java-tomcat`：使用 Tomcat 兼容 Java 构建镜像。
+```text
+springboot-jdk11-aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis java/jar/Dockerfile
+tomcat-jdk11-aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis java/tomcat/Dockerfile
+tomcat-jdk11-aws cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023 java/tomcat/Dockerfile
+springboot-jdk11-aws cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023 java/jar/Dockerfile
+nginx1221 cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1 nginx/Dockerfile
+```
 
 当前测试可用版本暂不支持：
 
@@ -72,8 +77,8 @@ default_ref
 
 ```text
 流水线标识：main / release
-运行时环境：Java 17 运行时 / Tomcat 8 运行时
-构建环境：java-springboot / java-tomcat
+运行时环境：springboot-jdk11-aliyun / tomcat-jdk11-aliyun / tomcat-jdk11-aws / springboot-jdk11-aws / nginx1221
+构建环境：gradle7-jdk11 / node22
 源码子目录：source_path
 构建命令：build_command
 产物拷贝命令：artifact_copy_command
@@ -136,7 +141,7 @@ runtime_base_image
 构建模板
 ```
 
-- 构建环境：维护可选构建预设，例如 `java-springboot`、`java-tomcat`，包含名称、描述和构建镜像。
+- 构建环境：维护可选构建预设，例如 `gradle7-jdk11`、`node22`，包含名称、描述和构建镜像。
 - 运行时环境：维护名称、运行时基础镜像、产物放置路径和 Dockerfile 路径。Dockerfile 路径仅在运行时环境管理页由平台管理员维护，创建应用、创建流水线和触发构建时不向用户展示。
 - 构建模板：全局仅维护一个模板。平台根据用户填写的代码源、构建环境、运行时环境和平台 Dockerfile 仓库配置渲染最终 Jenkins Job。
 

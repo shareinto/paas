@@ -120,7 +120,7 @@ test('构建管理支持编辑构建环境和运行时环境', async () => {
 
   await userEvent.click(screen.getAllByRole('button', { name: /编\s*辑/ })[0]);
   const buildDialog = await screen.findByRole('dialog', { name: '编辑构建环境' });
-  expect(within(buildDialog).getByDisplayValue('java-springboot')).toBeDisabled();
+  expect(within(buildDialog).getByDisplayValue('gradle7-jdk11')).toBeDisabled();
   expect(within(buildDialog).queryByLabelText('显示名称')).not.toBeInTheDocument();
   expect(within(buildDialog).queryByLabelText('构建策略')).not.toBeInTheDocument();
   expect(within(buildDialog).queryByLabelText('Java 版本')).not.toBeInTheDocument();
@@ -128,29 +128,29 @@ test('构建管理支持编辑构建环境和运行时环境', async () => {
   expect(within(buildDialog).queryByLabelText('Jenkins agent 标签')).not.toBeInTheDocument();
   expect(within(buildDialog).queryByLabelText('默认构建命令')).not.toBeInTheDocument();
   expect(within(buildDialog).queryByLabelText('默认产物路径')).not.toBeInTheDocument();
-  const buildImage = within(buildDialog).getByDisplayValue('maven:3.9.9-eclipse-temurin-17');
+  const buildImage = within(buildDialog).getByDisplayValue('cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11');
   await userEvent.clear(buildImage);
-  await userEvent.type(buildImage, 'maven:3.9.9-eclipse-temurin-21');
+  await userEvent.type(buildImage, 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11-test');
   await userEvent.click(within(buildDialog).getByRole('button', { name: /保\s*存/ }));
-  expect(await screen.findByText(/maven:3\.9\.9-eclipse-temurin-21/)).toBeInTheDocument();
+  expect(await screen.findByText(/gradle:7-jdk11-test/)).toBeInTheDocument();
 
   await userEvent.click(screen.getByRole('tab', { name: '运行时环境' }));
   expect(await screen.findByText('运行时环境列表')).toBeInTheDocument();
-  expect(await screen.findByText('java17')).toBeInTheDocument();
+  expect(await screen.findByText('springboot-jdk11-aliyun')).toBeInTheDocument();
   const runtimeList = screen.getByText('运行时环境列表').closest('.ant-card') as HTMLElement;
   await waitFor(() => expect(within(runtimeList).getAllByRole('button', { name: /编\s*辑/ }).length).toBeGreaterThan(0));
   await userEvent.click(within(runtimeList).getAllByRole('button', { name: /编\s*辑/ })[0]);
   const runtimeDialog = (await screen.findByText('编辑运行时环境')).closest('.ant-modal') as HTMLElement;
-  expect(within(runtimeDialog).getByDisplayValue('java17')).toBeDisabled();
+  expect(within(runtimeDialog).getByDisplayValue('springboot-jdk11-aliyun')).toBeDisabled();
   expect(within(runtimeDialog).queryByLabelText('显示名称')).not.toBeInTheDocument();
   expect(within(runtimeDialog).queryByLabelText('Dockerfile 路径')).not.toBeInTheDocument();
   expect(within(runtimeDialog).queryByLabelText('兼容构建策略')).not.toBeInTheDocument();
   expect(within(runtimeDialog).queryByLabelText('启动命令')).not.toBeInTheDocument();
-  const runtimeImage = within(runtimeDialog).getByDisplayValue('registry.example/runtime/java17:1.0');
+  const runtimeImage = within(runtimeDialog).getByDisplayValue('cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis');
   await userEvent.clear(runtimeImage);
-  await userEvent.type(runtimeImage, 'registry.example/runtime/java17:2.0');
+  await userEvent.type(runtimeImage, 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis-test');
   await userEvent.click(within(runtimeDialog).getByRole('button', { name: /保\s*存/ }));
-  expect(await screen.findByText(/registry\.example\/runtime\/java17:2\.0/)).toBeInTheDocument();
+  expect(await screen.findByText(/dragonwell:11-anolis-test/)).toBeInTheDocument();
 }, 15000);
 
 test('核心交付路径包含构建日志、版本、晋级审批、回滚和审计', async () => {

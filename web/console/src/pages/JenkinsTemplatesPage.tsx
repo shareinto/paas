@@ -142,7 +142,7 @@ function BuildEnvironmentFields({ editing = false }: { editing?: boolean }) {
     <>
       <Form.Item label="名称" name="name" rules={[{ required: true, message: '请输入名称' }]}><Input disabled={editing} /></Form.Item>
       <Form.Item label="描述" name="description"><Input.TextArea rows={2} /></Form.Item>
-      <Form.Item label="构建镜像" name="buildImage" rules={[{ required: true, message: '请输入构建镜像' }]}><Input placeholder="maven:3.9.9-eclipse-temurin-17" /></Form.Item>
+      <Form.Item label="构建镜像" name="buildImage" rules={[{ required: true, message: '请输入构建镜像' }]}><Input placeholder="cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11" /></Form.Item>
       {editing && <Form.Item label="状态" name="status" rules={[{ required: true, message: '请选择状态' }]}><Select options={STATUS_OPTIONS} /></Form.Item>}
       <Form.Item label="默认环境" name="isDefault" valuePropName="checked"><Switch checkedChildren="是" unCheckedChildren="否" /></Form.Item>
     </>
@@ -322,17 +322,17 @@ const registerGroovyLanguage: BeforeMount = (monaco) => {
 
 function defaultBuildEnvironmentValues() {
   return {
-    name: 'java-springboot',
-    buildImage: 'maven:3.9.9-eclipse-temurin-17',
+    name: 'gradle7-jdk11',
+    buildImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11',
     isDefault: false
   };
 }
 
 function defaultRuntimeEnvironmentValues() {
   return {
-    name: 'java17',
-    runtimeBaseImage: 'registry.example/runtime/java17:1.0',
-    artifactDeployPath: '/app/',
+    name: 'springboot-jdk11-aliyun',
+    runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis',
+    artifactDeployPath: '',
     dockerfilePath: 'java/jar/Dockerfile',
     isDefault: false
   };

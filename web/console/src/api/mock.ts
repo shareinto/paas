@@ -76,12 +76,15 @@ const jenkinsJobTemplates: JenkinsJobTemplate[] = [
   { id: 'java-tomcat-v1', name: 'java-tomcat-v1', version: 2, status: 'enabled', isDefault: false, updatedAt: '2026-05-30 18:20' }
 ];
 const buildEnvironments: BuildEnvironment[] = [
-  { id: 'build_env_java_springboot', name: 'java-springboot', buildImage: 'maven:3.9.9-eclipse-temurin-17', status: 'enabled', isDefault: true, updatedAt: '2026-05-31 10:00' },
-  { id: 'build_env_java_tomcat', name: 'java-tomcat', buildImage: 'maven:3.8.8-eclipse-temurin-8', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' }
+  { id: 'build_env_gradle7_jdk11', name: 'gradle7-jdk11', buildImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11', status: 'enabled', isDefault: true, updatedAt: '2026-05-31 10:00' },
+  { id: 'build_env_node22', name: 'node22', buildImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/node:22.14.0-bookworm', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' }
 ];
 const runtimeEnvironments: RuntimeEnvironment[] = [
-  { id: 'runtime_env_java17', name: 'java17', runtimeBaseImage: 'registry.example/runtime/java17:1.0', artifactDeployPath: '/app/', dockerfilePath: 'java/jar/Dockerfile', status: 'enabled', isDefault: true, updatedAt: '2026-05-31 10:00' },
-  { id: 'runtime_env_tomcat8', name: 'tomcat8', runtimeBaseImage: 'registry.example/runtime/tomcat8:1.0', artifactDeployPath: '/usr/local/tomcat/webapps/', dockerfilePath: 'java/tomcat/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' }
+  { id: 'runtime_env_springboot_jdk11_aliyun', name: 'springboot-jdk11-aliyun', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', artifactDeployPath: '', dockerfilePath: 'java/jar/Dockerfile', status: 'enabled', isDefault: true, updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_tomcat_jdk11_aliyun', name: 'tomcat-jdk11-aliyun', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis', artifactDeployPath: '', dockerfilePath: 'java/tomcat/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_tomcat_jdk11_aws', name: 'tomcat-jdk11-aws', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023', artifactDeployPath: '', dockerfilePath: 'java/tomcat/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_springboot_jdk11_aws', name: 'springboot-jdk11-aws', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023', artifactDeployPath: '', dockerfilePath: 'java/jar/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_nginx1221', name: 'nginx1221', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1', artifactDeployPath: '', dockerfilePath: 'nginx/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' }
 ];
 let buildTemplate: BuildTemplate = {
   id: 'global-build-template',
@@ -626,7 +629,7 @@ export async function listAdminRuntimeEnvironments(): Promise<RuntimeEnvironment
 export async function createBuildEnvironment(input: Partial<BuildEnvironment>) {
   await wait();
   if (input.isDefault) buildEnvironments.forEach((item) => { item.isDefault = false; });
-  const item: BuildEnvironment = { id: `build_env_${Date.now()}`, name: input.name || 'custom-build', description: input.description || '', buildImage: input.buildImage || 'maven:3.9.9-eclipse-temurin-17', status: 'enabled', isDefault: !!input.isDefault, updatedAt: '刚刚' };
+  const item: BuildEnvironment = { id: `build_env_${Date.now()}`, name: input.name || 'custom-build', description: input.description || '', buildImage: input.buildImage || 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11', status: 'enabled', isDefault: !!input.isDefault, updatedAt: '刚刚' };
   buildEnvironments.unshift(item);
   return { ...item };
 }
@@ -650,7 +653,7 @@ export async function deleteBuildEnvironment(id: string) {
 export async function createRuntimeEnvironment(input: Partial<RuntimeEnvironment>) {
   await wait();
   if (input.isDefault) runtimeEnvironments.forEach((item) => { item.isDefault = false; });
-  const item: RuntimeEnvironment = { id: `runtime_env_${Date.now()}`, name: input.name || 'custom-runtime', runtimeBaseImage: input.runtimeBaseImage || 'registry.example/runtime/java17:1.0', artifactDeployPath: input.artifactDeployPath || '/app/', dockerfilePath: input.dockerfilePath || 'java/jar/Dockerfile', status: 'enabled', isDefault: !!input.isDefault, updatedAt: '刚刚' };
+  const item: RuntimeEnvironment = { id: `runtime_env_${Date.now()}`, name: input.name || 'custom-runtime', runtimeBaseImage: input.runtimeBaseImage || 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', artifactDeployPath: input.artifactDeployPath || '', dockerfilePath: input.dockerfilePath || 'java/jar/Dockerfile', status: 'enabled', isDefault: !!input.isDefault, updatedAt: '刚刚' };
   runtimeEnvironments.unshift(item);
   return { ...item };
 }

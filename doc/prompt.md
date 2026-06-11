@@ -243,8 +243,8 @@ identity-access 认证要求：
 当前测试可用版本支持：
 
 ```text
-java-springboot
-java-tomcat
+gradle7-jdk11
+node22
 ```
 
 BuildSpec 字段：

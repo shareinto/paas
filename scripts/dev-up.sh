@@ -3,6 +3,59 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${PAAS_DEV_ENV_FILE:-$ROOT_DIR/deploy/config/paas-dev.env}"
+RECREATE_DB_ARG=""
+SEED_DEV_DATA_ARG=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/dev-up.sh [options]
+
+Options:
+  --recreate-db        启动前删除并重建 MYSQL_DATABASE，然后执行全量 migration 建表；默认注入开发测试数据。
+  --no-recreate-db     不重建数据库，按当前 PAAS_AUTO_MIGRATE 设置启动。
+  --seed-dev-data      后端 ready 后注入 SBG/MACC 开发测试数据。
+  --no-seed-dev-data   跳过开发测试数据注入。
+  -h, --help           显示帮助。
+
+Examples:
+  ./scripts/dev-up.sh
+  ./scripts/dev-up.sh --recreate-db
+  ./scripts/dev-up.sh --recreate-db --no-seed-dev-data
+  ./scripts/dev-up.sh --seed-dev-data
+  PAAS_AUTO_MIGRATE=true ./scripts/dev-up.sh
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --recreate-db)
+      RECREATE_DB_ARG=true
+      shift
+      ;;
+    --no-recreate-db)
+      RECREATE_DB_ARG=false
+      shift
+      ;;
+    --seed-dev-data)
+      SEED_DEV_DATA_ARG=true
+      shift
+      ;;
+    --no-seed-dev-data)
+      SEED_DEV_DATA_ARG=false
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "未知参数: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -10,6 +63,39 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
   set +a
 fi
+
+RECREATE_DB="${PAAS_DEV_RECREATE_DB:-false}"
+if [[ -n "$RECREATE_DB_ARG" ]]; then
+  RECREATE_DB="$RECREATE_DB_ARG"
+fi
+case "$RECREATE_DB" in
+  true|false)
+    ;;
+  *)
+    echo "PAAS_DEV_RECREATE_DB 只能为 true 或 false，当前值: $RECREATE_DB" >&2
+    exit 2
+    ;;
+esac
+
+SEED_DEV_DATA="${PAAS_DEV_SEED_DATA:-}"
+if [[ -z "$SEED_DEV_DATA" ]]; then
+  if [[ "$RECREATE_DB" == "true" ]]; then
+    SEED_DEV_DATA=true
+  else
+    SEED_DEV_DATA=false
+  fi
+fi
+if [[ -n "$SEED_DEV_DATA_ARG" ]]; then
+  SEED_DEV_DATA="$SEED_DEV_DATA_ARG"
+fi
+case "$SEED_DEV_DATA" in
+  true|false)
+    ;;
+  *)
+    echo "PAAS_DEV_SEED_DATA 只能为 true 或 false，当前值: $SEED_DEV_DATA" >&2
+    exit 2
+    ;;
+esac
 
 export DOCKERFILE_REPOSITORY_URL=ssh://git@gitops:2422/paas/dockerfiles.git
 export PAAS_HTTP_ADDR="${PAAS_HTTP_ADDR:-:8080}"
@@ -44,7 +130,23 @@ export DOCKERFILE_REPOSITORY_CREDENTIALS_ID="${DOCKERFILE_REPOSITORY_CREDENTIALS
 
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-5173}"
-export VITE_API_BASE_URL="${VITE_API_BASE_URL:-http://127.0.0.1${PAAS_HTTP_ADDR}}"
+
+paas_http_port() {
+  local addr="$1"
+  if [[ "$addr" == :* ]]; then
+    printf '%s\n' "${addr#:}"
+    return
+  fi
+  if [[ "$addr" == *:* ]]; then
+    printf '%s\n' "${addr##*:}"
+    return
+  fi
+  printf '%s\n' "$addr"
+}
+
+PAAS_HTTP_PORT="$(paas_http_port "$PAAS_HTTP_ADDR")"
+BACKEND_LOCAL_BASE_URL="${PAAS_DEV_BACKEND_LOCAL_BASE_URL:-http://127.0.0.1:${PAAS_HTTP_PORT}}"
+export VITE_API_BASE_URL="${VITE_API_BASE_URL:-$BACKEND_LOCAL_BASE_URL}"
 
 pids=()
 
@@ -62,11 +164,95 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+recreate_database() {
+  case "$MYSQL_DATABASE" in
+    ""|"mysql"|"information_schema"|"performance_schema"|"sys")
+      echo "拒绝重建系统数据库: ${MYSQL_DATABASE:-<empty>}" >&2
+      exit 1
+      ;;
+  esac
+
+  echo "即将重建开发数据库: $MYSQL_DATABASE@$MYSQL_HOST:$MYSQL_PORT"
+  echo "该操作会删除该库中的应用、构建、Freight、Stage、审计等数据。"
+
+  local tmp
+  tmp="$(mktemp /tmp/paas-recreate-db-XXXX.go)"
+  cat > "$tmp" <<'EOF'
+package main
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+	"strings"
+
+	_ "github.com/go-sql-driver/mysql"
+)
+
+func main() {
+	host := os.Getenv("MYSQL_HOST")
+	port := os.Getenv("MYSQL_PORT")
+	user := os.Getenv("MYSQL_USER")
+	password := os.Getenv("MYSQL_PASSWORD")
+	database := os.Getenv("MYSQL_DATABASE")
+	if strings.TrimSpace(database) == "" {
+		panic("MYSQL_DATABASE is required")
+	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true&loc=Local&interpolateParams=true", user, password, host, port)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		panic(err)
+	}
+	quoted := "`" + strings.ReplaceAll(database, "`", "``") + "`"
+	if _, err := db.Exec("DROP DATABASE IF EXISTS " + quoted); err != nil {
+		panic(err)
+	}
+	if _, err := db.Exec("CREATE DATABASE " + quoted + " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
+		panic(err)
+	}
+	fmt.Printf("已重建开发数据库: %s\n", database)
+}
+EOF
+  if ! (cd "$ROOT_DIR" && go run "$tmp"); then
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
+}
+
+wait_for_backend_ready() {
+  local ready_url="${BACKEND_LOCAL_BASE_URL}/readyz"
+  local attempts="${PAAS_DEV_READY_RETRIES:-60}"
+  local interval="${PAAS_DEV_READY_INTERVAL_SECONDS:-1}"
+  echo "等待后端 ready: $ready_url"
+  for ((i = 1; i <= attempts; i++)); do
+    if curl -fsS "$ready_url" >/dev/null 2>&1; then
+      echo "后端已 ready"
+      return 0
+    fi
+    sleep "$interval"
+  done
+  echo "等待后端 ready 超时: $ready_url" >&2
+  return 1
+}
+
+if [[ "$RECREATE_DB" == "true" ]]; then
+  export PAAS_AUTO_MIGRATE=true
+  recreate_database
+fi
+
 echo "PaaS dev environment"
 echo "  env file: $ENV_FILE"
-echo "  backend:  http://127.0.0.1${PAAS_HTTP_ADDR}"
-echo "  frontend: http://127.0.0.1:${WEB_PORT}"
+echo "  backend:  $BACKEND_LOCAL_BASE_URL"
+echo "  frontend: http://${WEB_HOST}:${WEB_PORT}"
 echo "  API base: $VITE_API_BASE_URL"
+echo "  migrate:  $PAAS_AUTO_MIGRATE"
+echo "  recreate: $RECREATE_DB"
+echo "  dev seed: $SEED_DEV_DATA"
 if [[ -n "$GITLAB_BASE_URL" && -n "$GITLAB_TOKEN" ]]; then
   echo "  GitLab:   real adapter"
 else
@@ -78,11 +264,20 @@ else
   echo "  Jenkins:  fake adapter"
 fi
 
-(
-  cd "$ROOT_DIR"
-  go run ./cmd/paas-server
-) &
-pids+=("$!")
+if curl -fsS "${BACKEND_LOCAL_BASE_URL}/readyz" >/dev/null 2>&1; then
+  echo "后端已在运行，跳过启动: $BACKEND_LOCAL_BASE_URL"
+else
+  (
+    cd "$ROOT_DIR"
+    go run ./cmd/paas-server
+  ) &
+  pids+=("$!")
+fi
+
+if [[ "$SEED_DEV_DATA" == "true" ]]; then
+  wait_for_backend_ready
+  "$ROOT_DIR/scripts/dev-seed.sh" --api-base "$VITE_API_BASE_URL"
+fi
 
 (
   cd "$ROOT_DIR/web/console"

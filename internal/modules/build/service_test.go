@@ -409,12 +409,12 @@ func TestEnsureDefaultBuildConfigurationDoesNotRecreateDeletedEnvironments(t *te
 	if err := env.svc.EnsureDefaultBuildConfiguration(ctx, actor.ID); err != nil {
 		t.Fatalf("EnsureDefaultBuildConfiguration() error = %v", err)
 	}
-	for _, id := range []shared.ID{"build_env_java_springboot", "build_env_java_tomcat"} {
+	for _, id := range []shared.ID{"build_env_gradle7_jdk11", "build_env_node22"} {
 		if err := env.svc.DeleteBuildEnvironment(ctx, actor, id); err != nil {
 			t.Fatalf("DeleteBuildEnvironment(%s) error = %v", id, err)
 		}
 	}
-	for _, id := range []shared.ID{"runtime_env_java17", "runtime_env_tomcat8"} {
+	for _, id := range []shared.ID{"runtime_env_springboot_jdk11_aliyun", "runtime_env_tomcat_jdk11_aliyun", "runtime_env_tomcat_jdk11_aws", "runtime_env_springboot_jdk11_aws", "runtime_env_nginx1221"} {
 		if err := env.svc.DeleteRuntimeEnvironment(ctx, actor, id); err != nil {
 			t.Fatalf("DeleteRuntimeEnvironment(%s) error = %v", id, err)
 		}
@@ -436,6 +436,60 @@ func TestEnsureDefaultBuildConfigurationDoesNotRecreateDeletedEnvironments(t *te
 	}
 	if runtimeEnvironments.Total != 0 || len(runtimeEnvironments.Items) != 0 {
 		t.Fatalf("deleted runtime environments were recreated: %+v", runtimeEnvironments.Items)
+	}
+}
+
+func TestEnsureDefaultBuildConfigurationSeedsRequestedPresets(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+
+	if err := env.svc.EnsureDefaultBuildConfiguration(ctx, buildActor().ID); err != nil {
+		t.Fatalf("EnsureDefaultBuildConfiguration() error = %v", err)
+	}
+	buildEnvironments, err := env.svc.ListBuildEnvironments(ctx, true, shared.PageRequest{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("ListBuildEnvironments() error = %v", err)
+	}
+	buildImages := map[string]string{}
+	for _, environment := range buildEnvironments.Items {
+		buildImages[environment.Name] = environment.BuildImage
+	}
+	wantBuildImages := map[string]string{
+		"gradle7-jdk11": "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11",
+		"node22":        "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/node:22.14.0-bookworm",
+	}
+	for name, image := range wantBuildImages {
+		if buildImages[name] != image {
+			t.Fatalf("build environment %s image = %q, want %q; all=%#v", name, buildImages[name], image, buildImages)
+		}
+	}
+
+	runtimeEnvironments, err := env.svc.ListRuntimeEnvironments(ctx, true, shared.PageRequest{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("ListRuntimeEnvironments() error = %v", err)
+	}
+	runtimes := map[string]RuntimeEnvironment{}
+	for _, environment := range runtimeEnvironments.Items {
+		runtimes[environment.Name] = environment
+	}
+	wantRuntimeImages := map[string]struct {
+		image      string
+		dockerfile string
+	}{
+		"springboot-jdk11-aliyun": {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis", "java/jar/Dockerfile"},
+		"tomcat-jdk11-aliyun":     {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis", "java/tomcat/Dockerfile"},
+		"tomcat-jdk11-aws":        {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023", "java/tomcat/Dockerfile"},
+		"springboot-jdk11-aws":    {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023", "java/jar/Dockerfile"},
+		"nginx1221":               {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1", "nginx/Dockerfile"},
+	}
+	for name, want := range wantRuntimeImages {
+		got, ok := runtimes[name]
+		if !ok {
+			t.Fatalf("runtime environment %s missing; all=%#v", name, runtimes)
+		}
+		if got.RuntimeBaseImage != want.image || got.DockerfilePath != want.dockerfile {
+			t.Fatalf("runtime environment %s = image %q dockerfile %q, want %q %q", name, got.RuntimeBaseImage, got.DockerfilePath, want.image, want.dockerfile)
+		}
 	}
 }
 
