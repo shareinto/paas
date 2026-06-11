@@ -144,8 +144,8 @@ func runSeed(ctx context.Context, opts seedOptions) error {
 			"build_spec": map[string]any{
 				"source_path":           ".",
 				"default_ref":           "main",
-				"build_command":         "mvn clean package -DskipTests",
-				"artifact_copy_command": `mkdir -p "$PAAS_ARTIFACT_OUTPUT" && cp -ar target/*.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"`,
+				"build_command":         "gradle --no-daemon --parallel --max-workers=12 :log-receiver:bootJar -x test",
+				"artifact_copy_command": `cp log-receiver/build/libs/log-receiver.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"`,
 				"runtime_base_image":    "",
 				"artifact_deploy_path":  "",
 			},
@@ -190,6 +190,13 @@ func (c seedClient) ensureSourceRepository(ctx context.Context, projectID string
 	if err := c.doJSON(ctx, "POST", "/api/source-repositories", createPayload, &created); err != nil {
 		if !isFailedPrecondition(err) {
 			return "", err
+		}
+		items, listErr := c.list(ctx, "GET", "/api/projects/"+projectID+"/source-repositories?page=1&page_size=100")
+		if listErr != nil {
+			return "", listErr
+		}
+		if id := findIDByName(items, "log-receiver"); id != "" {
+			return id, nil
 		}
 		return c.createRepositoryMigration(ctx, projectID, actor, sourceURL)
 	}

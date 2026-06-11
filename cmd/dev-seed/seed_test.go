@@ -106,6 +106,7 @@ func TestSeedCreatesDevDataInOrderAndPatchesSourceURL(t *testing.T) {
 
 func TestSeedFallsBackToRepositoryMigrationWhenSourceRepositoryCreateFailsPrecondition(t *testing.T) {
 	var calls []string
+	sourceRepositoryListCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -115,6 +116,7 @@ func TestSeedFallsBackToRepositoryMigrationWhenSourceRepositoryCreateFailsPrecon
 		case "GET /api/projects":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "project_macc", "tenant_id": "tenant_sbg", "name": "macc"}}, "total": 1})
 		case "GET /api/projects/project_macc/source-repositories":
+			sourceRepositoryListCalls++
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
 		case "POST /api/source-repositories":
 			w.WriteHeader(http.StatusPreconditionFailed)
@@ -164,6 +166,7 @@ func TestSeedFallsBackToRepositoryMigrationWhenSourceRepositoryCreateFailsPrecon
 		"GET /api/projects",
 		"GET /api/projects/project_macc/source-repositories",
 		"POST /api/source-repositories",
+		"GET /api/projects/project_macc/source-repositories",
 		"POST /api/repository-migrations",
 		"GET /api/projects/project_macc/applications",
 		"POST /api/applications",
@@ -179,6 +182,88 @@ func TestSeedFallsBackToRepositoryMigrationWhenSourceRepositoryCreateFailsPrecon
 	}
 	if !reflect.DeepEqual(updater.calls, []sourceURLUpdate{{ID: "repo_log_receiver", HTTPURL: defaultSourceURL, SSHURL: defaultSourceSSHURL}}) {
 		t.Fatalf("source URL updater calls = %#v", updater.calls)
+	}
+	if sourceRepositoryListCalls != 2 {
+		t.Fatalf("source repository list calls = %d, want 2", sourceRepositoryListCalls)
+	}
+}
+
+func TestSeedReusesSourceRepositoryPersistedByFailedGitLabCreate(t *testing.T) {
+	var calls []string
+	sourceRepositoryListCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		switch r.Method + " " + r.URL.Path {
+		case "GET /api/tenants":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "tenant_sbg", "name": "sbg"}}, "total": 1})
+		case "GET /api/projects":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "project_macc", "tenant_id": "tenant_sbg", "name": "macc"}}, "total": 1})
+		case "GET /api/projects/project_macc/source-repositories":
+			sourceRepositoryListCalls++
+			if sourceRepositoryListCalls == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "repo_failed_log_receiver", "name": "log-receiver", "status": "failed"}}, "total": 1})
+		case "POST /api/source-repositories":
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "failed_precondition", "message": "请求处理失败"}})
+		case "GET /api/projects/project_macc/applications":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
+		case "POST /api/applications":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "app_log_receiver", "name": "log-receiver"})
+		case "GET /api/applications/app_log_receiver/workloads":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		case "POST /api/applications/app_log_receiver/workloads":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "workload_log_receiver", "name": "log-receiver"})
+		case "GET /api/runtime-environments":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "runtime_env_java17", "name": "java17", "status": "enabled"}}, "total": 1})
+		case "GET /api/build-environments":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "build_env_gradle7_jdk11", "name": "gradle7-jdk11", "status": "enabled"}}, "total": 1})
+		case "GET /api/apps/app_log_receiver/build-pipelines":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
+		case "POST /api/apps/app_log_receiver/build-pipelines":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "pipeline_main", "name": "main"})
+		case "POST /api/repository-migrations":
+			t.Fatalf("repository migration should not be created when failed repository row exists")
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	updater := &recordingSourceURLUpdater{}
+	if err := runSeed(context.Background(), seedOptions{APIBase: server.URL, SourceURL: defaultSourceURL, Updater: updater}); err != nil {
+		t.Fatalf("runSeed() error = %v", err)
+	}
+
+	want := []string{
+		"GET /api/tenants",
+		"GET /api/projects",
+		"GET /api/projects/project_macc/source-repositories",
+		"POST /api/source-repositories",
+		"GET /api/projects/project_macc/source-repositories",
+		"GET /api/projects/project_macc/applications",
+		"POST /api/applications",
+		"GET /api/applications/app_log_receiver/workloads",
+		"POST /api/applications/app_log_receiver/workloads",
+		"GET /api/runtime-environments",
+		"GET /api/build-environments",
+		"GET /api/apps/app_log_receiver/build-pipelines",
+		"POST /api/apps/app_log_receiver/build-pipelines",
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("request order mismatch\nwant: %#v\n got: %#v", want, calls)
+	}
+	if !reflect.DeepEqual(updater.calls, []sourceURLUpdate{{ID: "repo_failed_log_receiver", HTTPURL: defaultSourceURL, SSHURL: defaultSourceSSHURL}}) {
+		t.Fatalf("source URL updater calls = %#v", updater.calls)
+	}
+	if sourceRepositoryListCalls != 2 {
+		t.Fatalf("source repository list calls = %d, want 2", sourceRepositoryListCalls)
 	}
 }
 
