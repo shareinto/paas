@@ -640,17 +640,25 @@ func TestWorkloadLifecycleValidationEnabledListAndAudit(t *testing.T) {
 	}
 
 	workload, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{
-		Actor:         appenvActor(),
-		ApplicationID: app.ID,
-		Name:          "api",
-		DisplayName:   "接口服务",
-		WorkloadType:  WorkloadTypeDeployment,
+		Actor:           appenvActor(),
+		ApplicationID:   app.ID,
+		Name:            "api",
+		DisplayName:     "接口服务",
+		WorkloadType:    WorkloadTypeDeployment,
+		ImageSourceMode: "custom_image",
 	})
 	if err != nil {
 		t.Fatalf("CreateWorkload() error = %v", err)
 	}
-	if workload.ApplicationID != app.ID || workload.Name != "api" || workload.WorkloadType != WorkloadTypeDeployment || workload.Status != WorkloadStatusEnabled {
+	if workload.ApplicationID != app.ID || workload.Name != "api" || workload.WorkloadType != WorkloadTypeDeployment || workload.Status != WorkloadStatusEnabled || workload.ImageSourceMode != "custom_image" {
 		t.Fatalf("unexpected workload: %+v", workload)
+	}
+	persisted, err := env.repo.GetWorkload(ctx, workload.ID)
+	if err != nil {
+		t.Fatalf("GetWorkload() error = %v", err)
+	}
+	if persisted.ImageSourceMode != "custom_image" {
+		t.Fatalf("image_source_mode should persist, got %+v", persisted)
 	}
 	lowercase, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{
 		Actor:         appenvActor(),
@@ -670,17 +678,23 @@ func TestWorkloadLifecycleValidationEnabledListAndAudit(t *testing.T) {
 	if _, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "worker", WorkloadType: WorkloadType("DaemonSet")}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("unsupported workload type should fail, got %v", err)
 	}
+	if _, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "bad-image-source", WorkloadType: WorkloadTypeDeployment, ImageSourceMode: "external_registry"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("unsupported image_source_mode should fail, got %v", err)
+	}
 
 	worker, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "worker", WorkloadType: WorkloadTypeStatefulSet})
 	if err != nil {
 		t.Fatalf("CreateWorkload(worker) error = %v", err)
 	}
-	updated, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", Description: "handles async jobs"})
+	updated, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", Description: "handles async jobs", ImageSourceMode: "mixed"})
 	if err != nil {
 		t.Fatalf("UpdateWorkload() error = %v", err)
 	}
-	if updated.DisplayName != "后台任务" || updated.Description != "handles async jobs" || updated.WorkloadType != WorkloadTypeStatefulSet {
+	if updated.DisplayName != "后台任务" || updated.Description != "handles async jobs" || updated.WorkloadType != WorkloadTypeStatefulSet || updated.ImageSourceMode != "mixed" {
 		t.Fatalf("unexpected updated workload: %+v", updated)
+	}
+	if _, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", ImageSourceMode: "bad_mode"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("unsupported update image_source_mode should fail, got %v", err)
 	}
 	if _, err := env.svc.DisableWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID}); err != nil {
 		t.Fatalf("DisableWorkload() error = %v", err)
@@ -1283,18 +1297,29 @@ func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
 	actorBody, _ := json.Marshal(struct {
 		Actor identityaccess.Subject `json:"actor"`
 	}{Actor: appenvActor()})
-	workloadBody, _ := json.Marshal(CreateWorkloadInput{Actor: appenvActor(), Name: "api", DisplayName: "接口服务", WorkloadType: WorkloadTypeDeployment})
+	workloadBody, _ := json.Marshal(CreateWorkloadInput{Actor: appenvActor(), Name: "api", DisplayName: "接口服务", WorkloadType: WorkloadTypeDeployment, ImageSourceMode: "custom_image"})
 	workloadRec := serveJSON(mux, http.MethodPost, "/api/applications/"+app.ID.String()+"/workloads", workloadBody)
 	assertStatus(t, workloadRec, http.StatusCreated)
 	var workload Workload
 	if err := json.NewDecoder(workloadRec.Body).Decode(&workload); err != nil {
 		t.Fatalf("decode workload: %v", err)
 	}
+	if workload.ImageSourceMode != "custom_image" {
+		t.Fatalf("create workload should return requested image_source_mode, got %+v", workload)
+	}
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads", nil), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads?enabled=true", nil), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String(), nil), http.StatusOK)
-	updateWorkloadBody, _ := json.Marshal(UpdateWorkloadInput{Actor: appenvActor(), DisplayName: "接口服务 v2", WorkloadType: WorkloadTypeDeployment})
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String(), updateWorkloadBody), http.StatusOK)
+	updateWorkloadBody, _ := json.Marshal(UpdateWorkloadInput{Actor: appenvActor(), DisplayName: "接口服务 v2", WorkloadType: WorkloadTypeDeployment, ImageSourceMode: "mixed"})
+	updateWorkloadRec := serveJSON(mux, http.MethodPut, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String(), updateWorkloadBody)
+	assertStatus(t, updateWorkloadRec, http.StatusOK)
+	var updatedWorkload Workload
+	if err := json.NewDecoder(updateWorkloadRec.Body).Decode(&updatedWorkload); err != nil {
+		t.Fatalf("decode updated workload: %v", err)
+	}
+	if updatedWorkload.ImageSourceMode != "mixed" {
+		t.Fatalf("update workload should return requested image_source_mode, got %+v", updatedWorkload)
+	}
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+":disable", actorBody), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+":enable", actorBody), http.StatusOK)
 	configPayload, _ := json.Marshal(SaveWorkloadEnvironmentConfigInput{

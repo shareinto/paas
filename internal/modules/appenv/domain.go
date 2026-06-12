@@ -67,6 +67,12 @@ const (
 )
 
 var AllowedWorkloadTypes = []string{string(WorkloadTypeDeployment), string(WorkloadTypeStatefulSet)}
+var allowedWorkloadImageSourceModes = map[string]struct{}{
+	"pipeline_artifact": {},
+	"custom_image":      {},
+	"mixed":             {},
+	"none":              {},
+}
 
 type WorkloadStatus string
 
@@ -343,6 +349,17 @@ func normalizeWorkloadType(workloadType WorkloadType) WorkloadType {
 
 func validateWorkloadType(workloadType WorkloadType) error {
 	return shared.ValidateStatus(string(workloadType), AllowedWorkloadTypes)
+}
+
+func normalizeWorkloadImageSourceMode(mode string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" {
+		normalized = "pipeline_artifact"
+	}
+	if _, ok := allowedWorkloadImageSourceModes[normalized]; !ok {
+		return "", shared.NewError(shared.CodeInvalidArgument, "unsupported workload image_source_mode")
+	}
+	return normalized, nil
 }
 
 func normalizeSourceKey(key string) string {

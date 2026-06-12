@@ -86,6 +86,44 @@ test('真实 API 创建 Workload 使用服务端响应作为缓存数据来源',
   expect(postBody).not.toHaveProperty('customImage');
 });
 
+test('真实 API 更新 Workload 调用 PUT 并映射 image_source_mode', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  let putBody: Record<string, unknown> = {};
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/applications/app_1/workloads/workload_api') && init?.method === 'PUT') {
+      putBody = JSON.parse(String(init.body));
+      return jsonResponse({
+        id: 'workload_api',
+        application_id: 'app_1',
+        name: 'order-api',
+        display_name: '订单接口 v2',
+        workload_type: 'Deployment',
+        image_source_mode: 'mixed',
+        status: 'enabled'
+      });
+    }
+    return jsonResponse({ error: { code: 'not_found', message: '未处理请求' } }, 404);
+  }));
+
+  const api = await import('./index');
+  await expect(api.updateWorkload('app_1', 'workload_api', {
+    name: 'order-api',
+    displayName: '订单接口 v2',
+    workloadType: 'deployment',
+    imageSourceMode: 'mixed'
+  })).resolves.toMatchObject({
+    id: 'workload_api',
+    displayName: '订单接口 v2',
+    imageSourceMode: 'mixed'
+  });
+  expect(putBody).toMatchObject({
+    name: 'order-api',
+    display_name: '订单接口 v2',
+    workload_type: 'deployment',
+    image_source_mode: 'mixed'
+  });
+});
+
 test('真实 API 删除 Workload 提交软删除请求', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
   let deleteBody: Record<string, unknown> = {};
@@ -155,6 +193,67 @@ test('真实 API 查询 Workload 环境配置映射配置文件和可写目录�
       configFiles: [{ mountPath: '/app/config/application.yaml', content: 'server:\n  port: 8080\n' }],
       writableDirs: [{ mountPath: '/data', sizeLimit: '20Gi' }]
     }
+  ]);
+});
+
+test('真实 API 查询应用环境并保存 Workload 环境配置', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  let saveBody: Record<string, unknown> = {};
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/applications/app_1/environments')) {
+      return jsonResponse({ items: [{ id: 'env_dev', application_id: 'app_1', name: 'dev', display_name: '开发环境' }] });
+    }
+    if (url.endsWith('/api/applications/app_1/workloads/workload_api/environment-configs/env_dev') && init?.method === 'PUT') {
+      saveBody = JSON.parse(String(init.body));
+      return jsonResponse({
+        id: 'config_dev',
+        workload_id: 'workload_api',
+        environment_id: 'env_dev',
+        replicas: 2,
+        service_ports: [{ name: 'http', port: 80, target_port: 8080, protocol: 'TCP' }],
+        ingress_hosts: [{ host: 'dev-order.example.com', path: '/' }],
+        env_vars: [{ name: 'SPRING_PROFILES_ACTIVE', value: 'dev' }],
+        config_files: [{ mount_path: '/app/config/application.yaml', content: 'server.port: 8080' }],
+        writable_dirs: [{ mount_path: '/data', size_limit: '5Gi' }]
+      });
+    }
+    return jsonResponse({ error: { code: 'not_found', message: '未处理请求' } }, 404);
+  }));
+
+  const api = await import('./index');
+  await expect(api.listApplicationEnvironments('app_1')).resolves.toEqual([
+    expect.objectContaining({ id: 'env_dev', name: 'dev', displayName: '开发环境' })
+  ]);
+  await expect(api.saveWorkloadEnvironmentConfig('app_1', 'workload_api', 'env_dev', {
+    replicas: 2,
+    servicePorts: [{ name: 'http', port: 80, targetPort: 8080, protocol: 'TCP' }],
+    ingressHosts: [{ host: 'dev-order.example.com', path: '/', servicePort: 'http', tls: false }],
+    envVars: [{ name: 'SPRING_PROFILES_ACTIVE', value: 'dev' }],
+    configFiles: [{ mountPath: '/app/config/application.yaml', content: 'server.port: 8080' }],
+    writableDirs: [{ mountPath: '/data', sizeLimit: '5Gi' }]
+  })).resolves.toMatchObject({ id: 'config_dev', replicas: 2 });
+  expect(saveBody).toMatchObject({
+    replicas: 2,
+    service_ports: [{ name: 'http', port: 80, target_port: 8080, protocol: 'TCP' }],
+    ingress_hosts: [{ host: 'dev-order.example.com', path: '/', service_port: 'http', tls: false }],
+    env_vars: [{ name: 'SPRING_PROFILES_ACTIVE', value: 'dev' }],
+    config_files: [{ mount_path: '/app/config/application.yaml', content: 'server.port: 8080' }],
+    writable_dirs: [{ mount_path: '/data', size_limit: '5Gi' }]
+  });
+});
+
+test('真实 API 查询应用构建记录映射 pipeline_id', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url.endsWith('/api/apps/app_1/builds?page=1&page_size=50')) {
+      return jsonResponse({ items: [{ id: 'build_1', application_id: 'app_1', pipeline_id: 'pipeline_1', status: 'succeeded', git_ref: 'main', commit_sha: 'abc123', started_at: '2026-06-11T09:00:00Z', duration_seconds: 120 }] });
+    }
+    return jsonResponse({ error: { code: 'not_found', message: '未处理请求' } }, 404);
+  }));
+
+  const api = await import('./index');
+  await expect(api.listApplicationBuilds('app_1')).resolves.toEqual([
+    expect.objectContaining({ id: 'build_1', pipelineId: 'pipeline_1', status: '成功', ref: 'main', commit: 'abc123' })
   ]);
 });
 
