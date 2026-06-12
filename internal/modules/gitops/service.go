@@ -163,7 +163,7 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	if err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
-	binding, err := s.envs.GetActiveBinding(ctx, env.ID)
+	bindings, err := s.promotionTargetBindings(ctx, env, spec.TargetClusters)
 	if err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
@@ -179,18 +179,6 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	if err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
-	deploymentID, err := s.ids.NewID("deployment")
-	if err != nil {
-		return delivery.GitOpsPromotionResult{}, err
-	}
-	manifestRevisionID, err := s.ids.NewID("manifest_revision")
-	if err != nil {
-		return delivery.GitOpsPromotionResult{}, err
-	}
-	eventID, err := s.ids.NewID("deployment_event")
-	if err != nil {
-		return delivery.GitOpsPromotionResult{}, err
-	}
 	artifacts := normalizePromotionArtifacts(spec)
 	artifact := primaryPromotionArtifact(artifacts)
 	if artifact.URI == "" && strings.TrimSpace(spec.ImageURI) != "" {
@@ -203,49 +191,87 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 		artifacts = []delivery.GitOpsArtifactSpec{artifact}
 	}
 	repository, tag := imageRepositoryTag(artifact)
-	valuesPath := manifestPath(app.Name, env.Name)
-	values, workloadSummary, err := s.renderPromotionValues(ctx, app, env, binding, artifacts, template.Content)
-	if err != nil {
-		return delivery.GitOpsPromotionResult{}, err
+	type targetRecord struct {
+		binding          ClusterBindingRef
+		deployment       Deployment
+		manifestRevision ManifestRevision
+		eventID          shared.ID
+		valuesPath       string
 	}
-	argoPath := argoApplicationPath(app.Name, env.Name)
-	argo := renderArgoApplication(app, env, binding, valuesPath)
-	files := []CommitFile{{Path: valuesPath, Content: values}, {Path: argoPath, Content: argo}}
+	records := make([]targetRecord, 0, len(bindings))
+	files := make([]CommitFile, 0, len(bindings)*2)
 	message := fmt.Sprintf("paas: deploy %s to %s", app.Name, env.Name)
 	now := s.clock.Now()
-	manifestRevision := ManifestRevision{ID: manifestRevisionID, DeploymentID: deploymentID, PromotionID: spec.PromotionID, ApplicationID: app.ID, EnvironmentID: env.ID, TemplateRevisionID: revision.ID, Path: valuesPath, ChangeType: "deploy", CreatedAt: now}
+	changeType := "deploy"
 	if spec.IsRollback {
-		manifestRevision.ChangeType = "rollback"
+		changeType = "rollback"
 	}
-	deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: env.ID, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: artifact.Digest, WorkloadSummary: workloadSummary, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
+	for _, binding := range bindings {
+		deploymentID, err := s.ids.NewID("deployment")
+		if err != nil {
+			return delivery.GitOpsPromotionResult{}, err
+		}
+		manifestRevisionID, err := s.ids.NewID("manifest_revision")
+		if err != nil {
+			return delivery.GitOpsPromotionResult{}, err
+		}
+		eventID, err := s.ids.NewID("deployment_event")
+		if err != nil {
+			return delivery.GitOpsPromotionResult{}, err
+		}
+		valuesPath := manifestPathForBinding(app.Name, env.Name, binding)
+		values, workloadSummary, err := s.renderPromotionValues(ctx, app, env, binding, artifacts, template.Content)
+		if err != nil {
+			return delivery.GitOpsPromotionResult{}, err
+		}
+		argoPath := argoApplicationPathForBinding(app.Name, env.Name, binding)
+		argo := renderArgoApplication(app, env, binding, valuesPath)
+		files = append(files, CommitFile{Path: valuesPath, Content: values}, CommitFile{Path: argoPath, Content: argo})
+		manifestRevision := ManifestRevision{ID: manifestRevisionID, DeploymentID: deploymentID, PromotionID: spec.PromotionID, ApplicationID: app.ID, EnvironmentID: env.ID, TemplateRevisionID: revision.ID, Path: valuesPath, ChangeType: changeType, CreatedAt: now}
+		deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: env.ID, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: artifact.Digest, WorkloadSummary: workloadSummary, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
+		records = append(records, targetRecord{binding: binding, deployment: deployment, manifestRevision: manifestRevision, eventID: eventID, valuesPath: valuesPath})
+	}
+	var manifestRef string
 	if commitDirectly(env.Name) {
 		result, err := s.manifest.CommitFiles(ctx, CommitSpec{Branch: "main", Message: message, Files: files})
 		if err != nil {
-			deployment.ManifestRevisionID = ""
-			_ = s.recordFailedDeployment(ctx, deployment, eventID, "提交部署清单失败："+err.Error())
+			for _, record := range records {
+				record.deployment.ManifestRevisionID = ""
+				_ = s.recordFailedDeployment(ctx, record.deployment, record.eventID, "提交部署清单失败："+err.Error())
+			}
 			return delivery.GitOpsPromotionResult{}, err
 		}
-		manifestRevision.CommitSHA = result.CommitSHA
+		manifestRef = result.CommitSHA
+		for i := range records {
+			records[i].manifestRevision.CommitSHA = result.CommitSHA
+		}
 	} else {
 		mr, err := s.manifest.CreateMergeRequest(ctx, MergeRequestSpec{SourceBranch: "paas/" + string(spec.PromotionID), TargetBranch: "main", Title: message, Files: files})
 		if err != nil {
-			deployment.ManifestRevisionID = ""
-			_ = s.recordFailedDeployment(ctx, deployment, eventID, "创建合并请求失败："+err.Error())
+			for _, record := range records {
+				record.deployment.ManifestRevisionID = ""
+				_ = s.recordFailedDeployment(ctx, record.deployment, record.eventID, "创建合并请求失败："+err.Error())
+			}
 			return delivery.GitOpsPromotionResult{}, err
 		}
-		manifestRevision.MergeRequestID = mr.ID
-		manifestRevision.CommitSHA = mr.CommitSHA
+		manifestRef = firstNonEmpty(mr.CommitSHA, mr.ID)
+		for i := range records {
+			records[i].manifestRevision.MergeRequestID = mr.ID
+			records[i].manifestRevision.CommitSHA = mr.CommitSHA
+		}
 	}
-	if err := s.repo.CreateDeployment(ctx, deployment); err != nil {
-		return delivery.GitOpsPromotionResult{}, err
+	for _, record := range records {
+		if err := s.repo.CreateDeployment(ctx, record.deployment); err != nil {
+			return delivery.GitOpsPromotionResult{}, err
+		}
+		if err := s.repo.CreateManifestRevision(ctx, record.manifestRevision); err != nil {
+			return delivery.GitOpsPromotionResult{}, err
+		}
+		_ = s.repo.CreateDeploymentEvent(ctx, DeploymentEvent{ID: record.eventID, DeploymentID: record.deployment.ID, Status: record.deployment.Status, Message: "清单变更已提交", OccurredAt: now})
+		_ = s.audit.Log(ctx, AuditEvent{TenantID: app.TenantID, ProjectID: app.ProjectID, Action: "manifest_revision.create", ResourceType: "manifest_revision", ResourceID: record.manifestRevision.ID, Result: "succeeded", Summary: "提交部署清单变更", OccurredAt: now})
+		_ = s.audit.Log(ctx, AuditEvent{TenantID: app.TenantID, ProjectID: app.ProjectID, Action: "deployment.create", ResourceType: "deployment", ResourceID: record.deployment.ID, Result: "succeeded", Summary: "创建部署记录", OccurredAt: now})
 	}
-	if err := s.repo.CreateManifestRevision(ctx, manifestRevision); err != nil {
-		return delivery.GitOpsPromotionResult{}, err
-	}
-	_ = s.repo.CreateDeploymentEvent(ctx, DeploymentEvent{ID: eventID, DeploymentID: deployment.ID, Status: deployment.Status, Message: "清单变更已提交", OccurredAt: now})
-	_ = s.audit.Log(ctx, AuditEvent{TenantID: app.TenantID, ProjectID: app.ProjectID, Action: "manifest_revision.create", ResourceType: "manifest_revision", ResourceID: manifestRevision.ID, Result: "succeeded", Summary: "提交部署清单变更", OccurredAt: now})
-	_ = s.audit.Log(ctx, AuditEvent{TenantID: app.TenantID, ProjectID: app.ProjectID, Action: "deployment.create", ResourceType: "deployment", ResourceID: deployment.ID, Result: "succeeded", Summary: "创建部署记录", OccurredAt: now})
-	return delivery.GitOpsPromotionResult{ManifestRevision: firstNonEmpty(manifestRevision.CommitSHA, manifestRevision.MergeRequestID)}, nil
+	return delivery.GitOpsPromotionResult{ManifestRevision: manifestRef}, nil
 }
 
 func (s *Service) UpdateFromAgent(ctx context.Context, report clusteragent.StatusReport) error {
@@ -280,6 +306,31 @@ func (s *Service) UpdateFromAgent(ctx context.Context, report clusteragent.Statu
 		}
 	}
 	return nil
+}
+
+func (s *Service) promotionTargetBindings(ctx context.Context, env EnvironmentRef, targets []delivery.GitOpsPromotionTargetCluster) ([]ClusterBindingRef, error) {
+	if len(targets) == 0 {
+		binding, err := s.envs.GetActiveBinding(ctx, env.ID)
+		if err != nil {
+			return nil, err
+		}
+		return []ClusterBindingRef{binding}, nil
+	}
+	out := make([]ClusterBindingRef, 0, len(targets))
+	for _, target := range targets {
+		if target.ClusterID.IsZero() || strings.TrimSpace(target.Namespace) == "" {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "promotion target cluster is invalid")
+		}
+		out = append(out, ClusterBindingRef{
+			ID:            target.ClusterID,
+			EnvironmentID: env.ID,
+			ClusterID:     target.ClusterID,
+			ClusterName:   strings.TrimSpace(target.ClusterName),
+			Namespace:     strings.TrimSpace(target.Namespace),
+			Active:        true,
+		})
+	}
+	return out, nil
 }
 
 func primaryPromotionArtifact(artifacts []delivery.GitOpsArtifactSpec) delivery.GitOpsArtifactSpec {
@@ -499,7 +550,11 @@ func renderValues(app ApplicationRef, env EnvironmentRef, binding ClusterBinding
 }
 
 func renderArgoApplication(app ApplicationRef, env EnvironmentRef, binding ClusterBindingRef, valuesPath string) string {
-	return fmt.Sprintf("apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s-%s\nspec:\n  destination:\n    namespace: %s\n  source:\n    path: %s\n", app.Name, env.Name, binding.Namespace, valuesPath)
+	name := fmt.Sprintf("%s-%s", app.Name, env.Name)
+	if !binding.ClusterID.IsZero() {
+		name = fmt.Sprintf("%s-%s", name, binding.ClusterID)
+	}
+	return fmt.Sprintf("apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\nspec:\n  destination:\n    namespace: %s\n  source:\n    path: %s\n", name, binding.Namespace, valuesPath)
 }
 
 func indent(value string, prefix string) string {

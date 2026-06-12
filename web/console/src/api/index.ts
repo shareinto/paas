@@ -1,7 +1,7 @@
 import * as mock from './mock';
 import { hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
 
-export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, Environment, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, FreightCreationContext, CreateFreightInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, Environment, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, StageClusterBinding, ClusterOption, AppStage, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -365,6 +365,54 @@ export async function listApplicationEnvironments(applicationId: string) {
   return data.items.map(mapEnvironment);
 }
 
+export async function getDeliveryFlowTemplate(tenantId = 'tenant_1') {
+  if (!hasAPIBaseURL()) return mock.getDeliveryFlowTemplate(tenantId);
+  return mapDeliveryFlowTemplate(await request<any>(`/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template`));
+}
+
+export async function saveDeliveryFlowTemplateStage(tenantId: string, input: Partial<mock.DeliveryFlowTemplateStage> & { stageKey: string }) {
+  if (!hasAPIBaseURL()) return mock.saveDeliveryFlowTemplateStage(tenantId, input);
+  const path = input.id
+    ? `/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template/stages/${encodeURIComponent(input.stageKey)}`
+    : `/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template/stages`;
+  const item = await request<any>(path, { method: input.id ? 'PATCH' : 'POST', body: JSON.stringify(stageTemplatePayload(input)) });
+  return mapDeliveryFlowTemplateStage(item);
+}
+
+export async function disableDeliveryFlowTemplateStage(tenantId: string, stageKey: string) {
+  if (!hasAPIBaseURL()) return mock.disableDeliveryFlowTemplateStage(tenantId, stageKey);
+  const item = await request<any>(`/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template/stages/${encodeURIComponent(stageKey)}`, { method: 'DELETE', body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' } }) });
+  return mapDeliveryFlowTemplateStage(item);
+}
+
+export async function listClusterOptions() {
+  if (!hasAPIBaseURL()) return mock.listClusterOptions();
+  const data = await request<PageResult<any>>('/api/clusters?page=1&page_size=100&actor_id=usr_admin');
+  return data.items.map((item) => ({ id: item.id, name: item.name, region: item.region || '', status: item.status || 'ready' }));
+}
+
+export async function replaceStageClusterBindings(tenantId: string, stageKey: string, clusterIds: string[]) {
+  if (!hasAPIBaseURL()) return mock.replaceStageClusterBindings(tenantId, stageKey, clusterIds);
+  const clusters = await listClusterOptions();
+  const data = await request<{ items: any[] }>(`/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template/stages/${encodeURIComponent(stageKey)}/cluster-bindings`, {
+    method: 'PUT',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, clusters: clusterIds.map((clusterId) => ({ cluster_id: clusterId, cluster_name: clusters.find((cluster) => cluster.id === clusterId)?.name || clusterId })) })
+  });
+  return data.items.map(mapStageClusterBinding);
+}
+
+export async function listStageClusterBindings(tenantId: string, stageKey: string) {
+  if (!hasAPIBaseURL()) return mock.listStageClusterBindings(tenantId, stageKey);
+  const data = await request<{ items: any[] }>(`/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template/stages/${encodeURIComponent(stageKey)}/cluster-bindings`);
+  return data.items.map(mapStageClusterBinding);
+}
+
+export async function listAppStages(applicationId: string) {
+  if (!hasAPIBaseURL()) return mock.listAppStages(applicationId);
+  const data = await request<{ items: any[] }>(`/api/apps/${encodeURIComponent(applicationId)}/stages`);
+  return data.items.map(mapAppStage);
+}
+
 export async function saveWorkloadEnvironmentConfig(applicationId: string, workloadId: string, environmentId: string, input: Partial<mock.WorkloadEnvironmentConfig>) {
   if (!hasAPIBaseURL()) return mock.saveWorkloadEnvironmentConfig(applicationId, workloadId, environmentId, input);
   const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/environment-configs/${encodeURIComponent(environmentId)}`, {
@@ -374,15 +422,47 @@ export async function saveWorkloadEnvironmentConfig(applicationId: string, workl
   return mapWorkloadEnvironmentConfig(item);
 }
 
-export async function createPromotion(input: { freightId: string; targetEnvironmentId: string; message?: string }) {
+export async function createPromotion(input: mock.CreatePromotionInput) {
   if (!hasAPIBaseURL()) return mock.createPromotion(input);
   return request<any>('/api/promotions', {
     method: 'POST',
     body: JSON.stringify({
       actor: { type: 'user', id: 'usr_admin' },
       freight_id: input.freightId,
-      target_environment_id: input.targetEnvironmentId,
+      target_environment_id: input.targetEnvironmentId || '',
+      target_stage_key: input.targetStageKey || '',
+      target_cluster_ids: input.targetClusterIds || [],
+      namespace_override: input.namespaceOverride || '',
       message: input.message || ''
+    })
+  });
+}
+
+export async function completeFreightApproval(freightId: string, input: mock.FreightApprovalInput) {
+  if (!hasAPIBaseURL()) return mock.completeFreightApproval(freightId, input);
+  return request<any>(`/api/freights/${encodeURIComponent(freightId)}/approvals`, {
+    method: 'POST',
+    body: JSON.stringify({
+      actor: { type: 'user', id: 'usr_admin' },
+      target_stage_key: input.targetStageKey,
+      decision: input.decision,
+      comment: input.comment || ''
+    })
+  });
+}
+
+export async function completeStageVerification(applicationId: string, stageKey: string, input: mock.StageVerificationInput) {
+  if (!hasAPIBaseURL()) return mock.completeStageVerification(applicationId, stageKey, input);
+  return request<any>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/verification`, {
+    method: 'POST',
+    body: JSON.stringify({
+      actor: { type: 'user', id: 'usr_admin' },
+      freight_id: input.freightId,
+      status: input.status,
+      comment: input.comment || '',
+      sync_status: input.syncStatus || '',
+      health_status: input.healthStatus || '',
+      agent_status: input.agentStatus || ''
     })
   });
 }
@@ -885,6 +965,78 @@ function mapWorkload(item: any): mock.Workload {
       healthStatus: env.health_status || env.healthStatus || env.health || '未知'
     })),
     updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
+  };
+}
+
+function mapDeliveryFlowTemplate(item: any): mock.DeliveryFlowTemplate {
+  return {
+    id: item.id,
+    tenantId: item.tenant_id || item.tenantId || '',
+    name: item.name || '默认交付流模板',
+    stages: (item.stages || []).map(mapDeliveryFlowTemplateStage),
+    createdAt: item.createdAt || formatTime(item.created_at),
+    updatedAt: item.updatedAt || formatTime(item.updated_at)
+  };
+}
+
+function mapDeliveryFlowTemplateStage(item: any): mock.DeliveryFlowTemplateStage {
+  return {
+    id: item.id,
+    tenantId: item.tenant_id || item.tenantId || '',
+    templateId: item.template_id || item.templateId || '',
+    stageKey: item.stage_key || item.stageKey || '',
+    displayName: item.display_name || item.displayName || item.stage_key || item.stageKey || '',
+    color: item.color || '#1677ff',
+    order: item.order || item.stage_order || 1,
+    status: item.status || 'enabled',
+    requiresApproval: !!(item.requires_approval || item.requiresApproval),
+    requiresVerification: !!(item.requires_verification || item.requiresVerification),
+    approveRoles: item.approve_roles || item.approveRoles || [],
+    verifyRoles: item.verify_roles || item.verifyRoles || []
+  };
+}
+
+function mapStageClusterBinding(item: any): mock.StageClusterBinding {
+  return {
+    id: item.id,
+    tenantId: item.tenant_id || item.tenantId || '',
+    stageKey: item.stage_key || item.stageKey || '',
+    clusterId: item.cluster_id || item.clusterId || '',
+    clusterName: item.cluster_name || item.clusterName || '',
+    status: item.status || 'active'
+  };
+}
+
+function mapAppStage(item: any): mock.AppStage {
+  return {
+    tenantId: item.tenant_id || item.tenantId || '',
+    projectId: item.project_id || item.projectId || '',
+    applicationId: item.application_id || item.applicationId || '',
+    stageKey: item.stage_key || item.stageKey || '',
+    displayName: item.display_name || item.displayName || item.stage_key || item.stageKey || '',
+    color: item.color || '#1677ff',
+    order: item.order || 1,
+    status: item.status || 'enabled',
+    requiresApproval: !!(item.requires_approval || item.requiresApproval),
+    requiresVerification: !!(item.requires_verification || item.requiresVerification),
+    approveRoles: item.approve_roles || item.approveRoles || [],
+    verifyRoles: item.verify_roles || item.verifyRoles || [],
+    clusterPoolSize: item.cluster_pool_size || item.clusterPoolSize || 0
+  };
+}
+
+function stageTemplatePayload(input: Partial<mock.DeliveryFlowTemplateStage> & { stageKey: string }) {
+  return {
+    actor: { type: 'user', id: 'usr_admin' },
+    stage_key: input.stageKey,
+    display_name: input.displayName || input.stageKey,
+    color: input.color || '#1677ff',
+    order: input.order || 1,
+    status: input.status || 'enabled',
+    requires_approval: !!input.requiresApproval,
+    requires_verification: !!input.requiresVerification,
+    approve_roles: input.approveRoles || [],
+    verify_roles: input.verifyRoles || []
   };
 }
 

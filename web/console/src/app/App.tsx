@@ -15,6 +15,7 @@ import { FreightsPage } from '../pages/FreightsPage';
 import { PromotionPage } from '../pages/PromotionPage';
 import { AuditPage } from '../pages/AuditPage';
 import { TemplateConfigPage } from '../pages/TemplateConfigPage';
+import { DeliveryFlowTemplatePage } from '../pages/DeliveryFlowTemplatePage';
 import { JenkinsTemplatesPage } from '../pages/JenkinsTemplatesPage';
 import { TenantsPage } from '../pages/TenantsPage';
 
@@ -43,6 +44,7 @@ export function App() {
         <Route path="promotions" element={<Navigate to="/apps" replace />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="templates" element={<TemplateConfigPage />} />
+        <Route path="delivery-flow-template" element={<DeliveryFlowTemplatePage />} />
         <Route path="tenants" element={<TenantsPage />} />
         <Route path="jenkins-templates" element={<JenkinsTemplatesPage />} />
       </Route>

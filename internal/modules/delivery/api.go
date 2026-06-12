@@ -17,8 +17,17 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/apps/{appId}/freights", h.handleListFreights)
 	mux.HandleFunc("POST /api/apps/{appId}/freights", h.handleCreateFreight)
 	mux.HandleFunc("GET /api/apps/{appId}/freights/creation-context", h.handleFreightCreationContext)
+	mux.HandleFunc("GET /api/apps/{appId}/stages", h.handleListAppStages)
 	mux.HandleFunc("GET /api/freights/{freightId}", h.handleGetFreight)
+	mux.HandleFunc("POST /api/freights/{freightId}/approvals", h.handleCompleteFreightApproval)
+	mux.HandleFunc("GET /api/tenants/{tenantId}/delivery-flow-template", h.handleGetDeliveryFlowTemplate)
+	mux.HandleFunc("POST /api/tenants/{tenantId}/delivery-flow-template/stages", h.handleSaveDeliveryFlowTemplateStage)
+	mux.HandleFunc("PATCH /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}", h.handleSaveDeliveryFlowTemplateStage)
+	mux.HandleFunc("DELETE /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}", h.handleDisableDeliveryFlowTemplateStage)
+	mux.HandleFunc("GET /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}/cluster-bindings", h.handleListStageClusterBindings)
+	mux.HandleFunc("PUT /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}/cluster-bindings", h.handleReplaceStageClusterBindings)
 	mux.HandleFunc("GET /api/apps/{appId}/delivery/stages/{stageId}/eligible-freights", h.handleEligibleFreights)
+	mux.HandleFunc("POST /api/apps/{appId}/stages/{stageKey}/verification", h.handleCompleteStageVerification)
 	mux.HandleFunc("POST /api/promotions", h.handleCreatePromotion)
 	mux.HandleFunc("POST /api/promotions/rollback", h.handleRollbackPromotion)
 	mux.HandleFunc("GET /api/promotions/{promotionId}", h.handleGetPromotion)
@@ -69,6 +78,78 @@ func (h *Handler) handleFreightCreationContext(w http.ResponseWriter, r *http.Re
 	}
 	writeJSON(w, http.StatusOK, context)
 }
+func (h *Handler) handleListAppStages(w http.ResponseWriter, r *http.Request) {
+	stages, err := h.service.ListAppStages(r.Context(), shared.ID(r.PathValue("appId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": stages})
+}
+func (h *Handler) handleGetDeliveryFlowTemplate(w http.ResponseWriter, r *http.Request) {
+	template, err := h.service.GetDeliveryFlowTemplate(r.Context(), shared.ID(r.PathValue("tenantId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, template)
+}
+func (h *Handler) handleSaveDeliveryFlowTemplateStage(w http.ResponseWriter, r *http.Request) {
+	var req SaveDeliveryFlowTemplateStageInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.TenantID = shared.ID(r.PathValue("tenantId"))
+	if stageKey := r.PathValue("stageKey"); stageKey != "" {
+		req.StageKey = stageKey
+	}
+	stage, err := h.service.SaveDeliveryFlowTemplateStage(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if r.Method == http.MethodPost {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, stage)
+}
+func (h *Handler) handleDisableDeliveryFlowTemplateStage(w http.ResponseWriter, r *http.Request) {
+	var req StageTemplateActionInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.TenantID = shared.ID(r.PathValue("tenantId"))
+	req.StageKey = r.PathValue("stageKey")
+	stage, err := h.service.DisableDeliveryFlowTemplateStage(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, stage)
+}
+func (h *Handler) handleReplaceStageClusterBindings(w http.ResponseWriter, r *http.Request) {
+	var req ReplaceStageClusterBindingsInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.TenantID = shared.ID(r.PathValue("tenantId"))
+	req.StageKey = r.PathValue("stageKey")
+	bindings, err := h.service.ReplaceStageClusterBindings(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": bindings})
+}
+func (h *Handler) handleListStageClusterBindings(w http.ResponseWriter, r *http.Request) {
+	bindings, err := h.service.ListStageClusterBindings(r.Context(), shared.ID(r.PathValue("tenantId")), r.PathValue("stageKey"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": bindings})
+}
 func (h *Handler) handleEligibleFreights(w http.ResponseWriter, r *http.Request) {
 	freights, err := h.service.ListEligibleFreights(r.Context(), shared.ID(r.PathValue("appId")), shared.ID(r.PathValue("stageId")))
 	if err != nil {
@@ -85,6 +166,19 @@ func (h *Handler) handleGetFreight(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, freight)
 }
+func (h *Handler) handleCompleteFreightApproval(w http.ResponseWriter, r *http.Request) {
+	var req FreightApprovalInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.FreightID = shared.ID(r.PathValue("freightId"))
+	approval, err := h.service.CompleteFreightApproval(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, approval)
+}
 func (h *Handler) handleCreatePromotion(w http.ResponseWriter, r *http.Request) {
 	var req CreatePromotionInput
 	if !decodeJSON(w, r, &req) {
@@ -96,6 +190,20 @@ func (h *Handler) handleCreatePromotion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusCreated, promotion)
+}
+func (h *Handler) handleCompleteStageVerification(w http.ResponseWriter, r *http.Request) {
+	var req StageVerificationInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.ApplicationID = shared.ID(r.PathValue("appId"))
+	req.StageKey = r.PathValue("stageKey")
+	verification, err := h.service.CompleteStageVerification(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, verification)
 }
 func (h *Handler) handleRollbackPromotion(w http.ResponseWriter, r *http.Request) {
 	var req CreateRollbackPromotionInput

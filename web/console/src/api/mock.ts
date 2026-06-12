@@ -52,8 +52,17 @@ export type WorkloadEnvironmentConfig = {
 export type ReleaseCandidate = { id: string; workloadId: string; version: string; image: string; digest: string; commit: string; buildArtifactId?: string; createdAt: string };
 export type BuildArtifactCandidate = { id: string; workloadId: string; image: string; digest: string; createdAt: string };
 export type StageDefinition = { id: string; name: 'dev' | 'test' | 'staging' | 'prod'; environmentId: string; approvalRequired?: boolean; approvalCount?: number; approverScope?: string; selfApprovalForbidden?: boolean; currentFreightVersion?: string; replicasSummary?: string; domainSummary?: string; configSummary?: string };
+export type DeliveryFlowTemplateStageStatus = 'enabled' | 'disabled';
+export type DeliveryFlowTemplateStage = { id: string; tenantId: string; templateId: string; stageKey: string; displayName: string; color: string; order: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[] };
+export type DeliveryFlowTemplate = { id: string; tenantId: string; name: string; stages: DeliveryFlowTemplateStage[]; createdAt?: string; updatedAt?: string };
+export type StageClusterBinding = { id: string; tenantId: string; stageKey: string; clusterId: string; clusterName: string; status: 'active' | 'disabled' };
+export type ClusterOption = { id: string; name: string; region: string; status: string };
+export type AppStage = { tenantId: string; projectId: string; applicationId: string; stageKey: string; displayName: string; color: string; order: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[]; clusterPoolSize: number };
 export type FreightCreationContext = { enabledWorkloads: Workload[]; latestReleasesByWorkload: Record<string, ReleaseCandidate>; latestArtifactsByWorkload: Record<string, BuildArtifactCandidate>; stageEligibility: Record<string, string[]>; stages: StageDefinition[] };
 export type CreateFreightInput = { name: string; items: { workloadId: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageRef?: string }[] };
+export type CreatePromotionInput = { freightId: string; targetEnvironmentId?: string; targetStageKey?: string; targetClusterIds?: string[]; namespaceOverride?: string; message?: string };
+export type FreightApprovalInput = { targetStageKey: string; decision: 'approved' | 'rejected'; comment?: string };
+export type StageVerificationInput = { freightId: string; status: 'passed' | 'failed'; comment?: string; syncStatus?: string; healthStatus?: string; agentStatus?: string };
 export type SourceRepository = { id: string; projectId: string; projectName: string; name: string; displayName: string; description: string; gitProvider: string; httpUrl: string; sshUrl: string; defaultBranch: string; status: string; associatedApplications: number; updatedAt: string };
 export type RepositoryBranch = { name: string; default: boolean };
 export type RepositoryTreeItem = { name: string; path: string; type: 'tree' | 'blob' };
@@ -115,6 +124,28 @@ const promotionStages: StageDefinition[] = [
   { id: 'stage_test', name: 'test', environmentId: 'env_test', currentFreightVersion: '20260610.1', replicasSummary: '1 / 1 / 1', domainSummary: 'test-order.example.com', configSummary: 'test values' },
   { id: 'stage_staging', name: 'staging', environmentId: 'env_staging', currentFreightVersion: '20260609.1', replicasSummary: '2 / 2 / 1', domainSummary: 'staging-order.example.com', configSummary: 'staging values' },
   { id: 'stage_prod', name: 'prod', environmentId: 'env_prod', approvalRequired: true, approvalCount: 2, approverScope: '生产审批人', selfApprovalForbidden: true, currentFreightVersion: '20260609.1', replicasSummary: '2 / 4 / 2', domainSummary: 'order.example.com', configSummary: 'prod values' }
+];
+let deliveryFlowTemplate: DeliveryFlowTemplate = {
+  id: 'delivery_flow_template_1',
+  tenantId: 'tenant_1',
+  name: '默认交付流模板',
+  stages: [
+    { id: 'stage_template_dev', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'dev', displayName: '开发', color: '#1677ff', order: 1, status: 'enabled', requiresApproval: false, requiresVerification: false, approveRoles: [], verifyRoles: ['developer', 'operator'] },
+    { id: 'stage_template_test', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'test', displayName: '测试', color: '#52c41a', order: 2, status: 'enabled', requiresApproval: false, requiresVerification: true, approveRoles: [], verifyRoles: ['developer', 'operator'] },
+    { id: 'stage_template_staging', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'staging', displayName: '预发', color: '#fa8c16', order: 3, status: 'enabled', requiresApproval: true, requiresVerification: true, approveRoles: ['operator'], verifyRoles: ['operator'] },
+    { id: 'stage_template_prod', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'prod', displayName: '生产', color: '#f5222d', order: 4, status: 'enabled', requiresApproval: true, requiresVerification: true, approveRoles: ['prod_approver'], verifyRoles: ['operator', 'prod_approver'] }
+  ],
+  createdAt: '2026-06-12 09:00',
+  updatedAt: '2026-06-12 09:00'
+};
+const clusterOptions: ClusterOption[] = [
+  { id: 'cluster_shanghai', name: '上海集群', region: 'cn-shanghai', status: 'ready' },
+  { id: 'cluster_beijing', name: '北京集群', region: 'cn-beijing', status: 'ready' },
+  { id: 'cluster_hangzhou', name: '杭州集群', region: 'cn-hangzhou', status: 'ready' }
+];
+let stageClusterBindings: StageClusterBinding[] = [
+  { id: 'stage_binding_dev_shanghai', tenantId: 'tenant_1', stageKey: 'dev', clusterId: 'cluster_shanghai', clusterName: '上海集群', status: 'active' },
+  { id: 'stage_binding_test_beijing', tenantId: 'tenant_1', stageKey: 'test', clusterId: 'cluster_beijing', clusterName: '北京集群', status: 'active' }
 ];
 const environments: Record<string, Environment[]> = {
   app_1: [
@@ -484,10 +515,20 @@ export async function createFreight(_applicationId: string, input: CreateFreight
   return cloneFreight(freight);
 }
 
-export async function createPromotion(input: { freightId: string; targetEnvironmentId: string; message?: string }) {
+export async function createPromotion(input: CreatePromotionInput) {
   await wait();
-  if (!input.freightId || !input.targetEnvironmentId) throw new Error('请选择 Freight 和目标环境');
-  return { id: `promotion_${Date.now()}`, freightId: input.freightId, targetEnvironmentId: input.targetEnvironmentId, status: input.targetEnvironmentId === 'env_prod' ? '待审批' : '发布中', message: input.message || '' };
+  if (!input.freightId || (!input.targetEnvironmentId && !input.targetStageKey)) throw new Error('请选择 Freight 和目标 Stage');
+  const stageKey = input.targetStageKey || promotionStages.find((stage) => stage.environmentId === input.targetEnvironmentId)?.name || '';
+  return {
+    id: `promotion_${Date.now()}`,
+    freightId: input.freightId,
+    targetEnvironmentId: input.targetEnvironmentId,
+    targetStageKey: stageKey,
+    targetClusterIds: input.targetClusterIds || [],
+    namespaceOverride: input.namespaceOverride || '',
+    status: stageKey === 'prod' || input.targetEnvironmentId === 'env_prod' ? '待审批' : '发布中',
+    message: input.message || ''
+  };
 }
 
 export async function listWorkloads(applicationId: string): Promise<Workload[]> {
@@ -554,6 +595,82 @@ export async function listWorkloadEnvironmentConfigs(_applicationId: string, wor
 export async function listApplicationEnvironments(applicationId: string): Promise<Environment[]> {
   await wait();
   return (environments[applicationId] || []).map((item) => ({ ...item }));
+}
+
+export async function getDeliveryFlowTemplate(tenantId = 'tenant_1'): Promise<DeliveryFlowTemplate> {
+  await wait();
+  if (deliveryFlowTemplate.tenantId !== tenantId) throw new Error('交付流模板不存在');
+  return { ...deliveryFlowTemplate, stages: deliveryFlowTemplate.stages.map((stage) => ({ ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] })) };
+}
+
+export async function saveDeliveryFlowTemplateStage(tenantId: string, input: Partial<DeliveryFlowTemplateStage> & { stageKey: string }) {
+  await wait();
+  const stageKey = input.stageKey.trim();
+  const existing = deliveryFlowTemplate.stages.find((stage) => stage.stageKey === stageKey);
+  if (existing) {
+    Object.assign(existing, {
+      displayName: input.displayName || existing.displayName,
+      color: input.color || existing.color,
+      order: input.order || existing.order,
+      status: input.status || existing.status,
+      requiresApproval: !!input.requiresApproval,
+      requiresVerification: !!input.requiresVerification,
+      approveRoles: input.approveRoles || existing.approveRoles,
+      verifyRoles: input.verifyRoles || existing.verifyRoles
+    });
+    return { ...existing, approveRoles: [...existing.approveRoles], verifyRoles: [...existing.verifyRoles] };
+  }
+  const stage: DeliveryFlowTemplateStage = { id: `stage_template_${Date.now()}`, tenantId, templateId: deliveryFlowTemplate.id, stageKey, displayName: input.displayName || stageKey, color: input.color || '#1677ff', order: input.order || deliveryFlowTemplate.stages.length + 1, status: input.status || 'enabled', requiresApproval: !!input.requiresApproval, requiresVerification: !!input.requiresVerification, approveRoles: input.approveRoles || [], verifyRoles: input.verifyRoles || [] };
+  deliveryFlowTemplate.stages.push(stage);
+  return { ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] };
+}
+
+export async function disableDeliveryFlowTemplateStage(tenantId: string, stageKey: string) {
+  await wait();
+  const stage = deliveryFlowTemplate.stages.find((item) => item.tenantId === tenantId && item.stageKey === stageKey);
+  if (!stage) throw new Error('Stage 不存在');
+  stage.status = 'disabled';
+  return { ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] };
+}
+
+export async function listClusterOptions(): Promise<ClusterOption[]> {
+  await wait();
+  return clusterOptions.map((item) => ({ ...item }));
+}
+
+export async function replaceStageClusterBindings(tenantId: string, stageKey: string, clusterIds: string[]) {
+  await wait();
+  stageClusterBindings = stageClusterBindings.filter((item) => !(item.tenantId === tenantId && item.stageKey === stageKey));
+  const next = clusterIds.map((clusterId) => {
+    const cluster = clusterOptions.find((item) => item.id === clusterId);
+    if (!cluster) throw new Error('集群不存在');
+    return { id: `stage_binding_${stageKey}_${clusterId}`, tenantId, stageKey, clusterId, clusterName: cluster.name, status: 'active' as const };
+  });
+  stageClusterBindings.push(...next);
+  return next.map((item) => ({ ...item }));
+}
+
+export async function listStageClusterBindings(tenantId: string, stageKey: string): Promise<StageClusterBinding[]> {
+  await wait();
+  return stageClusterBindings.filter((item) => item.tenantId === tenantId && item.stageKey === stageKey && item.status === 'active').map((item) => ({ ...item }));
+}
+
+export async function listAppStages(applicationId: string): Promise<AppStage[]> {
+  await wait();
+  const app = applications.find((item) => item.id === applicationId) || applications[0];
+  return deliveryFlowTemplate.stages.slice().sort((a, b) => a.order - b.order).map((stage) => ({ tenantId: deliveryFlowTemplate.tenantId, projectId: app.projectId || 'project_1', applicationId, stageKey: stage.stageKey, displayName: stage.displayName, color: stage.color, order: stage.order, status: stage.status, requiresApproval: stage.requiresApproval, requiresVerification: stage.requiresVerification, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles], clusterPoolSize: stageClusterBindings.filter((binding) => binding.tenantId === deliveryFlowTemplate.tenantId && binding.stageKey === stage.stageKey && binding.status === 'active').length }));
+}
+
+export async function completeFreightApproval(freightId: string, input: FreightApprovalInput) {
+  await wait();
+  if (!freightId || !input.targetStageKey) throw new Error('请选择 Freight 和目标 Stage');
+  return { id: `freight_approval_${Date.now()}`, freightId, targetStageKey: input.targetStageKey, status: input.decision, comment: input.comment || '' };
+}
+
+export async function completeStageVerification(applicationId: string, stageKey: string, input: StageVerificationInput) {
+  await wait();
+  if (!applicationId || !stageKey || !input.freightId) throw new Error('请选择 Stage 和 Freight');
+  return { id: `stage_verification_${Date.now()}`, applicationId, stageKey, freightId: input.freightId, status: input.status, comment: input.comment || '', syncStatus: input.syncStatus || 'Synced', healthStatus: input.healthStatus || 'Healthy', agentStatus: input.agentStatus || 'ready' };
 }
 
 export async function saveWorkloadEnvironmentConfig(_applicationId: string, workloadId: string, environmentId: string, input: Partial<WorkloadEnvironmentConfig>) {

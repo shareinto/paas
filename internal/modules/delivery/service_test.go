@@ -251,6 +251,195 @@ func TestBuildSucceededCreatesWorkloadReleaseCandidateOnly(t *testing.T) {
 	}
 }
 
+func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+
+	template, err := env.svc.GetDeliveryFlowTemplate(ctx, "tenant_a")
+	if err != nil {
+		t.Fatalf("GetDeliveryFlowTemplate() error = %v", err)
+	}
+	if template.TenantID != "tenant_a" || len(template.Stages) != 4 {
+		t.Fatalf("unexpected default template: %+v", template)
+	}
+	if template.Stages[0].StageKey != "dev" || template.Stages[3].StageKey != "prod" || !template.Stages[3].RequiresApproval {
+		t.Fatalf("default stages should be dev/test/staging/prod with prod approval, got %+v", template.Stages)
+	}
+
+	updated, err := env.svc.SaveDeliveryFlowTemplateStage(ctx, SaveDeliveryFlowTemplateStageInput{
+		Actor:                actor("usr_admin"),
+		TenantID:             "tenant_a",
+		StageKey:             "test",
+		DisplayName:          "集成测试",
+		Color:                "#13c2c2",
+		Order:                3,
+		Status:               DeliveryFlowTemplateStageEnabled,
+		RequiresApproval:     true,
+		RequiresVerification: true,
+		ApproveRoles:         []string{"tenant_admin", "operator"},
+		VerifyRoles:          []string{"developer", "operator"},
+	})
+	if err != nil {
+		t.Fatalf("SaveDeliveryFlowTemplateStage() error = %v", err)
+	}
+	if updated.StageKey != "test" || updated.DisplayName != "集成测试" || !updated.RequiresApproval || !updated.RequiresVerification {
+		t.Fatalf("stage update should keep key and update editable fields: %+v", updated)
+	}
+	if len(updated.ApproveRoles) != 2 || updated.ApproveRoles[0] != "tenant_admin" || len(updated.VerifyRoles) != 2 {
+		t.Fatalf("roles should be persisted: %+v", updated)
+	}
+
+	if _, err := env.svc.SaveDeliveryFlowTemplateStage(ctx, SaveDeliveryFlowTemplateStageInput{Actor: actor("usr_admin"), TenantID: "tenant_a", StageKey: "qa", NewStageKey: "uat", DisplayName: "验收", Color: "#722ed1", Order: 5}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("changing stage key should fail, got %v", err)
+	}
+
+	disabled, err := env.svc.DisableDeliveryFlowTemplateStage(ctx, StageTemplateActionInput{Actor: actor("usr_admin"), TenantID: "tenant_a", StageKey: "staging"})
+	if err != nil {
+		t.Fatalf("DisableDeliveryFlowTemplateStage() error = %v", err)
+	}
+	if disabled.Status != DeliveryFlowTemplateStageDisabled {
+		t.Fatalf("delete semantic should disable stage, got %+v", disabled)
+	}
+
+	bindings, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		StageKey: "dev",
+		Clusters: []StageClusterBindingInput{
+			{ClusterID: "cluster_shanghai", ClusterName: "上海集群"},
+			{ClusterID: "cluster_beijing", ClusterName: "北京集群"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceStageClusterBindings() error = %v", err)
+	}
+	if len(bindings) != 2 || bindings[0].StageKey != "dev" || bindings[1].Status != StageClusterBindingActive {
+		t.Fatalf("unexpected bindings: %+v", bindings)
+	}
+	prodBindings, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		StageKey: "prod",
+		Clusters: []StageClusterBindingInput{
+			{ClusterID: "cluster_shanghai", ClusterName: "上海集群"},
+		},
+	})
+	if err != nil || len(prodBindings) != 1 {
+		t.Fatalf("same cluster can bind multiple stages, got %+v err=%v", prodBindings, err)
+	}
+
+	appStages, err := env.svc.ListAppStages(ctx, "app_user")
+	if err != nil {
+		t.Fatalf("ListAppStages() error = %v", err)
+	}
+	if len(appStages) != 4 {
+		t.Fatalf("expected all template stages including disabled for history visibility, got %+v", appStages)
+	}
+	if appStages[0].StageKey != "dev" || appStages[0].ClusterPoolSize != 2 {
+		t.Fatalf("app stage should project tenant cluster pool: %+v", appStages[0])
+	}
+}
+
+func TestCreatePromotionWithStageClusterSubset(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	freight := seedFreight(t, env)
+	if _, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		StageKey: "dev",
+		Clusters: []StageClusterBindingInput{
+			{ClusterID: "cluster_shanghai", ClusterName: "上海集群"},
+			{ClusterID: "cluster_beijing", ClusterName: "北京集群"},
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceStageClusterBindings() error = %v", err)
+	}
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("stage promotion without selected clusters should fail, got %v", err)
+	}
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev", TargetClusterIDs: []shared.ID{"cluster_missing"}}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("cluster outside stage pool should fail, got %v", err)
+	}
+	promotion, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{
+		Actor:             actor("usr_dev"),
+		FreightID:         freight.ID,
+		TargetStageKey:    "dev",
+		TargetClusterIDs:  []shared.ID{"cluster_beijing"},
+		NamespaceOverride: "order-dev",
+		Message:           "发布到北京",
+	})
+	if err != nil {
+		t.Fatalf("CreatePromotion() error = %v", err)
+	}
+	if promotion.Status != PromotionManifestUpdated || promotion.TargetStageKey != "dev" || promotion.NamespaceOverride != "order-dev" {
+		t.Fatalf("unexpected promotion: %+v", promotion)
+	}
+	if len(env.gitops.specs) != 1 || len(env.gitops.specs[0].TargetClusters) != 1 {
+		t.Fatalf("gitops spec should include selected cluster subset, got %+v", env.gitops.specs)
+	}
+	target := env.gitops.specs[0].TargetClusters[0]
+	if target.ClusterID != "cluster_beijing" || target.Namespace != "order-dev" || target.ClusterName != "北京集群" {
+		t.Fatalf("unexpected gitops target cluster: %+v", target)
+	}
+}
+
+func TestFreightApprovalAndStageVerification(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	freight := seedFreight(t, env)
+
+	approval, err := env.svc.CompleteFreightApproval(ctx, FreightApprovalInput{
+		Actor:          actor("usr_ops"),
+		FreightID:      freight.ID,
+		TargetStageKey: "prod",
+		Decision:       FreightApprovalApproved,
+		Comment:        "同意发布",
+	})
+	if err != nil {
+		t.Fatalf("CompleteFreightApproval() error = %v", err)
+	}
+	if approval.Status != FreightApprovalApproved || approval.TargetStageKey != "prod" || approval.ApproverID != "usr_ops" {
+		t.Fatalf("unexpected freight approval: %+v", approval)
+	}
+
+	if _, err := env.svc.CompleteStageVerification(ctx, StageVerificationInput{
+		Actor:         actor("usr_ops"),
+		ApplicationID: "app_user",
+		StageKey:      "dev",
+		FreightID:     freight.ID,
+		Status:        StageVerificationPassed,
+		Comment:       "验证通过",
+		SyncStatus:    "OutOfSync",
+		HealthStatus:  "Degraded",
+		AgentStatus:   "ready",
+	}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("verification without deployment record should fail, got %v", err)
+	}
+
+	promotion, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	if err != nil || promotion.Status != PromotionManifestUpdated {
+		t.Fatalf("CreatePromotion() error = %v promotion=%+v", err, promotion)
+	}
+	verification, err := env.svc.CompleteStageVerification(ctx, StageVerificationInput{
+		Actor:         actor("usr_ops"),
+		ApplicationID: "app_user",
+		StageKey:      "dev",
+		FreightID:     freight.ID,
+		Status:        StageVerificationFailed,
+		Comment:       "健康异常，验证不通过",
+		SyncStatus:    "OutOfSync",
+		HealthStatus:  "Degraded",
+		AgentStatus:   "ready",
+	})
+	if err != nil {
+		t.Fatalf("CompleteStageVerification() error = %v", err)
+	}
+	if verification.Status != StageVerificationFailed || verification.HealthStatus != "Degraded" || verification.VerifierID != "usr_ops" {
+		t.Fatalf("verification should persist evidence even when failed: %+v", verification)
+	}
+}
+
 func TestManualFreightValidatesWorkloadCoverageSourcesAndCustomImageRisk(t *testing.T) {
 	env := newDeliveryEnv(t)
 	env.svc.workloads = fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {
@@ -520,6 +709,52 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	if len(contextOut.Stages) != 4 || contextOut.Stages[0].ID.IsZero() || len(firstStageEligible) != 1 || firstStageEligible[0] != freight.ID {
 		t.Fatalf("creation context should include real stages and eligibility, got %+v", contextOut)
 	}
+	templateRec := serveJSON(mux, http.MethodGet, "/api/tenants/tenant_a/delivery-flow-template", nil)
+	assertStatus(t, templateRec, http.StatusOK)
+	var template DeliveryFlowTemplate
+	if err := json.NewDecoder(templateRec.Body).Decode(&template); err != nil {
+		t.Fatalf("decode delivery flow template: %v", err)
+	}
+	if len(template.Stages) != 4 || template.Stages[0].StageKey != "dev" {
+		t.Fatalf("GET template should include default stages, got %+v", template)
+	}
+	stageBody := mustJSON(t, SaveDeliveryFlowTemplateStageInput{Actor: actor("usr_admin"), DisplayName: "开发环境", Color: "#1677ff", Order: 1, Status: DeliveryFlowTemplateStageEnabled, VerifyRoles: []string{"developer"}})
+	stageRec := serveJSON(mux, http.MethodPatch, "/api/tenants/tenant_a/delivery-flow-template/stages/dev", stageBody)
+	assertStatus(t, stageRec, http.StatusOK)
+	bindingBody := mustJSON(t, ReplaceStageClusterBindingsInput{Actor: actor("usr_admin"), Clusters: []StageClusterBindingInput{{ClusterID: "cluster_shanghai", ClusterName: "上海集群"}}})
+	bindingRec := serveJSON(mux, http.MethodPut, "/api/tenants/tenant_a/delivery-flow-template/stages/dev/cluster-bindings", bindingBody)
+	assertStatus(t, bindingRec, http.StatusOK)
+	var bindingOut struct {
+		Items []StageClusterBinding `json:"items"`
+	}
+	if err := json.NewDecoder(bindingRec.Body).Decode(&bindingOut); err != nil {
+		t.Fatalf("decode stage cluster bindings: %v", err)
+	}
+	if len(bindingOut.Items) != 1 || bindingOut.Items[0].ClusterID != "cluster_shanghai" {
+		t.Fatalf("PUT cluster bindings should return bindings, got %+v", bindingOut)
+	}
+	bindingListRec := serveJSON(mux, http.MethodGet, "/api/tenants/tenant_a/delivery-flow-template/stages/dev/cluster-bindings", nil)
+	assertStatus(t, bindingListRec, http.StatusOK)
+	var bindingListOut struct {
+		Items []StageClusterBinding `json:"items"`
+	}
+	if err := json.NewDecoder(bindingListRec.Body).Decode(&bindingListOut); err != nil {
+		t.Fatalf("decode listed stage cluster bindings: %v", err)
+	}
+	if len(bindingListOut.Items) != 1 || bindingListOut.Items[0].ClusterName != "上海集群" {
+		t.Fatalf("GET cluster bindings should return bindings, got %+v", bindingListOut)
+	}
+	appStagesRec := serveJSON(mux, http.MethodGet, "/api/apps/app_user/stages", nil)
+	assertStatus(t, appStagesRec, http.StatusOK)
+	var appStagesOut struct {
+		Items []AppStage `json:"items"`
+	}
+	if err := json.NewDecoder(appStagesRec.Body).Decode(&appStagesOut); err != nil {
+		t.Fatalf("decode app stages: %v", err)
+	}
+	if len(appStagesOut.Items) != 4 || appStagesOut.Items[0].ClusterPoolSize != 1 {
+		t.Fatalf("GET app stages should include stage cluster pool, got %+v", appStagesOut)
+	}
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights?page=1&page_size=5", nil), http.StatusOK)
 	detailRec := serveJSON(mux, http.MethodGet, "/api/freights/"+freight.ID.String(), nil)
 	assertStatus(t, detailRec, http.StatusOK)
@@ -535,6 +770,10 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	assertStatus(t, promoRec, http.StatusCreated)
 	var promotion Promotion
 	_ = json.NewDecoder(promoRec.Body).Decode(&promotion)
+	freightApprovalRec := serveJSON(mux, http.MethodPost, "/api/freights/"+freight.ID.String()+"/approvals", mustJSON(t, FreightApprovalInput{Actor: actor("usr_ops"), TargetStageKey: "dev", Decision: FreightApprovalApproved, Comment: "同意"}))
+	assertStatus(t, freightApprovalRec, http.StatusCreated)
+	verificationRec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/stages/dev/verification", mustJSON(t, StageVerificationInput{Actor: actor("usr_ops"), FreightID: freight.ID, Status: StageVerificationPassed, Comment: "验证通过", SyncStatus: "Synced", HealthStatus: "Healthy", AgentStatus: "ready"}))
+	assertStatus(t, verificationRec, http.StatusCreated)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/promotions/"+promotion.ID.String(), nil), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/app_user/promotions", nil), http.StatusOK)
 	abortBody, _ := json.Marshal(struct {

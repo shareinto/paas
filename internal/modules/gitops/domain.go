@@ -203,8 +203,22 @@ func manifestPath(appName, envName string) string {
 	return fmt.Sprintf("apps/%s/%s/values.yaml", appName, envName)
 }
 
+func manifestPathForBinding(appName, envName string, binding ClusterBindingRef) string {
+	if binding.ClusterID.IsZero() {
+		return manifestPath(appName, envName)
+	}
+	return fmt.Sprintf("apps/%s/%s/%s/values.yaml", appName, envName, binding.ClusterID)
+}
+
 func argoApplicationPath(appName, envName string) string {
 	return fmt.Sprintf("argocd/apps/%s-%s.yaml", appName, envName)
+}
+
+func argoApplicationPathForBinding(appName, envName string, binding ClusterBindingRef) string {
+	if binding.ClusterID.IsZero() {
+		return argoApplicationPath(appName, envName)
+	}
+	return fmt.Sprintf("argocd/apps/%s-%s-%s.yaml", appName, envName, binding.ClusterID)
 }
 
 func commitDirectly(envName string) bool {

@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 
 	"github.com/shareinto/paas/internal/platform/database"
 	"github.com/shareinto/paas/internal/shared"
@@ -177,12 +178,170 @@ func (r *MySQLRepository) ListDeliveryStages(ctx context.Context, flowID shared.
 	return items, nil
 }
 
+func (r *MySQLRepository) CreateDeliveryFlowTemplate(ctx context.Context, template DeliveryFlowTemplate) error {
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO delivery_flow_templates (id, tenant_id, name, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)`,
+		template.ID, template.TenantID, template.Name, template.CreatedAt, template.UpdatedAt)
+	return database.ConflictOrUnavailable(err, "delivery flow template already exists", "create delivery flow template failed")
+}
+
+func (r *MySQLRepository) FindDeliveryFlowTemplateByTenant(ctx context.Context, tenantID shared.ID) (DeliveryFlowTemplate, error) {
+	template, err := scanDeliveryFlowTemplate(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, deliveryFlowTemplateSelect()+" WHERE tenant_id = ?", tenantID))
+	if err != nil {
+		return DeliveryFlowTemplate{}, database.NotFound(err, "delivery flow template not found")
+	}
+	return template, nil
+}
+
+func (r *MySQLRepository) CreateDeliveryFlowTemplateStage(ctx context.Context, stage DeliveryFlowTemplateStage) error {
+	approveRoles, err := json.Marshal(stage.ApproveRoles)
+	if err != nil {
+		return shared.WrapError(shared.CodeInvalidArgument, "approve roles is invalid", err)
+	}
+	verifyRoles, err := json.Marshal(stage.VerifyRoles)
+	if err != nil {
+		return shared.WrapError(shared.CodeInvalidArgument, "verify roles is invalid", err)
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO delivery_flow_template_stages (
+  id, tenant_id, template_id, stage_key, display_name, color, stage_order, status,
+  requires_approval, requires_verification, approve_roles_json, verify_roles_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?)`,
+		stage.ID, stage.TenantID, stage.TemplateID, stage.StageKey, stage.DisplayName, stage.Color, stage.Order,
+		stage.Status, stage.RequiresApproval, stage.RequiresVerification, string(approveRoles), string(verifyRoles),
+		stage.CreatedAt, stage.UpdatedAt)
+	return database.ConflictOrUnavailable(err, "delivery flow template stage already exists", "create delivery flow template stage failed")
+}
+
+func (r *MySQLRepository) UpdateDeliveryFlowTemplateStage(ctx context.Context, stage DeliveryFlowTemplateStage) error {
+	approveRoles, err := json.Marshal(stage.ApproveRoles)
+	if err != nil {
+		return shared.WrapError(shared.CodeInvalidArgument, "approve roles is invalid", err)
+	}
+	verifyRoles, err := json.Marshal(stage.VerifyRoles)
+	if err != nil {
+		return shared.WrapError(shared.CodeInvalidArgument, "verify roles is invalid", err)
+	}
+	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+UPDATE delivery_flow_template_stages
+SET display_name = ?, color = ?, stage_order = ?, status = ?, requires_approval = ?,
+    requires_verification = ?, approve_roles_json = CAST(? AS JSON), verify_roles_json = CAST(? AS JSON), updated_at = ?
+WHERE tenant_id = ? AND stage_key = ?`,
+		stage.DisplayName, stage.Color, stage.Order, stage.Status, stage.RequiresApproval, stage.RequiresVerification,
+		string(approveRoles), string(verifyRoles), stage.UpdatedAt, stage.TenantID, stage.StageKey)
+	if err != nil {
+		return database.WrapUnavailable(err, "update delivery flow template stage failed")
+	}
+	return database.RequireAffected(result, "delivery flow template stage not found")
+}
+
+func (r *MySQLRepository) FindDeliveryFlowTemplateStage(ctx context.Context, tenantID shared.ID, stageKey string) (DeliveryFlowTemplateStage, error) {
+	stage, err := scanDeliveryFlowTemplateStage(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, deliveryFlowTemplateStageSelect()+" WHERE tenant_id = ? AND stage_key = ?", tenantID, stageKey))
+	if err != nil {
+		return DeliveryFlowTemplateStage{}, database.NotFound(err, "delivery flow template stage not found")
+	}
+	return stage, nil
+}
+
+func (r *MySQLRepository) ListDeliveryFlowTemplateStages(ctx context.Context, templateID shared.ID) ([]DeliveryFlowTemplateStage, error) {
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, deliveryFlowTemplateStageSelect()+" WHERE template_id = ? ORDER BY stage_order ASC, created_at ASC", templateID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list delivery flow template stages failed")
+	}
+	defer rows.Close()
+	items := []DeliveryFlowTemplateStage{}
+	for rows.Next() {
+		stage, err := scanDeliveryFlowTemplateStage(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, stage)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, database.WrapUnavailable(err, "list delivery flow template stages failed")
+	}
+	return items, nil
+}
+
+func (r *MySQLRepository) ReplaceStageClusterBindings(ctx context.Context, tenantID shared.ID, stageKey string, bindings []StageClusterBinding) error {
+	exec := database.ExecutorFromContext(ctx, r.db)
+	if _, err := exec.ExecContext(ctx, "DELETE FROM stage_cluster_bindings WHERE tenant_id = ? AND stage_key = ?", tenantID, stageKey); err != nil {
+		return database.WrapUnavailable(err, "replace stage cluster bindings failed")
+	}
+	for _, binding := range bindings {
+		_, err := exec.ExecContext(ctx, `
+INSERT INTO stage_cluster_bindings (id, tenant_id, stage_key, cluster_id, cluster_name, status, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			binding.ID, binding.TenantID, binding.StageKey, binding.ClusterID, binding.ClusterName, binding.Status, binding.CreatedAt, binding.UpdatedAt)
+		if err != nil {
+			return database.ConflictOrUnavailable(err, "stage cluster binding already exists", "replace stage cluster bindings failed")
+		}
+	}
+	return nil
+}
+
+func (r *MySQLRepository) ListStageClusterBindings(ctx context.Context, tenantID shared.ID, stageKey string) ([]StageClusterBinding, error) {
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, stageClusterBindingSelect()+" WHERE tenant_id = ? AND stage_key = ? ORDER BY cluster_name ASC, cluster_id ASC", tenantID, stageKey)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list stage cluster bindings failed")
+	}
+	defer rows.Close()
+	items := []StageClusterBinding{}
+	for rows.Next() {
+		binding, err := scanStageClusterBinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, database.WrapUnavailable(err, "list stage cluster bindings failed")
+	}
+	return items, nil
+}
+
+func (r *MySQLRepository) CreateFreightApproval(ctx context.Context, approval FreightApproval) error {
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO freight_approvals (id, tenant_id, project_id, application_id, freight_id, target_stage_key, approver_id, status, comment, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		approval.ID, approval.TenantID, approval.ProjectID, approval.ApplicationID, approval.FreightID, approval.TargetStageKey,
+		approval.ApproverID, approval.Status, approval.Comment, approval.CreatedAt, approval.UpdatedAt)
+	return database.ConflictOrUnavailable(err, "freight approval already exists", "create freight approval failed")
+}
+
+func (r *MySQLRepository) FindFreightApproval(ctx context.Context, freightID shared.ID, targetStageKey string) (FreightApproval, error) {
+	approval, err := scanFreightApproval(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, freightApprovalSelect()+" WHERE freight_id = ? AND target_stage_key = ?", freightID, targetStageKey))
+	if err != nil {
+		return FreightApproval{}, database.NotFound(err, "freight approval not found")
+	}
+	return approval, nil
+}
+
+func (r *MySQLRepository) CreateStageVerification(ctx context.Context, verification StageVerification) error {
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO stage_verifications (id, tenant_id, project_id, application_id, stage_key, freight_id, verifier_id, status, comment, sync_status, health_status, agent_status, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		verification.ID, verification.TenantID, verification.ProjectID, verification.ApplicationID, verification.StageKey, verification.FreightID,
+		verification.VerifierID, verification.Status, verification.Comment, verification.SyncStatus, verification.HealthStatus, verification.AgentStatus,
+		verification.CreatedAt, verification.UpdatedAt)
+	return database.ConflictOrUnavailable(err, "stage verification already exists", "create stage verification failed")
+}
+
+func (r *MySQLRepository) FindStageVerification(ctx context.Context, applicationID shared.ID, stageKey string, freightID shared.ID) (StageVerification, error) {
+	verification, err := scanStageVerification(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, stageVerificationSelect()+" WHERE application_id = ? AND stage_key = ? AND freight_id = ?", applicationID, stageKey, freightID))
+	if err != nil {
+		return StageVerification{}, database.NotFound(err, "stage verification not found")
+	}
+	return verification, nil
+}
+
 func (r *MySQLRepository) CreatePromotion(ctx context.Context, promotion Promotion) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO promotions (id, tenant_id, project_id, application_id, freight_id, target_stage_id, target_environment_id, status, is_rollback, rollback_from_freight_id, created_by, approved_by, message, manifest_revision, created_at, updated_at, completed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO promotions (id, tenant_id, project_id, application_id, freight_id, target_stage_id, target_environment_id, target_stage_key, namespace_override, status, is_rollback, rollback_from_freight_id, created_by, approved_by, message, manifest_revision, created_at, updated_at, completed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		promotion.ID, promotion.TenantID, promotion.ProjectID, promotion.ApplicationID, promotion.FreightID,
-		promotion.TargetStageID, promotion.TargetEnvironmentID, promotion.Status, promotion.IsRollback,
+		promotion.TargetStageID, promotion.TargetEnvironmentID, promotion.TargetStageKey, promotion.NamespaceOverride, promotion.Status, promotion.IsRollback,
 		promotion.RollbackFromFreightID, promotion.CreatedBy, promotion.ApprovedBy, promotion.Message,
 		promotion.ManifestRevision, promotion.CreatedAt, promotion.UpdatedAt, promotion.CompletedAt)
 	return database.ConflictOrUnavailable(err, "promotion already exists", "create promotion failed")
@@ -199,10 +358,11 @@ func (r *MySQLRepository) UpdatePromotion(ctx context.Context, promotion Promoti
 	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE promotions
 SET target_stage_id = ?, target_environment_id = ?, status = ?, is_rollback = ?,
-    rollback_from_freight_id = ?, created_by = ?, approved_by = ?, message = ?,
+    target_stage_key = ?, namespace_override = ?, rollback_from_freight_id = ?, created_by = ?, approved_by = ?, message = ?,
     manifest_revision = ?, updated_at = ?, completed_at = ?
 WHERE id = ?`,
 		promotion.TargetStageID, promotion.TargetEnvironmentID, promotion.Status, promotion.IsRollback,
+		promotion.TargetStageKey, promotion.NamespaceOverride,
 		promotion.RollbackFromFreightID, promotion.CreatedBy, promotion.ApprovedBy, promotion.Message,
 		promotion.ManifestRevision, promotion.UpdatedAt, promotion.CompletedAt, promotion.ID)
 	if err != nil {
@@ -281,8 +441,28 @@ func deliveryStageSelect() string {
 	return "SELECT id, tenant_id, project_id, application_id, delivery_flow_id, environment_id, name, stage_order, requires_approval, created_at, updated_at FROM delivery_stages"
 }
 
+func deliveryFlowTemplateSelect() string {
+	return "SELECT id, tenant_id, name, created_at, updated_at FROM delivery_flow_templates"
+}
+
+func deliveryFlowTemplateStageSelect() string {
+	return "SELECT id, tenant_id, template_id, stage_key, display_name, color, stage_order, status, requires_approval, requires_verification, approve_roles_json, verify_roles_json, created_at, updated_at FROM delivery_flow_template_stages"
+}
+
+func stageClusterBindingSelect() string {
+	return "SELECT id, tenant_id, stage_key, cluster_id, cluster_name, status, created_at, updated_at FROM stage_cluster_bindings"
+}
+
+func freightApprovalSelect() string {
+	return "SELECT id, tenant_id, project_id, application_id, freight_id, target_stage_key, approver_id, status, comment, created_at, updated_at FROM freight_approvals"
+}
+
+func stageVerificationSelect() string {
+	return "SELECT id, tenant_id, project_id, application_id, stage_key, freight_id, verifier_id, status, comment, sync_status, health_status, agent_status, created_at, updated_at FROM stage_verifications"
+}
+
 func promotionSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, freight_id, target_stage_id, target_environment_id, status, is_rollback, rollback_from_freight_id, created_by, approved_by, message, manifest_revision, created_at, updated_at, completed_at FROM promotions"
+	return "SELECT id, tenant_id, project_id, application_id, freight_id, target_stage_id, target_environment_id, target_stage_key, namespace_override, status, is_rollback, rollback_from_freight_id, created_by, approved_by, message, manifest_revision, created_at, updated_at, completed_at FROM promotions"
 }
 
 func scanRelease(scanner deliveryScanner) (Release, error) {
@@ -315,9 +495,53 @@ func scanDeliveryStage(scanner deliveryScanner) (DeliveryStage, error) {
 	return v, err
 }
 
+func scanDeliveryFlowTemplate(scanner deliveryScanner) (DeliveryFlowTemplate, error) {
+	var v DeliveryFlowTemplate
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.Name, &v.CreatedAt, &v.UpdatedAt)
+	return v, err
+}
+
+func scanDeliveryFlowTemplateStage(scanner deliveryScanner) (DeliveryFlowTemplateStage, error) {
+	var v DeliveryFlowTemplateStage
+	var approveRoles, verifyRoles []byte
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.TemplateID, &v.StageKey, &v.DisplayName, &v.Color, &v.Order, &v.Status, &v.RequiresApproval, &v.RequiresVerification, &approveRoles, &verifyRoles, &v.CreatedAt, &v.UpdatedAt)
+	if err != nil {
+		return v, err
+	}
+	if len(approveRoles) > 0 {
+		if err := json.Unmarshal(approveRoles, &v.ApproveRoles); err != nil {
+			return v, shared.WrapError(shared.CodeUnavailable, "scan approve roles failed", err)
+		}
+	}
+	if len(verifyRoles) > 0 {
+		if err := json.Unmarshal(verifyRoles, &v.VerifyRoles); err != nil {
+			return v, shared.WrapError(shared.CodeUnavailable, "scan verify roles failed", err)
+		}
+	}
+	return v, nil
+}
+
+func scanStageClusterBinding(scanner deliveryScanner) (StageClusterBinding, error) {
+	var v StageClusterBinding
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.StageKey, &v.ClusterID, &v.ClusterName, &v.Status, &v.CreatedAt, &v.UpdatedAt)
+	return v, err
+}
+
+func scanFreightApproval(scanner deliveryScanner) (FreightApproval, error) {
+	var v FreightApproval
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.FreightID, &v.TargetStageKey, &v.ApproverID, &v.Status, &v.Comment, &v.CreatedAt, &v.UpdatedAt)
+	return v, err
+}
+
+func scanStageVerification(scanner deliveryScanner) (StageVerification, error) {
+	var v StageVerification
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.StageKey, &v.FreightID, &v.VerifierID, &v.Status, &v.Comment, &v.SyncStatus, &v.HealthStatus, &v.AgentStatus, &v.CreatedAt, &v.UpdatedAt)
+	return v, err
+}
+
 func scanPromotion(scanner deliveryScanner) (Promotion, error) {
 	var v Promotion
-	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.FreightID, &v.TargetStageID, &v.TargetEnvironmentID, &v.Status, &v.IsRollback, &v.RollbackFromFreightID, &v.CreatedBy, &v.ApprovedBy, &v.Message, &v.ManifestRevision, &v.CreatedAt, &v.UpdatedAt, &v.CompletedAt)
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.FreightID, &v.TargetStageID, &v.TargetEnvironmentID, &v.TargetStageKey, &v.NamespaceOverride, &v.Status, &v.IsRollback, &v.RollbackFromFreightID, &v.CreatedBy, &v.ApprovedBy, &v.Message, &v.ManifestRevision, &v.CreatedAt, &v.UpdatedAt, &v.CompletedAt)
 	return v, err
 }
 

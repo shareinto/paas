@@ -105,6 +105,8 @@ CREATE TABLE promotions (
   freight_id VARCHAR(64) NOT NULL,
   target_stage_id VARCHAR(64) NOT NULL,
   target_environment_id VARCHAR(64) NOT NULL,
+  target_stage_key VARCHAR(64) NOT NULL DEFAULT '',
+  namespace_override VARCHAR(255) NOT NULL DEFAULT '',
   status VARCHAR(64) NOT NULL,
   is_rollback TINYINT(1) NOT NULL DEFAULT 0,
   rollback_from_freight_id VARCHAR(64) NOT NULL DEFAULT '',
@@ -228,4 +230,115 @@ EXECUTE freight_items_tag_stmt;
 DEALLOCATE PREPARE freight_items_tag_stmt;
 `,
 	Down: `SELECT 1;`,
+}, {
+	Version: 202606120900,
+	Name:    "promotion_stage_cluster_target_columns",
+	Up: `
+SET @promotions_stage_key_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'promotions' AND column_name = 'target_stage_key'
+);
+SET @promotions_stage_key_ddl := IF(@promotions_stage_key_missing, 'ALTER TABLE promotions ADD COLUMN target_stage_key VARCHAR(64) NOT NULL DEFAULT '''' AFTER target_environment_id', 'SELECT 1');
+PREPARE promotions_stage_key_stmt FROM @promotions_stage_key_ddl;
+EXECUTE promotions_stage_key_stmt;
+DEALLOCATE PREPARE promotions_stage_key_stmt;
+
+SET @promotions_namespace_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'promotions' AND column_name = 'namespace_override'
+);
+SET @promotions_namespace_ddl := IF(@promotions_namespace_missing, 'ALTER TABLE promotions ADD COLUMN namespace_override VARCHAR(255) NOT NULL DEFAULT '''' AFTER target_stage_key', 'SELECT 1');
+PREPARE promotions_namespace_stmt FROM @promotions_namespace_ddl;
+EXECUTE promotions_namespace_stmt;
+DEALLOCATE PREPARE promotions_namespace_stmt;
+`,
+	Down: `SELECT 1;`,
+}, {
+	Version: 202606120901,
+	Name:    "stage_delivery_flow_templates",
+	Up: `
+CREATE TABLE delivery_flow_templates (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  name VARCHAR(128) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_delivery_flow_templates_tenant (tenant_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE delivery_flow_template_stages (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  template_id VARCHAR(64) NOT NULL,
+  stage_key VARCHAR(64) NOT NULL,
+  display_name VARCHAR(128) NOT NULL,
+  color VARCHAR(32) NOT NULL,
+  stage_order INT NOT NULL,
+  status VARCHAR(64) NOT NULL,
+  requires_approval TINYINT(1) NOT NULL DEFAULT 0,
+  requires_verification TINYINT(1) NOT NULL DEFAULT 0,
+  approve_roles_json JSON NOT NULL,
+  verify_roles_json JSON NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_delivery_flow_template_stages_key (tenant_id, stage_key),
+  KEY idx_delivery_flow_template_stages_template (template_id),
+  CONSTRAINT fk_delivery_flow_template_stages_template FOREIGN KEY (template_id) REFERENCES delivery_flow_templates(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE stage_cluster_bindings (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  stage_key VARCHAR(64) NOT NULL,
+  cluster_id VARCHAR(64) NOT NULL,
+  cluster_name VARCHAR(128) NOT NULL,
+  status VARCHAR(64) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_stage_cluster_bindings_cluster (tenant_id, stage_key, cluster_id),
+  KEY idx_stage_cluster_bindings_stage (tenant_id, stage_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE freight_approvals (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  freight_id VARCHAR(64) NOT NULL,
+  target_stage_key VARCHAR(64) NOT NULL,
+  approver_id VARCHAR(64) NOT NULL,
+  status VARCHAR(64) NOT NULL,
+  comment VARCHAR(1024) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_freight_approvals_target (freight_id, target_stage_key),
+  KEY idx_freight_approvals_application (application_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE stage_verifications (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  stage_key VARCHAR(64) NOT NULL,
+  freight_id VARCHAR(64) NOT NULL,
+  verifier_id VARCHAR(64) NOT NULL,
+  status VARCHAR(64) NOT NULL,
+  comment VARCHAR(1024) NOT NULL DEFAULT '',
+  sync_status VARCHAR(64) NOT NULL DEFAULT '',
+  health_status VARCHAR(64) NOT NULL DEFAULT '',
+  agent_status VARCHAR(64) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_stage_verifications_target (application_id, stage_key, freight_id),
+  KEY idx_stage_verifications_application (application_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+	Down: `
+DROP TABLE IF EXISTS stage_verifications;
+DROP TABLE IF EXISTS freight_approvals;
+DROP TABLE IF EXISTS stage_cluster_bindings;
+DROP TABLE IF EXISTS delivery_flow_template_stages;
+DROP TABLE IF EXISTS delivery_flow_templates;
+`,
 }}

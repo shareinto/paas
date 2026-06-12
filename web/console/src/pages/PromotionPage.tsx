@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, Select, Space, Spin, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Checkbox, Descriptions, Drawer, Empty, Form, Input, Modal, Radio, Select, Space, Spin, Table, Tag, Typography, message } from 'antd';
 import { useParams } from 'react-router-dom';
-import { createFreight, createPromotion, getFreight, getFreightCreationContext, listEligibleFreights, listFreights, type CreateFreightInput, type Freight, type FreightItem, type StageDefinition, type Workload } from '../api';
+import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, getApplication, getFreight, getFreightCreationContext, listAppStages, listClusterOptions, listEligibleFreights, listFreights, listStageClusterBindings, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type StageDefinition, type Workload } from '../api';
 import { PageHeader } from '../components/PageHeader';
 
 const DEFAULT_APPLICATION_ID = 'app_1';
@@ -16,6 +16,13 @@ type FreightDraftItem = {
 };
 
 type StageView = StageDefinition & {
+  stageKey?: string;
+  displayName?: string;
+  color?: string;
+  tenantId?: string;
+  clusterPoolSize?: number;
+  requiresVerification?: boolean;
+  verifyRoles?: string[];
   currentFreightVersion?: string;
   replicasSummary?: string;
   domainSummary?: string;
@@ -32,6 +39,14 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const queryClient = useQueryClient();
   const [activeStage, setActiveStage] = useState<StageView | null>(null);
   const [selectedFreight, setSelectedFreight] = useState<Freight | null>(null);
+  const [publishModalOpen, setPublishModalOpen] = useState(false);
+  const [approvalFreight, setApprovalFreight] = useState<Freight | null>(null);
+  const [approvalTargetStage, setApprovalTargetStage] = useState('prod');
+  const [approvalComment, setApprovalComment] = useState('');
+  const [verificationStage, setVerificationStage] = useState<StageView | null>(null);
+  const [verificationComment, setVerificationComment] = useState('');
+  const [targetClusterIds, setTargetClusterIds] = useState<string[]>([]);
+  const [namespaceOverride, setNamespaceOverride] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [draftName, setDraftName] = useState('');
   const [draftItems, setDraftItems] = useState<Record<string, FreightDraftItem>>({});
@@ -39,19 +54,47 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const [publishResult, setPublishResult] = useState('');
 
   const freightsQuery = useQuery({ queryKey: ['freights', applicationId], queryFn: () => listFreights(applicationId) });
+  const applicationQuery = useQuery({ queryKey: ['application', applicationId], queryFn: () => getApplication(applicationId) });
   const contextQuery = useQuery({ queryKey: ['freight-creation-context', applicationId], queryFn: () => getFreightCreationContext(applicationId) });
+  const appStagesQuery = useQuery({ queryKey: ['app-stages', applicationId], queryFn: () => listAppStages(applicationId) });
+  const clustersQuery = useQuery({ queryKey: ['cluster-options'], queryFn: listClusterOptions });
+  const stageBindingsQuery = useQuery({
+    queryKey: ['stage-cluster-bindings', activeStage?.tenantId, activeStage?.name],
+    queryFn: () => activeStage?.tenantId ? listStageClusterBindings(activeStage.tenantId, activeStage.name) : Promise.resolve([]),
+    enabled: publishModalOpen && !!activeStage?.tenantId && !!activeStage?.name
+  });
   const eligibleMutation = useMutation({ mutationFn: (stageId: string) => listEligibleFreights(applicationId, stageId) });
   const freightDetailMutation = useMutation({
     mutationFn: (freightId: string) => getFreight(freightId),
     onSuccess: (freight) => setSelectedFreight(freight)
   });
   const createPromotionMutation = useMutation({
-    mutationFn: (input: { freightId: string; targetEnvironmentId: string }) => createPromotion(input),
+    mutationFn: (input: { freightId: string; targetEnvironmentId?: string; targetStageKey?: string; targetClusterIds?: string[]; namespaceOverride?: string }) => createPromotion(input),
     onSuccess: () => {
       if (activeStage && selectedFreight) {
         setStageFreights((current) => ({ ...current, [activeStage.id]: selectedFreight.version }));
         setPublishResult(`${selectedFreight.version} 已提交到 ${activeStage.name}，等待同步结果。`);
+        setPublishModalOpen(false);
       }
+    }
+  });
+  const approvalMutation = useMutation({
+    mutationFn: (decision: 'approved' | 'rejected') => approvalFreight ? completeFreightApproval(approvalFreight.id, { targetStageKey: approvalTargetStage, decision, comment: approvalComment }) : Promise.resolve(null),
+    onSuccess: () => {
+      message.success('Freight 审批已提交');
+      setApprovalFreight(null);
+      setApprovalComment('');
+    }
+  });
+  const verificationMutation = useMutation({
+    mutationFn: (status: 'passed' | 'failed') => {
+      const freight = currentVerificationFreight(verificationStage, sortedFreights);
+      return verificationStage && freight ? completeStageVerification(applicationId, verificationStage.name, { freightId: freight.id, status, comment: verificationComment, syncStatus: 'Synced', healthStatus: 'Healthy', agentStatus: 'ready' }) : Promise.resolve(null);
+    },
+    onSuccess: () => {
+      message.success('人工验证已提交');
+      setVerificationStage(null);
+      setVerificationComment('');
     }
   });
   const createFreightMutation = useMutation({
@@ -66,20 +109,42 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   });
 
   const sortedFreights = useMemo(() => [...(freightsQuery.data || [])].sort((a, b) => timeValue(a.createdAt) - timeValue(b.createdAt)), [freightsQuery.data]);
+  const appStageByKey = useMemo(() => Object.fromEntries((appStagesQuery.data || []).map((stage: AppStage) => [stage.stageKey, stage])), [appStagesQuery.data]);
   const enabledWorkloads = contextQuery.data?.enabledWorkloads || [];
   const workloadNameById = useMemo(() => Object.fromEntries(enabledWorkloads.map((workload) => [workload.id, workload.displayName || workload.name])), [enabledWorkloads]);
-  const stages = useMemo(() => (contextQuery.data?.stages || []).map((stage) => withStageDefaults(stage as StageView, sortedFreights, stageFreights)), [contextQuery.data?.stages, sortedFreights, stageFreights]);
+  const stages = useMemo(() => (contextQuery.data?.stages || []).map((stage) => {
+    const appStage = appStageByKey[stage.name] as AppStage | undefined;
+    return withStageDefaults({ ...(stage as StageView), ...(appStage || {}), name: stage.name, stageKey: stage.name }, sortedFreights, stageFreights);
+  }), [appStageByKey, contextQuery.data?.stages, sortedFreights, stageFreights]);
   const eligibleIds = useMemo(() => {
     if (activeStage && contextQuery.data?.stageEligibility[activeStage.id]) return new Set(contextQuery.data.stageEligibility[activeStage.id]);
     return new Set((eligibleMutation.data || []).map((item) => item.id));
   }, [activeStage, contextQuery.data, eligibleMutation.data]);
+  const eligibleFreights = useMemo(() => activeStage ? sortedFreights.filter((freight) => eligibleIds.has(freight.id)) : [], [activeStage, eligibleIds, sortedFreights]);
+  const defaultNamespace = applicationQuery.data?.project || applicationQuery.data?.projectId || 'default';
+  const availableTargetClusters = useMemo(() => {
+    const bindings = stageBindingsQuery.data || [];
+    if (bindings.length > 0) return bindings.map((binding) => ({ id: binding.clusterId, name: binding.clusterName }));
+    return (clustersQuery.data || []).slice(0, activeStage?.clusterPoolSize || undefined).map((cluster) => ({ id: cluster.id, name: cluster.name }));
+  }, [activeStage?.clusterPoolSize, clustersQuery.data, stageBindingsQuery.data]);
   const selectedCount = enabledWorkloads.filter((workload) => draftItemComplete(draftItems[workload.id])).length;
   const submitDisabled = enabledWorkloads.length === 0 || selectedCount < enabledWorkloads.length;
+
+  useEffect(() => {
+    if (!publishModalOpen) return;
+    setNamespaceOverride(defaultNamespace);
+  }, [defaultNamespace, publishModalOpen]);
+
+  useEffect(() => {
+    if (!publishModalOpen) return;
+    setTargetClusterIds(availableTargetClusters.map((cluster) => cluster.id));
+  }, [availableTargetClusters, publishModalOpen]);
 
   const handleStagePublish = (stage: StageView) => {
     setActiveStage(stage);
     setSelectedFreight(null);
     setPublishResult('');
+    setPublishModalOpen(true);
     eligibleMutation.mutate(stage.id);
   };
 
@@ -95,6 +160,23 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
       return;
     }
     freightDetailMutation.mutate(freight.id);
+  };
+
+  const handleOpenApproval = (freight: Freight) => {
+    setApprovalFreight(freight);
+    setApprovalTargetStage(activeStage?.name || 'prod');
+    setApprovalComment('');
+  };
+
+  const handleConfirmPromotion = () => {
+    if (!selectedFreight || !activeStage) return;
+    createPromotionMutation.mutate({
+      freightId: selectedFreight.id,
+      targetEnvironmentId: activeStage.environmentId,
+      targetStageKey: activeStage.name,
+      targetClusterIds: targetClusterIds,
+      namespaceOverride: namespaceOverride.trim() || defaultNamespace
+    });
   };
 
   const updateDraftItem = (workloadId: string, patch: Partial<FreightDraftItem>) => {
@@ -148,7 +230,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
                   const eligible = !!activeStage && eligibleIds.has(freight.id);
                   const disabled = !!activeStage && !eligible;
                   return (
-                    <button key={freight.id} type="button" className={`freight-timeline-card ${eligible ? 'eligible' : ''} ${disabled ? 'disabled' : ''}`} data-testid="freight-card" data-eligible={activeStage ? String(eligible) : undefined} disabled={disabled || !activeStage} aria-label={`选择 Freight ${freight.version}`} onClick={() => handleSelectFreight(freight)}>
+                    <article key={freight.id} className={`freight-timeline-card ${eligible ? 'eligible' : ''} ${disabled ? 'disabled' : ''}`} data-testid="freight-card">
                       <div className="freight-card-head">
                         <Typography.Text strong data-testid="freight-name">{freight.version}</Typography.Text>
                         <Tag color={eligible ? 'blue' : 'default'}>{eligible ? '可发布' : '待选择 Stage'}</Tag>
@@ -157,7 +239,11 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
                       <div className="freight-card-items">
                         {(freight.items || []).map((item) => <div key={item.id} className="freight-card-item"><span>{item.workloadDisplayName}</span><Typography.Text ellipsis>{item.image}</Typography.Text></div>)}
                       </div>
-                    </button>
+                      <Space className="freight-card-actions">
+                        <Button aria-label={`选择 Freight ${freight.version}`} data-eligible={activeStage ? String(eligible) : undefined} disabled={disabled || !activeStage} onClick={() => handleSelectFreight(freight)}>选择</Button>
+                        <Button aria-label="审批" onClick={() => handleOpenApproval(freight)}>审批</Button>
+                      </Space>
+                    </article>
                   );
                 })}
               </div>
@@ -169,10 +255,15 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
               <Card key={stage.id} className={activeStage?.id === stage.id ? 'stage-card active' : 'stage-card'} aria-label={`${stage.name} Stage`}>
                 <div className="stage-card-head">
                   <Space direction="vertical" size={2}><Typography.Text strong>{stage.name}</Typography.Text><Typography.Text type="secondary">{stage.name === 'prod' ? '生产环境' : '标准环境'}</Typography.Text></Space>
-                  <Button aria-label="发布" type={activeStage?.id === stage.id ? 'primary' : 'default'} onClick={() => handleStagePublish(stage)} loading={activeStage?.id === stage.id && eligibleMutation.isPending}>发布</Button>
+                  <Space>
+                    <Button aria-label="验证" onClick={() => setVerificationStage(stage)}>验证</Button>
+                    <Button aria-label="发布" type={activeStage?.id === stage.id ? 'primary' : 'default'} onClick={() => handleStagePublish(stage)} loading={activeStage?.id === stage.id && eligibleMutation.isPending}>发布</Button>
+                  </Space>
                 </div>
                 <Descriptions size="small" column={1} items={[
+                  { key: 'clusterPool', label: '集群池', children: `${stage.clusterPoolSize || 0} 个` },
                   { key: 'freight', label: '当前 Freight', children: stage.currentFreightVersion || '-' },
+                  { key: 'verification', label: '验证状态', children: stage.requiresVerification ? '待验证' : '无需验证' },
                   { key: 'replicas', label: '副本', children: stage.replicasSummary || '-' },
                   { key: 'domain', label: '域名', children: stage.domainSummary || '-' },
                   { key: 'config', label: '配置', children: stage.configSummary || '-' }
@@ -189,9 +280,78 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
             </div>
           </Card>
         </div>
-
-        <PromotionConfirmPanel activeStage={activeStage} selectedFreight={selectedFreight} workloadNameById={workloadNameById} publishResult={publishResult} loading={createPromotionMutation.isPending} onConfirm={() => selectedFreight && activeStage && createPromotionMutation.mutate({ freightId: selectedFreight.id, targetEnvironmentId: activeStage.environmentId })} />
       </div>
+      {publishResult && <Alert className="form-alert" type="success" showIcon message={publishResult} />}
+
+      <Modal title="发布确认" open={publishModalOpen} onCancel={() => setPublishModalOpen(false)} width={820} destroyOnHidden footer={[
+        <Button key="cancel" onClick={() => setPublishModalOpen(false)}>取消</Button>,
+        <Button key="submit" type="primary" loading={createPromotionMutation.isPending} disabled={!selectedFreight || targetClusterIds.length === 0} onClick={handleConfirmPromotion}>确认发布</Button>
+      ]}>
+        <Space direction="vertical" size={14} className="full-width">
+          {activeStage && <Descriptions size="small" column={1} items={[
+            { key: 'stage', label: '目标 Stage', children: activeStage.name },
+            { key: 'pool', label: '集群池', children: `${activeStage.clusterPoolSize || availableTargetClusters.length} 个` },
+            { key: 'config', label: '环境配置', children: activeStage.configSummary || `${activeStage.name} values` }
+          ]} />}
+          <Form layout="vertical">
+            <Form.Item label="选择 Freight">
+              <Radio.Group aria-label="选择 Freight" value={selectedFreight?.id} onChange={(event) => {
+                const freight = eligibleFreights.find((item) => item.id === event.target.value);
+                if (freight) handleSelectFreight(freight);
+              }}>
+                <Space direction="vertical">
+                  {eligibleFreights.map((freight) => <Radio key={freight.id} value={freight.id}>{freight.version}</Radio>)}
+                </Space>
+              </Radio.Group>
+            </Form.Item>
+            <Form.Item label="目标集群">
+              <Checkbox.Group aria-label="目标集群" value={targetClusterIds} onChange={(values) => setTargetClusterIds(values.map(String))}>
+                <Space direction="vertical">
+                  {availableTargetClusters.map((cluster) => <Checkbox key={cluster.id} value={cluster.id}>{cluster.name}</Checkbox>)}
+                </Space>
+              </Checkbox.Group>
+            </Form.Item>
+            <Form.Item label="Namespace"><Input aria-label="Namespace" value={namespaceOverride} onChange={(event) => setNamespaceOverride(event.target.value)} /></Form.Item>
+          </Form>
+          {activeStage?.name === 'prod' && <Alert type="warning" showIcon message="生产发布审批" description={<Space direction="vertical" size={2}><span>审批人数：至少 {activeStage.approvalCount || 2} 人</span><span>审批人范围：{activeStage.approverScope || '生产审批人'}</span>{activeStage.selfApprovalForbidden !== false && <span>禁止发起人自审批</span>}</Space>} />}
+          {selectedFreight && <div className="confirm-workload-list">{withWorkloadDisplayNames(selectedFreight.items || [], workloadNameById).map((item) => <div key={item.id} className="confirm-workload-row"><Typography.Text strong>{item.workloadDisplayName}</Typography.Text><Typography.Text copyable>{item.image}</Typography.Text><Tag color={item.sourceType === 'custom_image' ? 'orange' : 'green'}>{item.sourceType === 'custom_image' ? '自定义镜像' : '流水线产物'}</Tag></div>)}</div>}
+        </Space>
+      </Modal>
+
+      <Modal title="Freight 审批" open={!!approvalFreight} onCancel={() => setApprovalFreight(null)} destroyOnHidden footer={[
+        <Button key="reject" danger loading={approvalMutation.isPending} onClick={() => approvalMutation.mutate('rejected')}>审批拒绝</Button>,
+        <Button key="approve" type="primary" loading={approvalMutation.isPending} onClick={() => approvalMutation.mutate('approved')}>审批通过</Button>
+      ]}>
+        <Space direction="vertical" size={14} className="full-width">
+          <Descriptions size="small" column={1} items={[
+            { key: 'freight', label: '审批 Freight', children: approvalFreight?.version || '-' },
+            { key: 'source', label: '晋级来源', children: activeStage?.name ? `${activeStage.name} Stage` : '最近发布记录' },
+            { key: 'roles', label: '审批角色', children: stages.find((stage) => stage.name === approvalTargetStage)?.approverScope || '租户管理员 / 生产审批人' }
+          ]} />
+          <Form layout="vertical">
+            <Form.Item label="目标 Stage"><Select aria-label="目标 Stage" value={approvalTargetStage} onChange={setApprovalTargetStage} options={stages.map((stage) => ({ value: stage.name, label: stage.name }))} /></Form.Item>
+            <Form.Item label="审批意见"><Input.TextArea aria-label="审批意见" value={approvalComment} onChange={(event) => setApprovalComment(event.target.value)} rows={3} /></Form.Item>
+          </Form>
+        </Space>
+      </Modal>
+
+      <Modal title="人工验证" open={!!verificationStage} onCancel={() => setVerificationStage(null)} destroyOnHidden footer={[
+        <Button key="fail" danger loading={verificationMutation.isPending} onClick={() => verificationMutation.mutate('failed')}>验证不通过</Button>,
+        <Button key="pass" type="primary" loading={verificationMutation.isPending} onClick={() => verificationMutation.mutate('passed')}>验证通过</Button>
+      ]}>
+        <Space direction="vertical" size={14} className="full-width">
+          <Descriptions size="small" column={1} items={[
+            { key: 'stage', label: '验证 Stage', children: verificationStage?.name || '-' },
+            { key: 'freight', label: '当前 Freight', children: verificationStage?.currentFreightVersion || '-' },
+            { key: 'sync', label: 'Argo CD 同步', children: <Tag color="green">Synced</Tag> },
+            { key: 'health', label: '健康状态', children: <Tag color="green">Healthy</Tag> },
+            { key: 'agent', label: 'Agent 状态', children: <Tag color="blue">ready</Tag> }
+          ]} />
+          <Form layout="vertical">
+            <Form.Item label="验证备注"><Input.TextArea aria-label="验证备注" value={verificationComment} onChange={(event) => setVerificationComment(event.target.value)} rows={3} /></Form.Item>
+          </Form>
+        </Space>
+      </Modal>
 
       <Drawer title="创建 Freight" open={drawerOpen} width={980} onClose={() => setDrawerOpen(false)} extra={<Button type="primary" aria-label="创建 Freight" disabled={submitDisabled} loading={createFreightMutation.isPending} onClick={handleCreateFreight}>创建 Freight</Button>}>
         <Space direction="vertical" size={16} className="full-width">
@@ -210,23 +370,6 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
 
 function DeliveryFlow() {
   return <div className="delivery-flow" aria-label="交付流程">{DELIVERY_FLOW_STEPS.map((step, index) => <div key={step} className="delivery-flow-step"><span className={index === 3 ? 'delivery-flow-node active' : 'delivery-flow-node'}>{step}</span>{index < DELIVERY_FLOW_STEPS.length - 1 && <span className="delivery-flow-arrow">→</span>}</div>)}</div>;
-}
-
-function PromotionConfirmPanel({ activeStage, selectedFreight, workloadNameById, publishResult, loading, onConfirm }: { activeStage: StageView | null; selectedFreight: Freight | null; workloadNameById: Record<string, string>; publishResult: string; loading: boolean; onConfirm: () => void }) {
-  return (
-    <aside className="promotion-confirm-panel" data-testid="promotion-confirm-panel">
-      <Typography.Title level={5}>发布确认</Typography.Title>
-      {!activeStage && <Typography.Text type="secondary">请先点击 Stage 上的发布按钮，再从左侧选择点亮的 Freight。</Typography.Text>}
-      {activeStage && !selectedFreight && <Alert type="info" showIcon message={`发布到 ${activeStage.name}`} description="请选择一个已点亮的 Freight。" />}
-      {activeStage && selectedFreight && <Space direction="vertical" size={14} className="full-width">
-        <Descriptions size="small" column={1} items={[{ key: 'stage', label: '目标 Stage', children: activeStage.name }, { key: 'freight', label: '选择 Freight', children: selectedFreight.version }, { key: 'config', label: '环境配置', children: activeStage.configSummary || `${activeStage.name} values` }]} />
-        {activeStage.name === 'prod' && <Alert type="warning" showIcon message="生产发布审批" description={<Space direction="vertical" size={2}><span>审批人数：至少 {activeStage.approvalCount || 2} 人</span><span>审批人范围：{activeStage.approverScope || '生产审批人'}</span>{activeStage.selfApprovalForbidden !== false && <span>禁止发起人自审批</span>}</Space>} />}
-        <div className="confirm-workload-list">{withWorkloadDisplayNames(selectedFreight.items || [], workloadNameById).map((item) => <div key={item.id} className="confirm-workload-row"><Typography.Text strong>{item.workloadDisplayName}</Typography.Text><Typography.Text copyable>{item.image}</Typography.Text><Tag color={item.sourceType === 'custom_image' ? 'orange' : 'green'}>{item.sourceType === 'custom_image' ? '自定义镜像' : '流水线产物'}</Tag></div>)}</div>
-        {publishResult && <Alert type="success" showIcon message={publishResult} />}
-        <Button type="primary" block loading={loading} onClick={onConfirm}>确认发布</Button>
-      </Space>}
-    </aside>
-  );
 }
 
 function freightDraftColumns(workloads: Workload[], draftItems: Record<string, FreightDraftItem>, releases: Record<string, any>, updateDraftItem: (workloadId: string, patch: Partial<FreightDraftItem>) => void) {
@@ -264,6 +407,11 @@ function timeValue(value: string) {
 
 function withWorkloadDisplayNames(items: FreightItem[], workloadNameById: Record<string, string>) {
   return items.map((item) => ({ ...item, workloadDisplayName: workloadNameById[item.workloadId] || item.workloadDisplayName || item.workloadName || item.workloadId }));
+}
+
+function currentVerificationFreight(stage: StageView | null, freights: Freight[]) {
+  if (!stage) return null;
+  return freights.find((freight) => freight.version === stage.currentFreightVersion) || freights[freights.length - 1] || null;
 }
 
 function withStageDefaults(stage: StageView, freights: Freight[], current: Record<string, string>): StageView {

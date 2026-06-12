@@ -103,6 +103,119 @@ type DeliveryFlow struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
+type DeliveryFlowTemplateStageStatus string
+
+const (
+	DeliveryFlowTemplateStageEnabled  DeliveryFlowTemplateStageStatus = "enabled"
+	DeliveryFlowTemplateStageDisabled DeliveryFlowTemplateStageStatus = "disabled"
+)
+
+type DeliveryFlowTemplate struct {
+	ID        shared.ID                   `json:"id"`
+	TenantID  shared.ID                   `json:"tenant_id"`
+	Name      string                      `json:"name"`
+	Stages    []DeliveryFlowTemplateStage `json:"stages,omitempty"`
+	CreatedAt time.Time                   `json:"created_at"`
+	UpdatedAt time.Time                   `json:"updated_at"`
+}
+
+type DeliveryFlowTemplateStage struct {
+	ID                   shared.ID                       `json:"id"`
+	TenantID             shared.ID                       `json:"tenant_id"`
+	TemplateID           shared.ID                       `json:"template_id"`
+	StageKey             string                          `json:"stage_key"`
+	DisplayName          string                          `json:"display_name"`
+	Color                string                          `json:"color"`
+	Order                int                             `json:"order"`
+	Status               DeliveryFlowTemplateStageStatus `json:"status"`
+	RequiresApproval     bool                            `json:"requires_approval"`
+	RequiresVerification bool                            `json:"requires_verification"`
+	ApproveRoles         []string                        `json:"approve_roles"`
+	VerifyRoles          []string                        `json:"verify_roles"`
+	CreatedAt            time.Time                       `json:"created_at"`
+	UpdatedAt            time.Time                       `json:"updated_at"`
+}
+
+type StageClusterBindingStatus string
+
+const (
+	StageClusterBindingActive   StageClusterBindingStatus = "active"
+	StageClusterBindingDisabled StageClusterBindingStatus = "disabled"
+)
+
+type StageClusterBinding struct {
+	ID          shared.ID                 `json:"id"`
+	TenantID    shared.ID                 `json:"tenant_id"`
+	StageKey    string                    `json:"stage_key"`
+	ClusterID   shared.ID                 `json:"cluster_id"`
+	ClusterName string                    `json:"cluster_name"`
+	Status      StageClusterBindingStatus `json:"status"`
+	CreatedAt   time.Time                 `json:"created_at"`
+	UpdatedAt   time.Time                 `json:"updated_at"`
+}
+
+type FreightApprovalStatus string
+
+const (
+	FreightApprovalPending  FreightApprovalStatus = "pending"
+	FreightApprovalApproved FreightApprovalStatus = "approved"
+	FreightApprovalRejected FreightApprovalStatus = "rejected"
+)
+
+type FreightApproval struct {
+	ID             shared.ID             `json:"id"`
+	TenantID       shared.ID             `json:"tenant_id"`
+	ProjectID      shared.ID             `json:"project_id"`
+	ApplicationID  shared.ID             `json:"application_id"`
+	FreightID      shared.ID             `json:"freight_id"`
+	TargetStageKey string                `json:"target_stage_key"`
+	ApproverID     shared.ID             `json:"approver_id"`
+	Status         FreightApprovalStatus `json:"status"`
+	Comment        string                `json:"comment"`
+	CreatedAt      time.Time             `json:"created_at"`
+	UpdatedAt      time.Time             `json:"updated_at"`
+}
+
+type StageVerificationStatus string
+
+const (
+	StageVerificationPassed StageVerificationStatus = "passed"
+	StageVerificationFailed StageVerificationStatus = "failed"
+)
+
+type StageVerification struct {
+	ID            shared.ID               `json:"id"`
+	TenantID      shared.ID               `json:"tenant_id"`
+	ProjectID     shared.ID               `json:"project_id"`
+	ApplicationID shared.ID               `json:"application_id"`
+	StageKey      string                  `json:"stage_key"`
+	FreightID     shared.ID               `json:"freight_id"`
+	VerifierID    shared.ID               `json:"verifier_id"`
+	Status        StageVerificationStatus `json:"status"`
+	Comment       string                  `json:"comment"`
+	SyncStatus    string                  `json:"sync_status"`
+	HealthStatus  string                  `json:"health_status"`
+	AgentStatus   string                  `json:"agent_status"`
+	CreatedAt     time.Time               `json:"created_at"`
+	UpdatedAt     time.Time               `json:"updated_at"`
+}
+
+type AppStage struct {
+	TenantID             shared.ID                       `json:"tenant_id"`
+	ProjectID            shared.ID                       `json:"project_id"`
+	ApplicationID        shared.ID                       `json:"application_id"`
+	StageKey             string                          `json:"stage_key"`
+	DisplayName          string                          `json:"display_name"`
+	Color                string                          `json:"color"`
+	Order                int                             `json:"order"`
+	Status               DeliveryFlowTemplateStageStatus `json:"status"`
+	RequiresApproval     bool                            `json:"requires_approval"`
+	RequiresVerification bool                            `json:"requires_verification"`
+	ApproveRoles         []string                        `json:"approve_roles"`
+	VerifyRoles          []string                        `json:"verify_roles"`
+	ClusterPoolSize      int                             `json:"cluster_pool_size"`
+}
+
 type DeliveryStage struct {
 	ID               shared.ID `json:"id"`
 	TenantID         shared.ID `json:"tenant_id"`
@@ -153,6 +266,8 @@ type Promotion struct {
 	FreightID             shared.ID       `json:"freight_id"`
 	TargetStageID         shared.ID       `json:"target_stage_id"`
 	TargetEnvironmentID   shared.ID       `json:"target_environment_id"`
+	TargetStageKey        string          `json:"target_stage_key"`
+	NamespaceOverride     string          `json:"namespace_override"`
 	Status                PromotionStatus `json:"status"`
 	IsRollback            bool            `json:"is_rollback"`
 	RollbackFromFreightID shared.ID       `json:"rollback_from_freight_id"`

@@ -28,6 +28,19 @@ type Repository interface {
 	FindDeliveryStageByEnvironment(ctx context.Context, applicationID shared.ID, environmentID shared.ID) (DeliveryStage, error)
 	ListDeliveryStages(ctx context.Context, flowID shared.ID) ([]DeliveryStage, error)
 
+	CreateDeliveryFlowTemplate(ctx context.Context, template DeliveryFlowTemplate) error
+	FindDeliveryFlowTemplateByTenant(ctx context.Context, tenantID shared.ID) (DeliveryFlowTemplate, error)
+	CreateDeliveryFlowTemplateStage(ctx context.Context, stage DeliveryFlowTemplateStage) error
+	UpdateDeliveryFlowTemplateStage(ctx context.Context, stage DeliveryFlowTemplateStage) error
+	FindDeliveryFlowTemplateStage(ctx context.Context, tenantID shared.ID, stageKey string) (DeliveryFlowTemplateStage, error)
+	ListDeliveryFlowTemplateStages(ctx context.Context, templateID shared.ID) ([]DeliveryFlowTemplateStage, error)
+	ReplaceStageClusterBindings(ctx context.Context, tenantID shared.ID, stageKey string, bindings []StageClusterBinding) error
+	ListStageClusterBindings(ctx context.Context, tenantID shared.ID, stageKey string) ([]StageClusterBinding, error)
+	CreateFreightApproval(ctx context.Context, approval FreightApproval) error
+	FindFreightApproval(ctx context.Context, freightID shared.ID, targetStageKey string) (FreightApproval, error)
+	CreateStageVerification(ctx context.Context, verification StageVerification) error
+	FindStageVerification(ctx context.Context, applicationID shared.ID, stageKey string, freightID shared.ID) (StageVerification, error)
+
 	CreatePromotion(ctx context.Context, promotion Promotion) error
 	UpdatePromotion(ctx context.Context, promotion Promotion) error
 	GetPromotion(ctx context.Context, id shared.ID) (Promotion, error)
@@ -110,14 +123,22 @@ type GitOpsDeploymentCommand interface {
 }
 
 type GitOpsPromotionSpec struct {
-	PromotionID   shared.ID
-	FreightID     shared.ID
-	ApplicationID shared.ID
-	EnvironmentID shared.ID
-	Artifacts     []GitOpsArtifactSpec
-	IsRollback    bool
-	ImageURI      string
-	ImageDigest   string
+	PromotionID    shared.ID
+	FreightID      shared.ID
+	ApplicationID  shared.ID
+	EnvironmentID  shared.ID
+	StageKey       string
+	TargetClusters []GitOpsPromotionTargetCluster
+	Artifacts      []GitOpsArtifactSpec
+	IsRollback     bool
+	ImageURI       string
+	ImageDigest    string
+}
+
+type GitOpsPromotionTargetCluster struct {
+	ClusterID   shared.ID
+	ClusterName string
+	Namespace   string
 }
 
 type GitOpsArtifactSpec struct {

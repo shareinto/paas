@@ -291,6 +291,47 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 	}
 }
 
+func TestApplyPromotionCreatesDeploymentPerSelectedStageCluster(t *testing.T) {
+	ids := []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
+		"deployment_shanghai", "manifest_shanghai", "event_shanghai",
+		"deployment_beijing", "manifest_beijing", "event_beijing",
+	}
+	svc, manifest, _ := newTestService(t, ids)
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+
+	result, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID:   "promotion_dev_multi",
+		FreightID:     "freight_1",
+		ApplicationID: "app_1",
+		EnvironmentID: "env_dev",
+		StageKey:      "dev",
+		ImageURI:      "registry/order-api:v2",
+		ImageDigest:   "sha256:multi",
+		TargetClusters: []delivery.GitOpsPromotionTargetCluster{
+			{ClusterID: "cluster_shanghai", ClusterName: "上海集群", Namespace: "order-dev"},
+			{ClusterID: "cluster_beijing", ClusterName: "北京集群", Namespace: "order-dev"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPromotion() error = %v", err)
+	}
+	if result.ManifestRevision == "" || len(manifest.Commits) != 1 {
+		t.Fatalf("multi-cluster dev promotion should commit once, result=%+v commits=%d", result, len(manifest.Commits))
+	}
+	if !strings.Contains(manifest.Files["apps/order-api/dev/cluster_shanghai/values.yaml"], "sha256:multi") || !strings.Contains(manifest.Files["apps/order-api/dev/cluster_beijing/values.yaml"], "sha256:multi") {
+		t.Fatalf("cluster-specific values files missing digest: %#v", manifest.Files)
+	}
+	page, err := svc.ListDeployments(context.Background(), "app_1", shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListDeployments() error = %v", err)
+	}
+	if page.Total != 2 {
+		t.Fatalf("expected one deployment per target cluster, got %+v", page)
+	}
+}
+
 type workloadQuery struct {
 	workloads map[shared.ID]WorkloadRef
 	configs   map[string]WorkloadEnvironmentConfigRef

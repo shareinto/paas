@@ -134,4 +134,22 @@ EXECUTE drop_deployments_workload_summary_stmt;
 DEALLOCATE PREPARE drop_deployments_workload_summary_stmt;
 `,
 	},
+	{
+		Version: 202606120903,
+		Name:    "gitops_multi_cluster_promotion_targets",
+		Up: `
+SET @deployments_promotion_unique_exists := (
+  SELECT COUNT(*) > 0
+  FROM information_schema.statistics
+  WHERE table_schema = DATABASE()
+    AND table_name = 'deployments'
+    AND index_name = 'uk_deployments_promotion'
+);
+SET @deployments_promotion_unique_drop := IF(@deployments_promotion_unique_exists, 'ALTER TABLE deployments DROP INDEX uk_deployments_promotion', 'SELECT 1');
+PREPARE deployments_promotion_unique_stmt FROM @deployments_promotion_unique_drop;
+EXECUTE deployments_promotion_unique_stmt;
+DEALLOCATE PREPARE deployments_promotion_unique_stmt;
+`,
+		Down: `SELECT 1;`,
+	},
 }

@@ -12,6 +12,7 @@ const platformItems = [
 
 const adminItems = [
   { key: '/tenants', icon: <TeamOutlined />, label: '租户管理' },
+  { key: '/delivery-flow-template', icon: <DeploymentUnitOutlined />, label: '交付流模板' },
   { key: '/jenkins-templates', icon: <BuildOutlined />, label: '构建管理' },
   { key: '/audit', icon: <FileSearchOutlined />, label: '审计日志' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' }
@@ -67,6 +68,7 @@ function selectedKey(pathname: string) {
   if (pathname.startsWith('/freights')) return '/freights';
   if (pathname.startsWith('/audit')) return '/audit';
   if (pathname.startsWith('/tenants')) return '/tenants';
+  if (pathname.startsWith('/delivery-flow-template')) return '/delivery-flow-template';
   if (pathname.startsWith('/jenkins-templates')) return '/jenkins-templates';
   if (pathname.startsWith('/settings')) return '/settings';
   return pathname;

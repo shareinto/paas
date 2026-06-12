@@ -62,6 +62,9 @@ type CreatePromotionInput struct {
 	Actor               identityaccess.Subject `json:"actor"`
 	FreightID           shared.ID              `json:"freight_id"`
 	TargetEnvironmentID shared.ID              `json:"target_environment_id"`
+	TargetStageKey      string                 `json:"target_stage_key"`
+	TargetClusterIDs    []shared.ID            `json:"target_cluster_ids"`
+	NamespaceOverride   string                 `json:"namespace_override"`
 	Message             string                 `json:"message"`
 }
 
@@ -79,12 +82,80 @@ type ApprovalInput struct {
 	Comment     string                 `json:"comment"`
 }
 
+type SaveDeliveryFlowTemplateStageInput struct {
+	Actor                identityaccess.Subject          `json:"actor"`
+	TenantID             shared.ID                       `json:"tenant_id"`
+	StageKey             string                          `json:"stage_key"`
+	NewStageKey          string                          `json:"new_stage_key,omitempty"`
+	DisplayName          string                          `json:"display_name"`
+	Color                string                          `json:"color"`
+	Order                int                             `json:"order"`
+	Status               DeliveryFlowTemplateStageStatus `json:"status"`
+	RequiresApproval     bool                            `json:"requires_approval"`
+	RequiresVerification bool                            `json:"requires_verification"`
+	ApproveRoles         []string                        `json:"approve_roles"`
+	VerifyRoles          []string                        `json:"verify_roles"`
+}
+
+type StageTemplateActionInput struct {
+	Actor    identityaccess.Subject `json:"actor"`
+	TenantID shared.ID              `json:"tenant_id"`
+	StageKey string                 `json:"stage_key"`
+}
+
+type ReplaceStageClusterBindingsInput struct {
+	Actor    identityaccess.Subject     `json:"actor"`
+	TenantID shared.ID                  `json:"tenant_id"`
+	StageKey string                     `json:"stage_key"`
+	Clusters []StageClusterBindingInput `json:"clusters"`
+}
+
+type StageClusterBindingInput struct {
+	ClusterID   shared.ID `json:"cluster_id"`
+	ClusterName string    `json:"cluster_name"`
+}
+
+type FreightApprovalInput struct {
+	Actor          identityaccess.Subject `json:"actor"`
+	FreightID      shared.ID              `json:"freight_id"`
+	TargetStageKey string                 `json:"target_stage_key"`
+	Decision       FreightApprovalStatus  `json:"decision"`
+	Comment        string                 `json:"comment"`
+}
+
+type StageVerificationInput struct {
+	Actor         identityaccess.Subject  `json:"actor"`
+	ApplicationID shared.ID               `json:"application_id"`
+	StageKey      string                  `json:"stage_key"`
+	FreightID     shared.ID               `json:"freight_id"`
+	Status        StageVerificationStatus `json:"status"`
+	Comment       string                  `json:"comment"`
+	SyncStatus    string                  `json:"sync_status"`
+	HealthStatus  string                  `json:"health_status"`
+	AgentStatus   string                  `json:"agent_status"`
+}
+
 type CreateFreightInput struct {
 	Actor         identityaccess.Subject   `json:"actor"`
 	ApplicationID shared.ID                `json:"application_id"`
 	Name          string                   `json:"name"`
 	Description   string                   `json:"description"`
 	Items         []CreateFreightItemInput `json:"items"`
+}
+
+var defaultTemplateStages = []struct {
+	key                  string
+	displayName          string
+	color                string
+	requiresApproval     bool
+	requiresVerification bool
+	approveRoles         []string
+	verifyRoles          []string
+}{
+	{key: "dev", displayName: "开发", color: "#1677ff", verifyRoles: []string{"developer", "operator"}},
+	{key: "test", displayName: "测试", color: "#52c41a", verifyRoles: []string{"developer", "operator"}},
+	{key: "staging", displayName: "预发", color: "#fa8c16", verifyRoles: []string{"operator"}},
+	{key: "prod", displayName: "生产", color: "#f5222d", requiresApproval: true, requiresVerification: true, approveRoles: []string{"prod_approver"}, verifyRoles: []string{"operator", "prod_approver"}},
 }
 
 type CreateFreightItemInput struct {
@@ -171,7 +242,15 @@ func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInpu
 	if err != nil {
 		return Promotion{}, err
 	}
+	targetClusters := []GitOpsPromotionTargetCluster(nil)
 	app, env, stage, err := s.validatePromotionTarget(ctx, freight.ApplicationID, input.TargetEnvironmentID)
+	stageKey := stage.Name
+	namespaceOverride := ""
+	if strings.TrimSpace(input.TargetStageKey) != "" {
+		app, env, stage, targetClusters, err = s.validateStagePromotionTarget(ctx, freight.ApplicationID, normalizeStageKey(input.TargetStageKey), input.TargetClusterIDs, input.NamespaceOverride)
+		stageKey = normalizeStageKey(input.TargetStageKey)
+		namespaceOverride = strings.TrimSpace(input.NamespaceOverride)
+	}
 	if err != nil {
 		return Promotion{}, err
 	}
@@ -184,14 +263,14 @@ func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInpu
 	if err := s.validateStageOrder(ctx, freight, stage); err != nil {
 		return Promotion{}, err
 	}
-	promotion, err := s.newPromotion(ctx, freight, stage, env, input.Actor.ID, strings.TrimSpace(input.Message), false, "")
+	promotion, err := s.newPromotion(ctx, freight, stage, env, stageKey, namespaceOverride, input.Actor.ID, strings.TrimSpace(input.Message), false, "")
 	if err != nil {
 		return Promotion{}, err
 	}
 	if isProdStage(stage.Name) {
 		return s.createApproval(ctx, promotion)
 	}
-	return s.applyPromotion(ctx, promotion)
+	return s.applyPromotion(ctx, promotion, targetClusters)
 }
 
 func (s *Service) CreateFreight(ctx context.Context, input CreateFreightInput) (Freight, error) {
@@ -294,6 +373,268 @@ func (s *Service) CreateFreight(ctx context.Context, input CreateFreightInput) (
 	return freight, nil
 }
 
+func (s *Service) GetDeliveryFlowTemplate(ctx context.Context, tenantID shared.ID) (DeliveryFlowTemplate, error) {
+	return s.ensureDeliveryFlowTemplate(ctx, tenantID)
+}
+
+func (s *Service) SaveDeliveryFlowTemplateStage(ctx context.Context, input SaveDeliveryFlowTemplateStageInput) (DeliveryFlowTemplateStage, error) {
+	stageKey := normalizeStageKey(input.StageKey)
+	if input.TenantID.IsZero() || stageKey == "" {
+		return DeliveryFlowTemplateStage{}, shared.NewError(shared.CodeInvalidArgument, "tenant_id and stage_key are required")
+	}
+	if newKey := normalizeStageKey(input.NewStageKey); newKey != "" && newKey != stageKey {
+		return DeliveryFlowTemplateStage{}, shared.NewError(shared.CodeInvalidArgument, "stage key cannot be changed")
+	}
+	if err := s.check(ctx, input.Actor, ApplicationRef{TenantID: input.TenantID}, "tenant:update"); err != nil {
+		return DeliveryFlowTemplateStage{}, err
+	}
+	template, err := s.ensureDeliveryFlowTemplate(ctx, input.TenantID)
+	if err != nil {
+		return DeliveryFlowTemplateStage{}, err
+	}
+	now := s.clock.Now()
+	status := input.Status
+	if status == "" {
+		status = DeliveryFlowTemplateStageEnabled
+	}
+	if status != DeliveryFlowTemplateStageEnabled && status != DeliveryFlowTemplateStageDisabled {
+		return DeliveryFlowTemplateStage{}, shared.NewError(shared.CodeInvalidArgument, "stage status is not supported")
+	}
+	stage := DeliveryFlowTemplateStage{
+		TenantID:             input.TenantID,
+		TemplateID:           template.ID,
+		StageKey:             stageKey,
+		DisplayName:          firstNonEmpty(strings.TrimSpace(input.DisplayName), stageKey),
+		Color:                normalizeStageColor(input.Color),
+		Order:                input.Order,
+		Status:               status,
+		RequiresApproval:     input.RequiresApproval,
+		RequiresVerification: input.RequiresVerification,
+		ApproveRoles:         cleanRoles(input.ApproveRoles),
+		VerifyRoles:          cleanRoles(input.VerifyRoles),
+		UpdatedAt:            now,
+	}
+	if stage.Order <= 0 {
+		stage.Order = len(template.Stages) + 1
+	}
+	existing, err := s.repo.FindDeliveryFlowTemplateStage(ctx, input.TenantID, stageKey)
+	if err == nil {
+		stage.ID = existing.ID
+		stage.CreatedAt = existing.CreatedAt
+		if err := s.repo.UpdateDeliveryFlowTemplateStage(ctx, stage); err != nil {
+			return DeliveryFlowTemplateStage{}, err
+		}
+		_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "delivery_flow_template.stage.update", ResourceType: "delivery_flow_template_stage", ResourceID: stage.ID, Result: "succeeded", Summary: "更新交付流 Stage 模板", OccurredAt: now})
+		return stage, nil
+	}
+	if shared.CodeOf(err) != shared.CodeNotFound {
+		return DeliveryFlowTemplateStage{}, err
+	}
+	id, err := s.ids.NewID("delivery_flow_stage_template")
+	if err != nil {
+		return DeliveryFlowTemplateStage{}, err
+	}
+	stage.ID = id
+	stage.CreatedAt = now
+	if err := s.repo.CreateDeliveryFlowTemplateStage(ctx, stage); err != nil {
+		return DeliveryFlowTemplateStage{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "delivery_flow_template.stage.create", ResourceType: "delivery_flow_template_stage", ResourceID: stage.ID, Result: "succeeded", Summary: "创建交付流 Stage 模板", OccurredAt: now})
+	return stage, nil
+}
+
+func (s *Service) DisableDeliveryFlowTemplateStage(ctx context.Context, input StageTemplateActionInput) (DeliveryFlowTemplateStage, error) {
+	stage, err := s.repo.FindDeliveryFlowTemplateStage(ctx, input.TenantID, normalizeStageKey(input.StageKey))
+	if err != nil {
+		return DeliveryFlowTemplateStage{}, err
+	}
+	if err := s.check(ctx, input.Actor, ApplicationRef{TenantID: input.TenantID}, "tenant:update"); err != nil {
+		return DeliveryFlowTemplateStage{}, err
+	}
+	stage.Status = DeliveryFlowTemplateStageDisabled
+	stage.UpdatedAt = s.clock.Now()
+	if err := s.repo.UpdateDeliveryFlowTemplateStage(ctx, stage); err != nil {
+		return DeliveryFlowTemplateStage{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "delivery_flow_template.stage.disable", ResourceType: "delivery_flow_template_stage", ResourceID: stage.ID, Result: "succeeded", Summary: "禁用交付流 Stage 模板并保留历史记录", OccurredAt: stage.UpdatedAt})
+	return stage, nil
+}
+
+func (s *Service) ReplaceStageClusterBindings(ctx context.Context, input ReplaceStageClusterBindingsInput) ([]StageClusterBinding, error) {
+	stageKey := normalizeStageKey(input.StageKey)
+	if input.TenantID.IsZero() || stageKey == "" {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "tenant_id and stage_key are required")
+	}
+	if err := s.check(ctx, input.Actor, ApplicationRef{TenantID: input.TenantID}, "cluster:manage"); err != nil {
+		return nil, err
+	}
+	if _, err := s.ensureDeliveryFlowTemplate(ctx, input.TenantID); err != nil {
+		return nil, err
+	}
+	stage, err := s.repo.FindDeliveryFlowTemplateStage(ctx, input.TenantID, stageKey)
+	if err != nil {
+		return nil, err
+	}
+	if stage.Status == DeliveryFlowTemplateStageDisabled {
+		return nil, shared.NewError(shared.CodeFailedPrecondition, "disabled stage cannot bind clusters")
+	}
+	now := s.clock.Now()
+	bindings := make([]StageClusterBinding, 0, len(input.Clusters))
+	seen := map[shared.ID]struct{}{}
+	for _, cluster := range input.Clusters {
+		if cluster.ClusterID.IsZero() || strings.TrimSpace(cluster.ClusterName) == "" {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "cluster_id and cluster_name are required")
+		}
+		if _, ok := seen[cluster.ClusterID]; ok {
+			return nil, shared.NewError(shared.CodeConflict, "cluster is duplicated")
+		}
+		seen[cluster.ClusterID] = struct{}{}
+		id, err := s.ids.NewID("stage_cluster_binding")
+		if err != nil {
+			return nil, err
+		}
+		bindings = append(bindings, StageClusterBinding{ID: id, TenantID: input.TenantID, StageKey: stageKey, ClusterID: cluster.ClusterID, ClusterName: strings.TrimSpace(cluster.ClusterName), Status: StageClusterBindingActive, CreatedAt: now, UpdatedAt: now})
+	}
+	if err := s.repo.ReplaceStageClusterBindings(ctx, input.TenantID, stageKey, bindings); err != nil {
+		return nil, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "stage_cluster_binding.replace", ResourceType: "delivery_flow_template_stage", ResourceID: stage.ID, Result: "succeeded", Summary: "保存 Stage 集群池绑定", Details: map[string]string{"stage_key": stageKey, "cluster_count": fmt.Sprintf("%d", len(bindings))}, OccurredAt: now})
+	return bindings, nil
+}
+
+func (s *Service) ListStageClusterBindings(ctx context.Context, tenantID shared.ID, stageKey string) ([]StageClusterBinding, error) {
+	normalized := normalizeStageKey(stageKey)
+	if tenantID.IsZero() || normalized == "" {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "tenant_id and stage_key are required")
+	}
+	if _, err := s.ensureDeliveryFlowTemplate(ctx, tenantID); err != nil {
+		return nil, err
+	}
+	if _, err := s.repo.FindDeliveryFlowTemplateStage(ctx, tenantID, normalized); err != nil {
+		return nil, err
+	}
+	return s.repo.ListStageClusterBindings(ctx, tenantID, normalized)
+}
+
+func (s *Service) ListAppStages(ctx context.Context, applicationID shared.ID) ([]AppStage, error) {
+	app, err := s.appsOrError().GetApplication(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	template, err := s.ensureDeliveryFlowTemplate(ctx, app.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AppStage, 0, len(template.Stages))
+	for _, stage := range template.Stages {
+		bindings, err := s.repo.ListStageClusterBindings(ctx, app.TenantID, stage.StageKey)
+		if err != nil {
+			return nil, err
+		}
+		active := 0
+		for _, binding := range bindings {
+			if binding.Status == StageClusterBindingActive {
+				active++
+			}
+		}
+		out = append(out, AppStage{
+			TenantID:             app.TenantID,
+			ProjectID:            app.ProjectID,
+			ApplicationID:        app.ID,
+			StageKey:             stage.StageKey,
+			DisplayName:          stage.DisplayName,
+			Color:                stage.Color,
+			Order:                stage.Order,
+			Status:               stage.Status,
+			RequiresApproval:     stage.RequiresApproval,
+			RequiresVerification: stage.RequiresVerification,
+			ApproveRoles:         append([]string(nil), stage.ApproveRoles...),
+			VerifyRoles:          append([]string(nil), stage.VerifyRoles...),
+			ClusterPoolSize:      active,
+		})
+	}
+	return out, nil
+}
+
+func (s *Service) CompleteFreightApproval(ctx context.Context, input FreightApprovalInput) (FreightApproval, error) {
+	freight, err := s.repo.GetFreight(ctx, input.FreightID)
+	if err != nil {
+		return FreightApproval{}, err
+	}
+	app, err := s.appsOrError().GetApplication(ctx, freight.ApplicationID)
+	if err != nil {
+		return FreightApproval{}, err
+	}
+	if err := s.check(ctx, input.Actor, app, "deployment:approve"); err != nil {
+		return FreightApproval{}, err
+	}
+	stageKey := normalizeStageKey(input.TargetStageKey)
+	if stageKey == "" {
+		return FreightApproval{}, shared.NewError(shared.CodeInvalidArgument, "target_stage_key is required")
+	}
+	if input.Decision != FreightApprovalApproved && input.Decision != FreightApprovalRejected {
+		return FreightApproval{}, shared.NewError(shared.CodeInvalidArgument, "approval decision is not supported")
+	}
+	if existing, err := s.repo.FindFreightApproval(ctx, freight.ID, stageKey); err == nil {
+		return existing, nil
+	} else if shared.CodeOf(err) != shared.CodeNotFound {
+		return FreightApproval{}, err
+	}
+	id, err := s.ids.NewID("freight_approval")
+	if err != nil {
+		return FreightApproval{}, err
+	}
+	now := s.clock.Now()
+	approval := FreightApproval{ID: id, TenantID: freight.TenantID, ProjectID: freight.ProjectID, ApplicationID: freight.ApplicationID, FreightID: freight.ID, TargetStageKey: stageKey, ApproverID: input.Actor.ID, Status: input.Decision, Comment: strings.TrimSpace(input.Comment), CreatedAt: now, UpdatedAt: now}
+	if err := s.repo.CreateFreightApproval(ctx, approval); err != nil {
+		return FreightApproval{}, err
+	}
+	action := "freight.approve"
+	summary := "审批通过 Freight"
+	if input.Decision == FreightApprovalRejected {
+		action = "freight.reject"
+		summary = "审批拒绝 Freight"
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: action, ResourceType: "freight", ResourceID: freight.ID, Result: "succeeded", Summary: summary, OccurredAt: now})
+	return approval, nil
+}
+
+func (s *Service) CompleteStageVerification(ctx context.Context, input StageVerificationInput) (StageVerification, error) {
+	app, err := s.appsOrError().GetApplication(ctx, input.ApplicationID)
+	if err != nil {
+		return StageVerification{}, err
+	}
+	if err := s.check(ctx, input.Actor, app, "deployment:approve"); err != nil {
+		return StageVerification{}, err
+	}
+	stageKey := normalizeStageKey(input.StageKey)
+	if stageKey == "" || input.FreightID.IsZero() {
+		return StageVerification{}, shared.NewError(shared.CodeInvalidArgument, "stage_key and freight_id are required")
+	}
+	if input.Status != StageVerificationPassed && input.Status != StageVerificationFailed {
+		return StageVerification{}, shared.NewError(shared.CodeInvalidArgument, "verification status is not supported")
+	}
+	if err := s.requireDeploymentRecordForVerification(ctx, app.ID, stageKey, input.FreightID); err != nil {
+		return StageVerification{}, err
+	}
+	if existing, err := s.repo.FindStageVerification(ctx, app.ID, stageKey, input.FreightID); err == nil {
+		return existing, nil
+	} else if shared.CodeOf(err) != shared.CodeNotFound {
+		return StageVerification{}, err
+	}
+	id, err := s.ids.NewID("stage_verification")
+	if err != nil {
+		return StageVerification{}, err
+	}
+	now := s.clock.Now()
+	verification := StageVerification{ID: id, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, StageKey: stageKey, FreightID: input.FreightID, VerifierID: input.Actor.ID, Status: input.Status, Comment: strings.TrimSpace(input.Comment), SyncStatus: strings.TrimSpace(input.SyncStatus), HealthStatus: strings.TrimSpace(input.HealthStatus), AgentStatus: strings.TrimSpace(input.AgentStatus), CreatedAt: now, UpdatedAt: now}
+	if err := s.repo.CreateStageVerification(ctx, verification); err != nil {
+		return StageVerification{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "stage.verify", ResourceType: "stage_verification", ResourceID: verification.ID, Result: "succeeded", Summary: "完成人工验证", OccurredAt: now})
+	return verification, nil
+}
+
 func (s *Service) GetFreightCreationContext(ctx context.Context, applicationID shared.ID) (FreightCreationContext, error) {
 	workloads, err := s.workloadsOrError().ListEnabledWorkloads(ctx, applicationID)
 	if err != nil {
@@ -380,14 +721,14 @@ func (s *Service) CreateRollbackPromotion(ctx context.Context, input CreateRollb
 	if err := s.check(ctx, input.Actor, app, "deployment:rollback"); err != nil {
 		return Promotion{}, err
 	}
-	promotion, err := s.newPromotion(ctx, target, stage, env, input.Actor.ID, strings.TrimSpace(input.Message), true, input.CurrentFreightID)
+	promotion, err := s.newPromotion(ctx, target, stage, env, stage.Name, "", input.Actor.ID, strings.TrimSpace(input.Message), true, input.CurrentFreightID)
 	if err != nil {
 		return Promotion{}, err
 	}
 	if isProdStage(stage.Name) {
 		return s.createApproval(ctx, promotion)
 	}
-	return s.applyPromotion(ctx, promotion)
+	return s.applyPromotion(ctx, promotion, nil)
 }
 
 func (s *Service) ApprovePromotion(ctx context.Context, input ApprovalInput) (Promotion, error) {
@@ -427,7 +768,7 @@ func (s *Service) ApprovePromotion(ctx context.Context, input ApprovalInput) (Pr
 		return Promotion{}, err
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "promotion.approve", ResourceType: "promotion", ResourceID: promotion.ID, Result: "succeeded", Summary: "审批通过发布晋级", OccurredAt: now})
-	return s.applyPromotion(ctx, promotion)
+	return s.applyPromotion(ctx, promotion, nil)
 }
 
 func (s *Service) RejectPromotion(ctx context.Context, input ApprovalInput) (Promotion, error) {
@@ -568,6 +909,66 @@ func (s *Service) ensureDefaultFlow(ctx context.Context, applicationID shared.ID
 	return flow, nil
 }
 
+func (s *Service) ensureDeliveryFlowTemplate(ctx context.Context, tenantID shared.ID) (DeliveryFlowTemplate, error) {
+	if tenantID.IsZero() {
+		return DeliveryFlowTemplate{}, shared.NewError(shared.CodeInvalidArgument, "tenant_id is required")
+	}
+	if template, err := s.repo.FindDeliveryFlowTemplateByTenant(ctx, tenantID); err == nil {
+		stages, err := s.repo.ListDeliveryFlowTemplateStages(ctx, template.ID)
+		if err != nil {
+			return DeliveryFlowTemplate{}, err
+		}
+		template.Stages = stages
+		return template, nil
+	} else if shared.CodeOf(err) != shared.CodeNotFound {
+		return DeliveryFlowTemplate{}, err
+	}
+	templateID, err := s.ids.NewID("delivery_flow_template")
+	if err != nil {
+		return DeliveryFlowTemplate{}, err
+	}
+	now := s.clock.Now()
+	template := DeliveryFlowTemplate{ID: templateID, TenantID: tenantID, Name: "默认交付流模板", CreatedAt: now, UpdatedAt: now}
+	if err := s.repo.CreateDeliveryFlowTemplate(ctx, template); err != nil {
+		if existing, findErr := s.repo.FindDeliveryFlowTemplateByTenant(ctx, tenantID); findErr == nil {
+			stages, err := s.repo.ListDeliveryFlowTemplateStages(ctx, existing.ID)
+			if err != nil {
+				return DeliveryFlowTemplate{}, err
+			}
+			existing.Stages = stages
+			return existing, nil
+		}
+		return DeliveryFlowTemplate{}, err
+	}
+	for idx, item := range defaultTemplateStages {
+		stageID, err := s.ids.NewID("delivery_flow_stage_template")
+		if err != nil {
+			return DeliveryFlowTemplate{}, err
+		}
+		stage := DeliveryFlowTemplateStage{
+			ID:                   stageID,
+			TenantID:             tenantID,
+			TemplateID:           template.ID,
+			StageKey:             item.key,
+			DisplayName:          item.displayName,
+			Color:                item.color,
+			Order:                idx + 1,
+			Status:               DeliveryFlowTemplateStageEnabled,
+			RequiresApproval:     item.requiresApproval,
+			RequiresVerification: item.requiresVerification,
+			ApproveRoles:         append([]string(nil), item.approveRoles...),
+			VerifyRoles:          append([]string(nil), item.verifyRoles...),
+			CreatedAt:            now,
+			UpdatedAt:            now,
+		}
+		if err := s.repo.CreateDeliveryFlowTemplateStage(ctx, stage); err != nil {
+			return DeliveryFlowTemplate{}, err
+		}
+		template.Stages = append(template.Stages, stage)
+	}
+	return template, nil
+}
+
 func (s *Service) validatePromotionTarget(ctx context.Context, applicationID shared.ID, environmentID shared.ID) (ApplicationRef, EnvironmentRef, DeliveryStage, error) {
 	app, err := s.appsOrError().GetApplication(ctx, applicationID)
 	if err != nil {
@@ -593,13 +994,117 @@ func (s *Service) validatePromotionTarget(ctx context.Context, applicationID sha
 	return app, env, stage, nil
 }
 
-func (s *Service) newPromotion(ctx context.Context, freight Freight, stage DeliveryStage, env EnvironmentRef, actorID shared.ID, message string, rollback bool, from shared.ID) (Promotion, error) {
+func (s *Service) validateStagePromotionTarget(ctx context.Context, applicationID shared.ID, stageKey string, clusterIDs []shared.ID, namespaceOverride string) (ApplicationRef, EnvironmentRef, DeliveryStage, []GitOpsPromotionTargetCluster, error) {
+	if stageKey == "" {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeInvalidArgument, "target_stage_key is required")
+	}
+	if len(clusterIDs) == 0 {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeInvalidArgument, "target_cluster_ids is required")
+	}
+	app, err := s.appsOrError().GetApplication(ctx, applicationID)
+	if err != nil {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, err
+	}
+	template, err := s.ensureDeliveryFlowTemplate(ctx, app.TenantID)
+	if err != nil {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, err
+	}
+	var templateStage DeliveryFlowTemplateStage
+	found := false
+	for _, stage := range template.Stages {
+		if stage.StageKey == stageKey {
+			templateStage = stage
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeNotFound, "stage template not found")
+	}
+	if templateStage.Status == DeliveryFlowTemplateStageDisabled {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeFailedPrecondition, "stage is disabled")
+	}
+	envs, err := s.envsOrError().ListEnvironments(ctx, applicationID)
+	if err != nil {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, err
+	}
+	var env EnvironmentRef
+	for _, candidate := range envs {
+		if candidate.Name == stageKey {
+			env = candidate
+			break
+		}
+	}
+	if env.ID.IsZero() {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeNotFound, "stage environment not found")
+	}
+	if _, err := s.ensureDefaultFlow(ctx, applicationID); err != nil {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, err
+	}
+	stage, err := s.repo.FindDeliveryStageByEnvironment(ctx, applicationID, env.ID)
+	if err != nil {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, err
+	}
+	bindings, err := s.repo.ListStageClusterBindings(ctx, app.TenantID, stageKey)
+	if err != nil {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, err
+	}
+	pool := map[shared.ID]StageClusterBinding{}
+	for _, binding := range bindings {
+		if binding.Status == StageClusterBindingActive {
+			pool[binding.ClusterID] = binding
+		}
+	}
+	namespace := strings.TrimSpace(namespaceOverride)
+	if namespace == "" {
+		namespace = string(app.ProjectID)
+	}
+	targets := make([]GitOpsPromotionTargetCluster, 0, len(clusterIDs))
+	seen := map[shared.ID]struct{}{}
+	for _, id := range clusterIDs {
+		if id.IsZero() {
+			return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeInvalidArgument, "target_cluster_ids is invalid")
+		}
+		if _, ok := seen[id]; ok {
+			return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeConflict, "target cluster is duplicated")
+		}
+		seen[id] = struct{}{}
+		binding, ok := pool[id]
+		if !ok {
+			return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeInvalidArgument, "target cluster is not bound to stage")
+		}
+		targets = append(targets, GitOpsPromotionTargetCluster{ClusterID: id, ClusterName: binding.ClusterName, Namespace: namespace})
+	}
+	return app, env, stage, targets, nil
+}
+
+func (s *Service) requireDeploymentRecordForVerification(ctx context.Context, applicationID shared.ID, stageKey string, freightID shared.ID) error {
+	promotions, err := s.repo.ListPromotionsByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
+	if err != nil {
+		return err
+	}
+	for _, promotion := range promotions.Items {
+		promotionStageKey := normalizeStageKey(promotion.TargetStageKey)
+		if promotionStageKey == "" {
+			stage, err := s.repo.GetDeliveryStage(ctx, promotion.TargetStageID)
+			if err == nil {
+				promotionStageKey = normalizeStageKey(stage.Name)
+			}
+		}
+		if promotion.FreightID == freightID && promotionStageKey == stageKey && (promotion.Status == PromotionManifestUpdated || promotion.Status == PromotionSyncing || promotion.Status == PromotionHealthy) {
+			return nil
+		}
+	}
+	return shared.NewError(shared.CodeFailedPrecondition, "stage has no deployment record for freight")
+}
+
+func (s *Service) newPromotion(ctx context.Context, freight Freight, stage DeliveryStage, env EnvironmentRef, stageKey string, namespaceOverride string, actorID shared.ID, message string, rollback bool, from shared.ID) (Promotion, error) {
 	id, err := s.ids.NewID("promotion")
 	if err != nil {
 		return Promotion{}, err
 	}
 	now := s.clock.Now()
-	promotion := Promotion{ID: id, TenantID: freight.TenantID, ProjectID: freight.ProjectID, ApplicationID: freight.ApplicationID, FreightID: freight.ID, TargetStageID: stage.ID, TargetEnvironmentID: env.ID, Status: PromotionCreated, IsRollback: rollback, RollbackFromFreightID: from, CreatedBy: actorID, Message: message, CreatedAt: now, UpdatedAt: now}
+	promotion := Promotion{ID: id, TenantID: freight.TenantID, ProjectID: freight.ProjectID, ApplicationID: freight.ApplicationID, FreightID: freight.ID, TargetStageID: stage.ID, TargetEnvironmentID: env.ID, TargetStageKey: stageKey, NamespaceOverride: namespaceOverride, Status: PromotionCreated, IsRollback: rollback, RollbackFromFreightID: from, CreatedBy: actorID, Message: message, CreatedAt: now, UpdatedAt: now}
 	if isProdStage(stage.Name) {
 		promotion.Status = PromotionPendingApproval
 	}
@@ -629,7 +1134,7 @@ func (s *Service) createApproval(ctx context.Context, promotion Promotion) (Prom
 	return promotion, nil
 }
 
-func (s *Service) applyPromotion(ctx context.Context, promotion Promotion) (Promotion, error) {
+func (s *Service) applyPromotion(ctx context.Context, promotion Promotion, targetClusters []GitOpsPromotionTargetCluster) (Promotion, error) {
 	items, err := s.repo.ListFreightItems(ctx, promotion.FreightID)
 	if err != nil {
 		return Promotion{}, err
@@ -647,7 +1152,7 @@ func (s *Service) applyPromotion(ctx context.Context, promotion Promotion) (Prom
 	for i, item := range items {
 		artifacts = append(artifacts, GitOpsArtifactSpec{WorkloadID: item.WorkloadID, Name: item.Name, SourceKey: item.SourceKey, URI: item.URI, Repository: item.ImageRepository, Tag: item.ImageTag, Digest: item.Digest, IsPrimary: i == 0 || item.Type == FreightItemApplicationRelease})
 	}
-	result, err := s.gitopsOrError().ApplyPromotion(ctx, GitOpsPromotionSpec{PromotionID: promotion.ID, FreightID: promotion.FreightID, ApplicationID: promotion.ApplicationID, EnvironmentID: promotion.TargetEnvironmentID, Artifacts: artifacts, IsRollback: promotion.IsRollback})
+	result, err := s.gitopsOrError().ApplyPromotion(ctx, GitOpsPromotionSpec{PromotionID: promotion.ID, FreightID: promotion.FreightID, ApplicationID: promotion.ApplicationID, EnvironmentID: promotion.TargetEnvironmentID, StageKey: promotion.TargetStageKey, TargetClusters: targetClusters, Artifacts: artifacts, IsRollback: promotion.IsRollback})
 	if err != nil {
 		promotion.Status = PromotionFailed
 		promotion.Message = strings.TrimSpace(err.Error())
@@ -936,6 +1441,45 @@ func splitImageRepositoryTag(image string) (string, string) {
 		return image[:lastColon], image[lastColon+1:]
 	}
 	return image, ""
+}
+
+func normalizeStageKey(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func normalizeStageColor(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) == 7 && value[0] == '#' {
+		return value
+	}
+	return "#1677ff"
+}
+
+func cleanRoles(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		role := strings.TrimSpace(value)
+		if role == "" {
+			continue
+		}
+		if _, ok := seen[role]; ok {
+			continue
+		}
+		seen[role] = struct{}{}
+		out = append(out, role)
+	}
+	return out
 }
 
 type failingBuildQuery struct{}
