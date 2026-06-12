@@ -53,13 +53,14 @@ export type WorkloadEnvironmentConfig = {
 };
 export type ReleaseCandidate = { id: string; workloadId: string; version: string; image: string; digest: string; commit: string; buildArtifactId?: string; imageBundleId?: string; bundleImages?: ImageBundleImage[]; createdAt: string };
 export type BuildArtifactCandidate = { id: string; workloadId: string; image: string; digest: string; createdAt: string };
-export type StageDefinition = { id: string; name: 'dev' | 'test' | 'staging' | 'prod'; environmentId: string; approvalRequired?: boolean; approvalCount?: number; approverScope?: string; selfApprovalForbidden?: boolean; currentFreightVersion?: string; replicasSummary?: string; domainSummary?: string; configSummary?: string };
+export type StageDefinition = { id: string; name: string; environmentId: string; approvalRequired?: boolean; approvalCount?: number; approverScope?: string; selfApprovalForbidden?: boolean; currentFreightVersion?: string; replicasSummary?: string; domainSummary?: string; configSummary?: string };
 export type DeliveryFlowTemplateStageStatus = 'enabled' | 'disabled';
-export type DeliveryFlowTemplateStage = { id: string; tenantId: string; templateId: string; stageKey: string; displayName: string; color: string; order: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[] };
-export type DeliveryFlowTemplate = { id: string; tenantId: string; name: string; stages: DeliveryFlowTemplateStage[]; createdAt?: string; updatedAt?: string };
+export type DeliveryFlowTemplateStage = { id: string; tenantId: string; templateId: string; stageKey: string; displayName: string; color: string; order: number; layoutColumn: number; layoutRow: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[] };
+export type DeliveryFlowTemplateEdge = { id: string; tenantId: string; templateId: string; fromStageKey: string; toStageKey: string };
+export type DeliveryFlowTemplate = { id: string; tenantId: string; name: string; stages: DeliveryFlowTemplateStage[]; edges: DeliveryFlowTemplateEdge[]; createdAt?: string; updatedAt?: string };
 export type StageClusterBinding = { id: string; tenantId: string; stageKey: string; clusterId: string; clusterName: string; status: 'active' | 'disabled' };
 export type ClusterOption = { id: string; name: string; region: string; status: string; labels?: StringMap };
-export type AppStage = { tenantId: string; projectId: string; applicationId: string; stageKey: string; displayName: string; color: string; order: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[]; clusterPoolSize: number };
+export type AppStage = { tenantId: string; projectId: string; applicationId: string; deliveryStageId?: string; environmentId?: string; stageKey: string; displayName: string; color: string; order: number; layoutColumn: number; layoutRow: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[]; clusterPoolSize: number; boundClusterId?: string; boundClusterName?: string; currentFreightId?: string; currentFreightVersion?: string; syncStatus?: string; healthStatus?: string; upstreamStageKeys?: string[]; downstreamStageKeys?: string[] };
 export type FreightCreationContext = { enabledWorkloads: Workload[]; latestReleasesByWorkload: Record<string, ReleaseCandidate>; latestArtifactsByWorkload: Record<string, BuildArtifactCandidate>; stageEligibility: Record<string, string[]>; stages: StageDefinition[] };
 export type CreateFreightInput = { name: string; items: { workloadId: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageRef?: string }[] };
 export type CreatePromotionInput = { freightId: string; targetEnvironmentId?: string; targetStageKey?: string; targetClusterIds?: string[]; namespaceOverride?: string; message?: string };
@@ -75,6 +76,8 @@ export type BuildEnvironment = { id: string; name: string; description?: string;
 export type RuntimeEnvironment = { id: string; name: string; description?: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string; selectorLabels?: StringMap; status: string; isDefault: boolean; updatedAt: string };
 export type BuildTemplate = { id: string; name: string; version: number; content: string; updatedAt: string };
 
+const DELIVERY_FLOW_COLUMN_COLORS = ['#ED204E', '#FD5352', '#FE7537', '#e78a00', '#DFC546', '#9bce22', '#84DF75', '#1CAC77', '#1bc1a7', '#1DCECA', '#0DAFD3', '#3882EA', '#2D5EDC', '#6380E1', '#7851AA', '#A9499D', '#D0469D', '#E573A2', '#f1619b', '#FE43A3', '#6a7382'];
+const columnColor = (column: number) => DELIVERY_FLOW_COLUMN_COLORS[Math.max(0, column) % DELIVERY_FLOW_COLUMN_COLORS.length];
 const wait = (ms = 120) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const tenants: Tenant[] = [
   { id: 'tenant_1', name: 'rnd', displayName: '研发中心', description: '默认开发租户', updatedAt: '2026-05-30 09:30' }
@@ -132,10 +135,15 @@ let deliveryFlowTemplate: DeliveryFlowTemplate = {
   tenantId: 'tenant_1',
   name: '默认交付流模板',
   stages: [
-    { id: 'stage_template_dev', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'dev', displayName: '开发', color: '#1677ff', order: 1, status: 'enabled', requiresApproval: false, requiresVerification: false, approveRoles: [], verifyRoles: ['developer', 'operator'] },
-    { id: 'stage_template_test', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'test', displayName: '测试', color: '#52c41a', order: 2, status: 'enabled', requiresApproval: false, requiresVerification: true, approveRoles: [], verifyRoles: ['developer', 'operator'] },
-    { id: 'stage_template_staging', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'staging', displayName: '预发', color: '#fa8c16', order: 3, status: 'enabled', requiresApproval: true, requiresVerification: true, approveRoles: ['operator'], verifyRoles: ['operator'] },
-    { id: 'stage_template_prod', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'prod', displayName: '生产', color: '#f5222d', order: 4, status: 'enabled', requiresApproval: true, requiresVerification: true, approveRoles: ['prod_approver'], verifyRoles: ['operator', 'prod_approver'] }
+    { id: 'stage_template_dev', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'dev', displayName: '开发', color: columnColor(0), order: 1, layoutColumn: 0, layoutRow: 0, status: 'enabled', requiresApproval: false, requiresVerification: false, approveRoles: [], verifyRoles: ['developer', 'operator'] },
+    { id: 'stage_template_test', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'test', displayName: '测试', color: columnColor(1), order: 2, layoutColumn: 1, layoutRow: 0, status: 'enabled', requiresApproval: false, requiresVerification: true, approveRoles: [], verifyRoles: ['developer', 'operator'] },
+    { id: 'stage_template_staging', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'staging', displayName: '预发', color: columnColor(2), order: 3, layoutColumn: 2, layoutRow: 0, status: 'enabled', requiresApproval: true, requiresVerification: true, approveRoles: ['operator'], verifyRoles: ['operator'] },
+    { id: 'stage_template_prod', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', stageKey: 'prod', displayName: '生产', color: columnColor(3), order: 4, layoutColumn: 3, layoutRow: 0, status: 'enabled', requiresApproval: true, requiresVerification: true, approveRoles: ['prod_approver'], verifyRoles: ['operator', 'prod_approver'] }
+  ],
+  edges: [
+    { id: 'edge_dev_test', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', fromStageKey: 'dev', toStageKey: 'test' },
+    { id: 'edge_test_staging', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', fromStageKey: 'test', toStageKey: 'staging' },
+    { id: 'edge_staging_prod', tenantId: 'tenant_1', templateId: 'delivery_flow_template_1', fromStageKey: 'staging', toStageKey: 'prod' }
   ],
   createdAt: '2026-06-12 09:00',
   updatedAt: '2026-06-12 09:00'
@@ -229,7 +237,11 @@ const stageEligibility: Record<string, string[]> = {
   stage_dev: ['freight_20260609_1'],
   stage_test: ['freight_20260610_1'],
   stage_staging: ['freight_20260611_1'],
-  stage_prod: ['freight_20260611_1']
+  stage_prod: ['freight_20260611_1'],
+  delivery_stage_dev: ['freight_20260609_1'],
+  delivery_stage_test: ['freight_20260610_1'],
+  delivery_stage_staging: ['freight_20260611_1'],
+  delivery_stage_prod: ['freight_20260611_1']
 };
 const buildPipelines: Record<string, BuildPipeline[]> = {
   app_1: [{
@@ -604,9 +616,42 @@ export async function listApplicationEnvironments(applicationId: string): Promis
 }
 
 export async function getDeliveryFlowTemplate(tenantId = 'tenant_1'): Promise<DeliveryFlowTemplate> {
-  await wait();
-  if (deliveryFlowTemplate.tenantId !== tenantId) throw new Error('交付流模板不存在');
-  return { ...deliveryFlowTemplate, stages: deliveryFlowTemplate.stages.map((stage) => ({ ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] })) };
+	await wait();
+	if (deliveryFlowTemplate.tenantId !== tenantId) throw new Error('交付流模板不存在');
+	return cloneDeliveryFlowTemplate();
+}
+
+export async function replaceDeliveryFlowTemplateGraph(tenantId: string, input: { stages: DeliveryFlowTemplateStage[]; edges: Pick<DeliveryFlowTemplateEdge, 'fromStageKey' | 'toStageKey'>[]; deletedStageKeys?: string[] }): Promise<DeliveryFlowTemplate> {
+	await wait();
+	if (deliveryFlowTemplate.tenantId !== tenantId) throw new Error('交付流模板不存在');
+	const deletedStageKeys = new Set((input.deletedStageKeys || []).map((key) => key.trim()).filter(Boolean));
+	const upsertedStageKeys = new Set(input.stages.map((stage) => stage.stageKey));
+	const retainedStages = deliveryFlowTemplate.stages.filter((stage) => !deletedStageKeys.has(stage.stageKey) || upsertedStageKeys.has(stage.stageKey));
+	const retainedByKey = new Map(retainedStages.map((stage) => [stage.stageKey, stage]));
+	deliveryFlowTemplate = {
+		...deliveryFlowTemplate,
+		stages: input.stages.map((stage, index) => ({
+			...(retainedByKey.get(stage.stageKey) || {}),
+			...stage,
+			tenantId,
+			templateId: deliveryFlowTemplate.id,
+			color: columnColor(stage.layoutColumn || 0),
+			order: stage.order || index + 1,
+			layoutColumn: Math.max(0, stage.layoutColumn || 0),
+			layoutRow: stage.layoutRow || 0,
+			approveRoles: [...(stage.approveRoles || [])],
+			verifyRoles: [...(stage.verifyRoles || [])]
+		})).concat(retainedStages.filter((stage) => !upsertedStageKeys.has(stage.stageKey))),
+		edges: input.edges.map((edge, index) => ({
+			id: `edge_${edge.fromStageKey}_${edge.toStageKey}_${index}`,
+			tenantId,
+			templateId: deliveryFlowTemplate.id,
+			fromStageKey: edge.fromStageKey,
+			toStageKey: edge.toStageKey
+		})),
+		updatedAt: '刚刚'
+	};
+	return cloneDeliveryFlowTemplate();
 }
 
 export async function saveDeliveryFlowTemplateStage(tenantId: string, input: Partial<DeliveryFlowTemplateStage> & { stageKey: string }) {
@@ -616,8 +661,10 @@ export async function saveDeliveryFlowTemplateStage(tenantId: string, input: Par
   if (existing) {
     Object.assign(existing, {
       displayName: input.displayName || existing.displayName,
-      color: input.color || existing.color,
+      color: columnColor(input.layoutColumn ?? existing.layoutColumn),
       order: input.order || existing.order,
+      layoutColumn: input.layoutColumn ?? existing.layoutColumn,
+      layoutRow: input.layoutRow ?? existing.layoutRow,
       status: input.status || existing.status,
       requiresApproval: !!input.requiresApproval,
       requiresVerification: !!input.requiresVerification,
@@ -626,18 +673,20 @@ export async function saveDeliveryFlowTemplateStage(tenantId: string, input: Par
     });
     return { ...existing, approveRoles: [...existing.approveRoles], verifyRoles: [...existing.verifyRoles] };
   }
-  const stage: DeliveryFlowTemplateStage = { id: `stage_template_${Date.now()}`, tenantId, templateId: deliveryFlowTemplate.id, stageKey, displayName: input.displayName || stageKey, color: input.color || '#1677ff', order: input.order || deliveryFlowTemplate.stages.length + 1, status: input.status || 'enabled', requiresApproval: !!input.requiresApproval, requiresVerification: !!input.requiresVerification, approveRoles: input.approveRoles || [], verifyRoles: input.verifyRoles || [] };
+  const layoutColumn = input.layoutColumn ?? deliveryFlowTemplate.stages.length;
+  const stage: DeliveryFlowTemplateStage = { id: `stage_template_${Date.now()}`, tenantId, templateId: deliveryFlowTemplate.id, stageKey, displayName: input.displayName || stageKey, color: columnColor(layoutColumn), order: input.order || deliveryFlowTemplate.stages.length + 1, layoutColumn, layoutRow: input.layoutRow || 0, status: input.status || 'enabled', requiresApproval: !!input.requiresApproval, requiresVerification: !!input.requiresVerification, approveRoles: input.approveRoles || [], verifyRoles: input.verifyRoles || [] };
   deliveryFlowTemplate.stages.push(stage);
   return { ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] };
 }
 
 export async function deleteDeliveryFlowTemplateStage(tenantId: string, stageKey: string) {
-  await wait();
-  const index = deliveryFlowTemplate.stages.findIndex((item) => item.tenantId === tenantId && item.stageKey === stageKey);
-  if (index < 0) throw new Error('Stage 不存在');
-  const [stage] = deliveryFlowTemplate.stages.splice(index, 1);
-  stageClusterBindings = stageClusterBindings.filter((item) => !(item.tenantId === tenantId && item.stageKey === stageKey));
-  return { ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] };
+	await wait();
+	const index = deliveryFlowTemplate.stages.findIndex((item) => item.tenantId === tenantId && item.stageKey === stageKey);
+	if (index < 0) throw new Error('Stage 不存在');
+	const [stage] = deliveryFlowTemplate.stages.splice(index, 1);
+	deliveryFlowTemplate.edges = deliveryFlowTemplate.edges.filter((edge) => edge.fromStageKey !== stageKey && edge.toStageKey !== stageKey);
+	stageClusterBindings = stageClusterBindings.filter((item) => !(item.tenantId === tenantId && item.stageKey === stageKey));
+	return { ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] };
 }
 
 export async function listClusterOptions(_tenantId?: string): Promise<ClusterOption[]> {
@@ -647,6 +696,7 @@ export async function listClusterOptions(_tenantId?: string): Promise<ClusterOpt
 
 export async function replaceStageClusterBindings(tenantId: string, stageKey: string, clusterIds: string[]) {
   await wait();
+  if (clusterIds.length > 1) throw new Error('一个 Stage 只能绑定一个集群');
   stageClusterBindings = stageClusterBindings.filter((item) => !(item.tenantId === tenantId && item.stageKey === stageKey));
   const next = clusterIds.map((clusterId) => {
     const cluster = clusterOptions.find((item) => item.id === clusterId);
@@ -663,9 +713,20 @@ export async function listStageClusterBindings(tenantId: string, stageKey: strin
 }
 
 export async function listAppStages(applicationId: string): Promise<AppStage[]> {
-  await wait();
-  const app = applications.find((item) => item.id === applicationId) || applications[0];
-  return deliveryFlowTemplate.stages.slice().sort((a, b) => a.order - b.order).map((stage) => ({ tenantId: deliveryFlowTemplate.tenantId, projectId: app.projectId || 'project_1', applicationId, stageKey: stage.stageKey, displayName: stage.displayName, color: stage.color, order: stage.order, status: stage.status, requiresApproval: stage.requiresApproval, requiresVerification: stage.requiresVerification, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles], clusterPoolSize: stageClusterBindings.filter((binding) => binding.tenantId === deliveryFlowTemplate.tenantId && binding.stageKey === stage.stageKey && binding.status === 'active').length }));
+	await wait();
+	const app = applications.find((item) => item.id === applicationId) || applications[0];
+	return deliveryFlowTemplate.stages.slice().sort((a, b) => a.order - b.order).map((stage) => {
+		const binding = stageClusterBindings.find((item) => item.tenantId === deliveryFlowTemplate.tenantId && item.stageKey === stage.stageKey && item.status === 'active');
+		return { tenantId: deliveryFlowTemplate.tenantId, projectId: app.projectId || 'project_1', applicationId, deliveryStageId: `delivery_stage_${stage.stageKey}`, environmentId: `env_${stage.stageKey}`, stageKey: stage.stageKey, displayName: stage.displayName, color: columnColor(stage.layoutColumn), order: stage.order, layoutColumn: stage.layoutColumn, layoutRow: stage.layoutRow, status: stage.status, requiresApproval: stage.requiresApproval, requiresVerification: stage.requiresVerification, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles], clusterPoolSize: binding ? 1 : 0, boundClusterId: binding?.clusterId, boundClusterName: binding?.clusterName, currentFreightId: freights[freights.length - 1]?.id, currentFreightVersion: freights[freights.length - 1]?.version, syncStatus: 'Synced', healthStatus: 'Healthy', upstreamStageKeys: deliveryFlowTemplate.edges.filter((edge) => edge.toStageKey === stage.stageKey).map((edge) => edge.fromStageKey), downstreamStageKeys: deliveryFlowTemplate.edges.filter((edge) => edge.fromStageKey === stage.stageKey).map((edge) => edge.toStageKey) };
+	});
+}
+
+function cloneDeliveryFlowTemplate(): DeliveryFlowTemplate {
+	return {
+		...deliveryFlowTemplate,
+		stages: deliveryFlowTemplate.stages.map((stage) => ({ ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] })),
+		edges: deliveryFlowTemplate.edges.map((edge) => ({ ...edge }))
+	};
 }
 
 export async function completeFreightApproval(freightId: string, input: FreightApprovalInput) {

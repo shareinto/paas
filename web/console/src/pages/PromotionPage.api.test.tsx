@@ -1,6 +1,6 @@
 import { ConfigProvider } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -22,13 +22,25 @@ test('真实 API 列表无 items 时点击 Freight 会加载详情并展示 Work
 	      return new Response(JSON.stringify({ id: 'app_1', name: 'order-service', display_name: '订单服务', project_id: 'project_1', project: '订单平台' }), { status: 200 });
 	    }
 	    if (url.endsWith('/api/apps/app_1/stages')) {
-	      return new Response(JSON.stringify({ items: [{ tenant_id: 'tenant_1', project_id: 'project_1', application_id: 'app_1', stage_key: 'dev', display_name: '开发', color: '#1677ff', order: 1, status: 'enabled', cluster_pool_size: 1 }] }), { status: 200 });
-	    }
-	    if (url.includes('/api/clusters?')) {
-	      return new Response(JSON.stringify({ items: [{ id: 'cluster_shanghai', name: '上海集群', region: 'cn-shanghai', status: 'ready' }], total: 1, page: 1, page_size: 100 }), { status: 200 });
-	    }
-	    if (url.endsWith('/api/tenants/tenant_1/delivery-flow-template/stages/dev/cluster-bindings')) {
-	      return new Response(JSON.stringify({ items: [{ id: 'binding_dev_shanghai', tenant_id: 'tenant_1', stage_key: 'dev', cluster_id: 'cluster_shanghai', cluster_name: '上海集群', status: 'active' }] }), { status: 200 });
+	      return new Response(JSON.stringify({ items: [{
+          tenant_id: 'tenant_1',
+          project_id: 'project_1',
+          application_id: 'app_1',
+          delivery_stage_id: 'stage_dev',
+          environment_id: 'env_dev',
+          stage_key: 'dev',
+          display_name: '开发',
+          color: '#ED204E',
+          order: 1,
+          layout_column: 0,
+          layout_row: 0,
+          status: 'enabled',
+          cluster_pool_size: 1,
+          bound_cluster_id: 'cluster_shanghai',
+          bound_cluster_name: '上海集群',
+          upstream_stage_keys: [],
+          downstream_stage_keys: []
+        }] }), { status: 200 });
 	    }
 	    if (url.endsWith('/api/apps/app_1/freights/creation-context')) {
 	      return new Response(JSON.stringify({
@@ -48,6 +60,7 @@ test('真实 API 列表无 items 时点击 Freight 会加载详情并展示 Work
         items: [{
           id: 'item_1',
           workload_id: 'workload_api',
+          workload_display_name: '订单接口',
           source_type: 'pipeline_artifact',
           release_id: 'release_1',
           build_artifact_id: 'artifact_1',
@@ -74,12 +87,11 @@ test('真实 API 列表无 items 时点击 Freight 会加载详情并展示 Work
   );
 
 	  const devCard = await screen.findByLabelText('dev Stage');
-	  await userEvent.click(within(devCard).getByRole('button', { name: '发布' }));
-	  await userEvent.click(await screen.findByRole('button', { name: /选择 Freight 20260612\.1/ }));
+	  dragFreightToStage(await freightCardByName('20260612.1'), devCard);
 
-	  const dialog = await screen.findByRole('dialog', { name: '发布确认' });
-	  expect(within(dialog).getByText('订单接口')).toBeInTheDocument();
-	  expect(within(dialog).getByText('registry.local/order-api:20260612.1')).toBeInTheDocument();
+	  const confirm = await within(devCard).findByLabelText('dev 发布确认');
+	  expect(within(confirm).getByText('订单接口')).toBeInTheDocument();
+	  expect(within(confirm).getByText('registry.local/order-api:20260612.1')).toBeInTheDocument();
 	  expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/freights/freight_1', expect.any(Object));
 	});
 
@@ -93,13 +105,25 @@ test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID',
 	      return new Response(JSON.stringify({ id: 'app_other', name: 'other-order', display_name: '外部订单', project_id: 'project_other', project: '外部订单平台' }), { status: 200 });
 	    }
 	    if (url.endsWith('/api/apps/app_other/stages')) {
-	      return new Response(JSON.stringify({ items: [{ tenant_id: 'tenant_1', project_id: 'project_other', application_id: 'app_other', stage_key: 'dev', display_name: '开发', color: '#1677ff', order: 1, status: 'enabled', cluster_pool_size: 1 }] }), { status: 200 });
-	    }
-	    if (url.includes('/api/clusters?')) {
-	      return new Response(JSON.stringify({ items: [{ id: 'cluster_shanghai', name: '上海集群', region: 'cn-shanghai', status: 'ready' }], total: 1, page: 1, page_size: 100 }), { status: 200 });
-	    }
-	    if (url.endsWith('/api/tenants/tenant_1/delivery-flow-template/stages/dev/cluster-bindings')) {
-	      return new Response(JSON.stringify({ items: [{ id: 'binding_dev_shanghai', tenant_id: 'tenant_1', stage_key: 'dev', cluster_id: 'cluster_shanghai', cluster_name: '上海集群', status: 'active' }] }), { status: 200 });
+	      return new Response(JSON.stringify({ items: [{
+          tenant_id: 'tenant_1',
+          project_id: 'project_other',
+          application_id: 'app_other',
+          delivery_stage_id: 'delivery_stage_real_dev',
+          environment_id: 'env_other_dev',
+          stage_key: 'dev',
+          display_name: '开发',
+          color: '#ED204E',
+          order: 1,
+          layout_column: 0,
+          layout_row: 0,
+          status: 'enabled',
+          cluster_pool_size: 1,
+          bound_cluster_id: 'cluster_shanghai',
+          bound_cluster_name: '上海集群',
+          upstream_stage_keys: [],
+          downstream_stage_keys: []
+        }] }), { status: 200 });
 	    }
 	    if (url.endsWith('/api/apps/app_other/freights/creation-context')) {
 	      return new Response(JSON.stringify({
@@ -126,6 +150,19 @@ test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID',
     if (url.endsWith('/api/apps/app_other/delivery/stages/delivery_stage_real_dev/eligible-freights')) {
       return new Response(JSON.stringify([{ id: 'freight_other', name: '20260613.1', created_at: '2026-06-13T09:00:00Z' }]), { status: 200 });
     }
+    if (url.endsWith('/api/freights/freight_other')) {
+      return new Response(JSON.stringify({
+        freight: { id: 'freight_other', name: '20260613.1', created_at: '2026-06-13T09:00:00Z' },
+        items: [{
+          id: 'item_other',
+          workload_id: 'workload_other_api',
+          workload_display_name: '外部订单接口',
+          source_type: 'pipeline_artifact',
+          image_ref: 'registry.local/other-api:20260613.1',
+          digest: 'sha256:other'
+        }]
+      }), { status: 200 });
+    }
     if (url.endsWith('/api/apps/app_other/freights') && options?.method === 'POST') {
       return new Response(JSON.stringify({ id: 'freight_created', name: '手工 Freight', created_at: '2026-06-13T10:00:00Z' }), { status: 201 });
     }
@@ -147,9 +184,9 @@ test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID',
   );
 
 	  const devCard = await screen.findByLabelText('dev Stage');
-	  await userEvent.click(within(devCard).getByRole('button', { name: '发布' }));
-	  expect(await screen.findByRole('button', { name: /选择 Freight 20260613\.1/ })).toHaveAttribute('data-eligible', 'true');
-	  await userEvent.click(within(await screen.findByRole('dialog', { name: '发布确认' })).getByRole('button', { name: 'Close' }));
+	  dragFreightToStage(await freightCardByName('20260613.1'), devCard);
+	  expect(await within(devCard).findByLabelText('dev 发布确认')).toBeInTheDocument();
+	  await userEvent.click(within(devCard).getByRole('button', { name: /取\s*消/ }));
 
 	  await userEvent.click(await screen.findByRole('button', { name: '创建 Freight' }));
   const drawer = await screen.findByRole('dialog', { name: '创建 Freight' });
@@ -161,3 +198,19 @@ test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID',
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/delivery/stages/delivery_stage_real_dev/eligible-freights', expect.any(Object));
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/freights', expect.objectContaining({ method: 'POST' }));
 });
+
+async function freightCardByName(name: string) {
+  const timeline = await screen.findByLabelText('Freight 时间轴');
+  return within(timeline).getAllByTestId('freight-card').find((card) => within(card).queryByText(name)) as HTMLElement;
+}
+
+function dragFreightToStage(freightCard: HTMLElement, stageCard: HTMLElement) {
+  const data = new Map<string, string>();
+  const dataTransfer = {
+    setData: (type: string, value: string) => data.set(type, value),
+    getData: (type: string) => data.get(type) || ''
+  } as DataTransfer;
+  fireEvent.dragStart(freightCard, { dataTransfer });
+  fireEvent.dragOver(stageCard, { dataTransfer });
+  fireEvent.drop(stageCard, { dataTransfer });
+}

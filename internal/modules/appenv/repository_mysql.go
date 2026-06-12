@@ -89,6 +89,10 @@ func (r *MySQLRepository) ListApplicationsByProject(ctx context.Context, project
 	return r.listApplications(ctx, "project_id = ?", []any{projectID}, page)
 }
 
+func (r *MySQLRepository) ListApplicationsByTenant(ctx context.Context, tenantID shared.ID, page shared.PageRequest) (shared.PageResult[Application], error) {
+	return r.listApplications(ctx, "tenant_id = ?", []any{tenantID}, page)
+}
+
 func (r *MySQLRepository) ListApplicationsByRuntimeEnvironment(ctx context.Context, runtimeEnvironmentID shared.ID, page shared.PageRequest) (shared.PageResult[Application], error) {
 	return r.listApplications(ctx, "id IN (SELECT application_id FROM application_runtime_environments WHERE runtime_environment_id = ?)", []any{runtimeEnvironmentID}, page)
 }

@@ -756,6 +756,56 @@ func (s *Service) ListEnvironments(ctx context.Context, applicationID shared.ID)
 	return s.repo.ListEnvironmentsByApplication(ctx, applicationID)
 }
 
+func (s *Service) SyncApplicationStageEnvironments(ctx context.Context, tenantID shared.ID, stageKeys []string) error {
+	if tenantID.IsZero() {
+		return shared.NewError(shared.CodeInvalidArgument, "tenant_id is required")
+	}
+	normalized := make([]string, 0, len(stageKeys))
+	seenKeys := map[string]struct{}{}
+	for _, key := range stageKeys {
+		name := strings.TrimSpace(key)
+		if name == "" {
+			continue
+		}
+		if _, ok := seenKeys[name]; ok {
+			continue
+		}
+		seenKeys[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	for page := 1; ; page++ {
+		apps, err := s.repo.ListApplicationsByTenant(ctx, tenantID, shared.PageRequest{Page: page, PageSize: 100})
+		if err != nil {
+			return err
+		}
+		for _, app := range apps.Items {
+			if app.Status != ApplicationStatusActive {
+				continue
+			}
+			envs, err := s.repo.ListEnvironmentsByApplication(ctx, app.ID)
+			if err != nil {
+				return err
+			}
+			existing := map[string]struct{}{}
+			for _, env := range envs {
+				existing[env.Name] = struct{}{}
+			}
+			for _, name := range normalized {
+				if _, ok := existing[name]; ok {
+					continue
+				}
+				if err := s.createEnvironment(ctx, app, name); err != nil {
+					return err
+				}
+			}
+		}
+		if int64(page*apps.PageSize) >= apps.Total {
+			break
+		}
+	}
+	return nil
+}
+
 func (s *Service) changeWorkloadStatus(ctx context.Context, input WorkloadStatusInput, status WorkloadStatus) (Workload, error) {
 	workload, err := s.requireWorkloadInApplication(ctx, input.ApplicationID, input.WorkloadID)
 	if err != nil {
@@ -913,48 +963,50 @@ func (s *Service) ListEnvironmentEvents(ctx context.Context, environmentID share
 
 func (s *Service) createDefaultEnvironments(ctx context.Context, app Application, source ApplicationSource) error {
 	for _, name := range defaultEnvironmentNames {
-		envID, err := s.ids.NewID("env")
-		if err != nil {
-			return err
-		}
-		now := s.clock.Now()
-		env := Environment{
-			ID:            envID,
-			TenantID:      app.TenantID,
-			ProjectID:     app.ProjectID,
-			ApplicationID: app.ID,
-			Name:          name,
-			DisplayName:   defaultEnvironmentDisplayName(name),
-			CreatedAt:     now,
-			UpdatedAt:     now,
-		}
-		if err := s.repo.CreateEnvironment(ctx, env); err != nil {
-			return err
-		}
-		status := EnvironmentStatusPendingClusterBinding
-		message := "等待绑定可用集群"
-		if s.clusters != nil {
-			candidate, ok, err := s.clusters.SelectCluster(ctx, env)
-			if err != nil {
-				return err
-			}
-			if ok {
-				if _, err := s.createBindingAndProvision(ctx, env, candidate); err != nil {
-					return err
-				}
-				continue
-			}
-		}
-		state := EnvironmentState{TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID, Status: status, Message: message, UpdatedAt: now}
-		if err := s.repo.SaveEnvironmentState(ctx, state); err != nil {
-			return err
-		}
-		if err := s.appendEnvironmentEvent(ctx, env, "environment.created", status, message, now); err != nil {
+		if err := s.createEnvironment(ctx, app, name); err != nil {
 			return err
 		}
 		_ = source
 	}
 	return nil
+}
+
+func (s *Service) createEnvironment(ctx context.Context, app Application, name string) error {
+	envID, err := s.ids.NewID("env")
+	if err != nil {
+		return err
+	}
+	now := s.clock.Now()
+	env := Environment{
+		ID:            envID,
+		TenantID:      app.TenantID,
+		ProjectID:     app.ProjectID,
+		ApplicationID: app.ID,
+		Name:          name,
+		DisplayName:   defaultEnvironmentDisplayName(name),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := s.repo.CreateEnvironment(ctx, env); err != nil {
+		return err
+	}
+	status := EnvironmentStatusPendingClusterBinding
+	message := "等待绑定可用集群"
+	if s.clusters != nil {
+		candidate, ok, err := s.clusters.SelectCluster(ctx, env)
+		if err != nil {
+			return err
+		}
+		if ok {
+			_, err := s.createBindingAndProvision(ctx, env, candidate)
+			return err
+		}
+	}
+	state := EnvironmentState{TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID, Status: status, Message: message, UpdatedAt: now}
+	if err := s.repo.SaveEnvironmentState(ctx, state); err != nil {
+		return err
+	}
+	return s.appendEnvironmentEvent(ctx, env, "environment.created", status, message, now)
 }
 
 func (s *Service) createBindingAndProvision(ctx context.Context, env Environment, candidate ClusterCandidate) (EnvironmentClusterBinding, error) {

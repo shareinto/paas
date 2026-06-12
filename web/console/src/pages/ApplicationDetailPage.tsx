@@ -46,7 +46,6 @@ const IMAGE_SOURCE_OPTIONS = [
   { label: '混合来源', value: 'mixed' },
   { label: '暂不绑定', value: 'none' }
 ];
-const DELIVERY_FLOW_STEPS = ['创建 Workload', '配置环境差异', '创建完整 Freight', '选择目标 Stage', '发布晋级', '回滚历史 Freight'];
 const WORKLOAD_WIZARD_STEPS = ['基础信息', '镜像来源', '运行参数', '网络访问', '配置与目录', '预览校验'];
 
 export function ApplicationDetailPage() {
@@ -79,7 +78,6 @@ export function ApplicationDetailPage() {
           { key: 'status', label: '状态', children: <Badge status={app?.status === 'disabled' ? 'default' : 'success'} text={app?.status === 'disabled' ? '已禁用' : '启用'} /> }
         ]} />
       </Card>
-      <DeliveryFlow />
       <Tabs
         activeKey={activeTab}
         onChange={setActiveTab}
@@ -89,19 +87,6 @@ export function ApplicationDetailPage() {
         { key: 'deploy', label: '部署', children: <PromotionContent applicationId={id} /> }
       ]} />
     </>
-  );
-}
-
-function DeliveryFlow() {
-  return (
-    <div className="delivery-flow" aria-label="交付流程">
-      {DELIVERY_FLOW_STEPS.map((step, index) => (
-        <div key={step} className="delivery-flow-step">
-          <span className={index === 0 ? 'delivery-flow-node active' : 'delivery-flow-node'}>{step}</span>
-          {index < DELIVERY_FLOW_STEPS.length - 1 && <span className="delivery-flow-arrow">→</span>}
-        </div>
-      ))}
-    </div>
   );
 }
 

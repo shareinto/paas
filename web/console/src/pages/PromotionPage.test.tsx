@@ -1,6 +1,6 @@
 import { ConfigProvider } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
@@ -25,10 +25,8 @@ afterEach(() => {
 test('Freight 按创建时间从左到右显示并展示流程引导', async () => {
   renderPromotionPage();
 
-  const flow = screen.getByLabelText('交付流程');
-  ['创建 Workload', '配置环境差异', '创建完整 Freight', '选择目标 Stage', '发布晋级', '回滚历史 Freight'].forEach((name) => {
-    expect(within(flow).getByText(name)).toBeInTheDocument();
-  });
+  expect(await screen.findByLabelText('应用部署 DAG')).toBeInTheDocument();
+  expect(screen.getByText('拖拽 Freight 到目标 Stage，系统按交付流 DAG 校验上游依赖、审批和验证要求。')).toBeInTheDocument();
   const timeline = await screen.findByLabelText('Freight 时间轴');
   const cards = within(timeline).getAllByTestId('freight-card');
 
@@ -39,89 +37,65 @@ test('Freight 按创建时间从左到右显示并展示流程引导', async () 
   ]);
 });
 
-test('Stage 卡片显示发布按钮和环境摘要', async () => {
+test('Stage 卡片显示 DAG 投影和部署状态', async () => {
   renderPromotionPage();
 
   for (const stage of ['dev', 'test', 'staging', 'prod']) {
     const card = await screen.findByLabelText(`${stage} Stage`);
-    expect(within(card).getByRole('button', { name: '发布' })).toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: '发布' })).not.toBeInTheDocument();
     expect(within(card).getByRole('button', { name: '验证' })).toBeInTheDocument();
-    expect(within(card).getByText('集群池')).toBeInTheDocument();
+    expect(within(card).getByText('绑定集群')).toBeInTheDocument();
     expect(within(card).getByText('当前 Freight')).toBeInTheDocument();
-    expect(within(card).getByText('副本')).toBeInTheDocument();
-    expect(within(card).getByText('域名')).toBeInTheDocument();
-    expect(within(card).getByText('配置')).toBeInTheDocument();
+    expect(within(card).getByText('上游 Stage')).toBeInTheDocument();
+    expect(within(card).getByText('验证状态')).toBeInTheDocument();
   }
-  expect(within(await screen.findByLabelText('prod Stage')).getByText('生产需审批')).toBeInTheDocument();
+  expect(within(await screen.findByLabelText('prod Stage')).getByText('需审批')).toBeInTheDocument();
 });
 
-test('点击 dev 发布后只点亮 dev 可发布 Freight，其他 Freight 被置灰禁用', async () => {
+test('拖拽不可发布 Freight 到 dev 后提示不可发布', async () => {
   renderPromotionPage();
 
   const devCard = await screen.findByLabelText('dev Stage');
-  await userEvent.click(within(devCard).getByRole('button', { name: '发布' }));
+  dragFreightToStage(await freightCardByName('20260610.1'), devCard);
 
-  const freightA = await screen.findByRole('button', { name: /选择 Freight 20260609\.1/ });
-  const freightB = screen.getByRole('button', { name: /选择 Freight 20260610\.1/ });
-  const freightC = screen.getByRole('button', { name: /选择 Freight 20260611\.1/ });
-
-  expect(freightA).toHaveAttribute('data-eligible', 'true');
-  expect(freightB).toBeDisabled();
-  expect(freightB).toHaveAttribute('data-eligible', 'false');
-  expect(freightC).toBeDisabled();
-  expect(freightC).toHaveAttribute('data-eligible', 'false');
+  expect(await screen.findByText('该 Freight 当前不能发布到目标 Stage')).toBeInTheDocument();
+  expect(within(devCard).queryByLabelText('dev 发布确认')).not.toBeInTheDocument();
 });
 
-test('发布确认使用弹窗选择 Freight、目标集群子集和 Namespace', async () => {
+test('拖拽 Freight 到 Stage 后在卡片内确认发布并展示 Workload 镜像', async () => {
   renderPromotionPage();
 
   const devCard = await screen.findByLabelText('dev Stage');
-  await userEvent.click(within(devCard).getByRole('button', { name: '发布' }));
+  dragFreightToStage(await freightCardByName('20260609.1'), devCard);
 
-  const dialog = await screen.findByRole('dialog', { name: '发布确认' });
+  const confirm = await within(devCard).findByLabelText('dev 发布确认');
   expect(screen.queryByTestId('promotion-confirm-panel')).not.toBeInTheDocument();
-  expect(within(dialog).getByText('目标 Stage')).toBeInTheDocument();
-  expect(within(dialog).getByText('dev')).toBeInTheDocument();
-  expect(within(dialog).getByLabelText('选择 Freight')).toBeInTheDocument();
-  expect(within(dialog).getByLabelText('目标集群')).toBeInTheDocument();
-  expect(within(dialog).getByLabelText('Namespace')).toHaveValue('订单平台');
-
-  await userEvent.click(within(dialog).getByRole('radio', { name: /20260609\.1/ }));
-  expect(within(dialog).getByText('前端入口')).toBeInTheDocument();
-  expect(within(dialog).getByText('registry.local/order-frontend:20260609.1-aliyun')).toBeInTheDocument();
-  expect(within(dialog).getByText('订单接口')).toBeInTheDocument();
-  expect(within(dialog).getByText('registry.local/order-api:20260609.1-aliyun')).toBeInTheDocument();
-  expect(within(dialog).getByText('异步任务')).toBeInTheDocument();
-  expect(within(dialog).getByText('registry.local/order-worker:20260609.1-aliyun')).toBeInTheDocument();
-  expect(within(dialog).getAllByText(/ImageBundle/).length).toBeGreaterThan(0);
+  expect(within(confirm).getByText('20260609.1')).toBeInTheDocument();
+  expect(within(confirm).getByText('发布到 上海集群')).toBeInTheDocument();
+  expect(screen.queryByRole('dialog', { name: '发布确认' })).not.toBeInTheDocument();
 });
 
 test('确认发布后更新 Stage 当前 Freight', async () => {
   renderPromotionPage();
 
   const devCard = await screen.findByLabelText('dev Stage');
-  await userEvent.click(within(devCard).getByRole('button', { name: '发布' }));
-  const dialog = await screen.findByRole('dialog', { name: '发布确认' });
-  await userEvent.click(within(dialog).getByRole('radio', { name: /20260609\.1/ }));
-  await userEvent.click(within(dialog).getByRole('button', { name: '确认发布' }));
+  dragFreightToStage(await freightCardByName('20260609.1'), devCard);
+  const confirm = await within(devCard).findByLabelText('dev 发布确认');
+  await userEvent.click(within(confirm).getByRole('button', { name: '确认发布' }));
 
   await waitFor(() => {
     expect(within(devCard).getByText('20260609.1')).toBeInTheDocument();
   });
   expect(await screen.findByText(/20260609\.1 已提交到 dev/)).toBeInTheDocument();
+  expect(screen.queryByRole('dialog', { name: '发布确认' })).not.toBeInTheDocument();
 });
 
-test('prod 发布在弹窗显示审批提示和禁止自审批提示', async () => {
+test('prod Stage 显示审批标签且不提供发布按钮', async () => {
   renderPromotionPage();
 
   const prodCard = await screen.findByLabelText('prod Stage');
-  await userEvent.click(within(prodCard).getByRole('button', { name: '发布' }));
-
-  const dialog = await screen.findByRole('dialog', { name: '发布确认' });
-  await userEvent.click(within(dialog).getByRole('radio', { name: /20260611\.1/ }));
-  expect(within(dialog).getByText('审批人数：至少 2 人')).toBeInTheDocument();
-  expect(within(dialog).getByText('审批人范围：生产审批人')).toBeInTheDocument();
-  expect(within(dialog).getByText('禁止发起人自审批')).toBeInTheDocument();
+  expect(within(prodCard).getByText('需审批')).toBeInTheDocument();
+  expect(within(prodCard).queryByRole('button', { name: '发布' })).not.toBeInTheDocument();
 });
 
 test('Freight 卡片审批按钮打开 Freight 审批弹窗', async () => {
@@ -196,3 +170,19 @@ test('创建 Freight 支持从历史 Freight 复制和自定义镜像 tag 风险
     expect(within(drawer).getByText('镜像 tag 可能被覆盖，建议使用 digest。')).toBeInTheDocument();
   });
 });
+
+async function freightCardByName(name: string) {
+  const timeline = await screen.findByLabelText('Freight 时间轴');
+  return within(timeline).getAllByTestId('freight-card').find((card) => within(card).queryByText(name)) as HTMLElement;
+}
+
+function dragFreightToStage(freightCard: HTMLElement, stageCard: HTMLElement) {
+  const data = new Map<string, string>();
+  const dataTransfer = {
+    setData: (type: string, value: string) => data.set(type, value),
+    getData: (type: string) => data.get(type) || ''
+  } as DataTransfer;
+  fireEvent.dragStart(freightCard, { dataTransfer });
+  fireEvent.dragOver(stageCard, { dataTransfer });
+  fireEvent.drop(stageCard, { dataTransfer });
+}

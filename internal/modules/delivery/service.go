@@ -16,6 +16,7 @@ type Service struct {
 	apps       ApplicationQuery
 	workloads  WorkloadQuery
 	envs       EnvironmentQuery
+	envSync    EnvironmentSync
 	clusters   ClusterQuery
 	gitops     GitOpsDeploymentCommand
 	permission PermissionChecker
@@ -31,6 +32,7 @@ type Options struct {
 	ApplicationQuery  ApplicationQuery
 	WorkloadQuery     WorkloadQuery
 	EnvironmentQuery  EnvironmentQuery
+	EnvironmentSync   EnvironmentSync
 	ClusterQuery      ClusterQuery
 	GitOpsDeployment  GitOpsDeploymentCommand
 	PermissionChecker PermissionChecker
@@ -57,7 +59,7 @@ func NewService(opts Options) *Service {
 	if clock == nil {
 		clock = shared.SystemClock{}
 	}
-	return &Service{repo: opts.Repository, builds: opts.BuildQuery, apps: opts.ApplicationQuery, workloads: opts.WorkloadQuery, envs: opts.EnvironmentQuery, clusters: opts.ClusterQuery, gitops: opts.GitOpsDeployment, permission: opts.PermissionChecker, audit: audit, events: events, ids: ids, clock: clock}
+	return &Service{repo: opts.Repository, builds: opts.BuildQuery, apps: opts.ApplicationQuery, workloads: opts.WorkloadQuery, envs: opts.EnvironmentQuery, envSync: opts.EnvironmentSync, clusters: opts.ClusterQuery, gitops: opts.GitOpsDeployment, permission: opts.PermissionChecker, audit: audit, events: events, ids: ids, clock: clock}
 }
 
 type CreatePromotionInput struct {
@@ -92,11 +94,26 @@ type SaveDeliveryFlowTemplateStageInput struct {
 	DisplayName          string                          `json:"display_name"`
 	Color                string                          `json:"color"`
 	Order                int                             `json:"order"`
+	LayoutColumn         int                             `json:"layout_column"`
+	LayoutRow            int                             `json:"layout_row"`
 	Status               DeliveryFlowTemplateStageStatus `json:"status"`
 	RequiresApproval     bool                            `json:"requires_approval"`
 	RequiresVerification bool                            `json:"requires_verification"`
 	ApproveRoles         []string                        `json:"approve_roles"`
 	VerifyRoles          []string                        `json:"verify_roles"`
+}
+
+type ReplaceDeliveryFlowTemplateGraphInput struct {
+	Actor            identityaccess.Subject               `json:"actor"`
+	TenantID         shared.ID                            `json:"tenant_id"`
+	Stages           []SaveDeliveryFlowTemplateStageInput `json:"stages"`
+	Edges            []DeliveryFlowTemplateEdgeInput      `json:"edges"`
+	DeletedStageKeys []string                             `json:"deleted_stage_keys"`
+}
+
+type DeliveryFlowTemplateEdgeInput struct {
+	FromStageKey string `json:"from_stage_key"`
+	ToStageKey   string `json:"to_stage_key"`
 }
 
 type StageTemplateActionInput struct {
@@ -148,17 +165,18 @@ type CreateFreightInput struct {
 var defaultTemplateStages = []struct {
 	key                  string
 	displayName          string
-	color                string
 	requiresApproval     bool
 	requiresVerification bool
 	approveRoles         []string
 	verifyRoles          []string
 }{
-	{key: "dev", displayName: "开发", color: "#1677ff", verifyRoles: []string{"developer", "operator"}},
-	{key: "test", displayName: "测试", color: "#52c41a", verifyRoles: []string{"developer", "operator"}},
-	{key: "staging", displayName: "预发", color: "#fa8c16", verifyRoles: []string{"operator"}},
-	{key: "prod", displayName: "生产", color: "#f5222d", requiresApproval: true, requiresVerification: true, approveRoles: []string{"prod_approver"}, verifyRoles: []string{"operator", "prod_approver"}},
+	{key: "dev", displayName: "开发", verifyRoles: []string{"developer", "operator"}},
+	{key: "test", displayName: "测试", verifyRoles: []string{"developer", "operator"}},
+	{key: "staging", displayName: "预发", verifyRoles: []string{"operator"}},
+	{key: "prod", displayName: "生产", requiresApproval: true, requiresVerification: true, approveRoles: []string{"prod_approver"}, verifyRoles: []string{"operator", "prod_approver"}},
 }
+
+var deliveryFlowColumnColors = []string{"#ED204E", "#FD5352", "#FE7537", "#e78a00", "#DFC546", "#9bce22", "#84DF75", "#1CAC77", "#1bc1a7", "#1DCECA", "#0DAFD3", "#3882EA", "#2D5EDC", "#6380E1", "#7851AA", "#A9499D", "#D0469D", "#E573A2", "#f1619b", "#FE43A3", "#6a7382"}
 
 type CreateFreightItemInput struct {
 	WorkloadID      shared.ID       `json:"workload_id"`
@@ -301,7 +319,7 @@ func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInpu
 	if err != nil {
 		return Promotion{}, err
 	}
-	if isProdStage(stage.Name) {
+	if promotion.Status == PromotionPendingApproval {
 		return s.createApproval(ctx, promotion)
 	}
 	return s.applyPromotion(ctx, promotion, targetClusters)
@@ -411,6 +429,119 @@ func (s *Service) GetDeliveryFlowTemplate(ctx context.Context, tenantID shared.I
 	return s.ensureDeliveryFlowTemplate(ctx, tenantID)
 }
 
+func (s *Service) ReplaceDeliveryFlowTemplateGraph(ctx context.Context, input ReplaceDeliveryFlowTemplateGraphInput) (DeliveryFlowTemplate, error) {
+	if input.TenantID.IsZero() {
+		return DeliveryFlowTemplate{}, shared.NewError(shared.CodeInvalidArgument, "tenant_id is required")
+	}
+	if err := s.check(ctx, input.Actor, ApplicationRef{TenantID: input.TenantID}, "tenant:update"); err != nil {
+		return DeliveryFlowTemplate{}, err
+	}
+	if len(input.Stages) == 0 {
+		return DeliveryFlowTemplate{}, shared.NewError(shared.CodeInvalidArgument, "stage is required")
+	}
+	template, err := s.ensureDeliveryFlowTemplate(ctx, input.TenantID)
+	if err != nil {
+		return DeliveryFlowTemplate{}, err
+	}
+	if err := validateTemplateGraphInput(input.Stages, input.Edges); err != nil {
+		return DeliveryFlowTemplate{}, err
+	}
+	now := s.clock.Now()
+	stages := make([]DeliveryFlowTemplateStage, 0, len(input.Stages))
+	stageByKey := map[string]DeliveryFlowTemplateStage{}
+	for idx, stageInput := range input.Stages {
+		stageKey := normalizeStageKey(stageInput.StageKey)
+		if stageKey == "" {
+			return DeliveryFlowTemplate{}, shared.NewError(shared.CodeInvalidArgument, "stage_key is required")
+		}
+		if _, ok := stageByKey[stageKey]; ok {
+			return DeliveryFlowTemplate{}, shared.NewError(shared.CodeConflict, "stage is duplicated")
+		}
+		status := stageInput.Status
+		if status == "" {
+			status = DeliveryFlowTemplateStageEnabled
+		}
+		if status != DeliveryFlowTemplateStageEnabled && status != DeliveryFlowTemplateStageDisabled {
+			return DeliveryFlowTemplate{}, shared.NewError(shared.CodeInvalidArgument, "stage status is not supported")
+		}
+		order := stageInput.Order
+		if order <= 0 {
+			order = idx + 1
+		}
+		stage := DeliveryFlowTemplateStage{TenantID: input.TenantID, TemplateID: template.ID, StageKey: stageKey, DisplayName: firstNonEmpty(strings.TrimSpace(stageInput.DisplayName), stageKey), Color: colorForLayoutColumn(stageInput.LayoutColumn), Order: order, LayoutColumn: stageInput.LayoutColumn, LayoutRow: stageInput.LayoutRow, Status: status, RequiresApproval: stageInput.RequiresApproval, RequiresVerification: stageInput.RequiresVerification, ApproveRoles: cleanRoles(stageInput.ApproveRoles), VerifyRoles: cleanRoles(stageInput.VerifyRoles), UpdatedAt: now}
+		if existing, err := s.repo.FindDeliveryFlowTemplateStage(ctx, input.TenantID, stageKey); err == nil {
+			stage.ID = existing.ID
+			stage.CreatedAt = existing.CreatedAt
+			if err := s.repo.UpdateDeliveryFlowTemplateStage(ctx, stage); err != nil {
+				if shared.CodeOf(err) != shared.CodeNotFound {
+					return DeliveryFlowTemplate{}, err
+				}
+				id, err := s.ids.NewID("delivery_flow_stage_template")
+				if err != nil {
+					return DeliveryFlowTemplate{}, err
+				}
+				stage.ID = id
+				stage.CreatedAt = now
+				if err := s.repo.CreateDeliveryFlowTemplateStage(ctx, stage); err != nil {
+					return DeliveryFlowTemplate{}, err
+				}
+			}
+		} else if shared.CodeOf(err) == shared.CodeNotFound {
+			id, err := s.ids.NewID("delivery_flow_stage_template")
+			if err != nil {
+				return DeliveryFlowTemplate{}, err
+			}
+			stage.ID = id
+			stage.CreatedAt = now
+			if err := s.repo.CreateDeliveryFlowTemplateStage(ctx, stage); err != nil {
+				return DeliveryFlowTemplate{}, err
+			}
+		} else {
+			return DeliveryFlowTemplate{}, err
+		}
+		stages = append(stages, stage)
+		stageByKey[stageKey] = stage
+	}
+	edges, err := s.buildTemplateEdges(input.TenantID, template.ID, input.Edges, stageByKey, now)
+	if err != nil {
+		return DeliveryFlowTemplate{}, err
+	}
+	if err := s.repo.ReplaceDeliveryFlowTemplateEdges(ctx, template.ID, edges); err != nil {
+		return DeliveryFlowTemplate{}, err
+	}
+	payloadStageKeys := map[string]struct{}{}
+	for _, stage := range stages {
+		payloadStageKeys[stage.StageKey] = struct{}{}
+	}
+	for _, rawStageKey := range input.DeletedStageKeys {
+		stageKey := normalizeStageKey(rawStageKey)
+		if stageKey == "" {
+			continue
+		}
+		if _, stillPresent := payloadStageKeys[stageKey]; stillPresent {
+			continue
+		}
+		if err := s.repo.DeleteDeliveryFlowTemplateStage(ctx, input.TenantID, stageKey); err != nil && shared.CodeOf(err) != shared.CodeNotFound {
+			return DeliveryFlowTemplate{}, err
+		}
+	}
+	stageKeys := make([]string, 0, len(stages))
+	for _, stage := range stages {
+		stageKeys = append(stageKeys, stage.StageKey)
+	}
+	if s.envSync != nil {
+		if err := s.envSync.SyncApplicationStages(ctx, SyncApplicationStagesInput{TenantID: input.TenantID, StageKeys: stageKeys}); err != nil {
+			return DeliveryFlowTemplate{}, err
+		}
+	}
+	saved, err := s.ensureDeliveryFlowTemplate(ctx, input.TenantID)
+	if err != nil {
+		return DeliveryFlowTemplate{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "delivery_flow_template.graph.replace", ResourceType: "delivery_flow_template", ResourceID: template.ID, Result: "succeeded", Summary: "保存交付流 DAG 模板", Details: map[string]string{"stage_count": fmt.Sprintf("%d", len(saved.Stages)), "edge_count": fmt.Sprintf("%d", len(saved.Edges))}, OccurredAt: now})
+	return saved, nil
+}
+
 func (s *Service) SaveDeliveryFlowTemplateStage(ctx context.Context, input SaveDeliveryFlowTemplateStageInput) (DeliveryFlowTemplateStage, error) {
 	stageKey := normalizeStageKey(input.StageKey)
 	if input.TenantID.IsZero() || stageKey == "" {
@@ -439,8 +570,10 @@ func (s *Service) SaveDeliveryFlowTemplateStage(ctx context.Context, input SaveD
 		TemplateID:           template.ID,
 		StageKey:             stageKey,
 		DisplayName:          firstNonEmpty(strings.TrimSpace(input.DisplayName), stageKey),
-		Color:                normalizeStageColor(input.Color),
+		Color:                colorForLayoutColumn(input.LayoutColumn),
 		Order:                input.Order,
+		LayoutColumn:         input.LayoutColumn,
+		LayoutRow:            input.LayoutRow,
 		Status:               status,
 		RequiresApproval:     input.RequiresApproval,
 		RequiresVerification: input.RequiresVerification,
@@ -455,6 +588,11 @@ func (s *Service) SaveDeliveryFlowTemplateStage(ctx context.Context, input SaveD
 	if err == nil {
 		stage.ID = existing.ID
 		stage.CreatedAt = existing.CreatedAt
+		if input.LayoutColumn == 0 && input.LayoutRow == 0 {
+			stage.LayoutColumn = existing.LayoutColumn
+			stage.LayoutRow = existing.LayoutRow
+			stage.Color = colorForLayoutColumn(existing.LayoutColumn)
+		}
 		if err := s.repo.UpdateDeliveryFlowTemplateStage(ctx, stage); err != nil {
 			return DeliveryFlowTemplateStage{}, err
 		}
@@ -470,6 +608,10 @@ func (s *Service) SaveDeliveryFlowTemplateStage(ctx context.Context, input SaveD
 	}
 	stage.ID = id
 	stage.CreatedAt = now
+	if input.LayoutColumn == 0 && input.LayoutRow == 0 {
+		stage.LayoutColumn = len(template.Stages)
+		stage.Color = colorForLayoutColumn(stage.LayoutColumn)
+	}
 	if err := s.repo.CreateDeliveryFlowTemplateStage(ctx, stage); err != nil {
 		return DeliveryFlowTemplateStage{}, err
 	}
@@ -510,6 +652,9 @@ func (s *Service) ReplaceStageClusterBindings(ctx context.Context, input Replace
 	}
 	if stage.Status == DeliveryFlowTemplateStageDisabled {
 		return nil, shared.NewError(shared.CodeFailedPrecondition, "disabled stage cannot bind clusters")
+	}
+	if len(input.Clusters) > 1 {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "stage can bind at most one cluster")
 	}
 	now := s.clock.Now()
 	bindings := make([]StageClusterBinding, 0, len(input.Clusters))
@@ -558,7 +703,37 @@ func (s *Service) ListAppStages(ctx context.Context, applicationID shared.ID) ([
 	if err != nil {
 		return nil, err
 	}
+	flow, err := s.ensureDefaultFlow(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	envs, err := s.envsOrError().ListEnvironments(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	envByName := map[string]EnvironmentRef{}
+	for _, env := range envs {
+		envByName[normalizeStageKey(env.Name)] = env
+	}
+	deliveryStages, err := s.repo.ListDeliveryStages(ctx, flow.ID)
+	if err != nil {
+		return nil, err
+	}
+	deliveryStageByName := map[string]DeliveryStage{}
+	for _, stage := range deliveryStages {
+		deliveryStageByName[normalizeStageKey(stage.Name)] = stage
+	}
+	currentFreights, err := s.currentFreightsByStage(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]AppStage, 0, len(template.Stages))
+	upstreams := map[string][]string{}
+	downstreams := map[string][]string{}
+	for _, edge := range template.Edges {
+		upstreams[edge.ToStageKey] = append(upstreams[edge.ToStageKey], edge.FromStageKey)
+		downstreams[edge.FromStageKey] = append(downstreams[edge.FromStageKey], edge.ToStageKey)
+	}
 	for _, stage := range template.Stages {
 		bindings, err := s.repo.ListStageClusterBindings(ctx, app.TenantID, stage.StageKey)
 		if err != nil {
@@ -570,23 +745,82 @@ func (s *Service) ListAppStages(ctx context.Context, applicationID shared.ID) ([
 				active++
 			}
 		}
+		var boundClusterID shared.ID
+		boundClusterName := ""
+		for _, binding := range bindings {
+			if binding.Status == StageClusterBindingActive {
+				boundClusterID = binding.ClusterID
+				boundClusterName = binding.ClusterName
+				break
+			}
+		}
+		env := envByName[stage.StageKey]
+		deliveryStage := deliveryStageByName[stage.StageKey]
+		currentFreight := currentFreights[stage.StageKey]
 		out = append(out, AppStage{
-			TenantID:             app.TenantID,
-			ProjectID:            app.ProjectID,
-			ApplicationID:        app.ID,
-			StageKey:             stage.StageKey,
-			DisplayName:          stage.DisplayName,
-			Color:                stage.Color,
-			Order:                stage.Order,
-			Status:               stage.Status,
-			RequiresApproval:     stage.RequiresApproval,
-			RequiresVerification: stage.RequiresVerification,
-			ApproveRoles:         append([]string(nil), stage.ApproveRoles...),
-			VerifyRoles:          append([]string(nil), stage.VerifyRoles...),
-			ClusterPoolSize:      active,
+			TenantID:              app.TenantID,
+			ProjectID:             app.ProjectID,
+			ApplicationID:         app.ID,
+			DeliveryStageID:       deliveryStage.ID,
+			EnvironmentID:         env.ID,
+			StageKey:              stage.StageKey,
+			DisplayName:           stage.DisplayName,
+			Color:                 stage.Color,
+			Order:                 stage.Order,
+			LayoutColumn:          stage.LayoutColumn,
+			LayoutRow:             stage.LayoutRow,
+			Status:                stage.Status,
+			RequiresApproval:      stage.RequiresApproval,
+			RequiresVerification:  stage.RequiresVerification,
+			ApproveRoles:          append([]string(nil), stage.ApproveRoles...),
+			VerifyRoles:           append([]string(nil), stage.VerifyRoles...),
+			ClusterPoolSize:       active,
+			BoundClusterID:        boundClusterID,
+			BoundClusterName:      boundClusterName,
+			CurrentFreightID:      currentFreight.ID,
+			CurrentFreightVersion: currentFreight.Name,
+			UpstreamStageKeys:     append([]string(nil), upstreams[stage.StageKey]...),
+			DownstreamStageKeys:   append([]string(nil), downstreams[stage.StageKey]...),
 		})
 	}
 	return out, nil
+}
+
+func (s *Service) currentFreightsByStage(ctx context.Context, applicationID shared.ID) (map[string]Freight, error) {
+	out := map[string]Freight{}
+	promotionAt := map[string]time.Time{}
+	for page := 1; ; page++ {
+		result, err := s.repo.ListPromotionsByApplication(ctx, applicationID, shared.PageRequest{Page: page, PageSize: 100})
+		if err != nil {
+			return nil, err
+		}
+		for _, promotion := range result.Items {
+			stageKey := normalizeStageKey(promotion.TargetStageKey)
+			if stageKey == "" || !promotionStagePassed(promotion.Status) {
+				continue
+			}
+			if currentPromotionTime, ok := promotionAt[stageKey]; ok && !promotion.CreatedAt.After(currentPromotionTime) {
+				continue
+			}
+			freight, err := s.repo.GetFreight(ctx, promotion.FreightID)
+			if err != nil {
+				if shared.CodeOf(err) == shared.CodeNotFound {
+					continue
+				}
+				return nil, err
+			}
+			out[stageKey] = freight
+			promotionAt[stageKey] = promotion.CreatedAt
+		}
+		if int64(page*result.PageSize) >= result.Total {
+			break
+		}
+	}
+	return out, nil
+}
+
+func promotionStagePassed(status PromotionStatus) bool {
+	return status == PromotionManifestUpdated || status == PromotionSyncing || status == PromotionHealthy
 }
 
 func (s *Service) CompleteFreightApproval(ctx context.Context, input FreightApprovalInput) (FreightApproval, error) {
@@ -762,7 +996,7 @@ func (s *Service) CreateRollbackPromotion(ctx context.Context, input CreateRollb
 	if err != nil {
 		return Promotion{}, err
 	}
-	if isProdStage(stage.Name) {
+	if promotion.Status == PromotionPendingApproval {
 		return s.createApproval(ctx, promotion)
 	}
 	return s.applyPromotion(ctx, promotion, nil)
@@ -934,13 +1168,12 @@ func (s *Service) enrichFreightItemBundleImages(ctx context.Context, items []Fre
 
 func (s *Service) ensureDefaultFlow(ctx context.Context, applicationID shared.ID) (DeliveryFlow, error) {
 	if flow, err := s.repo.FindDeliveryFlowByApplication(ctx, applicationID); err == nil {
+		if err := s.syncDeliveryStages(ctx, flow); err != nil {
+			return DeliveryFlow{}, err
+		}
 		return flow, nil
 	}
 	app, err := s.appsOrError().GetApplication(ctx, applicationID)
-	if err != nil {
-		return DeliveryFlow{}, err
-	}
-	envs, err := s.envsOrError().ListEnvironments(ctx, applicationID)
 	if err != nil {
 		return DeliveryFlow{}, err
 	}
@@ -953,27 +1186,53 @@ func (s *Service) ensureDefaultFlow(ctx context.Context, applicationID shared.ID
 	if err := s.repo.CreateDeliveryFlow(ctx, flow); err != nil {
 		return DeliveryFlow{}, err
 	}
-	order := map[string]int{"dev": 0, "test": 1, "staging": 2, "prod": 3}
-	seen := map[string]struct{}{}
+	if err := s.syncDeliveryStages(ctx, flow); err != nil {
+		return DeliveryFlow{}, err
+	}
+	return flow, nil
+}
+
+func (s *Service) syncDeliveryStages(ctx context.Context, flow DeliveryFlow) error {
+	app, err := s.appsOrError().GetApplication(ctx, flow.ApplicationID)
+	if err != nil {
+		return err
+	}
+	envs, err := s.envsOrError().ListEnvironments(ctx, flow.ApplicationID)
+	if err != nil {
+		return err
+	}
+	template, err := s.ensureDeliveryFlowTemplate(ctx, app.TenantID)
+	if err != nil {
+		return err
+	}
+	order := map[string]int{}
+	approval := map[string]bool{}
+	for _, stage := range template.Stages {
+		order[stage.StageKey] = stage.Order
+		approval[stage.StageKey] = stage.RequiresApproval
+	}
 	for _, env := range envs {
-		idx, ok := order[env.Name]
+		stageKey := normalizeStageKey(env.Name)
+		idx, ok := order[stageKey]
 		if !ok {
 			continue
 		}
-		if _, ok := seen[env.Name]; ok {
+		if _, err := s.repo.FindDeliveryStageByEnvironment(ctx, flow.ApplicationID, env.ID); err == nil {
 			continue
+		} else if shared.CodeOf(err) != shared.CodeNotFound {
+			return err
 		}
-		seen[env.Name] = struct{}{}
 		stageID, err := s.ids.NewID("delivery_stage")
 		if err != nil {
-			return DeliveryFlow{}, err
+			return err
 		}
-		stage := DeliveryStage{ID: stageID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, DeliveryFlowID: flow.ID, EnvironmentID: env.ID, Name: env.Name, Order: idx, RequiresApproval: isProdStage(env.Name), CreatedAt: now, UpdatedAt: now}
+		now := s.clock.Now()
+		stage := DeliveryStage{ID: stageID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, DeliveryFlowID: flow.ID, EnvironmentID: env.ID, Name: stageKey, Order: idx, RequiresApproval: approval[stageKey], CreatedAt: now, UpdatedAt: now}
 		if err := s.repo.CreateDeliveryStage(ctx, stage); err != nil {
-			return DeliveryFlow{}, err
+			return err
 		}
 	}
-	return flow, nil
+	return nil
 }
 
 func (s *Service) ensureDeliveryFlowTemplate(ctx context.Context, tenantID shared.ID) (DeliveryFlowTemplate, error) {
@@ -985,7 +1244,13 @@ func (s *Service) ensureDeliveryFlowTemplate(ctx context.Context, tenantID share
 		if err != nil {
 			return DeliveryFlowTemplate{}, err
 		}
+		edges, err := s.repo.ListDeliveryFlowTemplateEdges(ctx, template.ID)
+		if err != nil {
+			return DeliveryFlowTemplate{}, err
+		}
 		template.Stages = stages
+		template.Edges = edges
+		normalizeTemplateLayout(&template)
 		return template, nil
 	} else if shared.CodeOf(err) != shared.CodeNotFound {
 		return DeliveryFlowTemplate{}, err
@@ -1002,7 +1267,13 @@ func (s *Service) ensureDeliveryFlowTemplate(ctx context.Context, tenantID share
 			if err != nil {
 				return DeliveryFlowTemplate{}, err
 			}
+			edges, err := s.repo.ListDeliveryFlowTemplateEdges(ctx, existing.ID)
+			if err != nil {
+				return DeliveryFlowTemplate{}, err
+			}
 			existing.Stages = stages
+			existing.Edges = edges
+			normalizeTemplateLayout(&existing)
 			return existing, nil
 		}
 		return DeliveryFlowTemplate{}, err
@@ -1018,8 +1289,10 @@ func (s *Service) ensureDeliveryFlowTemplate(ctx context.Context, tenantID share
 			TemplateID:           template.ID,
 			StageKey:             item.key,
 			DisplayName:          item.displayName,
-			Color:                item.color,
+			Color:                colorForLayoutColumn(idx),
 			Order:                idx + 1,
+			LayoutColumn:         idx,
+			LayoutRow:            0,
 			Status:               DeliveryFlowTemplateStageEnabled,
 			RequiresApproval:     item.requiresApproval,
 			RequiresVerification: item.requiresVerification,
@@ -1033,6 +1306,19 @@ func (s *Service) ensureDeliveryFlowTemplate(ctx context.Context, tenantID share
 		}
 		template.Stages = append(template.Stages, stage)
 	}
+	defaultEdges := []DeliveryFlowTemplateEdgeInput{{FromStageKey: "dev", ToStageKey: "test"}, {FromStageKey: "test", ToStageKey: "staging"}, {FromStageKey: "staging", ToStageKey: "prod"}}
+	stageByKey := map[string]DeliveryFlowTemplateStage{}
+	for _, stage := range template.Stages {
+		stageByKey[stage.StageKey] = stage
+	}
+	edges, err := s.buildTemplateEdges(tenantID, template.ID, defaultEdges, stageByKey, now)
+	if err != nil {
+		return DeliveryFlowTemplate{}, err
+	}
+	if err := s.repo.ReplaceDeliveryFlowTemplateEdges(ctx, template.ID, edges); err != nil {
+		return DeliveryFlowTemplate{}, err
+	}
+	template.Edges = edges
 	return template, nil
 }
 
@@ -1065,8 +1351,8 @@ func (s *Service) validateStagePromotionTarget(ctx context.Context, applicationI
 	if stageKey == "" {
 		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeInvalidArgument, "target_stage_key is required")
 	}
-	if len(clusterIDs) == 0 {
-		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeInvalidArgument, "target_cluster_ids is required")
+	if len(clusterIDs) > 1 {
+		return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeInvalidArgument, "stage can target only one bound cluster")
 	}
 	app, err := s.appsOrError().GetApplication(ctx, applicationID)
 	if err != nil {
@@ -1120,6 +1406,17 @@ func (s *Service) validateStagePromotionTarget(ctx context.Context, applicationI
 	for _, binding := range bindings {
 		if binding.Status == StageClusterBindingActive {
 			pool[binding.ClusterID] = binding
+		}
+	}
+	if len(clusterIDs) == 0 {
+		if len(pool) == 0 {
+			return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeFailedPrecondition, "stage has no bound cluster")
+		}
+		if len(pool) > 1 {
+			return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeConflict, "stage has multiple bound clusters")
+		}
+		for clusterID := range pool {
+			clusterIDs = []shared.ID{clusterID}
 		}
 	}
 	namespace := strings.TrimSpace(namespaceOverride)
@@ -1183,7 +1480,11 @@ func (s *Service) newPromotion(ctx context.Context, freight Freight, stage Deliv
 	}
 	now := s.clock.Now()
 	promotion := Promotion{ID: id, TenantID: freight.TenantID, ProjectID: freight.ProjectID, ApplicationID: freight.ApplicationID, FreightID: freight.ID, TargetStageID: stage.ID, TargetEnvironmentID: env.ID, TargetStageKey: stageKey, NamespaceOverride: namespaceOverride, Status: PromotionCreated, IsRollback: rollback, RollbackFromFreightID: from, CreatedBy: actorID, Message: message, CreatedAt: now, UpdatedAt: now}
-	if isProdStage(stage.Name) {
+	requiresApproval := isProdStage(stage.Name)
+	if templateStage, err := s.templateStageForPromotion(ctx, freight.TenantID, stageKey); err == nil {
+		requiresApproval = templateStage.RequiresApproval
+	}
+	if requiresApproval {
 		promotion.Status = PromotionPendingApproval
 	}
 	if err := s.repo.CreatePromotion(ctx, promotion); err != nil {
@@ -1197,6 +1498,20 @@ func (s *Service) newPromotion(ctx context.Context, freight Freight, stage Deliv
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: actorID, Action: action, ResourceType: "promotion", ResourceID: promotion.ID, Result: "succeeded", Summary: summary, OccurredAt: now})
 	return promotion, nil
+}
+
+func (s *Service) templateStageForPromotion(ctx context.Context, tenantID shared.ID, stageKey string) (DeliveryFlowTemplateStage, error) {
+	template, err := s.ensureDeliveryFlowTemplate(ctx, tenantID)
+	if err != nil {
+		return DeliveryFlowTemplateStage{}, err
+	}
+	normalized := normalizeStageKey(stageKey)
+	for _, stage := range template.Stages {
+		if stage.StageKey == normalized {
+			return stage, nil
+		}
+	}
+	return DeliveryFlowTemplateStage{}, shared.NewError(shared.CodeNotFound, "stage template not found")
 }
 
 func (s *Service) createApproval(ctx context.Context, promotion Promotion) (Promotion, error) {
@@ -1344,7 +1659,25 @@ func (s *Service) validateFreightComplete(ctx context.Context, applicationID sha
 }
 
 func (s *Service) validateStageOrder(ctx context.Context, freight Freight, target DeliveryStage) error {
-	if target.Order <= 0 {
+	app, err := s.appsOrError().GetApplication(ctx, freight.ApplicationID)
+	if err != nil {
+		return err
+	}
+	template, err := s.ensureDeliveryFlowTemplate(ctx, app.TenantID)
+	if err != nil {
+		return err
+	}
+	stageByKey := map[string]DeliveryFlowTemplateStage{}
+	for _, stage := range template.Stages {
+		stageByKey[stage.StageKey] = stage
+	}
+	parentKeys := []string{}
+	for _, edge := range template.Edges {
+		if edge.ToStageKey == normalizeStageKey(target.Name) {
+			parentKeys = append(parentKeys, edge.FromStageKey)
+		}
+	}
+	if len(parentKeys) == 0 {
 		return nil
 	}
 	flow, err := s.repo.FindDeliveryFlowByApplication(ctx, freight.ApplicationID)
@@ -1355,17 +1688,26 @@ func (s *Service) validateStageOrder(ctx context.Context, freight Freight, targe
 	if err != nil {
 		return err
 	}
+	deliveryStageByName := map[string]DeliveryStage{}
 	for _, stage := range stages {
-		if stage.Order >= target.Order {
-			continue
-		}
-		promotions, err := s.repo.ListPromotionsByApplication(ctx, freight.ApplicationID, shared.PageRequest{Page: 1, PageSize: 1000})
-		if err != nil {
-			return err
+		deliveryStageByName[normalizeStageKey(stage.Name)] = stage
+	}
+	promotions, err := s.repo.ListPromotionsByApplication(ctx, freight.ApplicationID, shared.PageRequest{Page: 1, PageSize: 1000})
+	if err != nil {
+		return err
+	}
+	for _, parentKey := range parentKeys {
+		parentStage, ok := deliveryStageByName[parentKey]
+		if !ok {
+			return shared.NewError(shared.CodeFailedPrecondition, "freight has not passed previous stage")
 		}
 		found := false
 		for _, promotion := range promotions.Items {
-			if promotion.FreightID == freight.ID && promotion.TargetStageID == stage.ID && (promotion.Status == PromotionManifestUpdated || promotion.Status == PromotionHealthy || promotion.Status == PromotionSyncing) {
+			promotionStageKey := normalizeStageKey(promotion.TargetStageKey)
+			if promotionStageKey == "" {
+				promotionStageKey = normalizeStageKey(parentStage.Name)
+			}
+			if promotion.FreightID == freight.ID && promotionStageKey == parentKey && (promotion.Status == PromotionManifestUpdated || promotion.Status == PromotionHealthy || promotion.Status == PromotionSyncing) {
 				found = true
 				break
 			}
@@ -1373,8 +1715,139 @@ func (s *Service) validateStageOrder(ctx context.Context, freight Freight, targe
 		if !found {
 			return shared.NewError(shared.CodeFailedPrecondition, "freight has not passed previous stage")
 		}
+		if stageByKey[parentKey].RequiresVerification {
+			verification, err := s.repo.FindStageVerification(ctx, freight.ApplicationID, parentKey, freight.ID)
+			if err != nil {
+				return shared.NewError(shared.CodeFailedPrecondition, "freight has not passed previous stage")
+			}
+			if verification.Status != StageVerificationPassed {
+				return shared.NewError(shared.CodeFailedPrecondition, "freight has not passed previous stage")
+			}
+		}
 	}
 	return nil
+}
+
+func (s *Service) buildTemplateEdges(tenantID shared.ID, templateID shared.ID, inputs []DeliveryFlowTemplateEdgeInput, stageByKey map[string]DeliveryFlowTemplateStage, now time.Time) ([]DeliveryFlowTemplateEdge, error) {
+	edges := make([]DeliveryFlowTemplateEdge, 0, len(inputs))
+	seen := map[string]struct{}{}
+	graph := map[string][]string{}
+	for _, input := range inputs {
+		from := normalizeStageKey(input.FromStageKey)
+		to := normalizeStageKey(input.ToStageKey)
+		if from == "" || to == "" {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "edge stage key is required")
+		}
+		if from == to {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "edge cannot point to itself")
+		}
+		fromStage, ok := stageByKey[from]
+		if !ok {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "edge source stage not found")
+		}
+		toStage, ok := stageByKey[to]
+		if !ok {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "edge target stage not found")
+		}
+		if fromStage.Status == DeliveryFlowTemplateStageDisabled || toStage.Status == DeliveryFlowTemplateStageDisabled {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "edge cannot reference disabled stage")
+		}
+		key := from + "->" + to
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		id, err := s.ids.NewID("delivery_flow_template_edge")
+		if err != nil {
+			return nil, err
+		}
+		edges = append(edges, DeliveryFlowTemplateEdge{ID: id, TenantID: tenantID, TemplateID: templateID, FromStageKey: from, ToStageKey: to, CreatedAt: now, UpdatedAt: now})
+		graph[from] = append(graph[from], to)
+	}
+	if hasCycle(graph, stageByKey) {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "delivery flow template graph has cycle")
+	}
+	return edges, nil
+}
+
+func validateTemplateGraphInput(stages []SaveDeliveryFlowTemplateStageInput, edges []DeliveryFlowTemplateEdgeInput) error {
+	stageByKey := map[string]DeliveryFlowTemplateStage{}
+	for _, input := range stages {
+		key := normalizeStageKey(input.StageKey)
+		if key == "" {
+			return shared.NewError(shared.CodeInvalidArgument, "stage_key is required")
+		}
+		if input.LayoutColumn < 0 {
+			return shared.NewError(shared.CodeInvalidArgument, "layout_column is invalid")
+		}
+		if _, ok := stageByKey[key]; ok {
+			return shared.NewError(shared.CodeConflict, "stage is duplicated")
+		}
+		status := input.Status
+		if status == "" {
+			status = DeliveryFlowTemplateStageEnabled
+		}
+		stageByKey[key] = DeliveryFlowTemplateStage{StageKey: key, Status: status}
+	}
+	graph := map[string][]string{}
+	seen := map[string]struct{}{}
+	for _, input := range edges {
+		from := normalizeStageKey(input.FromStageKey)
+		to := normalizeStageKey(input.ToStageKey)
+		if from == "" || to == "" || from == to {
+			return shared.NewError(shared.CodeInvalidArgument, "edge is invalid")
+		}
+		fromStage, ok := stageByKey[from]
+		if !ok {
+			return shared.NewError(shared.CodeInvalidArgument, "edge source stage not found")
+		}
+		toStage, ok := stageByKey[to]
+		if !ok {
+			return shared.NewError(shared.CodeInvalidArgument, "edge target stage not found")
+		}
+		if fromStage.Status == DeliveryFlowTemplateStageDisabled || toStage.Status == DeliveryFlowTemplateStageDisabled {
+			return shared.NewError(shared.CodeInvalidArgument, "edge cannot reference disabled stage")
+		}
+		key := from + "->" + to
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		graph[from] = append(graph[from], to)
+	}
+	if hasCycle(graph, stageByKey) {
+		return shared.NewError(shared.CodeInvalidArgument, "delivery flow template graph has cycle")
+	}
+	return nil
+}
+
+func hasCycle(graph map[string][]string, stages map[string]DeliveryFlowTemplateStage) bool {
+	visiting := map[string]bool{}
+	visited := map[string]bool{}
+	var visit func(string) bool
+	visit = func(node string) bool {
+		if visiting[node] {
+			return true
+		}
+		if visited[node] {
+			return false
+		}
+		visiting[node] = true
+		for _, next := range graph[node] {
+			if visit(next) {
+				return true
+			}
+		}
+		visiting[node] = false
+		visited[node] = true
+		return false
+	}
+	for key := range stages {
+		if visit(key) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) check(ctx context.Context, actor identityaccess.Subject, app ApplicationRef, action identityaccess.Permission) error {
@@ -1580,12 +2053,94 @@ func normalizeStageKey(value string) string {
 	return value
 }
 
-func normalizeStageColor(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) == 7 && value[0] == '#' {
-		return value
+func normalizeTemplateLayout(template *DeliveryFlowTemplate) {
+	if len(template.Stages) == 0 {
+		return
 	}
-	return "#1677ff"
+	needsFallback := len(template.Stages) > 1
+	for _, stage := range template.Stages {
+		if stage.LayoutColumn != 0 || stage.LayoutRow != 0 {
+			needsFallback = false
+			break
+		}
+	}
+	if needsFallback {
+		depths := templateStageDepths(template.Stages, template.Edges)
+		rowByColumn := map[int]int{}
+		for idx := range template.Stages {
+			column := depths[template.Stages[idx].StageKey]
+			row := rowByColumn[column]
+			rowByColumn[column] = row + 1
+			template.Stages[idx].LayoutColumn = column
+			template.Stages[idx].LayoutRow = symmetricRow(row)
+		}
+	}
+	for idx := range template.Stages {
+		if template.Stages[idx].LayoutColumn < 0 {
+			template.Stages[idx].LayoutColumn = 0
+		}
+		template.Stages[idx].Color = colorForLayoutColumn(template.Stages[idx].LayoutColumn)
+	}
+}
+
+func templateStageDepths(stages []DeliveryFlowTemplateStage, edges []DeliveryFlowTemplateEdge) map[string]int {
+	stageKeys := map[string]struct{}{}
+	for _, stage := range stages {
+		stageKeys[stage.StageKey] = struct{}{}
+	}
+	parents := map[string][]string{}
+	for _, edge := range edges {
+		if _, ok := stageKeys[edge.FromStageKey]; !ok {
+			continue
+		}
+		if _, ok := stageKeys[edge.ToStageKey]; !ok {
+			continue
+		}
+		parents[edge.ToStageKey] = append(parents[edge.ToStageKey], edge.FromStageKey)
+	}
+	memo := map[string]int{}
+	visiting := map[string]bool{}
+	var depthOf func(string) int
+	depthOf = func(key string) int {
+		if value, ok := memo[key]; ok {
+			return value
+		}
+		if visiting[key] {
+			return 0
+		}
+		visiting[key] = true
+		maxDepth := 0
+		for _, parent := range parents[key] {
+			if depth := depthOf(parent) + 1; depth > maxDepth {
+				maxDepth = depth
+			}
+		}
+		visiting[key] = false
+		memo[key] = maxDepth
+		return maxDepth
+	}
+	for _, stage := range stages {
+		depthOf(stage.StageKey)
+	}
+	return memo
+}
+
+func symmetricRow(index int) int {
+	if index <= 0 {
+		return 0
+	}
+	value := (index + 1) / 2
+	if index%2 == 1 {
+		return -value
+	}
+	return value
+}
+
+func colorForLayoutColumn(column int) string {
+	if column < 0 {
+		column = 0
+	}
+	return deliveryFlowColumnColors[column%len(deliveryFlowColumnColors)]
 }
 
 func cleanRoles(values []string) []string {

@@ -330,6 +330,8 @@ CREATE TABLE delivery_flow_template_stages (
   display_name VARCHAR(128) NOT NULL,
   color VARCHAR(32) NOT NULL,
   stage_order INT NOT NULL,
+  layout_column INT NOT NULL DEFAULT 0,
+  layout_row INT NOT NULL DEFAULT 0,
   status VARCHAR(64) NOT NULL,
   requires_approval TINYINT(1) NOT NULL DEFAULT 0,
   requires_verification TINYINT(1) NOT NULL DEFAULT 0,
@@ -340,6 +342,20 @@ CREATE TABLE delivery_flow_template_stages (
   UNIQUE KEY uk_delivery_flow_template_stages_key (tenant_id, stage_key),
   KEY idx_delivery_flow_template_stages_template (template_id),
   CONSTRAINT fk_delivery_flow_template_stages_template FOREIGN KEY (template_id) REFERENCES delivery_flow_templates(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE delivery_flow_template_edges (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  template_id VARCHAR(64) NOT NULL,
+  from_stage_key VARCHAR(64) NOT NULL,
+  to_stage_key VARCHAR(64) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_delivery_flow_template_edges_pair (template_id, from_stage_key, to_stage_key),
+  KEY idx_delivery_flow_template_edges_template (template_id),
+  KEY idx_delivery_flow_template_edges_to (template_id, to_stage_key),
+  CONSTRAINT fk_delivery_flow_template_edges_template FOREIGN KEY (template_id) REFERENCES delivery_flow_templates(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE stage_cluster_bindings (
@@ -394,7 +410,65 @@ CREATE TABLE stage_verifications (
 DROP TABLE IF EXISTS stage_verifications;
 DROP TABLE IF EXISTS freight_approvals;
 DROP TABLE IF EXISTS stage_cluster_bindings;
+DROP TABLE IF EXISTS delivery_flow_template_edges;
 DROP TABLE IF EXISTS delivery_flow_template_stages;
 DROP TABLE IF EXISTS delivery_flow_templates;
+`,
+}, {
+	Version: 202606121650,
+	Name:    "delivery_flow_template_dag_edges",
+	Up: `
+CREATE TABLE IF NOT EXISTS delivery_flow_template_edges (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  template_id VARCHAR(64) NOT NULL,
+  from_stage_key VARCHAR(64) NOT NULL,
+  to_stage_key VARCHAR(64) NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_delivery_flow_template_edges_pair (template_id, from_stage_key, to_stage_key),
+  KEY idx_delivery_flow_template_edges_template (template_id),
+  KEY idx_delivery_flow_template_edges_to (template_id, to_stage_key),
+  CONSTRAINT fk_delivery_flow_template_edges_template FOREIGN KEY (template_id) REFERENCES delivery_flow_templates(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+	Down: `SELECT 1;`,
+}, {
+	Version: 202606122245,
+	Name:    "delivery_flow_template_stage_layout_slots",
+	Up: `
+SET @layout_column_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'delivery_flow_template_stages' AND column_name = 'layout_column'
+);
+SET @layout_column_ddl := IF(@layout_column_missing, 'ALTER TABLE delivery_flow_template_stages ADD COLUMN layout_column INT NOT NULL DEFAULT 0 AFTER stage_order', 'SELECT 1');
+PREPARE stmt FROM @layout_column_ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @layout_row_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'delivery_flow_template_stages' AND column_name = 'layout_row'
+);
+SET @layout_row_ddl := IF(@layout_row_missing, 'ALTER TABLE delivery_flow_template_stages ADD COLUMN layout_row INT NOT NULL DEFAULT 0 AFTER layout_column', 'SELECT 1');
+PREPARE stmt FROM @layout_row_ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+`,
+	Down: `SELECT 1;`,
+}, {
+	Version: 202606130130,
+	Name:    "stage_cluster_bindings_single_cluster_per_stage",
+	Up: `
+SET @stage_binding_unique_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.statistics
+  WHERE table_schema = DATABASE() AND table_name = 'stage_cluster_bindings' AND index_name = 'uk_stage_cluster_bindings_stage_unique'
+);
+SET @stage_binding_unique_ddl := IF(@stage_binding_unique_missing, 'ALTER TABLE stage_cluster_bindings ADD UNIQUE KEY uk_stage_cluster_bindings_stage_unique (tenant_id, stage_key)', 'SELECT 1');
+PREPARE stmt FROM @stage_binding_unique_ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+`,
+	Down: `
+SET @stage_binding_unique_exists := (
+  SELECT COUNT(*) > 0 FROM information_schema.statistics
+  WHERE table_schema = DATABASE() AND table_name = 'stage_cluster_bindings' AND index_name = 'uk_stage_cluster_bindings_stage_unique'
+);
+SET @stage_binding_unique_drop := IF(@stage_binding_unique_exists, 'ALTER TABLE stage_cluster_bindings DROP INDEX uk_stage_cluster_bindings_stage_unique', 'SELECT 1');
+PREPARE stmt FROM @stage_binding_unique_drop; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 `,
 }}

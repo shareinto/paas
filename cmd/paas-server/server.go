@@ -148,7 +148,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	gitopsRepo := repos.gitops
 	manifestRepo := gitlab.NewFakeManifestRepositoryAdapter()
 	gitopsSvc := gitops.NewService(gitops.Options{Repository: gitopsRepo, ManifestRepo: manifestRepo, Application: appForGitOps{service: appSvc}, Environment: envForGitOps{service: appSvc, repo: appRepo}, Workload: workloadForGitOps{service: appSvc}, Audit: audit.GitOpsLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
-	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, EnvironmentSync: envSyncForDelivery{service: appSvc}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	clusterRepo := repos.cluster
 	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, TenantQuery: tenantForClusterAgent{service: tenantSvc}, PermissionChecker: identitySvc, EnvironmentState: envUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
@@ -762,6 +762,12 @@ func (q appForDelivery) GetApplication(ctx context.Context, id shared.ID) (deliv
 type envForDelivery struct {
 	service *appenv.Service
 	repo    appenv.Repository
+}
+
+type envSyncForDelivery struct{ service *appenv.Service }
+
+func (s envSyncForDelivery) SyncApplicationStages(ctx context.Context, input delivery.SyncApplicationStagesInput) error {
+	return s.service.SyncApplicationStageEnvironments(ctx, input.TenantID, input.StageKeys)
 }
 
 func (q envForDelivery) ListEnvironments(ctx context.Context, applicationID shared.ID) ([]delivery.EnvironmentRef, error) {

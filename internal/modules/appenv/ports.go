@@ -15,6 +15,7 @@ type Repository interface {
 	DeleteApplicationData(ctx context.Context, applicationID shared.ID) error
 	GetApplication(ctx context.Context, id shared.ID) (Application, error)
 	FindApplicationByProjectAndName(ctx context.Context, projectID shared.ID, name string) (Application, error)
+	ListApplicationsByTenant(ctx context.Context, tenantID shared.ID, page shared.PageRequest) (shared.PageResult[Application], error)
 	ListApplicationsByProject(ctx context.Context, projectID shared.ID, page shared.PageRequest) (shared.PageResult[Application], error)
 	ListApplicationsByRuntimeEnvironment(ctx context.Context, runtimeEnvironmentID shared.ID, page shared.PageRequest) (shared.PageResult[Application], error)
 

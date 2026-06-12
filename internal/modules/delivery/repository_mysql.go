@@ -257,11 +257,11 @@ func (r *MySQLRepository) CreateDeliveryFlowTemplateStage(ctx context.Context, s
 	}
 	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO delivery_flow_template_stages (
-  id, tenant_id, template_id, stage_key, display_name, color, stage_order, status,
+  id, tenant_id, template_id, stage_key, display_name, color, stage_order, layout_column, layout_row, status,
   requires_approval, requires_verification, approve_roles_json, verify_roles_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?)`,
 		stage.ID, stage.TenantID, stage.TemplateID, stage.StageKey, stage.DisplayName, stage.Color, stage.Order,
-		stage.Status, stage.RequiresApproval, stage.RequiresVerification, string(approveRoles), string(verifyRoles),
+		stage.LayoutColumn, stage.LayoutRow, stage.Status, stage.RequiresApproval, stage.RequiresVerification, string(approveRoles), string(verifyRoles),
 		stage.CreatedAt, stage.UpdatedAt)
 	return database.ConflictOrUnavailable(err, "delivery flow template stage already exists", "create delivery flow template stage failed")
 }
@@ -277,10 +277,10 @@ func (r *MySQLRepository) UpdateDeliveryFlowTemplateStage(ctx context.Context, s
 	}
 	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE delivery_flow_template_stages
-SET display_name = ?, color = ?, stage_order = ?, status = ?, requires_approval = ?,
+SET display_name = ?, color = ?, stage_order = ?, layout_column = ?, layout_row = ?, status = ?, requires_approval = ?,
     requires_verification = ?, approve_roles_json = CAST(? AS JSON), verify_roles_json = CAST(? AS JSON), updated_at = ?
 WHERE tenant_id = ? AND stage_key = ?`,
-		stage.DisplayName, stage.Color, stage.Order, stage.Status, stage.RequiresApproval, stage.RequiresVerification,
+		stage.DisplayName, stage.Color, stage.Order, stage.LayoutColumn, stage.LayoutRow, stage.Status, stage.RequiresApproval, stage.RequiresVerification,
 		string(approveRoles), string(verifyRoles), stage.UpdatedAt, stage.TenantID, stage.StageKey)
 	if err != nil {
 		return database.WrapUnavailable(err, "update delivery flow template stage failed")
@@ -292,6 +292,9 @@ func (r *MySQLRepository) DeleteDeliveryFlowTemplateStage(ctx context.Context, t
 	return database.NewTransactor(r.db).WithinTx(ctx, func(txCtx context.Context) error {
 		exec := database.ExecutorFromContext(txCtx, r.db)
 		if _, err := exec.ExecContext(txCtx, "DELETE FROM stage_cluster_bindings WHERE tenant_id = ? AND stage_key = ?", tenantID, stageKey); err != nil {
+			return database.WrapUnavailable(err, "delete delivery flow template stage failed")
+		}
+		if _, err := exec.ExecContext(txCtx, "DELETE FROM delivery_flow_template_edges WHERE tenant_id = ? AND (from_stage_key = ? OR to_stage_key = ?)", tenantID, stageKey, stageKey); err != nil {
 			return database.WrapUnavailable(err, "delete delivery flow template stage failed")
 		}
 		result, err := exec.ExecContext(txCtx, "DELETE FROM delivery_flow_template_stages WHERE tenant_id = ? AND stage_key = ?", tenantID, stageKey)
@@ -326,6 +329,45 @@ func (r *MySQLRepository) ListDeliveryFlowTemplateStages(ctx context.Context, te
 	}
 	if err := rows.Err(); err != nil {
 		return nil, database.WrapUnavailable(err, "list delivery flow template stages failed")
+	}
+	return items, nil
+}
+
+func (r *MySQLRepository) ReplaceDeliveryFlowTemplateEdges(ctx context.Context, templateID shared.ID, edges []DeliveryFlowTemplateEdge) error {
+	return database.NewTransactor(r.db).WithinTx(ctx, func(txCtx context.Context) error {
+		exec := database.ExecutorFromContext(txCtx, r.db)
+		if _, err := exec.ExecContext(txCtx, "DELETE FROM delivery_flow_template_edges WHERE template_id = ?", templateID); err != nil {
+			return database.WrapUnavailable(err, "replace delivery flow template edges failed")
+		}
+		for _, edge := range edges {
+			_, err := exec.ExecContext(txCtx, `
+INSERT INTO delivery_flow_template_edges (id, tenant_id, template_id, from_stage_key, to_stage_key, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				edge.ID, edge.TenantID, edge.TemplateID, edge.FromStageKey, edge.ToStageKey, edge.CreatedAt, edge.UpdatedAt)
+			if err != nil {
+				return database.ConflictOrUnavailable(err, "delivery flow template edge already exists", "replace delivery flow template edges failed")
+			}
+		}
+		return nil
+	})
+}
+
+func (r *MySQLRepository) ListDeliveryFlowTemplateEdges(ctx context.Context, templateID shared.ID) ([]DeliveryFlowTemplateEdge, error) {
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, deliveryFlowTemplateEdgeSelect()+" WHERE template_id = ? ORDER BY from_stage_key ASC, to_stage_key ASC", templateID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list delivery flow template edges failed")
+	}
+	defer rows.Close()
+	items := []DeliveryFlowTemplateEdge{}
+	for rows.Next() {
+		edge, err := scanDeliveryFlowTemplateEdge(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, edge)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, database.WrapUnavailable(err, "list delivery flow template edges failed")
 	}
 	return items, nil
 }
@@ -520,7 +562,11 @@ func deliveryFlowTemplateSelect() string {
 }
 
 func deliveryFlowTemplateStageSelect() string {
-	return "SELECT id, tenant_id, template_id, stage_key, display_name, color, stage_order, status, requires_approval, requires_verification, approve_roles_json, verify_roles_json, created_at, updated_at FROM delivery_flow_template_stages"
+	return "SELECT id, tenant_id, template_id, stage_key, display_name, color, stage_order, layout_column, layout_row, status, requires_approval, requires_verification, approve_roles_json, verify_roles_json, created_at, updated_at FROM delivery_flow_template_stages"
+}
+
+func deliveryFlowTemplateEdgeSelect() string {
+	return "SELECT id, tenant_id, template_id, from_stage_key, to_stage_key, created_at, updated_at FROM delivery_flow_template_edges"
 }
 
 func stageClusterBindingSelect() string {
@@ -596,7 +642,7 @@ func scanDeliveryFlowTemplate(scanner deliveryScanner) (DeliveryFlowTemplate, er
 func scanDeliveryFlowTemplateStage(scanner deliveryScanner) (DeliveryFlowTemplateStage, error) {
 	var v DeliveryFlowTemplateStage
 	var approveRoles, verifyRoles []byte
-	err := scanner.Scan(&v.ID, &v.TenantID, &v.TemplateID, &v.StageKey, &v.DisplayName, &v.Color, &v.Order, &v.Status, &v.RequiresApproval, &v.RequiresVerification, &approveRoles, &verifyRoles, &v.CreatedAt, &v.UpdatedAt)
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.TemplateID, &v.StageKey, &v.DisplayName, &v.Color, &v.Order, &v.LayoutColumn, &v.LayoutRow, &v.Status, &v.RequiresApproval, &v.RequiresVerification, &approveRoles, &verifyRoles, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return v, err
 	}
@@ -611,6 +657,12 @@ func scanDeliveryFlowTemplateStage(scanner deliveryScanner) (DeliveryFlowTemplat
 		}
 	}
 	return v, nil
+}
+
+func scanDeliveryFlowTemplateEdge(scanner deliveryScanner) (DeliveryFlowTemplateEdge, error) {
+	var v DeliveryFlowTemplateEdge
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.TemplateID, &v.FromStageKey, &v.ToStageKey, &v.CreatedAt, &v.UpdatedAt)
+	return v, err
 }
 
 func scanStageClusterBinding(scanner deliveryScanner) (StageClusterBinding, error) {

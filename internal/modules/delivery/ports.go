@@ -39,6 +39,8 @@ type Repository interface {
 	DeleteDeliveryFlowTemplateStage(ctx context.Context, tenantID shared.ID, stageKey string) error
 	FindDeliveryFlowTemplateStage(ctx context.Context, tenantID shared.ID, stageKey string) (DeliveryFlowTemplateStage, error)
 	ListDeliveryFlowTemplateStages(ctx context.Context, templateID shared.ID) ([]DeliveryFlowTemplateStage, error)
+	ReplaceDeliveryFlowTemplateEdges(ctx context.Context, templateID shared.ID, edges []DeliveryFlowTemplateEdge) error
+	ListDeliveryFlowTemplateEdges(ctx context.Context, templateID shared.ID) ([]DeliveryFlowTemplateEdge, error)
 	ReplaceStageClusterBindings(ctx context.Context, tenantID shared.ID, stageKey string, bindings []StageClusterBinding) error
 	ListStageClusterBindings(ctx context.Context, tenantID shared.ID, stageKey string) ([]StageClusterBinding, error)
 	CreateFreightApproval(ctx context.Context, approval FreightApproval) error
@@ -123,6 +125,15 @@ type ApplicationQuery interface {
 type EnvironmentQuery interface {
 	ListEnvironments(ctx context.Context, applicationID shared.ID) ([]EnvironmentRef, error)
 	GetEnvironment(ctx context.Context, id shared.ID) (EnvironmentRef, error)
+}
+
+type SyncApplicationStagesInput struct {
+	TenantID  shared.ID
+	StageKeys []string
+}
+
+type EnvironmentSync interface {
+	SyncApplicationStages(ctx context.Context, input SyncApplicationStagesInput) error
 }
 
 type ClusterRef struct {

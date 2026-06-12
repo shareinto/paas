@@ -21,6 +21,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/freights/{freightId}", h.handleGetFreight)
 	mux.HandleFunc("POST /api/freights/{freightId}/approvals", h.handleCompleteFreightApproval)
 	mux.HandleFunc("GET /api/tenants/{tenantId}/delivery-flow-template", h.handleGetDeliveryFlowTemplate)
+	mux.HandleFunc("PUT /api/tenants/{tenantId}/delivery-flow-template/graph", h.handleReplaceDeliveryFlowTemplateGraph)
 	mux.HandleFunc("POST /api/tenants/{tenantId}/delivery-flow-template/stages", h.handleSaveDeliveryFlowTemplateStage)
 	mux.HandleFunc("PATCH /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}", h.handleSaveDeliveryFlowTemplateStage)
 	mux.HandleFunc("DELETE /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}", h.handleDeleteDeliveryFlowTemplateStage)
@@ -88,6 +89,19 @@ func (h *Handler) handleListAppStages(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) handleGetDeliveryFlowTemplate(w http.ResponseWriter, r *http.Request) {
 	template, err := h.service.GetDeliveryFlowTemplate(r.Context(), shared.ID(r.PathValue("tenantId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, template)
+}
+func (h *Handler) handleReplaceDeliveryFlowTemplateGraph(w http.ResponseWriter, r *http.Request) {
+	var req ReplaceDeliveryFlowTemplateGraphInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.TenantID = shared.ID(r.PathValue("tenantId"))
+	template, err := h.service.ReplaceDeliveryFlowTemplateGraph(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
 		return

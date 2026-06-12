@@ -145,6 +145,7 @@ type DeliveryFlowTemplate struct {
 	TenantID  shared.ID                   `json:"tenant_id"`
 	Name      string                      `json:"name"`
 	Stages    []DeliveryFlowTemplateStage `json:"stages,omitempty"`
+	Edges     []DeliveryFlowTemplateEdge  `json:"edges,omitempty"`
 	CreatedAt time.Time                   `json:"created_at"`
 	UpdatedAt time.Time                   `json:"updated_at"`
 }
@@ -157,6 +158,8 @@ type DeliveryFlowTemplateStage struct {
 	DisplayName          string                          `json:"display_name"`
 	Color                string                          `json:"color"`
 	Order                int                             `json:"order"`
+	LayoutColumn         int                             `json:"layout_column"`
+	LayoutRow            int                             `json:"layout_row"`
 	Status               DeliveryFlowTemplateStageStatus `json:"status"`
 	RequiresApproval     bool                            `json:"requires_approval"`
 	RequiresVerification bool                            `json:"requires_verification"`
@@ -164,6 +167,16 @@ type DeliveryFlowTemplateStage struct {
 	VerifyRoles          []string                        `json:"verify_roles"`
 	CreatedAt            time.Time                       `json:"created_at"`
 	UpdatedAt            time.Time                       `json:"updated_at"`
+}
+
+type DeliveryFlowTemplateEdge struct {
+	ID           shared.ID `json:"id"`
+	TenantID     shared.ID `json:"tenant_id"`
+	TemplateID   shared.ID `json:"template_id"`
+	FromStageKey string    `json:"from_stage_key"`
+	ToStageKey   string    `json:"to_stage_key"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 type StageClusterBindingStatus string
@@ -231,19 +244,31 @@ type StageVerification struct {
 }
 
 type AppStage struct {
-	TenantID             shared.ID                       `json:"tenant_id"`
-	ProjectID            shared.ID                       `json:"project_id"`
-	ApplicationID        shared.ID                       `json:"application_id"`
-	StageKey             string                          `json:"stage_key"`
-	DisplayName          string                          `json:"display_name"`
-	Color                string                          `json:"color"`
-	Order                int                             `json:"order"`
-	Status               DeliveryFlowTemplateStageStatus `json:"status"`
-	RequiresApproval     bool                            `json:"requires_approval"`
-	RequiresVerification bool                            `json:"requires_verification"`
-	ApproveRoles         []string                        `json:"approve_roles"`
-	VerifyRoles          []string                        `json:"verify_roles"`
-	ClusterPoolSize      int                             `json:"cluster_pool_size"`
+	TenantID              shared.ID                       `json:"tenant_id"`
+	ProjectID             shared.ID                       `json:"project_id"`
+	ApplicationID         shared.ID                       `json:"application_id"`
+	DeliveryStageID       shared.ID                       `json:"delivery_stage_id"`
+	EnvironmentID         shared.ID                       `json:"environment_id"`
+	StageKey              string                          `json:"stage_key"`
+	DisplayName           string                          `json:"display_name"`
+	Color                 string                          `json:"color"`
+	Order                 int                             `json:"order"`
+	LayoutColumn          int                             `json:"layout_column"`
+	LayoutRow             int                             `json:"layout_row"`
+	Status                DeliveryFlowTemplateStageStatus `json:"status"`
+	RequiresApproval      bool                            `json:"requires_approval"`
+	RequiresVerification  bool                            `json:"requires_verification"`
+	ApproveRoles          []string                        `json:"approve_roles"`
+	VerifyRoles           []string                        `json:"verify_roles"`
+	ClusterPoolSize       int                             `json:"cluster_pool_size"`
+	BoundClusterID        shared.ID                       `json:"bound_cluster_id,omitempty"`
+	BoundClusterName      string                          `json:"bound_cluster_name,omitempty"`
+	CurrentFreightID      shared.ID                       `json:"current_freight_id,omitempty"`
+	CurrentFreightVersion string                          `json:"current_freight_version,omitempty"`
+	SyncStatus            string                          `json:"sync_status,omitempty"`
+	HealthStatus          string                          `json:"health_status,omitempty"`
+	UpstreamStageKeys     []string                        `json:"upstream_stage_keys,omitempty"`
+	DownstreamStageKeys   []string                        `json:"downstream_stage_keys,omitempty"`
 }
 
 type DeliveryStage struct {

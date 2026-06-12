@@ -33,10 +33,7 @@ test('应用详情只展示构建和部署两个页签并默认进入构建', as
   ['应用 Workload', '镜像构建', '发布晋级', '总览', '环境', '版本', '配置', '日志', '监控', '设置'].forEach((name) => {
     expect(screen.queryByRole('tab', { name })).not.toBeInTheDocument();
   });
-  const flow = screen.getByLabelText('交付流程');
-  ['创建 Workload', '配置环境差异', '创建完整 Freight', '选择目标 Stage', '发布晋级', '回滚历史 Freight'].forEach((name) => {
-    expect(within(flow).getByText(name)).toBeInTheDocument();
-  });
+  expect(screen.queryByLabelText('交付流程')).not.toBeInTheDocument();
 
   const buildTab = await screen.findByTestId('build-tab');
   expect(within(buildTab).getByRole('heading', { name: '流水线' })).toBeInTheDocument();
@@ -68,6 +65,7 @@ test('部署页签嵌入发布晋级内容且保留旧路由兼容', async () =>
   await userEvent.click(await screen.findByRole('tab', { name: '部署' }));
 
   expect(await screen.findByText('Freight 时间轴')).toBeInTheDocument();
+  expect(await screen.findByLabelText('应用部署 DAG')).toBeInTheDocument();
   expect(screen.getByTestId('promotion-confirm-panel')).toBeInTheDocument();
 });
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +90,19 @@ func (q fakeEnvQuery) GetEnvironment(_ context.Context, id shared.ID) (Environme
 	return v, nil
 }
 
+type recordingEnvironmentSync struct {
+	calls []SyncApplicationStagesInput
+	err   error
+}
+
+func (s *recordingEnvironmentSync) SyncApplicationStages(_ context.Context, input SyncApplicationStagesInput) error {
+	s.calls = append(s.calls, input)
+	if s.err != nil {
+		return s.err
+	}
+	return nil
+}
+
 type recordingGitOps struct {
 	specs []GitOpsPromotionSpec
 	err   error
@@ -136,6 +150,7 @@ type deliveryEnv struct {
 	audit    *recordingAudit
 	events   *recordingPublisher
 	envQuery fakeEnvQuery
+	sync     *recordingEnvironmentSync
 }
 
 func newTestRepository(t *testing.T) Repository {
@@ -153,6 +168,7 @@ func newDeliveryEnv(t *testing.T) deliveryEnv {
 	gitops := &recordingGitOps{}
 	audit := &recordingAudit{}
 	events := &recordingPublisher{}
+	sync := &recordingEnvironmentSync{}
 	envs := fakeEnvQuery{envs: map[shared.ID]EnvironmentRef{
 		"env_dev":     {ID: "env_dev", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "dev", Status: "deployable", BindingActive: true},
 		"env_test":    {ID: "env_test", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "test", Status: "deployable", BindingActive: true},
@@ -170,13 +186,14 @@ func newDeliveryEnv(t *testing.T) deliveryEnv {
 		WorkloadQuery:     fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"}}}},
 		EnvironmentQuery:  envs,
 		GitOpsDeployment:  gitops,
+		EnvironmentSync:   sync,
 		PermissionChecker: &recordingPermission{},
 		Audit:             audit,
 		EventPublisher:    events,
 		IDGenerator:       testutil.NewFakeIDGenerator(1),
 		Clock:             testutil.NewFakeClock(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC)),
 	})
-	return deliveryEnv{svc: svc, repo: repo, gitops: gitops, audit: audit, events: events, envQuery: envs}
+	return deliveryEnv{svc: svc, repo: repo, gitops: gitops, audit: audit, events: events, envQuery: envs, sync: sync}
 }
 
 func actor(id shared.ID) identityaccess.Subject {
@@ -312,6 +329,12 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 	if template.Stages[0].StageKey != "dev" || template.Stages[3].StageKey != "prod" || !template.Stages[3].RequiresApproval {
 		t.Fatalf("default stages should be dev/test/staging/prod with prod approval, got %+v", template.Stages)
 	}
+	if template.Stages[0].LayoutColumn != 0 || template.Stages[3].LayoutColumn != 3 || template.Stages[0].Color != "#ED204E" || template.Stages[3].Color != "#e78a00" {
+		t.Fatalf("default stages should have fixed layout slots and automatic column colors, got %+v", template.Stages)
+	}
+	if got := edgePairs(template.Edges); strings.Join(got, ",") != "dev->test,staging->prod,test->staging" {
+		t.Fatalf("default template should expose linear DAG edges, got %+v", got)
+	}
 
 	updated, err := env.svc.SaveDeliveryFlowTemplateStage(ctx, SaveDeliveryFlowTemplateStageInput{
 		Actor:                actor("usr_admin"),
@@ -320,6 +343,8 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 		DisplayName:          "集成测试",
 		Color:                "#13c2c2",
 		Order:                3,
+		LayoutColumn:         1,
+		LayoutRow:            -1,
 		Status:               DeliveryFlowTemplateStageEnabled,
 		RequiresApproval:     true,
 		RequiresVerification: true,
@@ -331,6 +356,9 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 	}
 	if updated.StageKey != "test" || updated.DisplayName != "集成测试" || !updated.RequiresApproval || !updated.RequiresVerification {
 		t.Fatalf("stage update should keep key and update editable fields: %+v", updated)
+	}
+	if updated.Color != "#FD5352" || updated.LayoutColumn != 1 || updated.LayoutRow != -1 {
+		t.Fatalf("stage color should be derived from layout column, got %+v", updated)
 	}
 	if len(updated.ApproveRoles) != 2 || updated.ApproveRoles[0] != "tenant_admin" || len(updated.VerifyRoles) != 2 {
 		t.Fatalf("roles should be persisted: %+v", updated)
@@ -346,14 +374,24 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 		StageKey: "dev",
 		Clusters: []StageClusterBindingInput{
 			{ClusterID: "cluster_shanghai", ClusterName: "上海集群"},
-			{ClusterID: "cluster_beijing", ClusterName: "北京集群"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("ReplaceStageClusterBindings() error = %v", err)
 	}
-	if len(bindings) != 2 || bindings[0].StageKey != "dev" || bindings[1].Status != StageClusterBindingActive {
+	if len(bindings) != 1 || bindings[0].StageKey != "dev" || bindings[0].Status != StageClusterBindingActive {
 		t.Fatalf("unexpected bindings: %+v", bindings)
+	}
+	if _, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		StageKey: "dev",
+		Clusters: []StageClusterBindingInput{
+			{ClusterID: "cluster_shanghai", ClusterName: "上海集群"},
+			{ClusterID: "cluster_beijing", ClusterName: "北京集群"},
+		},
+	}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("stage should allow at most one bound cluster, got %v", err)
 	}
 	prodBindings, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
 		Actor:    actor("usr_admin"),
@@ -377,6 +415,15 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 	if _, err := env.repo.FindDeliveryFlowTemplateStage(ctx, "tenant_a", "staging"); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("stage should be physically deleted, got %v", err)
 	}
+	edges, err := env.repo.ListDeliveryFlowTemplateEdges(ctx, template.ID)
+	if err != nil {
+		t.Fatalf("ListDeliveryFlowTemplateEdges() error = %v", err)
+	}
+	for _, edge := range edges {
+		if edge.FromStageKey == "staging" || edge.ToStageKey == "staging" {
+			t.Fatalf("deleting stage should remove related DAG edges, got %+v", edges)
+		}
+	}
 
 	appStages, err := env.svc.ListAppStages(ctx, "app_user")
 	if err != nil {
@@ -385,7 +432,7 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 	if len(appStages) != 3 {
 		t.Fatalf("expected deleted stage to be absent, got %+v", appStages)
 	}
-	if appStages[0].StageKey != "dev" || appStages[0].ClusterPoolSize != 2 {
+	if appStages[0].StageKey != "dev" || appStages[0].ClusterPoolSize != 1 || appStages[0].BoundClusterID != "cluster_shanghai" || appStages[0].BoundClusterName != "上海集群" || appStages[0].DeliveryStageID.IsZero() || appStages[0].EnvironmentID != "env_dev" {
 		t.Fatalf("app stage should project tenant cluster pool: %+v", appStages[0])
 	}
 	if _, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
@@ -400,7 +447,94 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 	}
 }
 
-func TestCreatePromotionWithStageClusterSubset(t *testing.T) {
+func TestReplaceDeliveryFlowTemplateGraphValidatesDAGAndSyncsStages(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+
+	template, err := env.svc.ReplaceDeliveryFlowTemplateGraph(ctx, ReplaceDeliveryFlowTemplateGraphInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		Stages: []SaveDeliveryFlowTemplateStageInput{
+			{StageKey: "dev", DisplayName: "开发", Color: "#ffffff", Order: 1, LayoutColumn: 0, LayoutRow: 0, Status: DeliveryFlowTemplateStageEnabled},
+			{StageKey: "test", DisplayName: "测试", Color: "#ffffff", Order: 2, LayoutColumn: 1, LayoutRow: -1, Status: DeliveryFlowTemplateStageEnabled, RequiresVerification: true, VerifyRoles: []string{"operator"}},
+			{StageKey: "qa", DisplayName: "验收", Color: "#ffffff", Order: 3, LayoutColumn: 1, LayoutRow: 1, Status: DeliveryFlowTemplateStageEnabled, RequiresApproval: true, ApproveRoles: []string{"operator"}},
+			{StageKey: "prod", DisplayName: "生产", Color: "#ffffff", Order: 4, LayoutColumn: 2, LayoutRow: 0, Status: DeliveryFlowTemplateStageEnabled, RequiresApproval: true, ApproveRoles: []string{"prod_approver"}},
+		},
+		DeletedStageKeys: []string{"staging"},
+		Edges: []DeliveryFlowTemplateEdgeInput{
+			{FromStageKey: "dev", ToStageKey: "test"},
+			{FromStageKey: "dev", ToStageKey: "qa"},
+			{FromStageKey: "test", ToStageKey: "prod"},
+			{FromStageKey: "qa", ToStageKey: "prod"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceDeliveryFlowTemplateGraph() error = %v", err)
+	}
+	if got := edgePairs(template.Edges); strings.Join(got, ",") != "dev->qa,dev->test,qa->prod,test->prod" {
+		t.Fatalf("unexpected graph edges: %+v", got)
+	}
+	if template.Stages[1].Color != "#FD5352" || template.Stages[2].Color != "#FD5352" || template.Stages[3].Color != "#FE7537" || template.Stages[1].LayoutRow != -1 || template.Stages[2].LayoutRow != 1 {
+		t.Fatalf("graph save should persist slots and derive column colors, got %+v", template.Stages)
+	}
+	if _, err := env.repo.FindDeliveryFlowTemplateStage(ctx, "tenant_a", "staging"); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("graph save should delete explicitly deleted stages, got %v", err)
+	}
+	if len(env.sync.calls) != 1 || env.sync.calls[0].TenantID != "tenant_a" || strings.Join(env.sync.calls[0].StageKeys, ",") != "dev,test,qa,prod" {
+		t.Fatalf("graph save should sync application environments, got %+v", env.sync.calls)
+	}
+
+	_, err = env.svc.ReplaceDeliveryFlowTemplateGraph(ctx, ReplaceDeliveryFlowTemplateGraphInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		Stages: []SaveDeliveryFlowTemplateStageInput{
+			{StageKey: "dev", DisplayName: "开发", Color: "#1677ff", Status: DeliveryFlowTemplateStageEnabled},
+			{StageKey: "test", DisplayName: "测试", Color: "#52c41a", Status: DeliveryFlowTemplateStageEnabled},
+		},
+		Edges: []DeliveryFlowTemplateEdgeInput{
+			{FromStageKey: "dev", ToStageKey: "test"},
+			{FromStageKey: "test", ToStageKey: "dev"},
+		},
+	})
+	if shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("cycle should be rejected as invalid argument, got %v", err)
+	}
+}
+
+func TestReplaceDeliveryFlowTemplateGraphDoesNotDeleteOmittedStagesWithoutExplicitDelete(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+
+	template, err := env.svc.GetDeliveryFlowTemplate(ctx, "tenant_a")
+	if err != nil {
+		t.Fatalf("GetDeliveryFlowTemplate() error = %v", err)
+	}
+	if len(template.Stages) != 4 {
+		t.Fatalf("expected default template stages, got %+v", template.Stages)
+	}
+
+	template, err = env.svc.ReplaceDeliveryFlowTemplateGraph(ctx, ReplaceDeliveryFlowTemplateGraphInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		Stages: []SaveDeliveryFlowTemplateStageInput{
+			{StageKey: "dev", DisplayName: "开发", Order: 1, LayoutColumn: 0, LayoutRow: 0, Status: DeliveryFlowTemplateStageEnabled},
+		},
+		Edges: nil,
+	})
+	if err != nil {
+		t.Fatalf("ReplaceDeliveryFlowTemplateGraph() error = %v", err)
+	}
+	if len(template.Stages) != 4 {
+		t.Fatalf("response should include full persisted template, got %+v", template.Stages)
+	}
+	for _, stageKey := range []string{"test", "staging", "prod"} {
+		if _, err := env.repo.FindDeliveryFlowTemplateStage(ctx, "tenant_a", stageKey); err != nil {
+			t.Fatalf("omitted stage %s should not be deleted without explicit delete list: %v", stageKey, err)
+		}
+	}
+}
+
+func TestCreatePromotionWithSingleBoundStageCluster(t *testing.T) {
 	env := newDeliveryEnv(t)
 	ctx := context.Background()
 	freight := seedFreight(t, env)
@@ -410,24 +544,28 @@ func TestCreatePromotionWithStageClusterSubset(t *testing.T) {
 		StageKey: "dev",
 		Clusters: []StageClusterBindingInput{
 			{ClusterID: "cluster_shanghai", ClusterName: "上海集群"},
-			{ClusterID: "cluster_beijing", ClusterName: "北京集群"},
 		},
 	}); err != nil {
 		t.Fatalf("ReplaceStageClusterBindings() error = %v", err)
 	}
-	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
-		t.Fatalf("stage promotion without selected clusters should fail, got %v", err)
+	inferred, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"})
+	if err != nil {
+		t.Fatalf("stage promotion should infer the single bound cluster: %v", err)
+	}
+	if inferred.Status != PromotionManifestUpdated || len(env.gitops.specs) != 1 || len(env.gitops.specs[0].TargetClusters) != 1 || env.gitops.specs[0].TargetClusters[0].ClusterID != "cluster_shanghai" {
+		t.Fatalf("stage promotion should use the single bound cluster, promotion=%+v specs=%+v", inferred, env.gitops.specs)
 	}
 	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev", TargetClusterIDs: []shared.ID{"cluster_missing"}}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("cluster outside stage pool should fail, got %v", err)
 	}
+	env.gitops.specs = nil
 	promotion, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{
 		Actor:             actor("usr_dev"),
 		FreightID:         freight.ID,
 		TargetStageKey:    "dev",
-		TargetClusterIDs:  []shared.ID{"cluster_beijing"},
+		TargetClusterIDs:  []shared.ID{"cluster_shanghai"},
 		NamespaceOverride: "order-dev",
-		Message:           "发布到北京",
+		Message:           "发布到上海",
 	})
 	if err != nil {
 		t.Fatalf("CreatePromotion() error = %v", err)
@@ -436,11 +574,39 @@ func TestCreatePromotionWithStageClusterSubset(t *testing.T) {
 		t.Fatalf("unexpected promotion: %+v", promotion)
 	}
 	if len(env.gitops.specs) != 1 || len(env.gitops.specs[0].TargetClusters) != 1 {
-		t.Fatalf("gitops spec should include selected cluster subset, got %+v", env.gitops.specs)
+		t.Fatalf("gitops spec should include the single bound cluster, got %+v", env.gitops.specs)
 	}
 	target := env.gitops.specs[0].TargetClusters[0]
-	if target.ClusterID != "cluster_beijing" || target.Namespace != "order-dev" || target.ClusterName != "北京集群" {
+	if target.ClusterID != "cluster_shanghai" || target.Namespace != "order-dev" || target.ClusterName != "上海集群" {
 		t.Fatalf("unexpected gitops target cluster: %+v", target)
+	}
+}
+
+func TestCreatePromotionUsesTemplateApprovalRuleForAnyStage(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	freight := seedFreight(t, env)
+	if _, err := env.svc.SaveDeliveryFlowTemplateStage(ctx, SaveDeliveryFlowTemplateStageInput{
+		Actor:            actor("usr_admin"),
+		TenantID:         "tenant_a",
+		StageKey:         "dev",
+		DisplayName:      "开发",
+		Order:            1,
+		Status:           DeliveryFlowTemplateStageEnabled,
+		RequiresApproval: true,
+		ApproveRoles:     []string{"operator"},
+	}); err != nil {
+		t.Fatalf("SaveDeliveryFlowTemplateStage() error = %v", err)
+	}
+	promotion, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	if err != nil {
+		t.Fatalf("CreatePromotion() error = %v", err)
+	}
+	if promotion.Status != PromotionPendingApproval {
+		t.Fatalf("stage should use template approval rule, got %+v", promotion)
+	}
+	if len(env.gitops.specs) != 0 {
+		t.Fatalf("pending approval promotion should not apply gitops yet, got %+v", env.gitops.specs)
 	}
 }
 
@@ -648,6 +814,49 @@ func TestEligibleFreightsAndPromotionValidateStageOrder(t *testing.T) {
 	}
 }
 
+func TestEligibleFreightsUseDAGParentsAndRequiredVerification(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	freight := seedFreight(t, env)
+	env.envQuery.envs["env_qa"] = EnvironmentRef{ID: "env_qa", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "qa", Status: "deployable", BindingActive: true}
+
+	if _, err := env.svc.ReplaceDeliveryFlowTemplateGraph(ctx, ReplaceDeliveryFlowTemplateGraphInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		Stages: []SaveDeliveryFlowTemplateStageInput{
+			{StageKey: "dev", DisplayName: "开发", Color: "#1677ff", Order: 1, Status: DeliveryFlowTemplateStageEnabled},
+			{StageKey: "test", DisplayName: "测试", Color: "#52c41a", Order: 2, Status: DeliveryFlowTemplateStageEnabled, RequiresVerification: true, VerifyRoles: []string{"operator"}},
+			{StageKey: "qa", DisplayName: "验收", Color: "#13c2c2", Order: 3, Status: DeliveryFlowTemplateStageEnabled},
+			{StageKey: "prod", DisplayName: "生产", Color: "#f5222d", Order: 4, Status: DeliveryFlowTemplateStageEnabled, RequiresApproval: true, ApproveRoles: []string{"prod_approver"}},
+		},
+		Edges: []DeliveryFlowTemplateEdgeInput{
+			{FromStageKey: "dev", ToStageKey: "test"},
+			{FromStageKey: "dev", ToStageKey: "qa"},
+			{FromStageKey: "test", ToStageKey: "prod"},
+			{FromStageKey: "qa", ToStageKey: "prod"},
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceDeliveryFlowTemplateGraph() error = %v", err)
+	}
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("prod should require both DAG parents first, got %v", err)
+	}
+	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_qa")
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("prod should wait for test verification, got %v", err)
+	}
+	if _, err := env.svc.CompleteStageVerification(ctx, StageVerificationInput{Actor: actor("usr_ops"), ApplicationID: "app_user", StageKey: "test", FreightID: freight.ID, Status: StageVerificationPassed, Comment: "通过", SyncStatus: "Synced", HealthStatus: "Healthy", AgentStatus: "ready"}); err != nil {
+		t.Fatalf("CompleteStageVerification() error = %v", err)
+	}
+	prod, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
+	if err != nil {
+		t.Fatalf("CreatePromotion(prod) should pass after both parents and verification: %v", err)
+	}
+	if prod.Status != PromotionPendingApproval {
+		t.Fatalf("prod should use template approval rule, got %+v", prod)
+	}
+}
+
 func TestFreightCreationContextIncludesRealDeliveryStages(t *testing.T) {
 	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
@@ -709,6 +918,15 @@ func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
 	if approved.Status != PromotionManifestUpdated || approved.ApprovedBy != "usr_ops" || len(env.gitops.specs) != 4 {
 		t.Fatalf("approved prod should apply gitops, got %+v specs=%+v", approved, env.gitops.specs)
 	}
+}
+
+func edgePairs(edges []DeliveryFlowTemplateEdge) []string {
+	out := make([]string, 0, len(edges))
+	for _, edge := range edges {
+		out = append(out, edge.FromStageKey+"->"+edge.ToStageKey)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func TestRejectAbortPendingEnvironmentRollbackAndGitOpsFailure(t *testing.T) {

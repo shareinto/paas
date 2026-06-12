@@ -1,7 +1,7 @@
 import * as mock from './mock';
 import { hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
 
-export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, Environment, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, StageClusterBinding, ClusterOption, AppStage, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, Environment, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, AppStage, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -366,8 +366,21 @@ export async function listApplicationEnvironments(applicationId: string) {
 }
 
 export async function getDeliveryFlowTemplate(tenantId = 'tenant_1') {
-  if (!hasAPIBaseURL()) return mock.getDeliveryFlowTemplate(tenantId);
-  return mapDeliveryFlowTemplate(await request<any>(`/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template`));
+	if (!hasAPIBaseURL()) return mock.getDeliveryFlowTemplate(tenantId);
+	return mapDeliveryFlowTemplate(await request<any>(`/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template`));
+}
+
+export async function replaceDeliveryFlowTemplateGraph(tenantId: string, input: { stages: mock.DeliveryFlowTemplateStage[]; edges: Pick<mock.DeliveryFlowTemplateEdge, 'fromStageKey' | 'toStageKey'>[]; deletedStageKeys?: string[] }) {
+	if (!hasAPIBaseURL()) return mock.replaceDeliveryFlowTemplateGraph(tenantId, input);
+	return mapDeliveryFlowTemplate(await request<any>(`/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template/graph`, {
+		method: 'PUT',
+		body: JSON.stringify({
+			actor: { type: 'user', id: 'usr_admin' },
+			stages: input.stages.map(stageTemplatePayload),
+			edges: input.edges.map((edge) => ({ from_stage_key: edge.fromStageKey, to_stage_key: edge.toStageKey })),
+			deleted_stage_keys: input.deletedStageKeys || []
+		})
+	}));
 }
 
 export async function saveDeliveryFlowTemplateStage(tenantId: string, input: Partial<mock.DeliveryFlowTemplateStage> & { stageKey: string }) {
@@ -978,14 +991,25 @@ function mapWorkload(item: any): mock.Workload {
 }
 
 function mapDeliveryFlowTemplate(item: any): mock.DeliveryFlowTemplate {
-  return {
-    id: item.id,
-    tenantId: item.tenant_id || item.tenantId || '',
-    name: item.name || '默认交付流模板',
-    stages: (item.stages || []).map(mapDeliveryFlowTemplateStage),
-    createdAt: item.createdAt || formatTime(item.created_at),
-    updatedAt: item.updatedAt || formatTime(item.updated_at)
-  };
+	return {
+		id: item.id,
+		tenantId: item.tenant_id || item.tenantId || '',
+		name: item.name || '默认交付流模板',
+		stages: (item.stages || []).map(mapDeliveryFlowTemplateStage),
+		edges: (item.edges || []).map(mapDeliveryFlowTemplateEdge),
+		createdAt: item.createdAt || formatTime(item.created_at),
+		updatedAt: item.updatedAt || formatTime(item.updated_at)
+	};
+}
+
+function mapDeliveryFlowTemplateEdge(item: any): mock.DeliveryFlowTemplateEdge {
+	return {
+		id: item.id || `${item.from_stage_key || item.fromStageKey}-${item.to_stage_key || item.toStageKey}`,
+		tenantId: item.tenant_id || item.tenantId || '',
+		templateId: item.template_id || item.templateId || '',
+		fromStageKey: item.from_stage_key || item.fromStageKey || '',
+		toStageKey: item.to_stage_key || item.toStageKey || ''
+	};
 }
 
 function mapDeliveryFlowTemplateStage(item: any): mock.DeliveryFlowTemplateStage {
@@ -997,6 +1021,8 @@ function mapDeliveryFlowTemplateStage(item: any): mock.DeliveryFlowTemplateStage
     displayName: item.display_name || item.displayName || item.stage_key || item.stageKey || '',
     color: item.color || '#1677ff',
     order: item.order || item.stage_order || 1,
+    layoutColumn: item.layout_column ?? item.layoutColumn ?? 0,
+    layoutRow: item.layout_row ?? item.layoutRow ?? 0,
     status: item.status || 'enabled',
     requiresApproval: !!(item.requires_approval || item.requiresApproval),
     requiresVerification: !!(item.requires_verification || item.requiresVerification),
@@ -1021,17 +1047,29 @@ function mapAppStage(item: any): mock.AppStage {
     tenantId: item.tenant_id || item.tenantId || '',
     projectId: item.project_id || item.projectId || '',
     applicationId: item.application_id || item.applicationId || '',
+    deliveryStageId: item.delivery_stage_id || item.deliveryStageId || '',
+    environmentId: item.environment_id || item.environmentId || '',
     stageKey: item.stage_key || item.stageKey || '',
     displayName: item.display_name || item.displayName || item.stage_key || item.stageKey || '',
     color: item.color || '#1677ff',
     order: item.order || 1,
+    layoutColumn: item.layout_column ?? item.layoutColumn ?? 0,
+    layoutRow: item.layout_row ?? item.layoutRow ?? 0,
     status: item.status || 'enabled',
     requiresApproval: !!(item.requires_approval || item.requiresApproval),
-    requiresVerification: !!(item.requires_verification || item.requiresVerification),
-    approveRoles: item.approve_roles || item.approveRoles || [],
-    verifyRoles: item.verify_roles || item.verifyRoles || [],
-    clusterPoolSize: item.cluster_pool_size || item.clusterPoolSize || 0
-  };
+		requiresVerification: !!(item.requires_verification || item.requiresVerification),
+		approveRoles: item.approve_roles || item.approveRoles || [],
+		verifyRoles: item.verify_roles || item.verifyRoles || [],
+		clusterPoolSize: item.cluster_pool_size || item.clusterPoolSize || 0,
+		boundClusterId: item.bound_cluster_id || item.boundClusterId || '',
+		boundClusterName: item.bound_cluster_name || item.boundClusterName || '',
+		currentFreightId: item.current_freight_id || item.currentFreightId || '',
+		currentFreightVersion: item.current_freight_version || item.currentFreightVersion || '',
+		syncStatus: item.sync_status || item.syncStatus || '',
+		healthStatus: item.health_status || item.healthStatus || '',
+		upstreamStageKeys: item.upstream_stage_keys || item.upstreamStageKeys || [],
+		downstreamStageKeys: item.downstream_stage_keys || item.downstreamStageKeys || []
+	};
 }
 
 function stageTemplatePayload(input: Partial<mock.DeliveryFlowTemplateStage> & { stageKey: string }) {
@@ -1041,6 +1079,8 @@ function stageTemplatePayload(input: Partial<mock.DeliveryFlowTemplateStage> & {
     display_name: input.displayName || input.stageKey,
     color: input.color || '#1677ff',
     order: input.order || 1,
+    layout_column: input.layoutColumn || 0,
+    layout_row: input.layoutRow || 0,
     status: input.status || 'enabled',
     requires_approval: !!input.requiresApproval,
     requires_verification: !!input.requiresVerification,
