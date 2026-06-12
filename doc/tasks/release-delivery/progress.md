@@ -13,7 +13,7 @@
 ## 2026-06-12 Stage 化交付流更新
 
 - 新增租户级 DeliveryFlowTemplate、DeliveryFlowTemplateStage、StageClusterBinding、AppStage、FreightApproval 和 StageVerification。
-- Stage key 创建后保持稳定；删除语义为禁用。
+- Stage key 创建后保持稳定；删除 Stage 会物理删除模板项和该 Stage 的集群池绑定。
 - 集群绑定调整为租户 Stage 级集群池，支持一个 Stage 多集群、一个集群绑定多个 Stage。
 - Promotion 支持 `target_stage_key`、`target_cluster_ids` 和 `namespace_override`，并为目标集群子集生成独立部署记录。
 - GitOps 部署路径支持 Stage + Cluster 维度：`apps/<app>/<stage>/<cluster>/values.yaml` 和 `argocd/apps/<app>-<stage>-<cluster>.yaml`。

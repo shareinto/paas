@@ -86,9 +86,9 @@ Stage key 创建后必须保持稳定。
 
 约束：
 
-- 禁止物理删除 Stage key。
+- Stage key 创建后不可修改；删除 Stage 会物理删除模板项和该 Stage 的集群池绑定。
 - 禁止修改已有 Stage key。
-- 删除操作在产品语义上应转为禁用。
+- 删除 Stage 会物理删除模板项和该 Stage 的集群池绑定。
 - 历史发布记录必须保留。
 - 允许调整显示名、颜色、顺序和策略。
 
@@ -203,7 +203,7 @@ UI 按企业级运维控制台风格设计：
 产品语义：
 
 - 删除不做物理删除。
-- 删除应转为禁用。
+- 删除会物理删除模板项和该 Stage 的集群池绑定。
 - 保留历史发布记录。
 
 ### 6.3 绑定集群
@@ -296,7 +296,7 @@ Stage 卡片展示：
 - `showScreen`：切换主视图。
 - `openStageTemplateModal`：打开添加或编辑 Stage 弹窗。
 - `saveStageTemplate`：保存 Stage 模板配置。
-- `deleteStageTemplate`：禁用 Stage。
+- `deleteStageTemplate`：删除 Stage。
 - `openClusterBindingModal`：打开 Stage 绑定集群弹窗。
 - `saveClusterBinding`：保存 Stage 集群绑定。
 - `openPromotion`：打开发布弹窗。

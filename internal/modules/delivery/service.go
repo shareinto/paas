@@ -443,7 +443,7 @@ func (s *Service) SaveDeliveryFlowTemplateStage(ctx context.Context, input SaveD
 	return stage, nil
 }
 
-func (s *Service) DisableDeliveryFlowTemplateStage(ctx context.Context, input StageTemplateActionInput) (DeliveryFlowTemplateStage, error) {
+func (s *Service) DeleteDeliveryFlowTemplateStage(ctx context.Context, input StageTemplateActionInput) (DeliveryFlowTemplateStage, error) {
 	stage, err := s.repo.FindDeliveryFlowTemplateStage(ctx, input.TenantID, normalizeStageKey(input.StageKey))
 	if err != nil {
 		return DeliveryFlowTemplateStage{}, err
@@ -451,12 +451,11 @@ func (s *Service) DisableDeliveryFlowTemplateStage(ctx context.Context, input St
 	if err := s.check(ctx, input.Actor, ApplicationRef{TenantID: input.TenantID}, "tenant:update"); err != nil {
 		return DeliveryFlowTemplateStage{}, err
 	}
-	stage.Status = DeliveryFlowTemplateStageDisabled
-	stage.UpdatedAt = s.clock.Now()
-	if err := s.repo.UpdateDeliveryFlowTemplateStage(ctx, stage); err != nil {
+	now := s.clock.Now()
+	if err := s.repo.DeleteDeliveryFlowTemplateStage(ctx, input.TenantID, stage.StageKey); err != nil {
 		return DeliveryFlowTemplateStage{}, err
 	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "delivery_flow_template.stage.disable", ResourceType: "delivery_flow_template_stage", ResourceID: stage.ID, Result: "succeeded", Summary: "禁用交付流 Stage 模板并保留历史记录", OccurredAt: stage.UpdatedAt})
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "delivery_flow_template.stage.delete", ResourceType: "delivery_flow_template_stage", ResourceID: stage.ID, Result: "succeeded", Summary: "删除交付流 Stage 模板", OccurredAt: now})
 	return stage, nil
 }
 

@@ -211,7 +211,7 @@
                 </div>
               </div>
               <div class="panel-body">
-                <div class="notice" style="margin-bottom:12px;">模板变更会自动影响租户下所有应用；进行中的发布按最新模板规则校验。禁止物理删除或修改 Stage key，只允许禁用、调整显示名、顺序和策略。</div>
+                <div class="notice" style="margin-bottom:12px;">模板变更会自动影响租户下所有应用；进行中的发布按最新模板规则校验。Stage key 创建后不可修改；删除 Stage 会物理删除模板项和该 Stage 的集群池绑定。</div>
                 <div class="stage-grid">
                   <article class="stage-card selected" data-stage-key="dev" data-stage-color="#2f80ed" style="--stage-color:#2f80ed;">
                     <div class="stage-color-strip"><div><div class="stage-strip-title">开发</div><div class="stage-strip-key">Stage key: dev</div></div></div>
@@ -434,7 +434,7 @@
       <button class="btn" onclick="closeModals()">关闭</button>
     </div>
     <div class="modal-body">
-      <div class="notice" style="margin-bottom:14px;">Stage key 创建后保持稳定，后续不允许修改；删除操作会转为禁用，保留历史发布记录。</div>
+      <div class="notice" style="margin-bottom:14px;">Stage key 创建后保持稳定，后续不允许修改；删除 Stage 会物理删除模板项和该 Stage 的集群池绑定，历史发布记录保留。</div>
       <div class="form-grid">
         <div class="field"><label>Stage key</label><input id="stageTemplateKey" value="uat" /></div>
         <div class="field"><label>显示名</label><input id="stageTemplateName" value="用户验收" /></div>

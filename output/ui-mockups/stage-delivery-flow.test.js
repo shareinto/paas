@@ -20,7 +20,7 @@ assert(html.includes('data-stage-key="dev"'), '应使用稳定 Stage key 表达 
 assert(html.includes('data-stage-key="prod"'), '应使用稳定 Stage key 表达 prod');
 assert(html.includes('verify_roles'), '模板应包含 verify 角色策略');
 assert(html.includes('approve_roles'), '模板应包含 approve 角色策略');
-assert(html.includes('禁止物理删除或修改 Stage key'), '应提示 Stage key 稳定不可改');
+assert(html.includes('Stage key 创建后不可修改'), '应提示 Stage key 稳定不可改');
 assert(html.includes('id="stageTemplateModal"'), '添加和编辑 Stage 模板应使用弹窗');
 assert(html.includes('onclick="openStageTemplateModal()'), '模板页右上角应提供添加按钮');
 assert(html.includes('onclick="openStageTemplateModal('), 'Stage 卡片应提供编辑按钮并打开弹窗');

@@ -23,7 +23,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tenants/{tenantId}/delivery-flow-template", h.handleGetDeliveryFlowTemplate)
 	mux.HandleFunc("POST /api/tenants/{tenantId}/delivery-flow-template/stages", h.handleSaveDeliveryFlowTemplateStage)
 	mux.HandleFunc("PATCH /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}", h.handleSaveDeliveryFlowTemplateStage)
-	mux.HandleFunc("DELETE /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}", h.handleDisableDeliveryFlowTemplateStage)
+	mux.HandleFunc("DELETE /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}", h.handleDeleteDeliveryFlowTemplateStage)
 	mux.HandleFunc("GET /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}/cluster-bindings", h.handleListStageClusterBindings)
 	mux.HandleFunc("PUT /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}/cluster-bindings", h.handleReplaceStageClusterBindings)
 	mux.HandleFunc("GET /api/apps/{appId}/delivery/stages/{stageId}/eligible-freights", h.handleEligibleFreights)
@@ -114,14 +114,14 @@ func (h *Handler) handleSaveDeliveryFlowTemplateStage(w http.ResponseWriter, r *
 	}
 	writeJSON(w, status, stage)
 }
-func (h *Handler) handleDisableDeliveryFlowTemplateStage(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleDeleteDeliveryFlowTemplateStage(w http.ResponseWriter, r *http.Request) {
 	var req StageTemplateActionInput
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	req.TenantID = shared.ID(r.PathValue("tenantId"))
 	req.StageKey = r.PathValue("stageKey")
-	stage, err := h.service.DisableDeliveryFlowTemplateStage(r.Context(), req)
+	stage, err := h.service.DeleteDeliveryFlowTemplateStage(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
 		return

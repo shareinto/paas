@@ -625,15 +625,16 @@ export async function saveDeliveryFlowTemplateStage(tenantId: string, input: Par
   return { ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] };
 }
 
-export async function disableDeliveryFlowTemplateStage(tenantId: string, stageKey: string) {
+export async function deleteDeliveryFlowTemplateStage(tenantId: string, stageKey: string) {
   await wait();
-  const stage = deliveryFlowTemplate.stages.find((item) => item.tenantId === tenantId && item.stageKey === stageKey);
-  if (!stage) throw new Error('Stage 不存在');
-  stage.status = 'disabled';
+  const index = deliveryFlowTemplate.stages.findIndex((item) => item.tenantId === tenantId && item.stageKey === stageKey);
+  if (index < 0) throw new Error('Stage 不存在');
+  const [stage] = deliveryFlowTemplate.stages.splice(index, 1);
+  stageClusterBindings = stageClusterBindings.filter((item) => !(item.tenantId === tenantId && item.stageKey === stageKey));
   return { ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] };
 }
 
-export async function listClusterOptions(): Promise<ClusterOption[]> {
+export async function listClusterOptions(_tenantId?: string): Promise<ClusterOption[]> {
   await wait();
   return clusterOptions.map((item) => ({ ...item }));
 }

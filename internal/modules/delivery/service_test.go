@@ -293,14 +293,6 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 		t.Fatalf("changing stage key should fail, got %v", err)
 	}
 
-	disabled, err := env.svc.DisableDeliveryFlowTemplateStage(ctx, StageTemplateActionInput{Actor: actor("usr_admin"), TenantID: "tenant_a", StageKey: "staging"})
-	if err != nil {
-		t.Fatalf("DisableDeliveryFlowTemplateStage() error = %v", err)
-	}
-	if disabled.Status != DeliveryFlowTemplateStageDisabled {
-		t.Fatalf("delete semantic should disable stage, got %+v", disabled)
-	}
-
 	bindings, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
 		Actor:    actor("usr_admin"),
 		TenantID: "tenant_a",
@@ -328,15 +320,36 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 		t.Fatalf("same cluster can bind multiple stages, got %+v err=%v", prodBindings, err)
 	}
 
+	deleted, err := env.svc.DeleteDeliveryFlowTemplateStage(ctx, StageTemplateActionInput{Actor: actor("usr_admin"), TenantID: "tenant_a", StageKey: "staging"})
+	if err != nil {
+		t.Fatalf("DeleteDeliveryFlowTemplateStage() error = %v", err)
+	}
+	if deleted.StageKey != "staging" {
+		t.Fatalf("delete should return deleted stage snapshot, got %+v", deleted)
+	}
+	if _, err := env.repo.FindDeliveryFlowTemplateStage(ctx, "tenant_a", "staging"); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("stage should be physically deleted, got %v", err)
+	}
+
 	appStages, err := env.svc.ListAppStages(ctx, "app_user")
 	if err != nil {
 		t.Fatalf("ListAppStages() error = %v", err)
 	}
-	if len(appStages) != 4 {
-		t.Fatalf("expected all template stages including disabled for history visibility, got %+v", appStages)
+	if len(appStages) != 3 {
+		t.Fatalf("expected deleted stage to be absent, got %+v", appStages)
 	}
 	if appStages[0].StageKey != "dev" || appStages[0].ClusterPoolSize != 2 {
 		t.Fatalf("app stage should project tenant cluster pool: %+v", appStages[0])
+	}
+	if _, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		StageKey: "staging",
+		Clusters: []StageClusterBindingInput{
+			{ClusterID: "cluster_hangzhou", ClusterName: "杭州集群"},
+		},
+	}); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("deleted stage should reject cluster bindings, got %v", err)
 	}
 }
 
@@ -754,6 +767,19 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	}
 	if len(appStagesOut.Items) != 4 || appStagesOut.Items[0].ClusterPoolSize != 1 {
 		t.Fatalf("GET app stages should include stage cluster pool, got %+v", appStagesOut)
+	}
+	deleteStageRec := serveJSON(mux, http.MethodDelete, "/api/tenants/tenant_a/delivery-flow-template/stages/staging", mustJSON(t, StageTemplateActionInput{Actor: actor("usr_admin")}))
+	assertStatus(t, deleteStageRec, http.StatusOK)
+	templateAfterDeleteRec := serveJSON(mux, http.MethodGet, "/api/tenants/tenant_a/delivery-flow-template", nil)
+	assertStatus(t, templateAfterDeleteRec, http.StatusOK)
+	var templateAfterDelete DeliveryFlowTemplate
+	if err := json.NewDecoder(templateAfterDeleteRec.Body).Decode(&templateAfterDelete); err != nil {
+		t.Fatalf("decode template after delete: %v", err)
+	}
+	for _, stage := range templateAfterDelete.Stages {
+		if stage.StageKey == "staging" {
+			t.Fatalf("DELETE stage should physically remove staging, got %+v", templateAfterDelete.Stages)
+		}
 	}
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights?page=1&page_size=5", nil), http.StatusOK)
 	detailRec := serveJSON(mux, http.MethodGet, "/api/freights/"+freight.ID.String(), nil)

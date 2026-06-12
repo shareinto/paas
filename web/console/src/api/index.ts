@@ -379,21 +379,22 @@ export async function saveDeliveryFlowTemplateStage(tenantId: string, input: Par
   return mapDeliveryFlowTemplateStage(item);
 }
 
-export async function disableDeliveryFlowTemplateStage(tenantId: string, stageKey: string) {
-  if (!hasAPIBaseURL()) return mock.disableDeliveryFlowTemplateStage(tenantId, stageKey);
+export async function deleteDeliveryFlowTemplateStage(tenantId: string, stageKey: string) {
+  if (!hasAPIBaseURL()) return mock.deleteDeliveryFlowTemplateStage(tenantId, stageKey);
   const item = await request<any>(`/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template/stages/${encodeURIComponent(stageKey)}`, { method: 'DELETE', body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' } }) });
   return mapDeliveryFlowTemplateStage(item);
 }
 
-export async function listClusterOptions() {
-  if (!hasAPIBaseURL()) return mock.listClusterOptions();
-  const data = await request<PageResult<any>>('/api/clusters?page=1&page_size=100&actor_id=usr_admin');
+export async function listClusterOptions(tenantId?: string) {
+  if (!hasAPIBaseURL()) return mock.listClusterOptions(tenantId);
+  const tenantQuery = tenantId ? `tenant_id=${encodeURIComponent(tenantId)}&` : '';
+  const data = await request<PageResult<any>>(`/api/clusters?${tenantQuery}page=1&page_size=100&actor_id=usr_admin`);
   return data.items.map((item) => ({ id: item.id, name: item.name, region: item.region || '', status: item.status || 'ready' }));
 }
 
 export async function replaceStageClusterBindings(tenantId: string, stageKey: string, clusterIds: string[]) {
   if (!hasAPIBaseURL()) return mock.replaceStageClusterBindings(tenantId, stageKey, clusterIds);
-  const clusters = await listClusterOptions();
+  const clusters = await listClusterOptions(tenantId);
   const data = await request<{ items: any[] }>(`/api/tenants/${encodeURIComponent(tenantId)}/delivery-flow-template/stages/${encodeURIComponent(stageKey)}/cluster-bindings`, {
     method: 'PUT',
     body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, clusters: clusterIds.map((clusterId) => ({ cluster_id: clusterId, cluster_name: clusters.find((cluster) => cluster.id === clusterId)?.name || clusterId })) })

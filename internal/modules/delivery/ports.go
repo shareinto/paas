@@ -32,6 +32,7 @@ type Repository interface {
 	FindDeliveryFlowTemplateByTenant(ctx context.Context, tenantID shared.ID) (DeliveryFlowTemplate, error)
 	CreateDeliveryFlowTemplateStage(ctx context.Context, stage DeliveryFlowTemplateStage) error
 	UpdateDeliveryFlowTemplateStage(ctx context.Context, stage DeliveryFlowTemplateStage) error
+	DeleteDeliveryFlowTemplateStage(ctx context.Context, tenantID shared.ID, stageKey string) error
 	FindDeliveryFlowTemplateStage(ctx context.Context, tenantID shared.ID, stageKey string) (DeliveryFlowTemplateStage, error)
 	ListDeliveryFlowTemplateStages(ctx context.Context, templateID shared.ID) ([]DeliveryFlowTemplateStage, error)
 	ReplaceStageClusterBindings(ctx context.Context, tenantID shared.ID, stageKey string, bindings []StageClusterBinding) error

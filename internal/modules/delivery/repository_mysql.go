@@ -236,6 +236,20 @@ WHERE tenant_id = ? AND stage_key = ?`,
 	return database.RequireAffected(result, "delivery flow template stage not found")
 }
 
+func (r *MySQLRepository) DeleteDeliveryFlowTemplateStage(ctx context.Context, tenantID shared.ID, stageKey string) error {
+	return database.NewTransactor(r.db).WithinTx(ctx, func(txCtx context.Context) error {
+		exec := database.ExecutorFromContext(txCtx, r.db)
+		if _, err := exec.ExecContext(txCtx, "DELETE FROM stage_cluster_bindings WHERE tenant_id = ? AND stage_key = ?", tenantID, stageKey); err != nil {
+			return database.WrapUnavailable(err, "delete delivery flow template stage failed")
+		}
+		result, err := exec.ExecContext(txCtx, "DELETE FROM delivery_flow_template_stages WHERE tenant_id = ? AND stage_key = ?", tenantID, stageKey)
+		if err != nil {
+			return database.WrapUnavailable(err, "delete delivery flow template stage failed")
+		}
+		return database.RequireAffected(result, "delivery flow template stage not found")
+	})
+}
+
 func (r *MySQLRepository) FindDeliveryFlowTemplateStage(ctx context.Context, tenantID shared.ID, stageKey string) (DeliveryFlowTemplateStage, error) {
 	stage, err := scanDeliveryFlowTemplateStage(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, deliveryFlowTemplateStageSelect()+" WHERE tenant_id = ? AND stage_key = ?", tenantID, stageKey))
 	if err != nil {
