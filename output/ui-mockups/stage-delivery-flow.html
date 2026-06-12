@@ -1,0 +1,662 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Stage 化交付模型交互原型</title>
+  <style>
+    :root {
+      --primary: #1677ff;
+      --primary-soft: #e6f4ff;
+      --success: #16a34a;
+      --success-soft: #e8f7ee;
+      --warning: #d97706;
+      --warning-soft: #fff7e6;
+      --error: #dc2626;
+      --error-soft: #fff1f0;
+      --nav: #071426;
+      --bg: #f5f7fb;
+      --panel: #fff;
+      --line: #e5eaf2;
+      --text: #1f2937;
+      --muted: #667085;
+      --muted-2: #98a2b3;
+      --radius: 8px;
+      --shadow: 0 8px 24px rgba(15, 23, 42, .08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    button, input, select, textarea { font: inherit; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 232px minmax(0, 1fr); }
+    .sidebar { background: var(--nav); color: #d7e3f3; padding: 18px 14px; }
+    .brand { height: 42px; display: flex; align-items: center; gap: 10px; color: #fff; font-size: 17px; font-weight: 700; margin-bottom: 24px; }
+    .brand-mark { width: 28px; height: 28px; border-radius: 7px; background: linear-gradient(135deg, #1677ff, #31c48d); display: grid; place-items: center; }
+    .nav-section { color: #7d8ca3; font-size: 12px; margin: 20px 10px 8px; }
+    .nav-item { height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: 7px; color: #c8d5e8; margin: 3px 0; }
+    .nav-item.active { color: #fff; background: #17345d; box-shadow: inset 3px 0 0 var(--primary); }
+    .nav-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .8; }
+    .main { min-width: 0; display: flex; flex-direction: column; }
+    .topbar { height: 56px; background: #fff; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; }
+    .search { width: 390px; height: 34px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); display: flex; align-items: center; padding: 0 12px; background: #fafcff; }
+    .content { padding: 20px 24px 32px; max-width: 1680px; width: 100%; }
+    .page-title { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; margin-bottom: 14px; }
+    h1 { font-size: 22px; line-height: 1.25; margin: 0 0 6px; }
+    h2 { font-size: 17px; margin: 0; }
+    h3 { font-size: 15px; margin: 0 0 12px; }
+    .muted { color: var(--muted); }
+    .btn { height: 34px; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 0 12px; color: var(--text); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; }
+    .btn:hover { border-color: var(--primary); color: var(--primary); }
+    .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+    .btn.success { background: var(--success); border-color: var(--success); color: #fff; }
+    .btn.danger { color: var(--error); border-color: #fecaca; }
+    .btn:disabled { cursor: not-allowed; color: var(--muted-2); background: #f2f4f7; border-color: var(--line); }
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+    .tab { border: 0; background: transparent; padding: 12px 14px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+    .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+    .screen { display: none; }
+    .screen.active { display: block; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+    .panel-header { min-height: 48px; padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .panel-body { padding: 16px; }
+    .grid { display: grid; gap: 16px; }
+    .grid.two { grid-template-columns: minmax(0, 1fr) 380px; }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .metric-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .metric { background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+    .metric .value { margin-top: 8px; font-size: 22px; font-weight: 700; }
+    .tag, .status { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 8px; font-size: 12px; white-space: nowrap; border: 1px solid transparent; }
+    .tag.blue, .status.info { color: #0958d9; background: var(--primary-soft); border-color: #bae0ff; }
+    .tag.green, .status.ok { color: #15803d; background: var(--success-soft); border-color: #bbf7d0; }
+    .tag.orange, .status.warn { color: #b45309; background: var(--warning-soft); border-color: #fed7aa; }
+    .tag.gray, .status.idle { color: #475467; background: #f2f4f7; border-color: #e4e7ec; }
+    .tag.red, .status.err { color: #b42318; background: var(--error-soft); border-color: #ffccc7; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    th { color: var(--muted); font-weight: 600; background: #fafcff; }
+    tr:last-child td { border-bottom: 0; }
+    .flow { display: flex; align-items: center; gap: 8px; margin: 12px 0 18px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; overflow-x: auto; }
+    .flow-node { min-width: 136px; border: 1px solid var(--line); background: #fbfdff; border-radius: 7px; padding: 9px 10px; text-align: center; color: var(--muted); }
+    .flow-node.active { color: var(--primary); border-color: #91caff; background: var(--primary-soft); font-weight: 600; }
+    .arrow { color: var(--muted-2); font-weight: 700; }
+    .notice { border: 1px solid #fed7aa; background: var(--warning-soft); color: #92400e; border-radius: 7px; padding: 10px 12px; line-height: 1.5; }
+    .info-box { border: 1px solid #bae0ff; background: var(--primary-soft); color: #0958d9; border-radius: 7px; padding: 10px 12px; line-height: 1.5; }
+    .stage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .stage-card { border: 1px solid var(--line); border-radius: var(--radius); background: #fff; padding: 14px; min-height: 212px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+    .stage-card.selected { border-color: #91caff; box-shadow: 0 0 0 3px rgba(22, 119, 255, .08); }
+    .stage-color-strip { min-height: 48px; margin: -14px -14px 4px; border-radius: 8px 8px 0 0; background: var(--stage-color, var(--primary)); display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 14px; }
+    .stage-strip-title { color: #fff; font-weight: 700; font-size: 16px; line-height: 1.2; }
+    .stage-strip-key { color: rgba(255, 255, 255, .82); font-size: 12px; margin-top: 2px; }
+    .stage-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .stage-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; }
+    .stage-key { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .role-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+    .cluster-list, .freight-list, .evidence-list { display: grid; gap: 10px; }
+    .cluster-row, .freight-row, .evidence-row { border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: #fff; display: grid; gap: 8px; }
+    .cluster-row.active { border-color: #91caff; background: #fbfdff; }
+    .row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .kv { display: grid; grid-template-columns: 108px minmax(0, 1fr); gap: 8px; font-size: 13px; }
+    .kv .k { color: var(--muted); }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    label { color: #344054; font-size: 13px; font-weight: 600; }
+    input, select, textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; background: #fff; color: var(--text); outline: none; }
+    input:focus, select:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(22, 119, 255, .12); }
+    textarea { min-height: 100px; resize: vertical; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #f6f8fb; border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; font-size: 12px; }
+    .checkbox-list { display: grid; gap: 8px; }
+    .checkbox-card { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 7px; padding: 10px; background: #fff; }
+    .checkbox-card input { width: auto; margin-top: 3px; }
+    .timeline { display: grid; gap: 10px; }
+    .timeline-item { display: grid; grid-template-columns: 98px minmax(0, 1fr); gap: 12px; align-items: start; }
+    .timeline-content { border: 1px solid var(--line); border-radius: 7px; background: #fff; padding: 10px; }
+    .modal-mask { position: fixed; inset: 0; z-index: 40; display: none; background: rgba(15, 23, 42, .35); }
+    .modal-mask.open { display: block; }
+    .modal { position: fixed; z-index: 50; top: 7vh; left: 50%; width: min(980px, calc(100vw - 32px)); max-height: 86vh; transform: translateX(-50%); background: #fff; border-radius: 10px; box-shadow: 0 24px 64px rgba(15, 23, 42, .22); display: none; overflow: hidden; }
+    .modal.open { display: flex; flex-direction: column; }
+    .modal-header { padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .modal-body { padding: 16px 18px; overflow: auto; }
+    .modal-footer { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 8px; background: #fff; }
+
+    @media (max-width: 1180px) {
+      .app { grid-template-columns: 76px minmax(0, 1fr); }
+      .brand span, .nav-item span, .nav-section { display: none; }
+      .metric-row, .grid.three, .stage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .grid.two { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 760px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .topbar { padding: 0 12px; }
+      .search { display: none; }
+      .content { padding: 14px; }
+      .metric-row, .form-grid, .stage-grid { grid-template-columns: 1fr; }
+      table { min-width: 920px; }
+      .panel-body { overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">P</div><span>平台控制台</span></div>
+      <div class="nav-section">平台</div>
+      <div class="nav-item active"><i class="nav-dot"></i><span>应用交付</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>发布验证</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>审计日志</span></div>
+      <div class="nav-section">租户管理</div>
+      <div class="nav-item"><i class="nav-dot"></i><span>交付流模板</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>Stage 集群</span></div>
+      <div class="nav-item"><i class="nav-dot"></i><span>角色权限</span></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="search">搜索应用、Stage、集群、Freight 或审计记录</div>
+        <div class="muted">租户：研发中心　项目：云管平台　用户：租户管理员</div>
+      </header>
+
+      <section class="content">
+        <div class="page-title">
+          <div>
+            <h1>Stage 化交付模型交互原型</h1>
+            <div class="muted">Environment 已并入应用 Stage；租户模板定义路线和角色；Stage 绑定集群池，发布时选择目标集群子集。</div>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" onclick="showScreen('template')">管理模板</button>
+            <button class="btn primary" onclick="showScreen('release')">发起发布</button>
+          </div>
+        </div>
+
+        <div class="flow">
+          <div class="flow-node active">维护模板</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">绑定集群池</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">应用生成 Stage</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">选择集群发布</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">人工验证</div>
+          <div class="arrow">→</div>
+          <div class="flow-node">允许晋级</div>
+        </div>
+
+        <nav class="tabs" aria-label="Stage 化交付原型页面">
+          <button class="tab active" data-screen="template" onclick="showScreen('template')">租户交付流模板</button>
+          <button class="tab" data-screen="release" onclick="showScreen('release')">应用 Stage 发布</button>
+        </nav>
+
+        <section id="template" class="screen active">
+          <div class="metric-row">
+            <div class="metric"><div class="muted">当前模板</div><div class="value">研发中心默认</div></div>
+            <div class="metric"><div class="muted">Stage 数量</div><div class="value">4</div></div>
+            <div class="metric"><div class="muted">引用应用</div><div class="value">128</div></div>
+            <div class="metric"><div class="muted">生效方式</div><div class="value">自动</div></div>
+          </div>
+
+          <div class="panel">
+              <div class="panel-header">
+                <h2>Stage 路线与角色策略</h2>
+                <div style="display:flex; gap:8px;">
+                  <button class="btn" onclick="saveTemplate()">保存模板</button>
+                  <button class="btn primary" onclick="openStageTemplateModal()">添加 Stage</button>
+                </div>
+              </div>
+              <div class="panel-body">
+                <div class="notice" style="margin-bottom:12px;">模板变更会自动影响租户下所有应用；进行中的发布按最新模板规则校验。禁止物理删除或修改 Stage key，只允许禁用、调整显示名、顺序和策略。</div>
+                <div class="stage-grid">
+                  <article class="stage-card selected" data-stage-key="dev" data-stage-color="#2f80ed" style="--stage-color:#2f80ed;">
+                    <div class="stage-color-strip"><div><div class="stage-strip-title">开发</div><div class="stage-strip-key">Stage key: dev</div></div></div>
+                    <div class="stage-head">
+                      <div><span class="stage-key">模板策略</span></div>
+                      <span class="tag green">启用</span>
+                    </div>
+                    <div class="kv"><span class="k">顺序</span><span>1</span></div>
+                    <div class="kv"><span class="k">部署前审批</span><span>不需要</span></div>
+                    <div class="kv"><span class="k">部署后验证</span><span>需要</span></div>
+                    <div class="role-pills"><span class="tag blue">开发负责人</span><span class="tag gray">项目管理员</span></div>
+                    <code>verify_roles=["developer_lead","project_admin"]</code>
+                    <div class="stage-actions">
+                      <button class="btn" onclick="openClusterBindingModal('dev')">绑定集群</button>
+                      <button class="btn" onclick="openStageTemplateModal('dev')">编辑</button>
+                      <button class="btn danger" onclick="deleteStageTemplate('dev')">删除</button>
+                    </div>
+                  </article>
+
+                  <article class="stage-card" data-stage-key="test" data-stage-color="#12b76a" style="--stage-color:#12b76a;">
+                    <div class="stage-color-strip"><div><div class="stage-strip-title">测试</div><div class="stage-strip-key">Stage key: test</div></div></div>
+                    <div class="stage-head">
+                      <div><span class="stage-key">模板策略</span></div>
+                      <span class="tag green">启用</span>
+                    </div>
+                    <div class="kv"><span class="k">顺序</span><span>2</span></div>
+                    <div class="kv"><span class="k">部署前审批</span><span>不需要</span></div>
+                    <div class="kv"><span class="k">部署后验证</span><span>需要</span></div>
+                    <div class="role-pills"><span class="tag blue">测试负责人</span><span class="tag gray">项目管理员</span></div>
+                    <code>verify_roles=["qa_lead","project_admin"]</code>
+                    <div class="stage-actions">
+                      <button class="btn" onclick="openClusterBindingModal('test')">绑定集群</button>
+                      <button class="btn" onclick="openStageTemplateModal('test')">编辑</button>
+                      <button class="btn danger" onclick="deleteStageTemplate('test')">删除</button>
+                    </div>
+                  </article>
+
+                  <article class="stage-card" data-stage-key="staging" data-stage-color="#f79009" style="--stage-color:#f79009;">
+                    <div class="stage-color-strip"><div><div class="stage-strip-title">预发</div><div class="stage-strip-key">Stage key: staging</div></div></div>
+                    <div class="stage-head">
+                      <div><span class="stage-key">模板策略</span></div>
+                      <span class="tag green">启用</span>
+                    </div>
+                    <div class="kv"><span class="k">顺序</span><span>3</span></div>
+                    <div class="kv"><span class="k">部署前审批</span><span>需要</span></div>
+                    <div class="kv"><span class="k">部署后验证</span><span>需要</span></div>
+                    <div class="role-pills"><span class="tag orange">发布管理员</span><span class="tag blue">测试负责人</span></div>
+                    <code>approve_roles=["release_admin"]</code>
+                    <div class="stage-actions">
+                      <button class="btn" onclick="openClusterBindingModal('staging')">绑定集群</button>
+                      <button class="btn" onclick="openStageTemplateModal('staging')">编辑</button>
+                      <button class="btn danger" onclick="deleteStageTemplate('staging')">删除</button>
+                    </div>
+                  </article>
+
+                  <article class="stage-card" data-stage-key="prod" data-stage-color="#d92d20" style="--stage-color:#d92d20;">
+                    <div class="stage-color-strip"><div><div class="stage-strip-title">生产</div><div class="stage-strip-key">Stage key: prod</div></div></div>
+                    <div class="stage-head">
+                      <div><span class="stage-key">模板策略</span></div>
+                      <span class="tag green">启用</span>
+                    </div>
+                    <div class="kv"><span class="k">顺序</span><span>4</span></div>
+                    <div class="kv"><span class="k">部署前审批</span><span>需要</span></div>
+                    <div class="kv"><span class="k">部署后验证</span><span>需要</span></div>
+                    <div class="role-pills"><span class="tag orange">生产审批人</span><span class="tag blue">运维负责人</span></div>
+                    <code>approve_roles=["prod_approver"]</code>
+                    <div class="stage-actions">
+                      <button class="btn" onclick="openClusterBindingModal('prod')">绑定集群</button>
+                      <button class="btn" onclick="openStageTemplateModal('prod')">编辑</button>
+                      <button class="btn danger" onclick="deleteStageTemplate('prod')">删除</button>
+                    </div>
+                  </article>
+                </div>
+              </div>
+          </div>
+        </section>
+
+        <section id="release" class="screen">
+          <div class="grid two">
+            <div class="panel">
+              <div class="panel-header">
+                <h2>macc-frontend Stage 发布</h2>
+                <button class="btn primary" onclick="openPromotion('prod')">发布到 Stage</button>
+              </div>
+              <div class="panel-body">
+                <div class="freight-list" style="margin-bottom:16px;">
+                  <div class="freight-row">
+                    <div class="row-head">
+                      <strong>Freight 20260612.3</strong>
+                      <div style="display:flex; gap:8px; align-items:center;">
+                        <span class="tag green" id="freightApprovalState3">已通过 test</span>
+                        <button class="btn" onclick="openApprovalModal('Freight 20260612.3')">审批</button>
+                      </div>
+                    </div>
+                    <div class="muted">admin-web: registry.example.com/macc/admin@sha256:9f13...　api: registry.example.com/macc/api@sha256:2ab4...</div>
+                  </div>
+                  <div class="freight-row">
+                    <div class="row-head">
+                      <strong>Freight 20260612.4</strong>
+                      <div style="display:flex; gap:8px; align-items:center;">
+                        <span class="tag orange" id="freightApprovalState4">等待 test 验证</span>
+                        <button class="btn" onclick="openApprovalModal('Freight 20260612.4')">审批</button>
+                      </div>
+                    </div>
+                    <div class="muted">admin-web: registry.example.com/macc/admin@sha256:31c8...　api: registry.example.com/macc/api@sha256:7cc2...</div>
+                  </div>
+                </div>
+
+                <div class="stage-grid">
+                  <article class="stage-card" data-stage-key="dev" data-stage-color="#2f80ed" style="--stage-color:#2f80ed;">
+                    <div class="stage-color-strip"><div><div class="stage-strip-title">开发</div><div class="stage-strip-key">dev</div></div></div>
+                    <div class="stage-head">
+                      <div><span class="stage-key">应用 Stage</span></div>
+                      <div style="display:flex; gap:8px;">
+                        <button class="btn" onclick="openVerifyModal('dev')">验证</button>
+                        <button class="btn" onclick="openPromotion('dev')">发布</button>
+                      </div>
+                    </div>
+                    <div class="kv"><span class="k">集群池</span><span>2 个可选</span></div>
+                    <div class="kv"><span class="k">当前 Freight</span><span>20260612.4</span></div>
+                    <div class="kv"><span class="k">验证状态</span><span class="tag green" id="verifyState-dev">已通过</span></div>
+                  </article>
+                  <article class="stage-card" data-stage-key="test" data-stage-color="#12b76a" style="--stage-color:#12b76a;">
+                    <div class="stage-color-strip"><div><div class="stage-strip-title">测试</div><div class="stage-strip-key">test</div></div></div>
+                    <div class="stage-head">
+                      <div><span class="stage-key">应用 Stage</span></div>
+                      <div style="display:flex; gap:8px;">
+                        <button class="btn" onclick="openVerifyModal('test')">验证</button>
+                        <button class="btn" onclick="openPromotion('test')">发布</button>
+                      </div>
+                    </div>
+                    <div class="kv"><span class="k">集群池</span><span>2 个可选</span></div>
+                    <div class="kv"><span class="k">当前 Freight</span><span>20260612.4</span></div>
+                    <div class="kv"><span class="k">验证状态</span><span class="tag orange" id="verifyState-test">待验证</span></div>
+                  </article>
+                  <article class="stage-card" data-stage-key="staging" data-stage-color="#f79009" style="--stage-color:#f79009;">
+                    <div class="stage-color-strip"><div><div class="stage-strip-title">预发</div><div class="stage-strip-key">staging</div></div></div>
+                    <div class="stage-head">
+                      <div><span class="stage-key">应用 Stage</span></div>
+                      <div style="display:flex; gap:8px;">
+                        <button class="btn" onclick="openVerifyModal('staging')">验证</button>
+                        <button class="btn" onclick="openPromotion('staging')">发布</button>
+                      </div>
+                    </div>
+                    <div class="kv"><span class="k">集群池</span><span>1 个可选</span></div>
+                    <div class="kv"><span class="k">当前 Freight</span><span>20260612.3</span></div>
+                    <div class="kv"><span class="k">验证状态</span><span class="tag gray" id="verifyState-staging">未部署</span></div>
+                  </article>
+                  <article class="stage-card selected" data-stage-key="prod" data-stage-color="#d92d20" style="--stage-color:#d92d20;">
+                    <div class="stage-color-strip"><div><div class="stage-strip-title">生产</div><div class="stage-strip-key">prod</div></div></div>
+                    <div class="stage-head">
+                      <div><span class="stage-key">应用 Stage</span></div>
+                      <div style="display:flex; gap:8px;">
+                        <button class="btn" onclick="openVerifyModal('prod')">验证</button>
+                        <button class="btn primary" onclick="openPromotion('prod')">发布</button>
+                      </div>
+                    </div>
+                    <div class="kv"><span class="k">集群池</span><span>2 个可选</span></div>
+                    <div class="kv"><span class="k">当前 Freight</span><span>20260610.8</span></div>
+                    <div class="kv"><span class="k">验证状态</span><span class="tag orange" id="verifyState-prod">待验证</span></div>
+                  </article>
+                </div>
+              </div>
+            </div>
+
+            <aside class="panel">
+              <div class="panel-header"><h2>应用 Stage 集群配置</h2></div>
+              <div class="panel-body">
+                <div class="info-box" style="margin-bottom:12px;">Namespace 默认使用项目名称，用户可以手动填；保存到应用 Stage 集群配置，后续发布复用。</div>
+                <div class="cluster-list">
+                  <div class="cluster-row">
+                    <div class="row-head"><strong>prod / 生产上海集群</strong><span class="tag blue">AppStageClusterConfig</span></div>
+                    <div class="kv"><span class="k">namespace</span><span>cloud-platform</span></div>
+                    <div class="kv"><span class="k">manifest path</span><span>apps/macc-frontend/prod/cluster-shanghai</span></div>
+                  </div>
+                  <div class="cluster-row">
+                    <div class="row-head"><strong>prod / 生产北京集群</strong><span class="tag blue">AppStageClusterConfig</span></div>
+                    <div class="kv"><span class="k">namespace</span><span>cloud-platform-bj</span></div>
+                    <div class="kv"><span class="k">manifest path</span><span>apps/macc-frontend/prod/cluster-beijing</span></div>
+                  </div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-mask" id="modalMask" onclick="closeModals()"></div>
+  <section class="modal" id="clusterBindingModal">
+    <div class="modal-header">
+      <h2>绑定集群</h2>
+      <button class="btn" onclick="closeModals()">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="notice" style="margin-bottom:12px;">绑定到租户级 Stage，立即进入该 Stage 的可选集群池，仅影响后续发布。同一集群可绑定多个 Stage。</div>
+      <div class="field" style="margin-bottom:14px;">
+        <label>当前 Stage</label>
+        <input id="clusterBindingStage" value="prod" readonly />
+      </div>
+      <div class="checkbox-list">
+        <label class="checkbox-card" data-cluster="cluster-shanghai"><input type="checkbox" name="stageBindingClusters" checked value="cluster-shanghai" /><span><strong>生产上海集群</strong><br /><span class="muted">ready，适用于 prod、staging。</span></span></label>
+        <label class="checkbox-card"><input type="checkbox" name="stageBindingClusters" checked value="cluster-beijing" /><span><strong>生产北京集群</strong><br /><span class="muted">ready，适用于 prod。</span></span></label>
+        <label class="checkbox-card"><input type="checkbox" name="stageBindingClusters" value="cluster-dev" /><span><strong>研发共享集群</strong><br /><span class="muted">ready，适用于 dev、test。</span></span></label>
+        <label class="checkbox-card"><input type="checkbox" name="stageBindingClusters" value="cluster-test" /><span><strong>测试共享集群</strong><br /><span class="muted">ready，适用于 test。</span></span></label>
+      </div>
+      <div class="info-box" style="margin-top:14px;">保存后，该 Stage 下所有应用发布时都会从这些集群中选择目标子集。</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModals()">取消</button>
+      <button class="btn primary" onclick="saveClusterBinding()">保存绑定</button>
+    </div>
+  </section>
+
+  <section class="modal" id="stageTemplateModal">
+    <div class="modal-header">
+      <h2 id="stageTemplateModalTitle">添加 Stage</h2>
+      <button class="btn" onclick="closeModals()">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="notice" style="margin-bottom:14px;">Stage key 创建后保持稳定，后续不允许修改；删除操作会转为禁用，保留历史发布记录。</div>
+      <div class="form-grid">
+        <div class="field"><label>Stage key</label><input id="stageTemplateKey" value="uat" /></div>
+        <div class="field"><label>显示名</label><input id="stageTemplateName" value="用户验收" /></div>
+        <div class="field"><label>Stage 颜色</label><input id="stageTemplateColor" type="color" value="#7a5af8" /></div>
+        <div class="field"><label>顺序</label><input id="stageTemplateOrder" value="3" /></div>
+        <div class="field"><label>状态</label><select id="stageTemplateStatus"><option>启用</option><option>禁用</option></select></div>
+        <div class="field"><label>部署前审批</label><select id="stageTemplateApproveRequired"><option>需要</option><option>不需要</option></select></div>
+        <div class="field"><label>部署后验证</label><select id="stageTemplateVerifyRequired"><option>需要</option><option>不需要</option></select></div>
+        <div class="field"><label>允许审批角色</label><select multiple size="4" id="stageTemplateApproveRoles"><option selected>发布管理员</option><option>生产审批人</option><option>租户管理员</option><option>项目管理员</option></select></div>
+        <div class="field"><label>允许验证角色</label><select multiple size="4" id="stageTemplateVerifyRoles"><option selected>测试负责人</option><option>运维负责人</option><option>开发负责人</option><option>项目管理员</option></select></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModals()">取消</button>
+      <button class="btn primary" onclick="saveStageTemplate()">保存 Stage</button>
+    </div>
+  </section>
+
+  <section class="modal" id="promotionModal">
+    <div class="modal-header">
+      <h2>发布到 Stage</h2>
+      <button class="btn" onclick="closeModals()">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <div class="field"><label>目标 Stage</label><input id="promotionStage" value="prod" readonly /></div>
+        <div class="field"><label>选择 Freight</label><select><option>Freight 20260612.3</option><option>Freight 20260612.4</option></select></div>
+      </div>
+      <h3 style="margin-top:16px;">选择目标集群子集</h3>
+      <div class="checkbox-list">
+        <label class="checkbox-card"><input type="checkbox" name="targetClusters" checked value="cluster-shanghai" /><span><strong>生产上海集群</strong><br /><span class="muted">Agent ready，namespace 将默认使用项目名称。</span></span></label>
+        <label class="checkbox-card"><input type="checkbox" name="targetClusters" value="cluster-beijing" /><span><strong>生产北京集群</strong><br /><span class="muted">可选目标集群，本次不选不会自动补部署。</span></span></label>
+      </div>
+      <div class="field" style="margin-top:14px;">
+        <label>Namespace</label>
+        <input id="namespaceOverride" value="cloud-platform" />
+        <div class="muted">默认使用项目名称，用户可手动填写；保存为应用 Stage 集群配置。</div>
+      </div>
+      <div class="notice" style="margin-top:14px;">创建后会为每个目标集群生成独立 Deployment 和 Argo CD Application 同步记录。</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModals()">取消</button>
+      <button class="btn primary" onclick="submitPromotion()">确认发布</button>
+    </div>
+  </section>
+
+  <section class="modal" id="verifyModal">
+    <div class="modal-header">
+      <h2>人工验证</h2>
+      <button class="btn" onclick="closeModals()">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="info-box" style="margin-bottom:12px;">按最新模板规则校验：当前 Stage 允许运维负责人执行 verify。只要求已有部署记录，健康状态作为验证证据展示。</div>
+      <div class="field" style="margin-bottom:14px;">
+        <label>验证 Stage</label>
+        <input id="verifyStageName" value="prod" readonly />
+      </div>
+      <div class="evidence-list">
+        <div class="evidence-row">
+          <div class="row-head"><strong>生产上海集群</strong><span class="tag green">Deployment 已创建</span></div>
+          <div class="kv"><span class="k">Argo CD</span><span>Synced / Healthy</span></div>
+          <div class="kv"><span class="k">Agent 状态</span><span>3/3 Pod Ready</span></div>
+        </div>
+        <div class="evidence-row">
+          <div class="row-head"><strong>生产北京集群</strong><span class="tag gray">本次未选择</span></div>
+          <div class="kv"><span class="k">说明</span><span>不参与本次验证结论。</span></div>
+        </div>
+      </div>
+      <div class="field" style="margin-top:14px;">
+        <label>验证备注</label>
+        <textarea id="verifyComment">已确认业务探活和核心页面访问正常。</textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn danger" onclick="completeVerify(false)">验证不通过</button>
+      <button class="btn success" onclick="completeVerify(true)">验证通过</button>
+    </div>
+  </section>
+
+  <section class="modal" id="approvalModal">
+    <div class="modal-header">
+      <h2>Freight 审批</h2>
+      <button class="btn" onclick="closeModals()">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="info-box" style="margin-bottom:12px;">审批按最新模板规则校验：只有目标 Stage 配置的 approve 角色可以处理，审批结论会影响 Freight 是否允许晋级。</div>
+      <div class="form-grid">
+        <div class="field"><label>审批 Freight</label><input id="approvalFreightName" value="Freight 20260612.3" readonly /></div>
+        <div class="field"><label>目标 Stage</label><select id="approvalStage"><option>预发</option><option selected>生产</option></select></div>
+      </div>
+      <div class="evidence-list" style="margin-top:14px;">
+        <div class="evidence-row">
+          <div class="row-head"><strong>晋级来源</strong><span class="tag green">已通过 test</span></div>
+          <div class="kv"><span class="k">镜像摘要</span><span>admin-web sha256:9f13... / api sha256:2ab4...</span></div>
+          <div class="kv"><span class="k">审批角色</span><span>生产审批人、租户管理员</span></div>
+        </div>
+      </div>
+      <div class="field" style="margin-top:14px;">
+        <label>审批意见</label>
+        <textarea id="approvalComment">已确认变更单和回滚方案，可以进入目标 Stage。</textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn danger" onclick="completeApproval(false)">审批拒绝</button>
+      <button class="btn success" onclick="completeApproval(true)">审批通过</button>
+    </div>
+  </section>
+
+  <script>
+    const screenIds = ['template', 'release'];
+    let currentVerifyStage = 'prod';
+    let currentApprovalFreight = 'Freight 20260612.3';
+
+    function showScreen(id) {
+      screenIds.forEach((screen) => {
+        document.getElementById(screen).classList.toggle('active', screen === id);
+      });
+      document.querySelectorAll('.tab').forEach((tab) => {
+        tab.classList.toggle('active', tab.dataset.screen === id);
+      });
+    }
+
+    function openClusterBindingModal(stageKey) {
+      document.getElementById('clusterBindingStage').value = stageKey || 'prod';
+      document.getElementById('modalMask').classList.add('open');
+      document.getElementById('clusterBindingModal').classList.add('open');
+    }
+
+    function saveClusterBinding() {
+      const stage = document.getElementById('clusterBindingStage').value;
+      const selected = Array.from(document.querySelectorAll('input[name="stageBindingClusters"]:checked')).length;
+      document.querySelector('.page-title .muted').textContent = `Stage ${stage} 已绑定 ${selected} 个集群；这些集群会作为后续发布的可选目标池。`;
+      closeModals();
+    }
+
+    function openStageTemplateModal(stageKey) {
+      const isEdit = !!stageKey;
+      document.getElementById('stageTemplateModalTitle').textContent = isEdit ? '编辑 Stage' : '添加 Stage';
+      document.getElementById('stageTemplateKey').value = stageKey || 'uat';
+      document.getElementById('stageTemplateKey').readOnly = isEdit;
+      const names = { dev: '开发', test: '测试', staging: '预发', prod: '生产' };
+      const orders = { dev: '1', test: '2', staging: '3', prod: '4' };
+      const colors = { dev: '#2f80ed', test: '#12b76a', staging: '#f79009', prod: '#d92d20' };
+      document.getElementById('stageTemplateName').value = names[stageKey] || '用户验收';
+      document.getElementById('stageTemplateOrder').value = orders[stageKey] || '3';
+      document.getElementById('stageTemplateColor').value = colors[stageKey] || '#7a5af8';
+      document.getElementById('modalMask').classList.add('open');
+      document.getElementById('stageTemplateModal').classList.add('open');
+    }
+
+    function saveStageTemplate() {
+      const key = document.getElementById('stageTemplateKey').value.trim() || 'uat';
+      const name = document.getElementById('stageTemplateName').value.trim() || key;
+      const color = document.getElementById('stageTemplateColor').value;
+      document.querySelector('.page-title .muted').textContent = `Stage ${name} 已保存，颜色 ${color} 已应用；所有应用和进行中发布会按最新模板规则校验。`;
+      closeModals();
+    }
+
+    function deleteStageTemplate(stageKey) {
+      document.querySelector('.page-title .muted').textContent = `Stage ${stageKey} 已标记为禁用；历史发布记录保留，后续发布不再使用。`;
+    }
+
+    function openPromotion(stageKey) {
+      document.getElementById('promotionStage').value = stageKey || 'prod';
+      document.getElementById('modalMask').classList.add('open');
+      document.getElementById('promotionModal').classList.add('open');
+    }
+
+    function submitPromotion() {
+      const stage = document.getElementById('promotionStage').value;
+      closeModals();
+      showScreen('release');
+      document.querySelector('.page-title .muted').textContent = `已创建发布到 ${stage} 的部署记录；等待具备 verify 角色的用户在 Stage 卡片上执行人工验证。`;
+      const state = document.getElementById(`verifyState-${stage}`);
+      if (state) {
+        state.className = 'tag orange';
+        state.textContent = '待验证';
+      }
+    }
+
+    function openVerifyModal(stageKey) {
+      currentVerifyStage = stageKey || 'prod';
+      document.getElementById('verifyStageName').value = currentVerifyStage;
+      document.getElementById('modalMask').classList.add('open');
+      document.getElementById('verifyModal').classList.add('open');
+    }
+
+    function completeVerify(passed) {
+      const state = document.getElementById(`verifyState-${currentVerifyStage}`);
+      if (state) {
+        state.className = passed ? 'tag green' : 'tag red';
+        state.textContent = passed ? '已通过' : '未通过';
+      }
+      document.querySelector('.page-title .muted').textContent = passed ? `Stage ${currentVerifyStage} 验证通过，Freight 允许晋级下一 Stage。` : `Stage ${currentVerifyStage} 验证不通过，Freight 暂不可晋级下一 Stage。`;
+      closeModals();
+    }
+
+    function openApprovalModal(freightName) {
+      currentApprovalFreight = freightName || 'Freight 20260612.3';
+      document.getElementById('approvalFreightName').value = currentApprovalFreight;
+      document.getElementById('modalMask').classList.add('open');
+      document.getElementById('approvalModal').classList.add('open');
+    }
+
+    function completeApproval(approved) {
+      const state = currentApprovalFreight.endsWith('.4') ? document.getElementById('freightApprovalState4') : document.getElementById('freightApprovalState3');
+      if (state) {
+        state.className = approved ? 'tag green' : 'tag red';
+        state.textContent = approved ? '审批通过' : '审批拒绝';
+      }
+      document.querySelector('.page-title .muted').textContent = approved ? `${currentApprovalFreight} 审批通过，可以继续晋级。` : `${currentApprovalFreight} 审批拒绝，需重新处理后再发起晋级。`;
+      closeModals();
+    }
+
+    function saveTemplate() {
+      document.querySelector('.page-title .muted').textContent = '模板已保存；所有应用和进行中发布会按最新模板规则校验。';
+    }
+
+    function closeModals() {
+      document.getElementById('modalMask').classList.remove('open');
+      document.querySelectorAll('.modal').forEach((modal) => modal.classList.remove('open'));
+    }
+  </script>
+</body>
+</html>
