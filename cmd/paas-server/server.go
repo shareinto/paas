@@ -148,7 +148,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	gitopsRepo := repos.gitops
 	manifestRepo := gitlab.NewFakeManifestRepositoryAdapter()
 	gitopsSvc := gitops.NewService(gitops.Options{Repository: gitopsRepo, ManifestRepo: manifestRepo, Application: appForGitOps{service: appSvc}, Environment: envForGitOps{service: appSvc, repo: appRepo}, Workload: workloadForGitOps{service: appSvc}, Audit: audit.GitOpsLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
-	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	clusterRepo := repos.cluster
 	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, TenantQuery: tenantForClusterAgent{service: tenantSvc}, PermissionChecker: identitySvc, EnvironmentState: envUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
@@ -706,7 +706,7 @@ func (q runtimeEnvironmentForAppEnv) FindDefaultRuntimeEnvironment(ctx context.C
 }
 
 func toAppenvRuntimeEnvironmentRef(environment build.RuntimeEnvironment) appenv.RuntimeEnvironmentRef {
-	return appenv.RuntimeEnvironmentRef{ID: environment.ID, Name: environment.Name, Status: string(environment.Status), RuntimeBaseImage: environment.RuntimeBaseImage, ArtifactDeployPath: environment.ArtifactDeployPath, DockerfilePath: environment.DockerfilePath}
+	return appenv.RuntimeEnvironmentRef{ID: environment.ID, Name: environment.Name, Status: string(environment.Status), RuntimeBaseImage: environment.RuntimeBaseImage, ArtifactDeployPath: environment.ArtifactDeployPath, DockerfilePath: environment.DockerfilePath, SelectorLabels: environment.SelectorLabels}
 }
 
 type clusterForAppEnv struct{ repo clusteragent.Repository }
@@ -717,6 +717,16 @@ func (q clusterForAppEnv) GetCluster(ctx context.Context, id shared.ID) (appenv.
 		return appenv.ClusterRef{}, err
 	}
 	return appenv.ClusterRef{ID: cluster.ID, TenantID: cluster.TenantID, Name: cluster.Name, Status: string(cluster.Status)}, nil
+}
+
+type clusterForDelivery struct{ repo clusteragent.Repository }
+
+func (q clusterForDelivery) GetCluster(ctx context.Context, id shared.ID) (delivery.ClusterRef, error) {
+	cluster, err := q.repo.GetCluster(ctx, id)
+	if err != nil {
+		return delivery.ClusterRef{}, err
+	}
+	return delivery.ClusterRef{ID: cluster.ID, TenantID: cluster.TenantID, Name: cluster.Name, Labels: cluster.Labels}, nil
 }
 
 type tenantForClusterAgent struct{ service *tenantproject.Service }
@@ -934,13 +944,13 @@ func toBuildApplicationSourceRef(source appenv.ApplicationSource) build.Applicat
 func toBuildRuntimeEnvironments(environments []appenv.ApplicationRuntimeEnvironment) []build.RuntimeEnvironmentRef {
 	out := make([]build.RuntimeEnvironmentRef, 0, len(environments))
 	for _, environment := range environments {
-		out = append(out, build.RuntimeEnvironmentRef{ID: environment.ID, Name: environment.Name, RuntimeBaseImage: environment.RuntimeBaseImage, ArtifactDeployPath: environment.ArtifactDeployPath, DockerfilePath: environment.DockerfilePath})
+		out = append(out, build.RuntimeEnvironmentRef{ID: environment.ID, Name: environment.Name, RuntimeBaseImage: environment.RuntimeBaseImage, ArtifactDeployPath: environment.ArtifactDeployPath, DockerfilePath: environment.DockerfilePath, SelectorLabels: environment.SelectorLabels})
 	}
 	return out
 }
 
 func toDeliveryBuildArtifactRef(artifact build.BuildArtifact) delivery.BuildArtifactRef {
-	return delivery.BuildArtifactRef{ID: artifact.ID, BuildRunID: artifact.BuildRunID, ApplicationID: artifact.ApplicationID, WorkloadID: artifact.WorkloadID, SourceKey: artifact.SourceKey, URI: artifact.URI, Digest: artifact.Digest, IsPrimary: artifact.IsPrimary}
+	return delivery.BuildArtifactRef{ID: artifact.ID, BuildRunID: artifact.BuildRunID, ApplicationID: artifact.ApplicationID, WorkloadID: artifact.WorkloadID, SourceKey: artifact.SourceKey, URI: artifact.URI, Digest: artifact.Digest, IsPrimary: artifact.IsPrimary, SelectorLabels: artifact.SelectorLabels, Metadata: artifact.Metadata}
 }
 
 func applicationType(spec appenv.BuildSpec) string {

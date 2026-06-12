@@ -270,6 +270,7 @@ CREATE TABLE application_runtime_environments (
   runtime_base_image VARCHAR(512) NOT NULL DEFAULT '',
   artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
   dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
+  selector_labels_json JSON NULL,
   position INT NOT NULL DEFAULT 0,
   PRIMARY KEY (application_id, runtime_environment_id),
   KEY idx_application_runtime_environments_runtime (runtime_environment_id),
@@ -280,6 +281,22 @@ CREATE TABLE application_runtime_environments (
 DROP TABLE IF EXISTS application_runtime_environments;
 ALTER TABLE application_sources DROP COLUMN build_environment_id;
 ALTER TABLE applications DROP COLUMN runtime_environment_id;
+`,
+	},
+	{
+		Version: 202606121400,
+		Name:    "application_runtime_environment_selector_labels",
+		Up: `
+SELECT COUNT(*) = 0 INTO @app_runtime_labels_missing
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'application_runtime_environments' AND column_name = 'selector_labels_json';
+SET @app_runtime_labels_ddl := IF(@app_runtime_labels_missing, 'ALTER TABLE application_runtime_environments ADD COLUMN selector_labels_json JSON NULL AFTER dockerfile_path', 'SELECT 1');
+PREPARE app_runtime_labels_stmt FROM @app_runtime_labels_ddl;
+EXECUTE app_runtime_labels_stmt;
+DEALLOCATE PREPARE app_runtime_labels_stmt;
+`,
+		Down: `
+SELECT 1;
 `,
 	},
 	{

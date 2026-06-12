@@ -16,6 +16,7 @@ type Service struct {
 	apps       ApplicationQuery
 	workloads  WorkloadQuery
 	envs       EnvironmentQuery
+	clusters   ClusterQuery
 	gitops     GitOpsDeploymentCommand
 	permission PermissionChecker
 	audit      AuditLogger
@@ -30,6 +31,7 @@ type Options struct {
 	ApplicationQuery  ApplicationQuery
 	WorkloadQuery     WorkloadQuery
 	EnvironmentQuery  EnvironmentQuery
+	ClusterQuery      ClusterQuery
 	GitOpsDeployment  GitOpsDeploymentCommand
 	PermissionChecker PermissionChecker
 	Audit             AuditLogger
@@ -55,7 +57,7 @@ func NewService(opts Options) *Service {
 	if clock == nil {
 		clock = shared.SystemClock{}
 	}
-	return &Service{repo: opts.Repository, builds: opts.BuildQuery, apps: opts.ApplicationQuery, workloads: opts.WorkloadQuery, envs: opts.EnvironmentQuery, gitops: opts.GitOpsDeployment, permission: opts.PermissionChecker, audit: audit, events: events, ids: ids, clock: clock}
+	return &Service{repo: opts.Repository, builds: opts.BuildQuery, apps: opts.ApplicationQuery, workloads: opts.WorkloadQuery, envs: opts.EnvironmentQuery, clusters: opts.ClusterQuery, gitops: opts.GitOpsDeployment, permission: opts.PermissionChecker, audit: audit, events: events, ids: ids, clock: clock}
 }
 
 type CreatePromotionInput struct {
@@ -213,6 +215,38 @@ func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceed
 		return Release{}, shared.NewError(shared.CodeFailedPrecondition, "pipeline artifact requires digest and commit")
 	}
 	now := s.clock.Now()
+	bundleID, err := s.ids.NewID("image_bundle")
+	if err != nil {
+		return Release{}, err
+	}
+	bundle := ImageBundle{ID: bundleID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, WorkloadID: payload.WorkloadID, BuildRunID: run.ID, CommitSHA: firstNonEmpty(payload.CommitSHA, run.CommitSHA), CreatedAt: now}
+	if err := s.repo.CreateImageBundle(ctx, bundle); err != nil {
+		return Release{}, err
+	}
+	for _, artifact := range artifacts {
+		imageID, err := s.ids.NewID("image_bundle_image")
+		if err != nil {
+			return Release{}, err
+		}
+		repository, tag := splitImageRepositoryTag(artifact.URI)
+		image := ImageBundleImage{
+			ID:                     imageID,
+			BundleID:               bundle.ID,
+			BuildArtifactID:        artifact.ID,
+			RuntimeEnvironmentID:   shared.ID(artifact.Metadata["runtime_environment_id"]),
+			RuntimeEnvironmentName: artifact.Metadata["runtime_environment_name"],
+			URI:                    artifact.URI,
+			ImageRepository:        repository,
+			ImageTag:               tag,
+			Digest:                 artifact.Digest,
+			SelectorLabels:         cleanStringMap(artifact.SelectorLabels),
+			IsPrimary:              artifact.IsPrimary || artifact.ID == primary.ID,
+			CreatedAt:              now,
+		}
+		if err := s.repo.CreateImageBundleImage(ctx, image); err != nil {
+			return Release{}, err
+		}
+	}
 	releaseID, err := s.ids.NewID("release")
 	if err != nil {
 		return Release{}, err
@@ -227,7 +261,7 @@ func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceed
 	pipelineName := firstNonEmpty(run.PipelineName, payload.PipelineName)
 	pipelineDisplayName := firstNonEmpty(run.PipelineDisplayName, payload.PipelineDisplayName)
 	imageRepository, imageTag := splitImageRepositoryTag(imageURI)
-	release := Release{ID: releaseID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, WorkloadID: payload.WorkloadID, PipelineID: pipelineID, PipelineName: pipelineName, PipelineDisplayName: pipelineDisplayName, BuildRunID: run.ID, BuildArtifactID: primary.ID, Version: releaseVersion(commit, run.ID), CommitSHA: commit, ImageURI: imageURI, ImageRepository: imageRepository, ImageTag: imageTag, ImageDigest: imageDigest, SourceType: ReleaseSourcePipelineArtifact, Status: ReleaseReady, CreatedAt: now}
+	release := Release{ID: releaseID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, WorkloadID: payload.WorkloadID, PipelineID: pipelineID, PipelineName: pipelineName, PipelineDisplayName: pipelineDisplayName, BuildRunID: run.ID, BuildArtifactID: primary.ID, ImageBundleID: bundle.ID, Version: releaseVersion(commit, run.ID), CommitSHA: commit, ImageURI: imageURI, ImageRepository: imageRepository, ImageTag: imageTag, ImageDigest: imageDigest, SourceType: ReleaseSourcePipelineArtifact, Status: ReleaseReady, CreatedAt: now}
 	if err := s.repo.CreateRelease(ctx, release); err != nil {
 		return Release{}, err
 	}
@@ -653,6 +687,10 @@ func (s *Service) GetFreightCreationContext(ctx context.Context, applicationID s
 		if _, ok := ctxOut.LatestReleasesByWorkload[release.WorkloadID]; ok {
 			continue
 		}
+		release, err = s.enrichReleaseBundleImages(ctx, release)
+		if err != nil {
+			return FreightCreationContext{}, err
+		}
 		ctxOut.LatestReleasesByWorkload[release.WorkloadID] = release
 		if artifact, err := s.buildsOrError().GetBuildArtifact(ctx, release.BuildArtifactID); err == nil {
 			ctxOut.LatestArtifactsByWorkload[release.WorkloadID] = artifact
@@ -852,6 +890,10 @@ func (s *Service) GetFreightDetail(ctx context.Context, id shared.ID) (FreightDe
 	if err != nil {
 		return FreightDetail{}, err
 	}
+	items, err = s.enrichFreightItemBundleImages(ctx, items)
+	if err != nil {
+		return FreightDetail{}, err
+	}
 	return FreightDetail{Freight: freight, Items: items}, nil
 }
 func (s *Service) ListFreights(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Freight], error) {
@@ -862,6 +904,32 @@ func (s *Service) GetPromotion(ctx context.Context, id shared.ID) (Promotion, er
 }
 func (s *Service) ListPromotions(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Promotion], error) {
 	return s.repo.ListPromotionsByApplication(ctx, applicationID, page)
+}
+
+func (s *Service) enrichReleaseBundleImages(ctx context.Context, release Release) (Release, error) {
+	if release.ImageBundleID.IsZero() {
+		return release, nil
+	}
+	images, err := s.repo.ListImageBundleImages(ctx, release.ImageBundleID)
+	if err != nil {
+		return Release{}, err
+	}
+	release.BundleImages = images
+	return release, nil
+}
+
+func (s *Service) enrichFreightItemBundleImages(ctx context.Context, items []FreightItem) ([]FreightItem, error) {
+	for i := range items {
+		if items[i].ImageBundleID.IsZero() {
+			continue
+		}
+		images, err := s.repo.ListImageBundleImages(ctx, items[i].ImageBundleID)
+		if err != nil {
+			return nil, err
+		}
+		items[i].BundleImages = images
+	}
+	return items, nil
 }
 
 func (s *Service) ensureDefaultFlow(ctx context.Context, applicationID shared.ID) (DeliveryFlow, error) {
@@ -1072,7 +1140,18 @@ func (s *Service) validateStagePromotionTarget(ctx context.Context, applicationI
 		if !ok {
 			return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodeInvalidArgument, "target cluster is not bound to stage")
 		}
-		targets = append(targets, GitOpsPromotionTargetCluster{ClusterID: id, ClusterName: binding.ClusterName, Namespace: namespace})
+		labels := map[string]string(nil)
+		if s.clusters != nil {
+			cluster, err := s.clusters.GetCluster(ctx, id)
+			if err != nil {
+				return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, err
+			}
+			if cluster.TenantID != app.TenantID {
+				return ApplicationRef{}, EnvironmentRef{}, DeliveryStage{}, nil, shared.NewError(shared.CodePermissionDenied, "cluster belongs to another tenant")
+			}
+			labels = cleanStringMap(cluster.Labels)
+		}
+		targets = append(targets, GitOpsPromotionTargetCluster{ClusterID: id, ClusterName: binding.ClusterName, Namespace: namespace, Labels: labels})
 	}
 	return app, env, stage, targets, nil
 }
@@ -1149,7 +1228,15 @@ func (s *Service) applyPromotion(ctx context.Context, promotion Promotion, targe
 	}
 	artifacts := make([]GitOpsArtifactSpec, 0, len(items))
 	for i, item := range items {
-		artifacts = append(artifacts, GitOpsArtifactSpec{WorkloadID: item.WorkloadID, Name: item.Name, SourceKey: item.SourceKey, URI: item.URI, Repository: item.ImageRepository, Tag: item.ImageTag, Digest: item.Digest, IsPrimary: i == 0 || item.Type == FreightItemApplicationRelease})
+		spec := GitOpsArtifactSpec{WorkloadID: item.WorkloadID, Name: item.Name, SourceKey: item.SourceKey, URI: item.URI, Repository: item.ImageRepository, Tag: item.ImageTag, Digest: item.Digest, IsPrimary: i == 0 || item.Type == FreightItemApplicationRelease}
+		if !item.ImageBundleID.IsZero() {
+			images, err := s.repo.ListImageBundleImages(ctx, item.ImageBundleID)
+			if err != nil {
+				return Promotion{}, err
+			}
+			spec.Variants = imageBundleVariants(images)
+		}
+		artifacts = append(artifacts, spec)
 	}
 	result, err := s.gitopsOrError().ApplyPromotion(ctx, GitOpsPromotionSpec{PromotionID: promotion.ID, FreightID: promotion.FreightID, ApplicationID: promotion.ApplicationID, EnvironmentID: promotion.TargetEnvironmentID, StageKey: promotion.TargetStageKey, TargetClusters: targetClusters, Artifacts: artifacts, IsRollback: promotion.IsRollback})
 	if err != nil {
@@ -1187,6 +1274,7 @@ func (s *Service) pipelineFreightItem(ctx context.Context, item FreightItem, inp
 		}
 		item.ReleaseID = release.ID
 		item.BuildArtifactID = release.BuildArtifactID
+		item.ImageBundleID = release.ImageBundleID
 		item.URI = release.ImageURI
 		item.ImageRef = release.ImageURI
 		item.ImageRepository = release.ImageRepository
@@ -1386,6 +1474,42 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func imageBundleVariants(images []ImageBundleImage) []GitOpsImageVariant {
+	variants := make([]GitOpsImageVariant, 0, len(images))
+	for _, image := range images {
+		variants = append(variants, GitOpsImageVariant{
+			URI:                    image.URI,
+			Repository:             image.ImageRepository,
+			Tag:                    image.ImageTag,
+			Digest:                 image.Digest,
+			RuntimeEnvironmentID:   image.RuntimeEnvironmentID,
+			RuntimeEnvironmentName: image.RuntimeEnvironmentName,
+			SelectorLabels:         cleanStringMap(image.SelectorLabels),
+			IsPrimary:              image.IsPrimary,
+		})
+	}
+	return variants
+}
+
+func cleanStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func releaseVersion(commit string, fallback shared.ID) string {

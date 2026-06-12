@@ -112,6 +112,7 @@ type ClusterBindingRef struct {
 	ClusterID     shared.ID
 	ClusterName   string
 	Namespace     string
+	Labels        map[string]string
 	Active        bool
 }
 

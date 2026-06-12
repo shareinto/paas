@@ -98,11 +98,15 @@ func (r *MySQLRepository) CreateRuntimeEnvironment(ctx context.Context, environm
 			return database.WrapUnavailable(err, "unset default runtime environment failed")
 		}
 	}
-	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO runtime_environments (id, name, description, runtime_base_image, artifact_deploy_path, dockerfile_path, status, is_default, created_by, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	labels, err := database.MarshalJSON(environment.SelectorLabels)
+	if err != nil {
+		return err
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO runtime_environments (id, name, description, runtime_base_image, artifact_deploy_path, dockerfile_path, selector_labels_json, status, is_default, created_by, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		environment.ID, environment.Name, environment.Description, environment.RuntimeBaseImage, environment.ArtifactDeployPath,
-		environment.DockerfilePath, environment.Status, environment.IsDefault, environment.CreatedBy, mysqlTime(environment.CreatedAt), mysqlTime(environment.UpdatedAt))
+		environment.DockerfilePath, string(labels), environment.Status, environment.IsDefault, environment.CreatedBy, mysqlTime(environment.CreatedAt), mysqlTime(environment.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "runtime environment already exists", "create runtime environment failed")
 }
 
@@ -115,13 +119,17 @@ func (r *MySQLRepository) UpdateRuntimeEnvironment(ctx context.Context, environm
 			return database.WrapUnavailable(err, "unset default runtime environment failed")
 		}
 	}
-	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+	labels, err := database.MarshalJSON(environment.SelectorLabels)
+	if err != nil {
+		return err
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE runtime_environments
-SET name = ?, description = ?, runtime_base_image = ?, artifact_deploy_path = ?, dockerfile_path = ?,
+SET name = ?, description = ?, runtime_base_image = ?, artifact_deploy_path = ?, dockerfile_path = ?, selector_labels_json = ?,
     status = ?, is_default = ?, created_by = ?, created_at = ?, updated_at = ?
 WHERE id = ?`,
 		environment.Name, environment.Description, environment.RuntimeBaseImage, environment.ArtifactDeployPath,
-		environment.DockerfilePath, environment.Status, environment.IsDefault, environment.CreatedBy,
+		environment.DockerfilePath, string(labels), environment.Status, environment.IsDefault, environment.CreatedBy,
 		mysqlTime(environment.CreatedAt), mysqlTime(environment.UpdatedAt), environment.ID)
 	if err != nil {
 		return database.ConflictOrUnavailable(err, "runtime environment already exists", "update runtime environment failed")
@@ -365,10 +373,14 @@ func (r *MySQLRepository) ReplacePipelineRuntimeEnvironments(ctx context.Context
 			if runtime.ID.IsZero() {
 				return shared.NewError(shared.CodeInvalidArgument, "runtime_environment_id is required")
 			}
+			labels, err := database.MarshalJSON(runtime.SelectorLabels)
+			if err != nil {
+				return err
+			}
 			if _, err := exec.ExecContext(txCtx, `
-INSERT INTO build_pipeline_runtime_environments (pipeline_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, position)
-VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				pipelineID, runtime.ID, runtime.Name, runtime.RuntimeBaseImage, runtime.ArtifactDeployPath, runtime.DockerfilePath, i); err != nil {
+INSERT INTO build_pipeline_runtime_environments (pipeline_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, selector_labels_json, position)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				pipelineID, runtime.ID, runtime.Name, runtime.RuntimeBaseImage, runtime.ArtifactDeployPath, runtime.DockerfilePath, string(labels), i); err != nil {
 				return database.WrapUnavailable(err, "replace build pipeline runtime environments failed")
 			}
 		}
@@ -385,7 +397,7 @@ func (r *MySQLRepository) ListPipelineRuntimeEnvironments(ctx context.Context, p
 
 func (r *MySQLRepository) listPipelineRuntimeEnvironments(ctx context.Context, pipelineID shared.ID) ([]RuntimeEnvironmentRef, error) {
 	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
-SELECT runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path
+SELECT runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, selector_labels_json
 FROM build_pipeline_runtime_environments WHERE pipeline_id = ? ORDER BY position ASC, runtime_environment_id ASC`, pipelineID)
 	if err != nil {
 		return nil, database.WrapUnavailable(err, "list build pipeline runtime environments failed")
@@ -394,8 +406,12 @@ FROM build_pipeline_runtime_environments WHERE pipeline_id = ? ORDER BY position
 	items := []RuntimeEnvironmentRef{}
 	for rows.Next() {
 		var runtime RuntimeEnvironmentRef
-		if err := rows.Scan(&runtime.ID, &runtime.Name, &runtime.RuntimeBaseImage, &runtime.ArtifactDeployPath, &runtime.DockerfilePath); err != nil {
+		var labels []byte
+		if err := rows.Scan(&runtime.ID, &runtime.Name, &runtime.RuntimeBaseImage, &runtime.ArtifactDeployPath, &runtime.DockerfilePath, &labels); err != nil {
 			return nil, database.WrapUnavailable(err, "scan build pipeline runtime environment failed")
+		}
+		if err := database.UnmarshalJSON(labels, &runtime.SelectorLabels); err != nil {
+			return nil, err
 		}
 		items = append(items, runtime)
 	}
@@ -588,11 +604,15 @@ func (r *MySQLRepository) CreateArtifact(ctx context.Context, artifact BuildArti
 	if err != nil {
 		return err
 	}
+	labels, err := database.MarshalJSON(artifact.SelectorLabels)
+	if err != nil {
+		return err
+	}
 	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-	INSERT INTO build_artifacts (id, tenant_id, project_id, build_run_id, application_id, workload_id, source_key, type, name, uri, digest, is_primary, metadata, created_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	INSERT INTO build_artifacts (id, tenant_id, project_id, build_run_id, application_id, workload_id, source_key, type, name, uri, digest, is_primary, selector_labels_json, metadata, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		artifact.ID, artifact.TenantID, artifact.ProjectID, artifact.BuildRunID, artifact.ApplicationID,
-		artifact.WorkloadID, artifact.SourceKey, artifact.Type, artifact.Name, artifact.URI, artifact.Digest, artifact.IsPrimary, string(metadata), mysqlTime(artifact.CreatedAt))
+		artifact.WorkloadID, artifact.SourceKey, artifact.Type, artifact.Name, artifact.URI, artifact.Digest, artifact.IsPrimary, string(labels), string(metadata), mysqlTime(artifact.CreatedAt))
 	return database.ConflictOrUnavailable(err, "build artifact already exists", "create build artifact failed")
 }
 
@@ -752,13 +772,19 @@ func scanBuildEnvironment(scanner buildScanner) (BuildEnvironment, error) {
 }
 
 func runtimeEnvironmentSelect() string {
-	return "SELECT id, name, description, runtime_base_image, artifact_deploy_path, dockerfile_path, status, is_default, created_by, created_at, updated_at FROM runtime_environments"
+	return "SELECT id, name, description, runtime_base_image, artifact_deploy_path, dockerfile_path, selector_labels_json, status, is_default, created_by, created_at, updated_at FROM runtime_environments"
 }
 
 func scanRuntimeEnvironment(scanner buildScanner) (RuntimeEnvironment, error) {
 	var environment RuntimeEnvironment
-	err := scanner.Scan(&environment.ID, &environment.Name, &environment.Description, &environment.RuntimeBaseImage, &environment.ArtifactDeployPath, &environment.DockerfilePath, &environment.Status, &environment.IsDefault, &environment.CreatedBy, &environment.CreatedAt, &environment.UpdatedAt)
-	return environment, err
+	var labels []byte
+	if err := scanner.Scan(&environment.ID, &environment.Name, &environment.Description, &environment.RuntimeBaseImage, &environment.ArtifactDeployPath, &environment.DockerfilePath, &labels, &environment.Status, &environment.IsDefault, &environment.CreatedBy, &environment.CreatedAt, &environment.UpdatedAt); err != nil {
+		return RuntimeEnvironment{}, err
+	}
+	if err := database.UnmarshalJSON(labels, &environment.SelectorLabels); err != nil {
+		return RuntimeEnvironment{}, err
+	}
+	return environment, nil
 }
 
 func buildTemplateSelect() string {
@@ -828,13 +854,17 @@ func scanBuildRunSource(scanner buildScanner) (BuildRunSource, error) {
 }
 
 func buildArtifactSelect() string {
-	return "SELECT id, tenant_id, project_id, build_run_id, application_id, workload_id, source_key, type, name, uri, digest, is_primary, metadata, created_at FROM build_artifacts"
+	return "SELECT id, tenant_id, project_id, build_run_id, application_id, workload_id, source_key, type, name, uri, digest, is_primary, selector_labels_json, metadata, created_at FROM build_artifacts"
 }
 
 func scanBuildArtifact(scanner buildScanner) (BuildArtifact, error) {
 	var artifact BuildArtifact
 	var metadata []byte
-	if err := scanner.Scan(&artifact.ID, &artifact.TenantID, &artifact.ProjectID, &artifact.BuildRunID, &artifact.ApplicationID, &artifact.WorkloadID, &artifact.SourceKey, &artifact.Type, &artifact.Name, &artifact.URI, &artifact.Digest, &artifact.IsPrimary, &metadata, &artifact.CreatedAt); err != nil {
+	var labels []byte
+	if err := scanner.Scan(&artifact.ID, &artifact.TenantID, &artifact.ProjectID, &artifact.BuildRunID, &artifact.ApplicationID, &artifact.WorkloadID, &artifact.SourceKey, &artifact.Type, &artifact.Name, &artifact.URI, &artifact.Digest, &artifact.IsPrimary, &labels, &metadata, &artifact.CreatedAt); err != nil {
+		return BuildArtifact{}, err
+	}
+	if err := database.UnmarshalJSON(labels, &artifact.SelectorLabels); err != nil {
 		return BuildArtifact{}, err
 	}
 	if err := database.UnmarshalJSON(metadata, &artifact.Metadata); err != nil {

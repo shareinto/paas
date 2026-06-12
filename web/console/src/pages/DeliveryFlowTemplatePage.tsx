@@ -171,10 +171,15 @@ export function DeliveryFlowTemplatePage() {
         <Space direction="vertical" className="full-width" size={12}>
           <Alert type="info" showIcon message="绑定到租户级 Stage，保存后进入该 Stage 的可选集群池。" description="同一集群可绑定多个 Stage，绑定变更仅影响后续发布。" />
           <Checkbox.Group aria-label="可选集群" className="cluster-checkbox-list" value={selectedClusters} onChange={(values) => setSelectedClusters(values.map(String))}>
-            {(clusters as ClusterOption[]).map((cluster) => <Checkbox key={cluster.id} value={cluster.id}>{cluster.name}（{cluster.region}）</Checkbox>)}
+            {(clusters as ClusterOption[]).map((cluster) => <Checkbox key={cluster.id} value={cluster.id}>{cluster.name}（{cluster.region}，{formatLabels(cluster.labels)}）</Checkbox>)}
           </Checkbox.Group>
         </Space>
       </Modal>
     </>
   );
+}
+
+function formatLabels(labels?: Record<string, string>) {
+  const entries = Object.entries(labels || {});
+  return entries.length > 0 ? entries.map(([key, value]) => `${key}=${value}`).join(', ') : '无标签';
 }

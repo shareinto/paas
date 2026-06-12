@@ -251,6 +251,53 @@ func TestBuildSucceededCreatesWorkloadReleaseCandidateOnly(t *testing.T) {
 	}
 }
 
+func TestBuildSucceededCreatesImageBundleAndPromotionCarriesVariants(t *testing.T) {
+	env := newDeliveryEnv(t)
+	env.svc.builds = fakeBuildQuery{
+		runs: map[shared.ID]BuildRunRef{
+			"build_bundle": {ID: "build_bundle", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: "pipeline_main", PipelineName: "main", PipelineDisplayName: "主流水线", CommitSHA: "abcdef1234567890"},
+		},
+		artifacts: map[shared.ID]BuildArtifactRef{
+			"artifact_aliyun": {ID: "artifact_aliyun", BuildRunID: "build_bundle", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api-aliyun:abcdef", Digest: "sha256:aliyun", IsPrimary: true, SelectorLabels: map[string]string{"cloud": "aliyun"}},
+			"artifact_aws":    {ID: "artifact_aws", BuildRunID: "build_bundle", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api-aws:abcdef", Digest: "sha256:aws", SelectorLabels: map[string]string{"cloud": "aws"}},
+		},
+	}
+	release, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_bundle", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactIDs: []shared.ID{"artifact_aliyun", "artifact_aws"}})
+	if err != nil {
+		t.Fatalf("HandleBuildSucceeded() error = %v", err)
+	}
+	if release.ImageBundleID.IsZero() {
+		t.Fatalf("release should reference image bundle: %+v", release)
+	}
+	images, err := env.repo.ListImageBundleImages(context.Background(), release.ImageBundleID)
+	if err != nil || len(images) != 2 {
+		t.Fatalf("bundle should contain both image variants, got %+v, %v", images, err)
+	}
+	if images[0].SelectorLabels["cloud"] != "aliyun" || images[1].SelectorLabels["cloud"] != "aws" {
+		t.Fatalf("bundle images should keep selector labels: %+v", images)
+	}
+	freight, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{
+		Actor:         actor("usr_dev"),
+		ApplicationID: "app_user",
+		Name:          "bundle-freight",
+		Items:         []CreateFreightItemInput{{WorkloadID: "workload_api", SourceType: FreightItemPipelineArtifact, ReleaseID: release.ID}},
+	})
+	if err != nil {
+		t.Fatalf("CreateFreight() error = %v", err)
+	}
+	promotion, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	if err != nil || promotion.Status != PromotionManifestUpdated {
+		t.Fatalf("CreatePromotion() = %+v, %v", promotion, err)
+	}
+	if len(env.gitops.specs) != 1 || len(env.gitops.specs[0].Artifacts) != 1 {
+		t.Fatalf("expected one GitOps artifact, got %+v", env.gitops.specs)
+	}
+	variants := env.gitops.specs[0].Artifacts[0].Variants
+	if len(variants) != 2 || variants[0].SelectorLabels["cloud"] != "aliyun" || variants[1].SelectorLabels["cloud"] != "aws" {
+		t.Fatalf("GitOps spec should carry bundle variants, got %+v", variants)
+	}
+}
+
 func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 	env := newDeliveryEnv(t)
 	ctx := context.Background()

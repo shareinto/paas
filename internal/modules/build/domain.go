@@ -54,6 +54,7 @@ type RuntimeEnvironment struct {
 	RuntimeBaseImage   string                   `json:"runtime_base_image"`
 	ArtifactDeployPath string                   `json:"artifact_deploy_path"`
 	DockerfilePath     string                   `json:"dockerfile_path"`
+	SelectorLabels     map[string]string        `json:"selector_labels"`
 	Status             RuntimeEnvironmentStatus `json:"status"`
 	IsDefault          bool                     `json:"is_default"`
 	CreatedBy          shared.ID                `json:"created_by"`
@@ -209,20 +210,21 @@ const (
 )
 
 type BuildArtifact struct {
-	ID            shared.ID         `json:"id"`
-	TenantID      shared.ID         `json:"tenant_id"`
-	ProjectID     shared.ID         `json:"project_id"`
-	BuildRunID    shared.ID         `json:"build_run_id"`
-	ApplicationID shared.ID         `json:"application_id"`
-	WorkloadID    shared.ID         `json:"workload_id"`
-	SourceKey     string            `json:"source_key"`
-	Type          BuildArtifactType `json:"type"`
-	Name          string            `json:"name"`
-	URI           string            `json:"uri"`
-	Digest        string            `json:"digest"`
-	IsPrimary     bool              `json:"is_primary"`
-	Metadata      map[string]string `json:"metadata"`
-	CreatedAt     time.Time         `json:"created_at"`
+	ID             shared.ID         `json:"id"`
+	TenantID       shared.ID         `json:"tenant_id"`
+	ProjectID      shared.ID         `json:"project_id"`
+	BuildRunID     shared.ID         `json:"build_run_id"`
+	ApplicationID  shared.ID         `json:"application_id"`
+	WorkloadID     shared.ID         `json:"workload_id"`
+	SourceKey      string            `json:"source_key"`
+	Type           BuildArtifactType `json:"type"`
+	Name           string            `json:"name"`
+	URI            string            `json:"uri"`
+	Digest         string            `json:"digest"`
+	IsPrimary      bool              `json:"is_primary"`
+	SelectorLabels map[string]string `json:"selector_labels"`
+	Metadata       map[string]string `json:"metadata"`
+	CreatedAt      time.Time         `json:"created_at"`
 }
 
 type BuildStartedPayload struct {

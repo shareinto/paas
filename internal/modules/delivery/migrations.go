@@ -17,6 +17,7 @@ CREATE TABLE releases (
   pipeline_display_name VARCHAR(128) NOT NULL DEFAULT '',
   build_run_id VARCHAR(64) NOT NULL,
   build_artifact_id VARCHAR(64) NOT NULL,
+  image_bundle_id VARCHAR(64) NOT NULL DEFAULT '',
   version VARCHAR(128) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
   image_uri VARCHAR(1024) NOT NULL,
@@ -54,6 +55,7 @@ CREATE TABLE freight_items (
   workload_id VARCHAR(64) NOT NULL DEFAULT '',
   release_id VARCHAR(64) NOT NULL,
   build_artifact_id VARCHAR(64) NOT NULL,
+  image_bundle_id VARCHAR(64) NOT NULL DEFAULT '',
   source_type VARCHAR(64) NOT NULL DEFAULT 'pipeline_artifact',
   source_key VARCHAR(64) NOT NULL DEFAULT '',
   type VARCHAR(64) NOT NULL,
@@ -144,6 +146,60 @@ DROP TABLE IF EXISTS freight_items;
 DROP TABLE IF EXISTS freights;
 DROP TABLE IF EXISTS releases;
 `,
+}, {
+	Version: 202606121403,
+	Name:    "image_bundle_delivery",
+	Up: `
+CREATE TABLE IF NOT EXISTS image_bundles (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  workload_id VARCHAR(64) NOT NULL,
+  build_run_id VARCHAR(64) NOT NULL,
+  commit_sha VARCHAR(128) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_image_bundles_build_run (build_run_id),
+  KEY idx_image_bundles_workload_created (application_id, workload_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS image_bundle_images (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  bundle_id VARCHAR(64) NOT NULL,
+  build_artifact_id VARCHAR(64) NOT NULL,
+  runtime_environment_id VARCHAR(64) NOT NULL DEFAULT '',
+  runtime_environment_name VARCHAR(128) NOT NULL DEFAULT '',
+  uri VARCHAR(1024) NOT NULL,
+  image_repository VARCHAR(1024) NOT NULL DEFAULT '',
+  image_tag VARCHAR(255) NOT NULL DEFAULT '',
+  digest VARCHAR(255) NOT NULL DEFAULT '',
+  selector_labels_json JSON NULL,
+  is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  created_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_image_bundle_images_artifact (bundle_id, build_artifact_id),
+  KEY idx_image_bundle_images_bundle (bundle_id),
+  CONSTRAINT fk_image_bundle_images_bundle FOREIGN KEY (bundle_id) REFERENCES image_bundles(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+SET @releases_bundle_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'releases' AND column_name = 'image_bundle_id'
+);
+SET @releases_bundle_ddl := IF(@releases_bundle_missing, 'ALTER TABLE releases ADD COLUMN image_bundle_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER build_artifact_id', 'SELECT 1');
+PREPARE releases_bundle_stmt FROM @releases_bundle_ddl;
+EXECUTE releases_bundle_stmt;
+DEALLOCATE PREPARE releases_bundle_stmt;
+
+SET @freight_items_bundle_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'freight_items' AND column_name = 'image_bundle_id'
+);
+SET @freight_items_bundle_ddl := IF(@freight_items_bundle_missing, 'ALTER TABLE freight_items ADD COLUMN image_bundle_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER build_artifact_id', 'SELECT 1');
+PREPARE freight_items_bundle_stmt FROM @freight_items_bundle_ddl;
+EXECUTE freight_items_bundle_stmt;
+DEALLOCATE PREPARE freight_items_bundle_stmt;
+`,
+	Down: `SELECT 1;`,
 }, {
 	Version: 202606100302,
 	Name:    "release_freight_workload_v2_columns",

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Card, Checkbox, Descriptions, Drawer, Empty, Form, Input, Modal, Radio, Select, Space, Spin, Table, Tag, Typography, message } from 'antd';
 import { useParams } from 'react-router-dom';
-import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, getApplication, getFreight, getFreightCreationContext, listAppStages, listClusterOptions, listEligibleFreights, listFreights, listStageClusterBindings, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type StageDefinition, type Workload } from '../api';
+import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, getApplication, getFreight, getFreightCreationContext, listAppStages, listClusterOptions, listEligibleFreights, listFreights, listStageClusterBindings, type AppStage, type ClusterOption, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type StageDefinition, type Workload } from '../api';
 import { PageHeader } from '../components/PageHeader';
 
 const DEFAULT_APPLICATION_ID = 'app_1';
@@ -57,7 +57,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const applicationQuery = useQuery({ queryKey: ['application', applicationId], queryFn: () => getApplication(applicationId) });
   const contextQuery = useQuery({ queryKey: ['freight-creation-context', applicationId], queryFn: () => getFreightCreationContext(applicationId) });
   const appStagesQuery = useQuery({ queryKey: ['app-stages', applicationId], queryFn: () => listAppStages(applicationId) });
-  const clustersQuery = useQuery({ queryKey: ['cluster-options'], queryFn: listClusterOptions });
+  const clustersQuery = useQuery<ClusterOption[]>({ queryKey: ['cluster-options'], queryFn: () => listClusterOptions() });
   const stageBindingsQuery = useQuery({
     queryKey: ['stage-cluster-bindings', activeStage?.tenantId, activeStage?.name],
     queryFn: () => activeStage?.tenantId ? listStageClusterBindings(activeStage.tenantId, activeStage.name) : Promise.resolve([]),
@@ -124,9 +124,14 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const defaultNamespace = applicationQuery.data?.project || applicationQuery.data?.projectId || 'default';
   const availableTargetClusters = useMemo(() => {
     const bindings = stageBindingsQuery.data || [];
-    if (bindings.length > 0) return bindings.map((binding) => ({ id: binding.clusterId, name: binding.clusterName }));
-    return (clustersQuery.data || []).slice(0, activeStage?.clusterPoolSize || undefined).map((cluster) => ({ id: cluster.id, name: cluster.name }));
+    const clusterById = new Map((clustersQuery.data || []).map((cluster) => [cluster.id, cluster]));
+    if (bindings.length > 0) return bindings.map((binding) => {
+      const cluster = clusterById.get(binding.clusterId);
+      return { id: binding.clusterId, name: binding.clusterName, labels: cluster?.labels };
+    });
+    return (clustersQuery.data || []).slice(0, activeStage?.clusterPoolSize || undefined).map((cluster) => ({ id: cluster.id, name: cluster.name, labels: cluster.labels }));
   }, [activeStage?.clusterPoolSize, clustersQuery.data, stageBindingsQuery.data]);
+  const selectedTargetClusters = useMemo(() => availableTargetClusters.filter((cluster) => targetClusterIds.includes(cluster.id)), [availableTargetClusters, targetClusterIds]);
   const selectedCount = enabledWorkloads.filter((workload) => draftItemComplete(draftItems[workload.id])).length;
   const submitDisabled = enabledWorkloads.length === 0 || selectedCount < enabledWorkloads.length;
 
@@ -215,7 +220,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   };
 
   return (
-    <>
+    <div data-testid={showHeader ? undefined : 'promotion-confirm-panel'}>
       {showHeader && <PageHeader title="发布晋级" extra={contextQuery.isLoading ? null : <Button type="primary" aria-label="创建 Freight" onClick={() => setDrawerOpen(true)}>创建 Freight</Button>} />}
       {!showHeader && <div className="embedded-section-head"><Typography.Title level={4}>发布晋级</Typography.Title>{contextQuery.isLoading ? null : <Button type="primary" aria-label="创建 Freight" onClick={() => setDrawerOpen(true)}>创建 Freight</Button>}</div>}
       <Typography.Paragraph type="secondary">按完整 Freight 在 dev、test、staging、prod 中流转。</Typography.Paragraph>
@@ -237,7 +242,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
                       </div>
                       <div className="muted">{freight.createdAt}</div>
                       <div className="freight-card-items">
-                        {(freight.items || []).map((item) => <div key={item.id} className="freight-card-item"><span>{item.workloadDisplayName}</span><Typography.Text ellipsis>{item.image}</Typography.Text></div>)}
+                        {(freight.items || []).map((item) => <div key={item.id} className="freight-card-item"><span>{item.workloadDisplayName}</span><Typography.Text ellipsis>{item.image}</Typography.Text>{item.bundleImages?.length ? <Tag color="blue">{item.bundleImages.length} 个镜像</Tag> : null}</div>)}
                       </div>
                       <Space className="freight-card-actions">
                         <Button aria-label={`选择 Freight ${freight.version}`} data-eligible={activeStage ? String(eligible) : undefined} disabled={disabled || !activeStage} onClick={() => handleSelectFreight(freight)}>选择</Button>
@@ -307,14 +312,14 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
             <Form.Item label="目标集群">
               <Checkbox.Group aria-label="目标集群" value={targetClusterIds} onChange={(values) => setTargetClusterIds(values.map(String))}>
                 <Space direction="vertical">
-                  {availableTargetClusters.map((cluster) => <Checkbox key={cluster.id} value={cluster.id}>{cluster.name}</Checkbox>)}
+                  {availableTargetClusters.map((cluster) => <Checkbox key={cluster.id} value={cluster.id}>{cluster.name}<Typography.Text type="secondary">（{formatLabels(cluster.labels)}）</Typography.Text></Checkbox>)}
                 </Space>
               </Checkbox.Group>
             </Form.Item>
             <Form.Item label="Namespace"><Input aria-label="Namespace" value={namespaceOverride} onChange={(event) => setNamespaceOverride(event.target.value)} /></Form.Item>
           </Form>
           {activeStage?.name === 'prod' && <Alert type="warning" showIcon message="生产发布审批" description={<Space direction="vertical" size={2}><span>审批人数：至少 {activeStage.approvalCount || 2} 人</span><span>审批人范围：{activeStage.approverScope || '生产审批人'}</span>{activeStage.selfApprovalForbidden !== false && <span>禁止发起人自审批</span>}</Space>} />}
-          {selectedFreight && <div className="confirm-workload-list">{withWorkloadDisplayNames(selectedFreight.items || [], workloadNameById).map((item) => <div key={item.id} className="confirm-workload-row"><Typography.Text strong>{item.workloadDisplayName}</Typography.Text><Typography.Text copyable>{item.image}</Typography.Text><Tag color={item.sourceType === 'custom_image' ? 'orange' : 'green'}>{item.sourceType === 'custom_image' ? '自定义镜像' : '流水线产物'}</Tag></div>)}</div>}
+          {selectedFreight && <div className="confirm-workload-list">{withWorkloadDisplayNames(selectedFreight.items || [], workloadNameById).map((item) => <div key={item.id} className="confirm-workload-row"><Typography.Text strong>{item.workloadDisplayName}</Typography.Text><Typography.Text copyable>{item.image}</Typography.Text><Tag color={item.sourceType === 'custom_image' ? 'orange' : 'green'}>{item.sourceType === 'custom_image' ? '自定义镜像' : bundleSummary(item.bundleImages)}</Tag>{item.bundleImages?.length ? <Space size={[4, 4]} wrap>{selectedTargetClusters.map((cluster) => <Tag key={`${item.id}-${cluster.id}`}>{cluster.name}：{matchedBundleImage(item.bundleImages, cluster)?.image || '无匹配镜像'}</Tag>)}</Space> : null}</div>)}</div>}
         </Space>
       </Modal>
 
@@ -364,7 +369,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
           </div>
         </Space>
       </Drawer>
-    </>
+    </div>
   );
 }
 
@@ -382,7 +387,7 @@ function freightDraftColumns(workloads: Workload[], draftItems: Record<string, F
     { title: '流水线产物', key: 'release', render: (_: unknown, workload: Workload) => {
       const release = releases[workload.id];
       const draft = draftItems[workload.id] || { sourceType: 'pipeline_artifact' };
-      return <Select disabled={draft.sourceType !== 'pipeline_artifact'} value={draft.releaseId} placeholder="选择成功构建镜像" style={{ width: 220 }} options={release ? [{ value: release.id, label: release.image, title: release.image }] : []} onChange={(value) => updateDraftItem(workload.id, { releaseId: value, buildArtifactId: release?.buildArtifactId })} />;
+      return <Select disabled={draft.sourceType !== 'pipeline_artifact'} value={draft.releaseId} placeholder="选择成功构建镜像" style={{ width: 260 }} options={release ? [{ value: release.id, label: <Space direction="vertical" size={0}><Typography.Text>{release.image}</Typography.Text><Typography.Text type="secondary">{bundleSummary(release.bundleImages)}</Typography.Text></Space>, title: release.image }] : []} onChange={(value) => updateDraftItem(workload.id, { releaseId: value, buildArtifactId: release?.buildArtifactId })} />;
     } },
     { title: '自定义镜像', key: 'custom', render: (_: unknown, workload: Workload) => {
       const draft = draftItems[workload.id] || { sourceType: 'pipeline_artifact' };
@@ -423,4 +428,25 @@ function withStageDefaults(stage: StageView, freights: Freight[], current: Recor
     prod: { replicasSummary: '2 / 4 / 2', domainSummary: 'prod.example.com', configSummary: 'prod values' }
   };
   return { ...defaults[stage.name], ...stage, currentFreightVersion: current[stage.id] || stage.currentFreightVersion || fallback };
+}
+
+function bundleSummary(images?: ImageBundleImage[]) {
+  return images?.length ? `ImageBundle · ${images.length} 个镜像` : '流水线产物';
+}
+
+function matchedBundleImage(images: ImageBundleImage[] | undefined, cluster: Pick<ClusterOption, 'labels'>) {
+  if (!images?.length) return null;
+  const matches = images.filter((image) => labelsMatch(image.selectorLabels, cluster.labels));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function labelsMatch(selector?: Record<string, string>, labels?: Record<string, string>) {
+  const entries = Object.entries(selector || {});
+  if (entries.length === 0) return Object.keys(labels || {}).length === 0;
+  return entries.every(([key, value]) => labels?.[key] === value);
+}
+
+function formatLabels(labels?: Record<string, string>) {
+  const entries = Object.entries(labels || {});
+  return entries.length > 0 ? entries.map(([key, value]) => `${key}=${value}`).join(', ') : '无标签';
 }

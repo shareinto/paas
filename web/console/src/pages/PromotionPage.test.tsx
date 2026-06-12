@@ -88,11 +88,12 @@ test('发布确认使用弹窗选择 Freight、目标集群子集和 Namespace',
 
   await userEvent.click(within(dialog).getByRole('radio', { name: /20260609\.1/ }));
   expect(within(dialog).getByText('前端入口')).toBeInTheDocument();
-  expect(within(dialog).getByText('registry.local/order-frontend:20260609.1')).toBeInTheDocument();
+  expect(within(dialog).getByText('registry.local/order-frontend:20260609.1-aliyun')).toBeInTheDocument();
   expect(within(dialog).getByText('订单接口')).toBeInTheDocument();
-  expect(within(dialog).getByText('registry.local/order-api:20260609.1')).toBeInTheDocument();
+  expect(within(dialog).getByText('registry.local/order-api:20260609.1-aliyun')).toBeInTheDocument();
   expect(within(dialog).getByText('异步任务')).toBeInTheDocument();
-  expect(within(dialog).getByText('registry.local/order-worker:20260609.1')).toBeInTheDocument();
+  expect(within(dialog).getByText('registry.local/order-worker:20260609.1-aliyun')).toBeInTheDocument();
+  expect(within(dialog).getAllByText(/ImageBundle/).length).toBeGreaterThan(0);
 });
 
 test('确认发布后更新 Stage 当前 Freight', async () => {

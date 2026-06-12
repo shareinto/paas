@@ -276,6 +276,7 @@ func seedRuntimeEnvironments(t *testing.T, env buildTestEnv) {
 			RuntimeBaseImage:   "registry.example/runtime/java17:1.0",
 			ArtifactDeployPath: "/app/",
 			DockerfilePath:     "java/jar/Dockerfile",
+			SelectorLabels:     map[string]string{"cloud": "aliyun"},
 			Status:             RuntimeEnvironmentEnabled,
 			CreatedBy:          "usr_admin",
 			CreatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
@@ -286,6 +287,7 @@ func seedRuntimeEnvironments(t *testing.T, env buildTestEnv) {
 			Name:               "java21",
 			RuntimeBaseImage:   "registry.example/runtime/java21:1.0",
 			ArtifactDeployPath: "/app/",
+			SelectorLabels:     map[string]string{"cloud": "aws"},
 			Status:             RuntimeEnvironmentEnabled,
 			CreatedBy:          "usr_admin",
 			CreatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
@@ -1186,6 +1188,9 @@ func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
 	}
 	if !artifacts[0].IsPrimary || artifacts[1].IsPrimary {
 		t.Fatalf("first runtime image should be primary, got %+v", artifacts)
+	}
+	if artifacts[0].SelectorLabels["cloud"] != "aliyun" || artifacts[1].SelectorLabels["cloud"] != "aws" {
+		t.Fatalf("runtime image artifacts should keep selector labels, got %+v", artifacts)
 	}
 }
 

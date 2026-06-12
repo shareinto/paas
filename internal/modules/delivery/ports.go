@@ -13,6 +13,10 @@ type Repository interface {
 	GetRelease(ctx context.Context, id shared.ID) (Release, error)
 	FindReleaseByBuildRun(ctx context.Context, buildRunID shared.ID) (Release, error)
 	ListReleasesByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Release], error)
+	CreateImageBundle(ctx context.Context, bundle ImageBundle) error
+	CreateImageBundleImage(ctx context.Context, image ImageBundleImage) error
+	GetImageBundle(ctx context.Context, id shared.ID) (ImageBundle, error)
+	ListImageBundleImages(ctx context.Context, bundleID shared.ID) ([]ImageBundleImage, error)
 
 	CreateFreight(ctx context.Context, freight Freight) error
 	GetFreight(ctx context.Context, id shared.ID) (Freight, error)
@@ -80,14 +84,16 @@ type BuildRunRef struct {
 }
 
 type BuildArtifactRef struct {
-	ID            shared.ID
-	BuildRunID    shared.ID
-	ApplicationID shared.ID
-	WorkloadID    shared.ID
-	SourceKey     string
-	URI           string
-	Digest        string
-	IsPrimary     bool
+	ID             shared.ID
+	BuildRunID     shared.ID
+	ApplicationID  shared.ID
+	WorkloadID     shared.ID
+	SourceKey      string
+	URI            string
+	Digest         string
+	IsPrimary      bool
+	SelectorLabels map[string]string
+	Metadata       map[string]string
 }
 
 type WorkloadRef struct {
@@ -119,6 +125,17 @@ type EnvironmentQuery interface {
 	GetEnvironment(ctx context.Context, id shared.ID) (EnvironmentRef, error)
 }
 
+type ClusterRef struct {
+	ID       shared.ID
+	TenantID shared.ID
+	Name     string
+	Labels   map[string]string
+}
+
+type ClusterQuery interface {
+	GetCluster(ctx context.Context, id shared.ID) (ClusterRef, error)
+}
+
 type GitOpsDeploymentCommand interface {
 	ApplyPromotion(ctx context.Context, spec GitOpsPromotionSpec) (GitOpsPromotionResult, error)
 }
@@ -140,6 +157,7 @@ type GitOpsPromotionTargetCluster struct {
 	ClusterID   shared.ID
 	ClusterName string
 	Namespace   string
+	Labels      map[string]string
 }
 
 type GitOpsArtifactSpec struct {
@@ -151,6 +169,18 @@ type GitOpsArtifactSpec struct {
 	Tag        string
 	Digest     string
 	IsPrimary  bool
+	Variants   []GitOpsImageVariant
+}
+
+type GitOpsImageVariant struct {
+	URI                    string
+	Repository             string
+	Tag                    string
+	Digest                 string
+	RuntimeEnvironmentID   shared.ID
+	RuntimeEnvironmentName string
+	SelectorLabels         map[string]string
+	IsPrimary              bool
 }
 
 type GitOpsPromotionResult struct {

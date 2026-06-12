@@ -1,7 +1,7 @@
 import * as mock from './mock';
 import { hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
 
-export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, Environment, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, StageClusterBinding, ClusterOption, AppStage, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, Environment, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, StageClusterBinding, ClusterOption, AppStage, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -389,7 +389,7 @@ export async function listClusterOptions(tenantId?: string) {
   if (!hasAPIBaseURL()) return mock.listClusterOptions(tenantId);
   const tenantQuery = tenantId ? `tenant_id=${encodeURIComponent(tenantId)}&` : '';
   const data = await request<PageResult<any>>(`/api/clusters?${tenantQuery}page=1&page_size=100&actor_id=usr_admin`);
-  return data.items.map((item) => ({ id: item.id, name: item.name, region: item.region || '', status: item.status || 'ready' }));
+  return data.items.map(mapClusterOption);
 }
 
 export async function replaceStageClusterBindings(tenantId: string, stageKey: string, clusterIds: string[]) {
@@ -670,6 +670,7 @@ function runtimeEnvironmentPayload(input: Partial<mock.RuntimeEnvironment>, incl
 	    runtime_base_image: input.runtimeBaseImage,
 	    artifact_deploy_path: input.artifactDeployPath,
     dockerfile_path: input.dockerfilePath,
+    selector_labels: cleanStringRecord(input.selectorLabels),
     status: input.status,
     is_default: !!input.isDefault
   };
@@ -814,6 +815,7 @@ function mapFreightDetail(detail: any): mock.Freight {
 }
 
 function mapFreightItem(item: any): mock.FreightItem {
+  const bundleImages = mapImageBundleImages(item.bundleImages || item.bundle_images || item.imageBundleImages || item.image_bundle_images || []);
   return {
     id: item.id,
     workloadId: item.workloadId || item.workload_id || '',
@@ -822,6 +824,8 @@ function mapFreightItem(item: any): mock.FreightItem {
     sourceType: item.sourceType || item.source_type || 'pipeline_artifact',
     releaseId: item.releaseId || item.release_id || '',
     buildArtifactId: item.buildArtifactId || item.build_artifact_id || '',
+    imageBundleId: item.imageBundleId || item.image_bundle_id || '',
+    bundleImages,
     image: item.image || item.imageRef || item.image_ref || item.uri || [item.image_repository, item.image_tag].filter(Boolean).join(':') || '-',
     digest: item.digest || item.image_digest || item.imageDigest || '',
     commit: item.commit || item.commit_sha || item.commitSHA || ''
@@ -844,6 +848,7 @@ function mapRecord<T>(record: Record<string, any>, mapper: (item: any) => T): Re
 }
 
 function mapReleaseCandidate(item: any): mock.ReleaseCandidate {
+  const bundleImages = mapImageBundleImages(item.bundleImages || item.bundle_images || item.imageBundleImages || item.image_bundle_images || []);
   return {
     id: item.id,
     workloadId: item.workloadId || item.workload_id || '',
@@ -852,6 +857,8 @@ function mapReleaseCandidate(item: any): mock.ReleaseCandidate {
     digest: item.digest || item.image_digest || item.imageDigest || '',
     commit: item.commit || item.commit_sha || item.commitSHA || '',
     buildArtifactId: item.buildArtifactId || item.build_artifact_id || '',
+    imageBundleId: item.imageBundleId || item.image_bundle_id || '',
+    bundleImages,
     createdAt: item.createdAt || formatTime(item.created_at || item.createdAt)
   };
 }
@@ -924,7 +931,8 @@ function mapApplication(item: any): mock.Application {
 	      name: runtime.name,
 	      runtimeBaseImage: runtime.runtime_base_image || runtime.runtimeBaseImage || '',
 	      artifactDeployPath: runtime.artifact_deploy_path || runtime.artifactDeployPath || '',
-      dockerfilePath: runtime.dockerfile_path || runtime.dockerfilePath || ''
+      dockerfilePath: runtime.dockerfile_path || runtime.dockerfilePath || '',
+      selectorLabels: cleanStringRecord(runtime.selector_labels || runtime.selectorLabels)
     })),
     status: item.status || 'active',
     type: item.type || '-',
@@ -1168,6 +1176,7 @@ function mapRuntimeEnvironmentSnapshot(runtime: any): mock.RuntimeEnvironment {
     runtimeBaseImage: runtime.runtime_base_image || runtime.runtimeBaseImage || runtime.RuntimeBaseImage || '',
     artifactDeployPath: runtime.artifact_deploy_path || runtime.artifactDeployPath || runtime.ArtifactDeployPath || '',
     dockerfilePath: runtime.dockerfile_path || runtime.dockerfilePath || runtime.DockerfilePath || '',
+    selectorLabels: cleanStringRecord(runtime.selector_labels || runtime.selectorLabels || runtime.SelectorLabels),
     status: runtime.status || 'enabled',
     isDefault: !!(runtime.is_default || runtime.isDefault),
     updatedAt: runtime.updatedAt || formatTime(runtime.updated_at || runtime.updatedAt)
@@ -1238,10 +1247,43 @@ function mapRuntimeEnvironment(item: any): mock.RuntimeEnvironment {
 	    runtimeBaseImage: item.runtime_base_image || item.runtimeBaseImage || '',
 	    artifactDeployPath: item.artifact_deploy_path || item.artifactDeployPath || '',
     dockerfilePath: item.dockerfile_path || item.dockerfilePath || '',
+    selectorLabels: cleanStringRecord(item.selector_labels || item.selectorLabels),
     status: item.status || 'enabled',
     isDefault: !!(item.is_default || item.isDefault),
     updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
   };
+}
+
+function mapClusterOption(item: any): mock.ClusterOption {
+  return {
+    id: item.id,
+    name: item.name,
+    region: item.region || '',
+    status: item.status || 'ready',
+    labels: cleanStringRecord(item.labels || item.labels_json || item.Labels)
+  };
+}
+
+function mapImageBundleImages(items: any[]): mock.ImageBundleImage[] {
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    id: item.id,
+    imageBundleId: item.imageBundleId || item.image_bundle_id || item.bundle_id || '',
+    buildArtifactId: item.buildArtifactId || item.build_artifact_id || '',
+    runtimeEnvironmentId: item.runtimeEnvironmentId || item.runtime_environment_id || '',
+    runtimeEnvironmentName: item.runtimeEnvironmentName || item.runtime_environment_name || '',
+    image: item.image || item.uri || item.image_uri || [item.image_repository, item.image_tag].filter(Boolean).join(':') || '-',
+    digest: item.digest || item.image_digest || '',
+    selectorLabels: cleanStringRecord(item.selectorLabels || item.selector_labels),
+    isPrimary: !!(item.isPrimary || item.is_primary)
+  }));
+}
+
+function cleanStringRecord(value: any): mock.StringMap | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value)
+    .map(([key, item]) => [key.trim(), String(item).trim()] as const)
+    .filter(([key, item]) => key && item);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function mapBuildTemplate(item: any): mock.BuildTemplate {

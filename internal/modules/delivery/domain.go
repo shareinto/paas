@@ -15,25 +15,53 @@ const (
 )
 
 type Release struct {
-	ID                  shared.ID     `json:"id"`
-	TenantID            shared.ID     `json:"tenant_id"`
-	ProjectID           shared.ID     `json:"project_id"`
-	ApplicationID       shared.ID     `json:"application_id"`
-	WorkloadID          shared.ID     `json:"workload_id"`
-	PipelineID          shared.ID     `json:"pipeline_id"`
-	PipelineName        string        `json:"pipeline_name"`
-	PipelineDisplayName string        `json:"pipeline_display_name"`
-	BuildRunID          shared.ID     `json:"build_run_id"`
-	BuildArtifactID     shared.ID     `json:"build_artifact_id"`
-	Version             string        `json:"version"`
-	CommitSHA           string        `json:"commit_sha"`
-	ImageURI            string        `json:"image_uri"`
-	ImageRepository     string        `json:"image_repository"`
-	ImageTag            string        `json:"image_tag"`
-	ImageDigest         string        `json:"image_digest"`
-	SourceType          string        `json:"source_type"`
-	Status              ReleaseStatus `json:"status"`
-	CreatedAt           time.Time     `json:"created_at"`
+	ID                  shared.ID          `json:"id"`
+	TenantID            shared.ID          `json:"tenant_id"`
+	ProjectID           shared.ID          `json:"project_id"`
+	ApplicationID       shared.ID          `json:"application_id"`
+	WorkloadID          shared.ID          `json:"workload_id"`
+	PipelineID          shared.ID          `json:"pipeline_id"`
+	PipelineName        string             `json:"pipeline_name"`
+	PipelineDisplayName string             `json:"pipeline_display_name"`
+	BuildRunID          shared.ID          `json:"build_run_id"`
+	BuildArtifactID     shared.ID          `json:"build_artifact_id"`
+	ImageBundleID       shared.ID          `json:"image_bundle_id"`
+	Version             string             `json:"version"`
+	CommitSHA           string             `json:"commit_sha"`
+	ImageURI            string             `json:"image_uri"`
+	ImageRepository     string             `json:"image_repository"`
+	ImageTag            string             `json:"image_tag"`
+	ImageDigest         string             `json:"image_digest"`
+	SourceType          string             `json:"source_type"`
+	Status              ReleaseStatus      `json:"status"`
+	BundleImages        []ImageBundleImage `json:"bundle_images,omitempty"`
+	CreatedAt           time.Time          `json:"created_at"`
+}
+
+type ImageBundle struct {
+	ID            shared.ID `json:"id"`
+	TenantID      shared.ID `json:"tenant_id"`
+	ProjectID     shared.ID `json:"project_id"`
+	ApplicationID shared.ID `json:"application_id"`
+	WorkloadID    shared.ID `json:"workload_id"`
+	BuildRunID    shared.ID `json:"build_run_id"`
+	CommitSHA     string    `json:"commit_sha"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+type ImageBundleImage struct {
+	ID                     shared.ID         `json:"id"`
+	BundleID               shared.ID         `json:"bundle_id"`
+	BuildArtifactID        shared.ID         `json:"build_artifact_id"`
+	RuntimeEnvironmentID   shared.ID         `json:"runtime_environment_id"`
+	RuntimeEnvironmentName string            `json:"runtime_environment_name"`
+	URI                    string            `json:"uri"`
+	ImageRepository        string            `json:"image_repository"`
+	ImageTag               string            `json:"image_tag"`
+	Digest                 string            `json:"digest"`
+	SelectorLabels         map[string]string `json:"selector_labels"`
+	IsPrimary              bool              `json:"is_primary"`
+	CreatedAt              time.Time         `json:"created_at"`
 }
 
 type FreightStatus string
@@ -73,24 +101,26 @@ const (
 )
 
 type FreightItem struct {
-	ID              shared.ID       `json:"id"`
-	TenantID        shared.ID       `json:"tenant_id"`
-	ProjectID       shared.ID       `json:"project_id"`
-	FreightID       shared.ID       `json:"freight_id"`
-	ApplicationID   shared.ID       `json:"application_id"`
-	WorkloadID      shared.ID       `json:"workload_id"`
-	ReleaseID       shared.ID       `json:"release_id"`
-	BuildArtifactID shared.ID       `json:"build_artifact_id"`
-	SourceType      FreightItemType `json:"source_type"`
-	SourceKey       string          `json:"source_key"`
-	Type            FreightItemType `json:"type"`
-	Name            string          `json:"name"`
-	URI             string          `json:"uri"`
-	ImageRef        string          `json:"image_ref"`
-	ImageRepository string          `json:"image_repository"`
-	ImageTag        string          `json:"image_tag"`
-	Digest          string          `json:"digest"`
-	CreatedAt       time.Time       `json:"created_at"`
+	ID              shared.ID          `json:"id"`
+	TenantID        shared.ID          `json:"tenant_id"`
+	ProjectID       shared.ID          `json:"project_id"`
+	FreightID       shared.ID          `json:"freight_id"`
+	ApplicationID   shared.ID          `json:"application_id"`
+	WorkloadID      shared.ID          `json:"workload_id"`
+	ReleaseID       shared.ID          `json:"release_id"`
+	BuildArtifactID shared.ID          `json:"build_artifact_id"`
+	ImageBundleID   shared.ID          `json:"image_bundle_id"`
+	SourceType      FreightItemType    `json:"source_type"`
+	SourceKey       string             `json:"source_key"`
+	Type            FreightItemType    `json:"type"`
+	Name            string             `json:"name"`
+	URI             string             `json:"uri"`
+	ImageRef        string             `json:"image_ref"`
+	ImageRepository string             `json:"image_repository"`
+	ImageTag        string             `json:"image_tag"`
+	Digest          string             `json:"digest"`
+	BundleImages    []ImageBundleImage `json:"bundle_images,omitempty"`
+	CreatedAt       time.Time          `json:"created_at"`
 }
 
 type DeliveryFlow struct {

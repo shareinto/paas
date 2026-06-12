@@ -210,6 +210,7 @@ type CreateRuntimeEnvironmentInput struct {
 	RuntimeBaseImage   string                 `json:"runtime_base_image"`
 	ArtifactDeployPath string                 `json:"artifact_deploy_path"`
 	DockerfilePath     string                 `json:"dockerfile_path"`
+	SelectorLabels     map[string]string      `json:"selector_labels"`
 	IsDefault          bool                   `json:"is_default"`
 }
 
@@ -220,6 +221,7 @@ type UpdateRuntimeEnvironmentInput struct {
 	RuntimeBaseImage   string                   `json:"runtime_base_image"`
 	ArtifactDeployPath string                   `json:"artifact_deploy_path"`
 	DockerfilePath     string                   `json:"dockerfile_path"`
+	SelectorLabels     map[string]string        `json:"selector_labels"`
 	Status             RuntimeEnvironmentStatus `json:"status"`
 	IsDefault          bool                     `json:"is_default"`
 }
@@ -241,13 +243,14 @@ type BuildCallbackInput struct {
 }
 
 type BuildCallbackArtifactInput struct {
-	SourceKey string            `json:"source_key"`
-	Type      BuildArtifactType `json:"type"`
-	Name      string            `json:"name"`
-	URI       string            `json:"uri"`
-	Digest    string            `json:"digest"`
-	IsPrimary bool              `json:"is_primary"`
-	Metadata  map[string]string `json:"metadata"`
+	SourceKey      string            `json:"source_key"`
+	Type           BuildArtifactType `json:"type"`
+	Name           string            `json:"name"`
+	URI            string            `json:"uri"`
+	Digest         string            `json:"digest"`
+	IsPrimary      bool              `json:"is_primary"`
+	SelectorLabels map[string]string `json:"selector_labels"`
+	Metadata       map[string]string `json:"metadata"`
 }
 
 type LogEvent struct {
@@ -703,7 +706,7 @@ func (s *Service) CreateRuntimeEnvironment(ctx context.Context, input CreateRunt
 	if err := s.checkPlatformAdmin(ctx, input.Actor, "runtime_environment:manage"); err != nil {
 		return RuntimeEnvironment{}, err
 	}
-	environment, err := s.newRuntimeEnvironment(input.Actor.ID, input.Name, input.Description, input.RuntimeBaseImage, input.ArtifactDeployPath, input.DockerfilePath, input.IsDefault)
+	environment, err := s.newRuntimeEnvironment(input.Actor.ID, input.Name, input.Description, input.RuntimeBaseImage, input.ArtifactDeployPath, input.DockerfilePath, input.SelectorLabels, input.IsDefault)
 	if err != nil {
 		return RuntimeEnvironment{}, err
 	}
@@ -737,6 +740,7 @@ func (s *Service) UpdateRuntimeEnvironment(ctx context.Context, input UpdateRunt
 	environment.RuntimeBaseImage = firstNonEmpty(input.RuntimeBaseImage, environment.RuntimeBaseImage)
 	environment.ArtifactDeployPath = strings.TrimSpace(input.ArtifactDeployPath)
 	environment.DockerfilePath = normalizeDockerfilePath(input.DockerfilePath)
+	environment.SelectorLabels = normalizeSelectorLabels(input.SelectorLabels)
 	environment.IsDefault = input.IsDefault
 	environment.UpdatedAt = s.clock.Now()
 	if err := validateRuntimeEnvironment(environment); err != nil {
@@ -1854,7 +1858,7 @@ func (s *Service) createBuildArtifacts(ctx context.Context, run BuildRun, input 
 		for k, v := range item.Metadata {
 			metadata[k] = v
 		}
-		artifact := BuildArtifact{ID: id, TenantID: run.TenantID, ProjectID: run.ProjectID, BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, SourceKey: source.SourceKey, Type: artifactType, Name: name, URI: strings.TrimSpace(item.URI), Digest: strings.TrimSpace(item.Digest), IsPrimary: isPrimary, Metadata: metadata, CreatedAt: s.clock.Now()}
+		artifact := BuildArtifact{ID: id, TenantID: run.TenantID, ProjectID: run.ProjectID, BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, SourceKey: source.SourceKey, Type: artifactType, Name: name, URI: strings.TrimSpace(item.URI), Digest: strings.TrimSpace(item.Digest), IsPrimary: isPrimary, SelectorLabels: normalizeSelectorLabels(item.SelectorLabels), Metadata: metadata, CreatedAt: s.clock.Now()}
 		if err := s.repo.CreateArtifact(ctx, artifact); err != nil {
 			return nil, err
 		}
@@ -1901,12 +1905,13 @@ func (s *Service) synthesizedArtifactInputs(ctx context.Context, run BuildRun, r
 				imageName = fmt.Sprintf("%s/%s-%s:%s", imageRepo, app.Name, source.SourceKey, tag)
 			}
 			out = append(out, BuildCallbackArtifactInput{
-				SourceKey: source.SourceKey,
-				Type:      BuildArtifactImage,
-				Name:      name,
-				URI:       imageName,
-				IsPrimary: i == 0,
-				Metadata:  map[string]string{"runtime_environment_id": runtime.ID.String(), "runtime_environment_name": runtime.Name, "runtime_base_image": runtime.RuntimeBaseImage},
+				SourceKey:      source.SourceKey,
+				Type:           BuildArtifactImage,
+				Name:           name,
+				URI:            imageName,
+				IsPrimary:      i == 0,
+				SelectorLabels: runtime.SelectorLabels,
+				Metadata:       map[string]string{"runtime_environment_id": runtime.ID.String(), "runtime_environment_name": runtime.Name, "runtime_base_image": runtime.RuntimeBaseImage},
 			})
 		}
 		return out, nil
@@ -2284,6 +2289,7 @@ func (s *Service) requireEnabledRuntimeEnvironments(ctx context.Context, ids []s
 			RuntimeBaseImage:   environment.RuntimeBaseImage,
 			ArtifactDeployPath: environment.ArtifactDeployPath,
 			DockerfilePath:     environment.DockerfilePath,
+			SelectorLabels:     normalizeSelectorLabels(environment.SelectorLabels),
 		})
 	}
 	return out, nil
@@ -2547,7 +2553,7 @@ func defaultBuildImage() string {
 	return "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11"
 }
 
-func (s *Service) newRuntimeEnvironment(actorID shared.ID, name, description, runtimeBaseImage, artifactDeployPath, dockerfilePath string, isDefault bool) (RuntimeEnvironment, error) {
+func (s *Service) newRuntimeEnvironment(actorID shared.ID, name, description, runtimeBaseImage, artifactDeployPath, dockerfilePath string, selectorLabels map[string]string, isDefault bool) (RuntimeEnvironment, error) {
 	id, err := s.ids.NewID("runtime_env")
 	if err != nil {
 		return RuntimeEnvironment{}, err
@@ -2560,6 +2566,7 @@ func (s *Service) newRuntimeEnvironment(actorID shared.ID, name, description, ru
 		RuntimeBaseImage:   strings.TrimSpace(runtimeBaseImage),
 		ArtifactDeployPath: strings.TrimSpace(artifactDeployPath),
 		DockerfilePath:     normalizeDockerfilePath(dockerfilePath),
+		SelectorLabels:     normalizeSelectorLabels(selectorLabels),
 		Status:             RuntimeEnvironmentEnabled,
 		IsDefault:          isDefault,
 		CreatedBy:          actorID,
@@ -2590,6 +2597,25 @@ func validateRuntimeEnvironment(environment RuntimeEnvironment) error {
 		}
 	}
 	return nil
+}
+
+func normalizeSelectorLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range labels {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func normalizeDockerfilePath(value string) string {

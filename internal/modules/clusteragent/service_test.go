@@ -240,7 +240,7 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 	NewHandler(svc).Register(mux)
 
 	register := httptest.NewRecorder()
-	mux.ServeHTTP(register, httptest.NewRequest(http.MethodPost, "/api/clusters", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"},"tenant_id":"tenant_1","name":"生产集群","region":"cn"}`)))
+	mux.ServeHTTP(register, httptest.NewRequest(http.MethodPost, "/api/clusters", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"},"tenant_id":"tenant_1","name":"生产集群","region":"cn","labels":{"cloud":"aliyun"}}`)))
 	if register.Code != http.StatusCreated {
 		t.Fatalf("register status = %d body=%s", register.Code, register.Body.String())
 	}
@@ -250,6 +250,9 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 	}
 	if registered.AgentToken == "" || registered.Cluster.AgentTokenHash != "" {
 		t.Fatalf("token should be returned once and hash hidden: %#v", registered)
+	}
+	if registered.Cluster.Labels["cloud"] != "aliyun" {
+		t.Fatalf("registered cluster should keep labels: %#v", registered.Cluster)
 	}
 	rotate := httptest.NewRecorder()
 	mux.ServeHTTP(rotate, httptest.NewRequest(http.MethodPost, "/api/clusters/"+registered.Cluster.ID.String()+"/rotate-token", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"}}`)))
@@ -304,6 +307,9 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 	mux.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/clusters?tenant_id=tenant_1&page=1&page_size=10", nil))
 	if list.Code != http.StatusOK || bytes.Contains(list.Body.Bytes(), []byte("AgentTokenHash")) {
 		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
+	}
+	if !bytes.Contains(list.Body.Bytes(), []byte(`"cloud":"aliyun"`)) {
+		t.Fatalf("list should include cluster labels, body=%s", list.Body.String())
 	}
 	drain := httptest.NewRecorder()
 	mux.ServeHTTP(drain, httptest.NewRequest(http.MethodPost, "/api/clusters/cluster_1/drain", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"}}`)))

@@ -19,12 +19,64 @@ func NewMySQLRepository(_ context.Context, db *sql.DB) (*MySQLRepository, error)
 
 func (r *MySQLRepository) CreateRelease(ctx context.Context, release Release) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO releases (id, tenant_id, project_id, application_id, workload_id, pipeline_id, pipeline_name, pipeline_display_name, build_run_id, build_artifact_id, version, commit_sha, image_uri, image_repository, image_tag, image_digest, source_type, status, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO releases (id, tenant_id, project_id, application_id, workload_id, pipeline_id, pipeline_name, pipeline_display_name, build_run_id, build_artifact_id, image_bundle_id, version, commit_sha, image_uri, image_repository, image_tag, image_digest, source_type, status, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		release.ID, release.TenantID, release.ProjectID, release.ApplicationID, release.WorkloadID, release.PipelineID, release.PipelineName,
-		release.PipelineDisplayName, release.BuildRunID, release.BuildArtifactID, release.Version, release.CommitSHA,
+		release.PipelineDisplayName, release.BuildRunID, release.BuildArtifactID, release.ImageBundleID, release.Version, release.CommitSHA,
 		release.ImageURI, release.ImageRepository, release.ImageTag, release.ImageDigest, release.SourceType, release.Status, release.CreatedAt)
 	return database.ConflictOrUnavailable(err, "release already exists", "create release failed")
+}
+
+func (r *MySQLRepository) CreateImageBundle(ctx context.Context, bundle ImageBundle) error {
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO image_bundles (id, tenant_id, project_id, application_id, workload_id, build_run_id, commit_sha, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		bundle.ID, bundle.TenantID, bundle.ProjectID, bundle.ApplicationID, bundle.WorkloadID, bundle.BuildRunID, bundle.CommitSHA, bundle.CreatedAt)
+	return database.ConflictOrUnavailable(err, "image bundle already exists", "create image bundle failed")
+}
+
+func (r *MySQLRepository) CreateImageBundleImage(ctx context.Context, image ImageBundleImage) error {
+	labels, err := database.MarshalJSON(image.SelectorLabels)
+	if err != nil {
+		return err
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO image_bundle_images (id, bundle_id, build_artifact_id, runtime_environment_id, runtime_environment_name, uri, image_repository, image_tag, digest, selector_labels_json, is_primary, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		image.ID, image.BundleID, image.BuildArtifactID, image.RuntimeEnvironmentID, image.RuntimeEnvironmentName, image.URI,
+		image.ImageRepository, image.ImageTag, image.Digest, string(labels), image.IsPrimary, image.CreatedAt)
+	return database.ConflictOrUnavailable(err, "image bundle image already exists", "create image bundle image failed")
+}
+
+func (r *MySQLRepository) GetImageBundle(ctx context.Context, id shared.ID) (ImageBundle, error) {
+	bundle, err := scanImageBundle(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, imageBundleSelect()+" WHERE id = ?", id))
+	if err != nil {
+		return ImageBundle{}, database.NotFound(err, "image bundle not found")
+	}
+	return bundle, nil
+}
+
+func (r *MySQLRepository) ListImageBundleImages(ctx context.Context, bundleID shared.ID) ([]ImageBundleImage, error) {
+	if _, err := r.GetImageBundle(ctx, bundleID); err != nil {
+		return nil, err
+	}
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, imageBundleImageSelect()+" WHERE bundle_id = ? ORDER BY is_primary DESC, created_at ASC, id ASC", bundleID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list image bundle images failed")
+	}
+	defer rows.Close()
+	items := []ImageBundleImage{}
+	for rows.Next() {
+		item, err := scanImageBundleImage(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, database.WrapUnavailable(err, "list image bundle images failed")
+	}
+	return items, nil
 }
 
 func (r *MySQLRepository) GetRelease(ctx context.Context, id shared.ID) (Release, error) {
@@ -73,10 +125,10 @@ func (r *MySQLRepository) CreateFreightItem(ctx context.Context, item FreightIte
 		return err
 	}
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO freight_items (id, tenant_id, project_id, freight_id, application_id, workload_id, release_id, build_artifact_id, source_type, source_key, type, name, uri, image_ref, image_repository, image_tag, digest, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO freight_items (id, tenant_id, project_id, freight_id, application_id, workload_id, release_id, build_artifact_id, image_bundle_id, source_type, source_key, type, name, uri, image_ref, image_repository, image_tag, digest, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.TenantID, item.ProjectID, item.FreightID, item.ApplicationID, item.WorkloadID, item.ReleaseID,
-		item.BuildArtifactID, item.SourceType, item.SourceKey, item.Type, item.Name, item.URI, item.ImageRef, item.ImageRepository, item.ImageTag, item.Digest, item.CreatedAt)
+		item.BuildArtifactID, item.ImageBundleID, item.SourceType, item.SourceKey, item.Type, item.Name, item.URI, item.ImageRef, item.ImageRepository, item.ImageTag, item.Digest, item.CreatedAt)
 	return database.ConflictOrUnavailable(err, "freight item already exists", "create freight item failed")
 }
 
@@ -436,7 +488,7 @@ type deliveryScanner interface {
 }
 
 func releaseSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, workload_id, pipeline_id, pipeline_name, pipeline_display_name, build_run_id, build_artifact_id, version, commit_sha, image_uri, image_repository, image_tag, image_digest, source_type, status, created_at FROM releases"
+	return "SELECT id, tenant_id, project_id, application_id, workload_id, pipeline_id, pipeline_name, pipeline_display_name, build_run_id, build_artifact_id, image_bundle_id, version, commit_sha, image_uri, image_repository, image_tag, image_digest, source_type, status, created_at FROM releases"
 }
 
 func freightSelect() string {
@@ -444,7 +496,15 @@ func freightSelect() string {
 }
 
 func freightItemSelect() string {
-	return "SELECT id, tenant_id, project_id, freight_id, application_id, workload_id, release_id, build_artifact_id, source_type, source_key, type, name, uri, image_ref, image_repository, image_tag, digest, created_at FROM freight_items"
+	return "SELECT id, tenant_id, project_id, freight_id, application_id, workload_id, release_id, build_artifact_id, image_bundle_id, source_type, source_key, type, name, uri, image_ref, image_repository, image_tag, digest, created_at FROM freight_items"
+}
+
+func imageBundleSelect() string {
+	return "SELECT id, tenant_id, project_id, application_id, workload_id, build_run_id, commit_sha, created_at FROM image_bundles"
+}
+
+func imageBundleImageSelect() string {
+	return "SELECT id, bundle_id, build_artifact_id, runtime_environment_id, runtime_environment_name, uri, image_repository, image_tag, digest, selector_labels_json, is_primary, created_at FROM image_bundle_images"
 }
 
 func deliveryFlowSelect() string {
@@ -481,7 +541,7 @@ func promotionSelect() string {
 
 func scanRelease(scanner deliveryScanner) (Release, error) {
 	var v Release
-	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.WorkloadID, &v.PipelineID, &v.PipelineName, &v.PipelineDisplayName, &v.BuildRunID, &v.BuildArtifactID, &v.Version, &v.CommitSHA, &v.ImageURI, &v.ImageRepository, &v.ImageTag, &v.ImageDigest, &v.SourceType, &v.Status, &v.CreatedAt)
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.WorkloadID, &v.PipelineID, &v.PipelineName, &v.PipelineDisplayName, &v.BuildRunID, &v.BuildArtifactID, &v.ImageBundleID, &v.Version, &v.CommitSHA, &v.ImageURI, &v.ImageRepository, &v.ImageTag, &v.ImageDigest, &v.SourceType, &v.Status, &v.CreatedAt)
 	return v, err
 }
 
@@ -493,8 +553,26 @@ func scanFreight(scanner deliveryScanner) (Freight, error) {
 
 func scanFreightItem(scanner deliveryScanner) (FreightItem, error) {
 	var v FreightItem
-	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.FreightID, &v.ApplicationID, &v.WorkloadID, &v.ReleaseID, &v.BuildArtifactID, &v.SourceType, &v.SourceKey, &v.Type, &v.Name, &v.URI, &v.ImageRef, &v.ImageRepository, &v.ImageTag, &v.Digest, &v.CreatedAt)
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.FreightID, &v.ApplicationID, &v.WorkloadID, &v.ReleaseID, &v.BuildArtifactID, &v.ImageBundleID, &v.SourceType, &v.SourceKey, &v.Type, &v.Name, &v.URI, &v.ImageRef, &v.ImageRepository, &v.ImageTag, &v.Digest, &v.CreatedAt)
 	return v, err
+}
+
+func scanImageBundle(scanner deliveryScanner) (ImageBundle, error) {
+	var v ImageBundle
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.WorkloadID, &v.BuildRunID, &v.CommitSHA, &v.CreatedAt)
+	return v, err
+}
+
+func scanImageBundleImage(scanner deliveryScanner) (ImageBundleImage, error) {
+	var v ImageBundleImage
+	var labels []byte
+	if err := scanner.Scan(&v.ID, &v.BundleID, &v.BuildArtifactID, &v.RuntimeEnvironmentID, &v.RuntimeEnvironmentName, &v.URI, &v.ImageRepository, &v.ImageTag, &v.Digest, &labels, &v.IsPrimary, &v.CreatedAt); err != nil {
+		return ImageBundleImage{}, err
+	}
+	if err := database.UnmarshalJSON(labels, &v.SelectorLabels); err != nil {
+		return ImageBundleImage{}, err
+	}
+	return v, nil
 }
 
 func scanDeliveryFlow(scanner deliveryScanner) (DeliveryFlow, error) {

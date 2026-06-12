@@ -332,6 +332,81 @@ func TestApplyPromotionCreatesDeploymentPerSelectedStageCluster(t *testing.T) {
 	}
 }
 
+func TestApplyPromotionSelectsImageBundleVariantByTargetClusterLabels(t *testing.T) {
+	ids := []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
+		"deployment_aliyun", "manifest_aliyun", "event_aliyun",
+		"deployment_aws", "manifest_aws", "event_aws",
+	}
+	svc, manifest, _ := newTestService(t, ids)
+	svc.workloads = workloadQuery{workloads: map[shared.ID]WorkloadRef{
+		"workload_api": {ID: "workload_api", ApplicationID: "app_1", Name: "order-api", WorkloadType: "Deployment"},
+	}, configs: map[string]WorkloadEnvironmentConfigRef{}}
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+
+	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID:   "promotion_bundle",
+		FreightID:     "freight_bundle",
+		ApplicationID: "app_1",
+		EnvironmentID: "env_dev",
+		StageKey:      "dev",
+		TargetClusters: []delivery.GitOpsPromotionTargetCluster{
+			{ClusterID: "cluster_aliyun", ClusterName: "阿里云集群", Namespace: "order-dev", Labels: map[string]string{"cloud": "aliyun"}},
+			{ClusterID: "cluster_aws", ClusterName: "AWS 集群", Namespace: "order-dev", Labels: map[string]string{"cloud": "aws"}},
+		},
+		Artifacts: []delivery.GitOpsArtifactSpec{{
+			WorkloadID: "workload_api",
+			Name:       "订单 API",
+			Variants: []delivery.GitOpsImageVariant{
+				{URI: "registry/order-api:aliyun", Repository: "registry/order-api", Tag: "aliyun", Digest: "sha256:aliyun", SelectorLabels: map[string]string{"cloud": "aliyun"}, IsPrimary: true},
+				{URI: "registry/order-api:aws", Repository: "registry/order-api", Tag: "aws", Digest: "sha256:aws", SelectorLabels: map[string]string{"cloud": "aws"}},
+			},
+			IsPrimary: true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPromotion() error = %v", err)
+	}
+	aliyunValues := manifest.Files["apps/order-api/dev/cluster_aliyun/values.yaml"]
+	awsValues := manifest.Files["apps/order-api/dev/cluster_aws/values.yaml"]
+	if !strings.Contains(aliyunValues, "tag: aliyun") || !strings.Contains(aliyunValues, "digest: sha256:aliyun") {
+		t.Fatalf("aliyun cluster should use aliyun image:\n%s", aliyunValues)
+	}
+	if !strings.Contains(awsValues, "tag: aws") || !strings.Contains(awsValues, "digest: sha256:aws") {
+		t.Fatalf("aws cluster should use aws image:\n%s", awsValues)
+	}
+}
+
+func TestApplyPromotionRejectsImageBundleWithoutUniqueClusterMatch(t *testing.T) {
+	svc, _, _ := newTestService(t, []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
+		"deployment_missing", "manifest_missing", "event_missing",
+	})
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+
+	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID:   "promotion_bundle_missing",
+		FreightID:     "freight_bundle",
+		ApplicationID: "app_1",
+		EnvironmentID: "env_dev",
+		TargetClusters: []delivery.GitOpsPromotionTargetCluster{
+			{ClusterID: "cluster_unknown", ClusterName: "未知集群", Namespace: "order-dev", Labels: map[string]string{"cloud": "tencent"}},
+		},
+		Artifacts: []delivery.GitOpsArtifactSpec{{
+			WorkloadID: "workload_api",
+			Variants: []delivery.GitOpsImageVariant{
+				{URI: "registry/order-api:aliyun", Repository: "registry/order-api", Tag: "aliyun", Digest: "sha256:aliyun", SelectorLabels: map[string]string{"cloud": "aliyun"}},
+				{URI: "registry/order-api:aws", Repository: "registry/order-api", Tag: "aws", Digest: "sha256:aws", SelectorLabels: map[string]string{"cloud": "aws"}},
+			},
+		}},
+	})
+	if shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("missing variant match should fail with failed_precondition, got %v", err)
+	}
+}
+
 type workloadQuery struct {
 	workloads map[shared.ID]WorkloadRef
 	configs   map[string]WorkloadEnvironmentConfigRef

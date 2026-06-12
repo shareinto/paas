@@ -58,6 +58,7 @@ type RegisterClusterInput struct {
 	TenantID shared.ID              `json:"tenant_id"`
 	Name     string                 `json:"name"`
 	Region   string                 `json:"region"`
+	Labels   map[string]string      `json:"labels"`
 }
 
 type RegisterClusterResult struct {
@@ -90,7 +91,7 @@ func (s *Service) RegisterCluster(ctx context.Context, input RegisterClusterInpu
 		return RegisterClusterResult{}, err
 	}
 	now := s.clock.Now()
-	cluster, err := normalizeCluster(Cluster{ID: id, TenantID: input.TenantID, Name: input.Name, Region: input.Region, Status: ClusterReady, AgentTokenHash: string(hash), CreatedAt: now, UpdatedAt: now})
+	cluster, err := normalizeCluster(Cluster{ID: id, TenantID: input.TenantID, Name: input.Name, Region: input.Region, Labels: input.Labels, Status: ClusterReady, AgentTokenHash: string(hash), CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		return RegisterClusterResult{}, err
 	}

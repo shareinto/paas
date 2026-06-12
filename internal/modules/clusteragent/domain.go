@@ -20,16 +20,17 @@ const (
 )
 
 type Cluster struct {
-	ID              shared.ID     `json:"id"`
-	TenantID        shared.ID     `json:"tenant_id"`
-	Name            string        `json:"name"`
-	Region          string        `json:"region"`
-	ServerVersion   string        `json:"server_version"`
-	Status          ClusterStatus `json:"status"`
-	AgentTokenHash  string        `json:"-"`
-	LastHeartbeatAt *time.Time    `json:"last_heartbeat_at,omitempty"`
-	CreatedAt       time.Time     `json:"created_at"`
-	UpdatedAt       time.Time     `json:"updated_at"`
+	ID              shared.ID         `json:"id"`
+	TenantID        shared.ID         `json:"tenant_id"`
+	Name            string            `json:"name"`
+	Region          string            `json:"region"`
+	Labels          map[string]string `json:"labels"`
+	ServerVersion   string            `json:"server_version"`
+	Status          ClusterStatus     `json:"status"`
+	AgentTokenHash  string            `json:"-"`
+	LastHeartbeatAt *time.Time        `json:"last_heartbeat_at,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
 type ClusterHeartbeat struct {
@@ -123,6 +124,7 @@ type ClusterReportedEvent struct {
 func normalizeCluster(cluster Cluster) (Cluster, error) {
 	cluster.Name = strings.TrimSpace(cluster.Name)
 	cluster.Region = strings.TrimSpace(cluster.Region)
+	cluster.Labels = normalizeLabels(cluster.Labels)
 	if cluster.Name == "" {
 		return Cluster{}, shared.NewError(shared.CodeInvalidArgument, "cluster name is required")
 	}
@@ -130,6 +132,25 @@ func normalizeCluster(cluster Cluster) (Cluster, error) {
 		cluster.Status = ClusterReady
 	}
 	return cluster, nil
+}
+
+func normalizeLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range labels {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func newAgentToken() (string, error) {

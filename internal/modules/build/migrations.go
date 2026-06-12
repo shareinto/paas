@@ -119,6 +119,7 @@ CREATE TABLE build_pipeline_runtime_environments (
   runtime_base_image VARCHAR(512) NOT NULL DEFAULT '',
   artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
   dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
+  selector_labels_json JSON NULL,
   position INT NOT NULL DEFAULT 0,
   PRIMARY KEY (pipeline_id, runtime_environment_id),
   KEY idx_build_pipeline_runtime_environments_runtime (runtime_environment_id),
@@ -158,6 +159,7 @@ CREATE TABLE build_artifacts (
   uri VARCHAR(1024) NOT NULL,
   digest VARCHAR(255) NOT NULL DEFAULT '',
   is_primary TINYINT(1) NOT NULL DEFAULT 0,
+  selector_labels_json JSON NULL,
   metadata JSON NULL,
   created_at DATETIME(6) NOT NULL,
   KEY idx_build_artifacts_run (build_run_id),
@@ -239,6 +241,7 @@ CREATE TABLE runtime_environments (
   runtime_base_image VARCHAR(512) NOT NULL,
   artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
   dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
+  selector_labels_json JSON NULL,
   status VARCHAR(32) NOT NULL,
   is_default TINYINT(1) NOT NULL DEFAULT 0,
   created_by VARCHAR(64) NOT NULL DEFAULT '',
@@ -281,6 +284,39 @@ DROP TABLE IF EXISTS build_templates;
 DROP TABLE IF EXISTS runtime_environments;
 DROP TABLE IF EXISTS build_environments;
 `,
+	},
+	{
+		Version: 202606121401,
+		Name:    "image_bundle_build_selector_labels",
+		Up: `
+SET @runtime_labels_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'runtime_environments' AND column_name = 'selector_labels_json'
+);
+SET @runtime_labels_ddl := IF(@runtime_labels_missing, 'ALTER TABLE runtime_environments ADD COLUMN selector_labels_json JSON NULL AFTER dockerfile_path', 'SELECT 1');
+PREPARE runtime_labels_stmt FROM @runtime_labels_ddl;
+EXECUTE runtime_labels_stmt;
+DEALLOCATE PREPARE runtime_labels_stmt;
+
+SET @pipeline_runtime_labels_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'build_pipeline_runtime_environments' AND column_name = 'selector_labels_json'
+);
+SET @pipeline_runtime_labels_ddl := IF(@pipeline_runtime_labels_missing, 'ALTER TABLE build_pipeline_runtime_environments ADD COLUMN selector_labels_json JSON NULL AFTER dockerfile_path', 'SELECT 1');
+PREPARE pipeline_runtime_labels_stmt FROM @pipeline_runtime_labels_ddl;
+EXECUTE pipeline_runtime_labels_stmt;
+DEALLOCATE PREPARE pipeline_runtime_labels_stmt;
+
+SET @artifact_labels_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'build_artifacts' AND column_name = 'selector_labels_json'
+);
+SET @artifact_labels_ddl := IF(@artifact_labels_missing, 'ALTER TABLE build_artifacts ADD COLUMN selector_labels_json JSON NULL AFTER is_primary', 'SELECT 1');
+PREPARE artifact_labels_stmt FROM @artifact_labels_ddl;
+EXECUTE artifact_labels_stmt;
+DEALLOCATE PREPARE artifact_labels_stmt;
+`,
+		Down: `SELECT 1;`,
 	},
 	{
 		Version: 202606090402,

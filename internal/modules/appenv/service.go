@@ -496,6 +496,7 @@ func (s *Service) SyncRuntimeEnvironmentSnapshot(ctx context.Context, input Runt
 				RuntimeBaseImage:   input.Environment.RuntimeBaseImage,
 				ArtifactDeployPath: input.Environment.ArtifactDeployPath,
 				DockerfilePath:     input.Environment.DockerfilePath,
+				SelectorLabels:     cleanStringMap(input.Environment.SelectorLabels),
 			}
 			updated = true
 		}
@@ -1192,7 +1193,26 @@ func applicationRuntimeEnvironments(environments []RuntimeEnvironmentRef) []Appl
 		if environment.ID.IsZero() && strings.TrimSpace(environment.Name) == "" && strings.TrimSpace(environment.RuntimeBaseImage) == "" {
 			continue
 		}
-		out = append(out, ApplicationRuntimeEnvironment{ID: environment.ID, Name: environment.Name, RuntimeBaseImage: environment.RuntimeBaseImage, ArtifactDeployPath: environment.ArtifactDeployPath, DockerfilePath: environment.DockerfilePath})
+		out = append(out, ApplicationRuntimeEnvironment{ID: environment.ID, Name: environment.Name, RuntimeBaseImage: environment.RuntimeBaseImage, ArtifactDeployPath: environment.ArtifactDeployPath, DockerfilePath: environment.DockerfilePath, SelectorLabels: cleanStringMap(environment.SelectorLabels)})
+	}
+	return out
+}
+
+func cleanStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

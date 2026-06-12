@@ -18,21 +18,29 @@ func NewMySQLRepository(_ context.Context, db *sql.DB) (*MySQLRepository, error)
 }
 
 func (r *MySQLRepository) CreateCluster(ctx context.Context, cluster Cluster) error {
-	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO clusters (id, tenant_id, name, region, server_version, status, agent_token_hash, last_heartbeat_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		cluster.ID, cluster.TenantID, cluster.Name, cluster.Region, cluster.ServerVersion, cluster.Status,
+	labels, err := database.MarshalJSON(cluster.Labels)
+	if err != nil {
+		return err
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO clusters (id, tenant_id, name, region, labels_json, server_version, status, agent_token_hash, last_heartbeat_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		cluster.ID, cluster.TenantID, cluster.Name, cluster.Region, string(labels), cluster.ServerVersion, cluster.Status,
 		cluster.AgentTokenHash, mysqlTimePtr(cluster.LastHeartbeatAt), mysqlTime(cluster.CreatedAt), mysqlTime(cluster.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "cluster already exists", "create cluster failed")
 }
 
 func (r *MySQLRepository) UpdateCluster(ctx context.Context, cluster Cluster) error {
+	labels, err := database.MarshalJSON(cluster.Labels)
+	if err != nil {
+		return err
+	}
 	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE clusters
-SET tenant_id = ?, name = ?, region = ?, server_version = ?, status = ?, agent_token_hash = ?,
+SET tenant_id = ?, name = ?, region = ?, labels_json = ?, server_version = ?, status = ?, agent_token_hash = ?,
     last_heartbeat_at = ?, updated_at = ?
 WHERE id = ?`,
-		cluster.TenantID, cluster.Name, cluster.Region, cluster.ServerVersion, cluster.Status,
+		cluster.TenantID, cluster.Name, cluster.Region, string(labels), cluster.ServerVersion, cluster.Status,
 		cluster.AgentTokenHash, mysqlTimePtr(cluster.LastHeartbeatAt), mysqlTime(cluster.UpdatedAt), cluster.ID)
 	if err != nil {
 		return database.WrapUnavailable(err, "update cluster failed")
@@ -42,7 +50,7 @@ WHERE id = ?`,
 
 func (r *MySQLRepository) GetCluster(ctx context.Context, id shared.ID) (Cluster, error) {
 	cluster, err := scanCluster(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
-SELECT id, tenant_id, name, region, server_version, status, agent_token_hash, last_heartbeat_at, created_at, updated_at
+SELECT id, tenant_id, name, region, labels_json, server_version, status, agent_token_hash, last_heartbeat_at, created_at, updated_at
 FROM clusters WHERE id = ?`, id))
 	if err != nil {
 		return Cluster{}, database.NotFound(err, "cluster not found")
@@ -57,7 +65,7 @@ func (r *MySQLRepository) ListClusters(ctx context.Context, page shared.PageRequ
 	}
 	page, limit, offset := database.LimitOffset(page)
 	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
-SELECT id, tenant_id, name, region, server_version, status, agent_token_hash, last_heartbeat_at, created_at, updated_at
+SELECT id, tenant_id, name, region, labels_json, server_version, status, agent_token_hash, last_heartbeat_at, created_at, updated_at
 FROM clusters ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return shared.PageResult[Cluster]{}, database.WrapUnavailable(err, "list clusters failed")
@@ -84,7 +92,7 @@ func (r *MySQLRepository) ListClustersByTenant(ctx context.Context, tenantID sha
 	}
 	page, limit, offset := database.LimitOffset(page)
 	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
-SELECT id, tenant_id, name, region, server_version, status, agent_token_hash, last_heartbeat_at, created_at, updated_at
+SELECT id, tenant_id, name, region, labels_json, server_version, status, agent_token_hash, last_heartbeat_at, created_at, updated_at
 FROM clusters WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, tenantID, limit, offset)
 	if err != nil {
 		return shared.PageResult[Cluster]{}, database.WrapUnavailable(err, "list tenant clusters failed")
@@ -206,8 +214,14 @@ type clusterScanner interface {
 
 func scanCluster(scanner clusterScanner) (Cluster, error) {
 	var cluster Cluster
-	err := scanner.Scan(&cluster.ID, &cluster.TenantID, &cluster.Name, &cluster.Region, &cluster.ServerVersion, &cluster.Status, &cluster.AgentTokenHash, &cluster.LastHeartbeatAt, &cluster.CreatedAt, &cluster.UpdatedAt)
-	return cluster, err
+	var labels []byte
+	if err := scanner.Scan(&cluster.ID, &cluster.TenantID, &cluster.Name, &cluster.Region, &labels, &cluster.ServerVersion, &cluster.Status, &cluster.AgentTokenHash, &cluster.LastHeartbeatAt, &cluster.CreatedAt, &cluster.UpdatedAt); err != nil {
+		return Cluster{}, err
+	}
+	if err := database.UnmarshalJSON(labels, &cluster.Labels); err != nil {
+		return Cluster{}, err
+	}
+	return cluster, nil
 }
 
 func scanTask(scanner clusterScanner) (ClusterTask, error) {

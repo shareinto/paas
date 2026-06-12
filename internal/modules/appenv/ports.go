@@ -95,6 +95,7 @@ type RuntimeEnvironmentRef struct {
 	RuntimeBaseImage   string
 	ArtifactDeployPath string
 	DockerfilePath     string
+	SelectorLabels     map[string]string
 }
 
 type RuntimeEnvironmentSnapshotInput struct {

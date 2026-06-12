@@ -184,13 +184,12 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	if artifact.URI == "" && strings.TrimSpace(spec.ImageURI) != "" {
 		artifact = delivery.GitOpsArtifactSpec{URI: spec.ImageURI, Digest: spec.ImageDigest, IsPrimary: true}
 	}
-	if artifact.URI == "" {
+	if len(artifacts) == 0 && artifact.URI == "" {
 		return delivery.GitOpsPromotionResult{}, shared.NewError(shared.CodeInvalidArgument, "promotion artifacts is required")
 	}
 	if len(artifacts) == 0 {
 		artifacts = []delivery.GitOpsArtifactSpec{artifact}
 	}
-	repository, tag := imageRepositoryTag(artifact)
 	type targetRecord struct {
 		binding          ClusterBindingRef
 		deployment       Deployment
@@ -219,8 +218,14 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 		if err != nil {
 			return delivery.GitOpsPromotionResult{}, err
 		}
+		resolvedArtifacts, err := resolvePromotionArtifactsForBinding(artifacts, binding)
+		if err != nil {
+			return delivery.GitOpsPromotionResult{}, err
+		}
+		resolvedPrimary := primaryPromotionArtifact(resolvedArtifacts)
+		repository, tag := imageRepositoryTag(resolvedPrimary)
 		valuesPath := manifestPathForBinding(app.Name, env.Name, binding)
-		values, workloadSummary, err := s.renderPromotionValues(ctx, app, env, binding, artifacts, template.Content)
+		values, workloadSummary, err := s.renderPromotionValues(ctx, app, env, binding, resolvedArtifacts, template.Content)
 		if err != nil {
 			return delivery.GitOpsPromotionResult{}, err
 		}
@@ -228,7 +233,7 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 		argo := renderArgoApplication(app, env, binding, valuesPath)
 		files = append(files, CommitFile{Path: valuesPath, Content: values}, CommitFile{Path: argoPath, Content: argo})
 		manifestRevision := ManifestRevision{ID: manifestRevisionID, DeploymentID: deploymentID, PromotionID: spec.PromotionID, ApplicationID: app.ID, EnvironmentID: env.ID, TemplateRevisionID: revision.ID, Path: valuesPath, ChangeType: changeType, CreatedAt: now}
-		deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: env.ID, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: artifact.Digest, WorkloadSummary: workloadSummary, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
+		deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: env.ID, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: resolvedPrimary.Digest, WorkloadSummary: workloadSummary, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
 		records = append(records, targetRecord{binding: binding, deployment: deployment, manifestRevision: manifestRevision, eventID: eventID, valuesPath: valuesPath})
 	}
 	var manifestRef string
@@ -327,6 +332,7 @@ func (s *Service) promotionTargetBindings(ctx context.Context, env EnvironmentRe
 			ClusterID:     target.ClusterID,
 			ClusterName:   strings.TrimSpace(target.ClusterName),
 			Namespace:     strings.TrimSpace(target.Namespace),
+			Labels:        cleanStringMap(target.Labels),
 			Active:        true,
 		})
 	}
@@ -367,11 +373,98 @@ func normalizePromotionArtifacts(spec delivery.GitOpsPromotionSpec) []delivery.G
 				artifact.URI += ":" + artifact.Tag
 			}
 		}
+		artifact.Variants = normalizeImageVariants(artifact.Variants)
 		out = append(out, artifact)
 	}
 	if len(out) == 0 && strings.TrimSpace(spec.ImageURI) != "" {
 		repository, tag := splitImage(spec.ImageURI)
 		out = append(out, delivery.GitOpsArtifactSpec{URI: strings.TrimSpace(spec.ImageURI), Repository: repository, Tag: tag, Digest: strings.TrimSpace(spec.ImageDigest), IsPrimary: true})
+	}
+	return out
+}
+
+func normalizeImageVariants(variants []delivery.GitOpsImageVariant) []delivery.GitOpsImageVariant {
+	out := make([]delivery.GitOpsImageVariant, 0, len(variants))
+	for _, variant := range variants {
+		variant.URI = strings.TrimSpace(variant.URI)
+		variant.Repository = strings.TrimSpace(variant.Repository)
+		variant.Tag = strings.TrimSpace(variant.Tag)
+		variant.Digest = strings.TrimSpace(variant.Digest)
+		if variant.Repository == "" || variant.Tag == "" {
+			repository, tag := splitImage(variant.URI)
+			if variant.Repository == "" {
+				variant.Repository = repository
+			}
+			if variant.Tag == "" {
+				variant.Tag = tag
+			}
+		}
+		if variant.URI == "" && variant.Repository != "" {
+			variant.URI = variant.Repository
+			if variant.Tag != "" {
+				variant.URI += ":" + variant.Tag
+			}
+		}
+		variant.SelectorLabels = cleanStringMap(variant.SelectorLabels)
+		out = append(out, variant)
+	}
+	return out
+}
+
+func resolvePromotionArtifactsForBinding(artifacts []delivery.GitOpsArtifactSpec, binding ClusterBindingRef) ([]delivery.GitOpsArtifactSpec, error) {
+	out := make([]delivery.GitOpsArtifactSpec, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if len(artifact.Variants) == 0 {
+			out = append(out, artifact)
+			continue
+		}
+		matches := make([]delivery.GitOpsImageVariant, 0, 1)
+		for _, variant := range artifact.Variants {
+			if labelsMatch(binding.Labels, variant.SelectorLabels) {
+				matches = append(matches, variant)
+			}
+		}
+		if len(matches) != 1 {
+			return nil, shared.NewError(shared.CodeFailedPrecondition, fmt.Sprintf("image bundle for workload %s does not match target cluster %s uniquely", artifact.WorkloadID, binding.ClusterID))
+		}
+		match := matches[0]
+		artifact.URI = match.URI
+		artifact.Repository = match.Repository
+		artifact.Tag = match.Tag
+		artifact.Digest = match.Digest
+		artifact.Variants = nil
+		out = append(out, artifact)
+	}
+	return out, nil
+}
+
+func labelsMatch(clusterLabels map[string]string, selector map[string]string) bool {
+	if len(selector) == 0 {
+		return len(clusterLabels) == 0
+	}
+	for key, value := range selector {
+		if clusterLabels[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func cleanStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

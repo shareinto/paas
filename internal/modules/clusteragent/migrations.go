@@ -12,6 +12,7 @@ CREATE TABLE clusters (
   tenant_id VARCHAR(64) NOT NULL DEFAULT '',
   name VARCHAR(128) NOT NULL,
   region VARCHAR(128) NOT NULL DEFAULT '',
+  labels_json JSON NULL,
   server_version VARCHAR(64) NOT NULL DEFAULT '',
   status VARCHAR(32) NOT NULL,
   agent_token_hash VARCHAR(255) NOT NULL,
@@ -73,6 +74,21 @@ DROP TABLE IF EXISTS cluster_resource_snapshots;
 DROP TABLE IF EXISTS cluster_heartbeats;
 DROP TABLE IF EXISTS clusters;
 `,
+	},
+	{
+		Version: 202606121402,
+		Name:    "cluster_selector_labels",
+		Up: `
+SET @clusters_labels_missing := (
+  SELECT COUNT(*) = 0 FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'clusters' AND column_name = 'labels_json'
+);
+SET @clusters_labels_ddl := IF(@clusters_labels_missing, 'ALTER TABLE clusters ADD COLUMN labels_json JSON NULL AFTER region', 'SELECT 1');
+PREPARE clusters_labels_stmt FROM @clusters_labels_ddl;
+EXECUTE clusters_labels_stmt;
+DEALLOCATE PREPARE clusters_labels_stmt;
+`,
+		Down: `SELECT 1;`,
 	},
 	{
 		Version: 202606111201,

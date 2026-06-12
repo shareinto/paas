@@ -1,13 +1,15 @@
 export type Tenant = { id: string; name: string; displayName: string; description?: string; updatedAt: string };
 export type Project = { id: string; tenantId: string; name: string; displayName: string; description?: string; tenant: string; owner: string; updatedAt: string };
+export type StringMap = Record<string, string>;
 export type Application = { id: string; name: string; displayName: string; project: string; projectId?: string; description?: string; runtimeEnvironmentId?: string; runtimeEnvironments?: ApplicationRuntimeEnvironment[]; status?: string; type: string; envStatus: string; build: string; release: string; owner: string; updatedAt: string };
-export type ApplicationRuntimeEnvironment = { id: string; name: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string };
+export type ApplicationRuntimeEnvironment = { id: string; name: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string; selectorLabels?: StringMap };
 export type ApplicationSource = { id?: string; key: string; displayName: string; sourceRepositoryId: string; jenkinsTemplateId?: string; buildEnvironmentId?: string; sourcePath: string; defaultRef: string; isPrimary: boolean; buildSpec: { sourcePath: string; buildCommand: string; artifactCopyCommand: string; runtimeBaseImage?: string; artifactDeployPath?: string; defaultRef: string } };
 export type BuildPipelineSource = ApplicationSource & { pipelineId?: string };
 export type BuildPipeline = { id: string; applicationId: string; workloadId?: string; name: string; displayName: string; description?: string; status: string; externalJobName?: string; runtimeEnvironments?: RuntimeEnvironment[]; sources?: BuildPipelineSource[]; updatedAt: string };
 export type BuildRun = { id: string; application: string; pipeline?: string; pipelineId?: string; status: string; ref: string; commit: string; startedAt: string; duration: string };
 export type AuditLog = { id: string; actor: string; action: string; resource: string; result: string; summary: string; time: string };
-export type FreightItem = { id: string; workloadId: string; workloadName: string; workloadDisplayName: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; image: string; digest?: string; commit?: string };
+export type ImageBundleImage = { id: string; imageBundleId: string; buildArtifactId?: string; runtimeEnvironmentId?: string; runtimeEnvironmentName?: string; image: string; digest?: string; selectorLabels?: StringMap; isPrimary?: boolean };
+export type FreightItem = { id: string; workloadId: string; workloadName: string; workloadDisplayName: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageBundleId?: string; bundleImages?: ImageBundleImage[]; image: string; digest?: string; commit?: string };
 export type Freight = { id: string; version: string; image: string; digest: string; commit: string; createdAt: string; items?: FreightItem[] };
 export type WorkloadType = 'deployment' | 'statefulset';
 export type WorkloadImageSourceMode = 'pipeline_artifact' | 'custom_image' | 'mixed' | 'none';
@@ -49,14 +51,14 @@ export type WorkloadEnvironmentConfig = {
   configFiles: WorkloadConfigFile[];
   writableDirs: WorkloadWritableDir[];
 };
-export type ReleaseCandidate = { id: string; workloadId: string; version: string; image: string; digest: string; commit: string; buildArtifactId?: string; createdAt: string };
+export type ReleaseCandidate = { id: string; workloadId: string; version: string; image: string; digest: string; commit: string; buildArtifactId?: string; imageBundleId?: string; bundleImages?: ImageBundleImage[]; createdAt: string };
 export type BuildArtifactCandidate = { id: string; workloadId: string; image: string; digest: string; createdAt: string };
 export type StageDefinition = { id: string; name: 'dev' | 'test' | 'staging' | 'prod'; environmentId: string; approvalRequired?: boolean; approvalCount?: number; approverScope?: string; selfApprovalForbidden?: boolean; currentFreightVersion?: string; replicasSummary?: string; domainSummary?: string; configSummary?: string };
 export type DeliveryFlowTemplateStageStatus = 'enabled' | 'disabled';
 export type DeliveryFlowTemplateStage = { id: string; tenantId: string; templateId: string; stageKey: string; displayName: string; color: string; order: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[] };
 export type DeliveryFlowTemplate = { id: string; tenantId: string; name: string; stages: DeliveryFlowTemplateStage[]; createdAt?: string; updatedAt?: string };
 export type StageClusterBinding = { id: string; tenantId: string; stageKey: string; clusterId: string; clusterName: string; status: 'active' | 'disabled' };
-export type ClusterOption = { id: string; name: string; region: string; status: string };
+export type ClusterOption = { id: string; name: string; region: string; status: string; labels?: StringMap };
 export type AppStage = { tenantId: string; projectId: string; applicationId: string; stageKey: string; displayName: string; color: string; order: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[]; clusterPoolSize: number };
 export type FreightCreationContext = { enabledWorkloads: Workload[]; latestReleasesByWorkload: Record<string, ReleaseCandidate>; latestArtifactsByWorkload: Record<string, BuildArtifactCandidate>; stageEligibility: Record<string, string[]>; stages: StageDefinition[] };
 export type CreateFreightInput = { name: string; items: { workloadId: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageRef?: string }[] };
@@ -70,7 +72,7 @@ export type BuildSpecSuggestion = { sourcePath: string; buildCommand: string; ar
 export type JenkinsJobTemplate = { id: string; name: string; version: number; status: string; isDefault: boolean; jenkinsfileContent?: string; xmlContent?: string; updatedAt: string };
 export type BuildType = JenkinsJobTemplate;
 export type BuildEnvironment = { id: string; name: string; description?: string; buildImage?: string; status: string; isDefault: boolean; updatedAt: string };
-export type RuntimeEnvironment = { id: string; name: string; description?: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string; status: string; isDefault: boolean; updatedAt: string };
+export type RuntimeEnvironment = { id: string; name: string; description?: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string; selectorLabels?: StringMap; status: string; isDefault: boolean; updatedAt: string };
 export type BuildTemplate = { id: string; name: string; version: number; content: string; updatedAt: string };
 
 const wait = (ms = 120) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -90,10 +92,10 @@ const buildEnvironments: BuildEnvironment[] = [
   { id: 'build_env_node22', name: 'node22', buildImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/node:22.14.0-bookworm', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' }
 ];
 const runtimeEnvironments: RuntimeEnvironment[] = [
-  { id: 'runtime_env_springboot_jdk11_aliyun', name: 'springboot-jdk11-aliyun', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', artifactDeployPath: '', dockerfilePath: 'java/jar/Dockerfile', status: 'enabled', isDefault: true, updatedAt: '2026-05-31 10:00' },
-  { id: 'runtime_env_tomcat_jdk11_aliyun', name: 'tomcat-jdk11-aliyun', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis', artifactDeployPath: '', dockerfilePath: 'java/tomcat/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
-  { id: 'runtime_env_tomcat_jdk11_aws', name: 'tomcat-jdk11-aws', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023', artifactDeployPath: '', dockerfilePath: 'java/tomcat/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
-  { id: 'runtime_env_springboot_jdk11_aws', name: 'springboot-jdk11-aws', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023', artifactDeployPath: '', dockerfilePath: 'java/jar/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_springboot_jdk11_aliyun', name: 'springboot-jdk11-aliyun', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', artifactDeployPath: '', dockerfilePath: 'java/jar/Dockerfile', selectorLabels: { cloud: 'aliyun' }, status: 'enabled', isDefault: true, updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_tomcat_jdk11_aliyun', name: 'tomcat-jdk11-aliyun', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis', artifactDeployPath: '', dockerfilePath: 'java/tomcat/Dockerfile', selectorLabels: { cloud: 'aliyun' }, status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_tomcat_jdk11_aws', name: 'tomcat-jdk11-aws', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023', artifactDeployPath: '', dockerfilePath: 'java/tomcat/Dockerfile', selectorLabels: { cloud: 'aws' }, status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_springboot_jdk11_aws', name: 'springboot-jdk11-aws', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023', artifactDeployPath: '', dockerfilePath: 'java/jar/Dockerfile', selectorLabels: { cloud: 'aws' }, status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
   { id: 'runtime_env_nginx1221', name: 'nginx1221', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1', artifactDeployPath: '', dockerfilePath: 'nginx/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' }
 ];
 let buildTemplate: BuildTemplate = {
@@ -139,9 +141,9 @@ let deliveryFlowTemplate: DeliveryFlowTemplate = {
   updatedAt: '2026-06-12 09:00'
 };
 const clusterOptions: ClusterOption[] = [
-  { id: 'cluster_shanghai', name: '上海集群', region: 'cn-shanghai', status: 'ready' },
-  { id: 'cluster_beijing', name: '北京集群', region: 'cn-beijing', status: 'ready' },
-  { id: 'cluster_hangzhou', name: '杭州集群', region: 'cn-hangzhou', status: 'ready' }
+  { id: 'cluster_shanghai', name: '上海集群', region: 'cn-shanghai', status: 'ready', labels: { cloud: 'aliyun' } },
+  { id: 'cluster_beijing', name: '北京集群', region: 'cn-beijing', status: 'ready', labels: { cloud: 'aws' } },
+  { id: 'cluster_hangzhou', name: '杭州集群', region: 'cn-hangzhou', status: 'ready', labels: { cloud: 'aliyun' } }
 ];
 let stageClusterBindings: StageClusterBinding[] = [
   { id: 'stage_binding_dev_shanghai', tenantId: 'tenant_1', stageKey: 'dev', clusterId: 'cluster_shanghai', clusterName: '上海集群', status: 'active' },
@@ -199,10 +201,14 @@ const enabledWorkloads: Workload[] = [
     updatedAt: '2026-06-11 09:04'
   }
 ];
+const imageBundleImages = (workload: 'frontend' | 'api' | 'worker', version: string, digestPrefix: string): ImageBundleImage[] => [
+  { id: `bundle_image_${workload}_${version}_aliyun`, imageBundleId: `image_bundle_${workload}_${version}`, runtimeEnvironmentId: `runtime_env_${workload}_aliyun`, runtimeEnvironmentName: '阿里云基础镜像', image: `registry.local/order-${workload}:${version}-aliyun`, digest: `sha256:${digestPrefix}aliyun`, selectorLabels: { cloud: 'aliyun' }, isPrimary: true },
+  { id: `bundle_image_${workload}_${version}_aws`, imageBundleId: `image_bundle_${workload}_${version}`, runtimeEnvironmentId: `runtime_env_${workload}_aws`, runtimeEnvironmentName: 'AWS 基础镜像', image: `registry.local/order-${workload}:${version}-aws`, digest: `sha256:${digestPrefix}aws`, selectorLabels: { cloud: 'aws' } }
+];
 const latestReleasesByWorkload: Record<string, ReleaseCandidate> = {
-  workload_frontend: { id: 'release_frontend_20260611', workloadId: 'workload_frontend', version: '20260611.1', image: 'registry.local/order-frontend:20260611.1', digest: 'sha256:front111', commit: 'a11b22c', buildArtifactId: 'artifact_frontend_20260611', createdAt: '2026-06-11 09:00' },
-  workload_api: { id: 'release_api_20260611', workloadId: 'workload_api', version: '20260611.1', image: 'registry.local/order-api:20260611.1', digest: 'sha256:api111', commit: 'd33e44f', buildArtifactId: 'artifact_api_20260611', createdAt: '2026-06-11 09:02' },
-  workload_worker: { id: 'release_worker_20260611', workloadId: 'workload_worker', version: '20260611.1', image: 'registry.local/order-worker:20260611.1', digest: 'sha256:worker111', commit: 'g55h66i', buildArtifactId: 'artifact_worker_20260611', createdAt: '2026-06-11 09:04' }
+  workload_frontend: { id: 'release_frontend_20260611', workloadId: 'workload_frontend', version: '20260611.1', image: 'registry.local/order-frontend:20260611.1-aliyun', digest: 'sha256:frontaliyun', commit: 'a11b22c', buildArtifactId: 'artifact_frontend_20260611', imageBundleId: 'image_bundle_frontend_20260611.1', bundleImages: imageBundleImages('frontend', '20260611.1', 'front'), createdAt: '2026-06-11 09:00' },
+  workload_api: { id: 'release_api_20260611', workloadId: 'workload_api', version: '20260611.1', image: 'registry.local/order-api:20260611.1-aliyun', digest: 'sha256:apialiyun', commit: 'd33e44f', buildArtifactId: 'artifact_api_20260611', imageBundleId: 'image_bundle_api_20260611.1', bundleImages: imageBundleImages('api', '20260611.1', 'api'), createdAt: '2026-06-11 09:02' },
+  workload_worker: { id: 'release_worker_20260611', workloadId: 'workload_worker', version: '20260611.1', image: 'registry.local/order-worker:20260611.1-aliyun', digest: 'sha256:workeraliyun', commit: 'g55h66i', buildArtifactId: 'artifact_worker_20260611', imageBundleId: 'image_bundle_worker_20260611.1', bundleImages: imageBundleImages('worker', '20260611.1', 'worker'), createdAt: '2026-06-11 09:04' }
 };
 const latestArtifactsByWorkload: Record<string, BuildArtifactCandidate> = {
   workload_frontend: { id: 'artifact_frontend_20260611', workloadId: 'workload_frontend', image: 'registry.local/order-frontend:20260611.1', digest: 'sha256:front111', createdAt: '2026-06-11 09:00' },
@@ -210,9 +216,9 @@ const latestArtifactsByWorkload: Record<string, BuildArtifactCandidate> = {
   workload_worker: { id: 'artifact_worker_20260611', workloadId: 'workload_worker', image: 'registry.local/order-worker:20260611.1', digest: 'sha256:worker111', createdAt: '2026-06-11 09:04' }
 };
 const freightItems = (version: string): FreightItem[] => [
-  { id: `item_frontend_${version}`, workloadId: 'workload_frontend', workloadName: 'frontend', workloadDisplayName: '前端入口', sourceType: 'pipeline_artifact', releaseId: `release_frontend_${version}`, buildArtifactId: `artifact_frontend_${version}`, image: `registry.local/order-frontend:${version}`, digest: `sha256:front${version.replace(/\D/g, '').slice(-3)}`, commit: 'a11b22c' },
-  { id: `item_api_${version}`, workloadId: 'workload_api', workloadName: 'api', workloadDisplayName: '订单接口', sourceType: 'pipeline_artifact', releaseId: `release_api_${version}`, buildArtifactId: `artifact_api_${version}`, image: `registry.local/order-api:${version}`, digest: `sha256:api${version.replace(/\D/g, '').slice(-3)}`, commit: 'd33e44f' },
-  { id: `item_worker_${version}`, workloadId: 'workload_worker', workloadName: 'worker', workloadDisplayName: '异步任务', sourceType: version === '20260610.1' ? 'custom_image' : 'pipeline_artifact', releaseId: `release_worker_${version}`, buildArtifactId: `artifact_worker_${version}`, image: `registry.local/order-worker:${version}`, digest: `sha256:worker${version.replace(/\D/g, '').slice(-3)}`, commit: 'g55h66i' }
+  { id: `item_frontend_${version}`, workloadId: 'workload_frontend', workloadName: 'frontend', workloadDisplayName: '前端入口', sourceType: 'pipeline_artifact', releaseId: `release_frontend_${version}`, buildArtifactId: `artifact_frontend_${version}`, imageBundleId: `image_bundle_frontend_${version}`, bundleImages: imageBundleImages('frontend', version, `front${version.replace(/\D/g, '').slice(-3)}`), image: `registry.local/order-frontend:${version}-aliyun`, digest: `sha256:front${version.replace(/\D/g, '').slice(-3)}aliyun`, commit: 'a11b22c' },
+  { id: `item_api_${version}`, workloadId: 'workload_api', workloadName: 'api', workloadDisplayName: '订单接口', sourceType: 'pipeline_artifact', releaseId: `release_api_${version}`, buildArtifactId: `artifact_api_${version}`, imageBundleId: `image_bundle_api_${version}`, bundleImages: imageBundleImages('api', version, `api${version.replace(/\D/g, '').slice(-3)}`), image: `registry.local/order-api:${version}-aliyun`, digest: `sha256:api${version.replace(/\D/g, '').slice(-3)}aliyun`, commit: 'd33e44f' },
+  { id: `item_worker_${version}`, workloadId: 'workload_worker', workloadName: 'worker', workloadDisplayName: '异步任务', sourceType: version === '20260610.1' ? 'custom_image' : 'pipeline_artifact', releaseId: `release_worker_${version}`, buildArtifactId: `artifact_worker_${version}`, imageBundleId: version === '20260610.1' ? undefined : `image_bundle_worker_${version}`, bundleImages: version === '20260610.1' ? undefined : imageBundleImages('worker', version, `worker${version.replace(/\D/g, '').slice(-3)}`), image: `registry.local/order-worker:${version}${version === '20260610.1' ? '' : '-aliyun'}`, digest: `sha256:worker${version.replace(/\D/g, '').slice(-3)}${version === '20260610.1' ? '' : 'aliyun'}`, commit: 'g55h66i' }
 ];
 const freights: Freight[] = [
   { id: 'freight_20260611_1', version: '20260611.1', image: '3 个 Workload', digest: '-', commit: 'a11b22c', createdAt: '2026-06-11 09:12', items: freightItems('20260611.1') },
@@ -834,7 +840,7 @@ export async function deleteBuildEnvironment(id: string) {
 export async function createRuntimeEnvironment(input: Partial<RuntimeEnvironment>) {
   await wait();
   if (input.isDefault) runtimeEnvironments.forEach((item) => { item.isDefault = false; });
-  const item: RuntimeEnvironment = { id: `runtime_env_${Date.now()}`, name: input.name || 'custom-runtime', runtimeBaseImage: input.runtimeBaseImage || 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', artifactDeployPath: input.artifactDeployPath || '', dockerfilePath: input.dockerfilePath || 'java/jar/Dockerfile', status: 'enabled', isDefault: !!input.isDefault, updatedAt: '刚刚' };
+  const item: RuntimeEnvironment = { id: `runtime_env_${Date.now()}`, name: input.name || 'custom-runtime', runtimeBaseImage: input.runtimeBaseImage || 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', artifactDeployPath: input.artifactDeployPath || '', dockerfilePath: input.dockerfilePath || 'java/jar/Dockerfile', selectorLabels: input.selectorLabels, status: 'enabled', isDefault: !!input.isDefault, updatedAt: '刚刚' };
   runtimeEnvironments.unshift(item);
   return { ...item };
 }

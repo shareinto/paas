@@ -609,9 +609,13 @@ func (r *MySQLRepository) replaceApplicationRuntimeEnvironments(ctx context.Cont
 		return database.WrapUnavailable(err, "replace application runtime environments failed")
 	}
 	for i, env := range envs {
+		labels, err := database.MarshalJSON(cleanStringMap(env.SelectorLabels))
+		if err != nil {
+			return err
+		}
 		if _, err := exec.ExecContext(ctx, `
-INSERT INTO application_runtime_environments (application_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, position)
-VALUES (?, ?, ?, ?, ?, ?, ?)`, applicationID, env.ID, env.Name, env.RuntimeBaseImage, env.ArtifactDeployPath, env.DockerfilePath, i); err != nil {
+INSERT INTO application_runtime_environments (application_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, selector_labels_json, position)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, applicationID, env.ID, env.Name, env.RuntimeBaseImage, env.ArtifactDeployPath, env.DockerfilePath, labels, i); err != nil {
 			return database.WrapUnavailable(err, "replace application runtime environments failed")
 		}
 	}
@@ -620,7 +624,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`, applicationID, env.ID, env.Name, env.RuntimeBaseI
 
 func (r *MySQLRepository) listApplicationRuntimeEnvironments(ctx context.Context, applicationID shared.ID) ([]ApplicationRuntimeEnvironment, error) {
 	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
-SELECT runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path
+SELECT runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, selector_labels_json
 FROM application_runtime_environments WHERE application_id = ? ORDER BY position ASC, runtime_environment_id ASC`, applicationID)
 	if err != nil {
 		return nil, database.WrapUnavailable(err, "list application runtime environments failed")
@@ -629,9 +633,14 @@ FROM application_runtime_environments WHERE application_id = ? ORDER BY position
 	items := []ApplicationRuntimeEnvironment{}
 	for rows.Next() {
 		var env ApplicationRuntimeEnvironment
-		if err := rows.Scan(&env.ID, &env.Name, &env.RuntimeBaseImage, &env.ArtifactDeployPath, &env.DockerfilePath); err != nil {
+		var labels []byte
+		if err := rows.Scan(&env.ID, &env.Name, &env.RuntimeBaseImage, &env.ArtifactDeployPath, &env.DockerfilePath, &labels); err != nil {
 			return nil, err
 		}
+		if err := database.UnmarshalJSON(labels, &env.SelectorLabels); err != nil {
+			return nil, err
+		}
+		env.SelectorLabels = cleanStringMap(env.SelectorLabels)
 		items = append(items, env)
 	}
 	return items, rows.Err()

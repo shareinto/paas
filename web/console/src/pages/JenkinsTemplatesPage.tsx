@@ -97,13 +97,13 @@ function RuntimeEnvironmentTab() {
   const deleteMutation = useMutation({ mutationFn: deleteRuntimeEnvironment, onSuccess: () => { message.success('运行时环境已删除'); refresh(); }, onError: showError('运行时环境删除失败') });
 
   useEffect(() => {
-    if (editing) editForm.setFieldsValue(editing);
+    if (editing) editForm.setFieldsValue({ ...editing, selectorLabelsText: formatLabels(editing.selectorLabels) });
   }, [editForm, editing]);
 
   return (
     <div className="template-grid">
       <Card className="summary-card" title="新增运行时环境">
-        <Form form={form} layout="vertical" initialValues={defaultRuntimeEnvironmentValues()} onFinish={(values) => createMutation.mutate({ ...values, status: 'enabled' })}>
+        <Form form={form} layout="vertical" initialValues={defaultRuntimeEnvironmentValues()} onFinish={(values) => createMutation.mutate(runtimeEnvironmentFormValues({ ...values, status: 'enabled' }))}>
           <RuntimeEnvironmentFields />
           <Button type="primary" htmlType="submit" loading={createMutation.isPending}>创建运行时环境</Button>
         </Form>
@@ -118,6 +118,7 @@ function RuntimeEnvironmentTab() {
                 {item.isDefault && <Tag color="blue">默认</Tag>}
               </Space>
               <Typography.Text type="secondary">{item.runtimeBaseImage} · {item.artifactDeployPath || '-'} · {item.dockerfilePath || '-'}</Typography.Text>
+              <Space size={[4, 4]} wrap>{labelTags(item.selectorLabels)}</Space>
             </div>
             <Space wrap>
               <Button size="small" icon={<EditOutlined />} onClick={() => setEditing(item)}>编辑</Button>
@@ -129,7 +130,7 @@ function RuntimeEnvironmentTab() {
         )} />
       </Card>
       <Modal title="编辑运行时环境" open={!!editing} okText="保存" cancelText="取消" confirmLoading={updateMutation.isPending} onCancel={() => setEditing(null)} onOk={() => editForm.submit()}>
-        <Form form={editForm} layout="vertical" onFinish={(values) => editing && updateMutation.mutate({ id: editing.id, input: { ...editing, ...values } })}>
+        <Form form={editForm} layout="vertical" onFinish={(values) => editing && updateMutation.mutate({ id: editing.id, input: { ...editing, ...runtimeEnvironmentFormValues(values) } })}>
           <RuntimeEnvironmentFields editing />
         </Form>
       </Modal>
@@ -157,6 +158,7 @@ function RuntimeEnvironmentFields({ editing = false }: { editing?: boolean }) {
       <Form.Item label="运行时镜像" name="runtimeBaseImage" rules={[{ required: true, message: '请输入运行时镜像' }]}><Input /></Form.Item>
       <Form.Item label="产物放置路径" name="artifactDeployPath"><Input /></Form.Item>
       <Form.Item label="Dockerfile路径" name="dockerfilePath"><Input placeholder="java/jar/Dockerfile" /></Form.Item>
+      <Form.Item label="选择标签" name="selectorLabelsText"><Input placeholder="cloud=aliyun, os=anolis" /></Form.Item>
       {editing && <Form.Item label="状态" name="status" rules={[{ required: true, message: '请选择状态' }]}><Select options={STATUS_OPTIONS} /></Form.Item>}
       <Form.Item label="默认环境" name="isDefault" valuePropName="checked"><Switch checkedChildren="是" unCheckedChildren="否" /></Form.Item>
     </>
@@ -334,8 +336,34 @@ function defaultRuntimeEnvironmentValues() {
     runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis',
     artifactDeployPath: '',
     dockerfilePath: 'java/jar/Dockerfile',
+    selectorLabelsText: 'cloud=aliyun',
     isDefault: false
   };
+}
+
+function runtimeEnvironmentFormValues(values: any): Partial<RuntimeEnvironment> {
+  const { selectorLabelsText, ...rest } = values;
+  return { ...rest, selectorLabels: parseLabels(selectorLabelsText) };
+}
+
+function parseLabels(text?: string): Record<string, string> | undefined {
+  const entries = String(text || '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => part.split('='))
+    .map(([key, ...value]) => [key.trim(), value.join('=').trim()] as const)
+    .filter(([key, value]) => key && value);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function formatLabels(labels?: Record<string, string>) {
+  return Object.entries(labels || {}).map(([key, value]) => `${key}=${value}`).join(', ');
+}
+
+function labelTags(labels?: Record<string, string>) {
+  const entries = Object.entries(labels || {});
+  return entries.length > 0 ? entries.map(([key, value]) => <Tag key={key}>{key}={value}</Tag>) : <Tag>无标签</Tag>;
 }
 
 function showError(fallback: string) {
