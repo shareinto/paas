@@ -25,6 +25,10 @@ type StageView = StageDefinition & {
 export function PromotionPage() {
   const { id } = useParams();
   const applicationId = id || DEFAULT_APPLICATION_ID;
+  return <PromotionContent applicationId={applicationId} showHeader />;
+}
+
+export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showHeader = false }: { applicationId?: string; showHeader?: boolean }) {
   const queryClient = useQueryClient();
   const [activeStage, setActiveStage] = useState<StageView | null>(null);
   const [selectedFreight, setSelectedFreight] = useState<Freight | null>(null);
@@ -130,7 +134,8 @@ export function PromotionPage() {
 
   return (
     <>
-      <PageHeader title="发布晋级" extra={contextQuery.isLoading ? null : <Button type="primary" aria-label="创建 Freight" onClick={() => setDrawerOpen(true)}>创建 Freight</Button>} />
+      {showHeader && <PageHeader title="发布晋级" extra={contextQuery.isLoading ? null : <Button type="primary" aria-label="创建 Freight" onClick={() => setDrawerOpen(true)}>创建 Freight</Button>} />}
+      {!showHeader && <div className="embedded-section-head"><Typography.Title level={4}>发布晋级</Typography.Title>{contextQuery.isLoading ? null : <Button type="primary" aria-label="创建 Freight" onClick={() => setDrawerOpen(true)}>创建 Freight</Button>}</div>}
       <Typography.Paragraph type="secondary">按完整 Freight 在 dev、test、staging、prod 中流转。</Typography.Paragraph>
       <DeliveryFlow />
 

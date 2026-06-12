@@ -1,7 +1,7 @@
 import * as mock from './mock';
 import { hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
 
-export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, FreightCreationContext, CreateFreightInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, Environment, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, FreightCreationContext, CreateFreightInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -116,6 +116,12 @@ export async function listBuilds() {
   if (!hasAPIBaseURL()) return mock.listBuilds();
   const data = await request<PageResult<mock.BuildRun>>('/api/builds?page=1&page_size=50');
   return data.items;
+}
+
+export async function listApplicationBuilds(applicationId: string) {
+  if (!hasAPIBaseURL()) return mock.listApplicationBuilds(applicationId);
+  const data = await request<PageResult<any>>(`/api/apps/${encodeURIComponent(applicationId)}/builds?page=1&page_size=50`);
+  return data.items.map(mapBuildRun);
 }
 
 export async function buildLog(buildRunId = DEFAULT_BUILD_RUN_ID) {
@@ -313,6 +319,22 @@ export async function createWorkload(applicationId: string, input: { name: strin
   return mapWorkload(item);
 }
 
+export async function updateWorkload(applicationId: string, workloadId: string, input: { name?: string; displayName: string; description?: string; workloadType?: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode }) {
+  if (!hasAPIBaseURL()) return mock.updateWorkload(applicationId, workloadId, input);
+  const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      actor: { type: 'user', id: 'usr_admin' },
+      name: input.name || '',
+      display_name: input.displayName,
+      description: input.description || '',
+      workload_type: input.workloadType || '',
+      image_source_mode: input.imageSourceMode || ''
+    })
+  });
+  return mapWorkload(item);
+}
+
 export async function deleteWorkload(applicationId: string, workloadId: string) {
   if (!hasAPIBaseURL()) return mock.deleteWorkload(applicationId, workloadId);
   const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}`, {
@@ -326,6 +348,21 @@ export async function listWorkloadEnvironmentConfigs(applicationId: string, work
   if (!hasAPIBaseURL()) return mock.listWorkloadEnvironmentConfigs(applicationId, workloadId);
   const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/environment-configs`);
   return data.items.map(mapWorkloadEnvironmentConfig);
+}
+
+export async function listApplicationEnvironments(applicationId: string) {
+  if (!hasAPIBaseURL()) return mock.listApplicationEnvironments(applicationId);
+  const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/environments`);
+  return data.items.map(mapEnvironment);
+}
+
+export async function saveWorkloadEnvironmentConfig(applicationId: string, workloadId: string, environmentId: string, input: Partial<mock.WorkloadEnvironmentConfig>) {
+  if (!hasAPIBaseURL()) return mock.saveWorkloadEnvironmentConfig(applicationId, workloadId, environmentId, input);
+  const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/environment-configs/${encodeURIComponent(environmentId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(workloadEnvironmentConfigPayload(input))
+  });
+  return mapWorkloadEnvironmentConfig(item);
 }
 
 export async function createPromotion(input: { freightId: string; targetEnvironmentId: string; message?: string }) {
@@ -809,6 +846,16 @@ function mapApplication(item: any): mock.Application {
   };
 }
 
+function mapEnvironment(item: any): mock.Environment {
+  return {
+    id: item.id,
+    applicationId: item.application_id || item.applicationId || '',
+    name: item.name || '',
+    displayName: item.display_name || item.displayName || item.name || '',
+    description: item.description || ''
+  };
+}
+
 function mapWorkload(item: any): mock.Workload {
   const envStatuses = item.env_statuses || item.envStatuses || item.environments || [];
   return {
@@ -868,6 +915,37 @@ function mapWorkloadEnvironmentConfig(item: any): mock.WorkloadEnvironmentConfig
 
 function mapResourceList(value: any): mock.WorkloadResourceList {
   return { cpu: value?.cpu || '', memory: value?.memory || '' };
+}
+
+function workloadEnvironmentConfigPayload(input: Partial<mock.WorkloadEnvironmentConfig>) {
+  return {
+    actor: { type: 'user', id: 'usr_admin' },
+    replicas: input.replicas ?? 1,
+    service_ports: (input.servicePorts || []).map((port) => ({
+      name: port.name,
+      port: port.port,
+      target_port: port.targetPort,
+      protocol: port.protocol || 'TCP'
+    })),
+    resource_requests: input.resourceRequests || {},
+    resource_limits: input.resourceLimits || {},
+    probes: (input.probes || []).map((probe) => ({
+      name: probe.name,
+      type: probe.type,
+      path: probe.path || '',
+      port: probe.port || 0,
+      initial_delay_seconds: probe.initialDelaySeconds || 0
+    })),
+    ingress_hosts: (input.ingressHosts || []).map((host) => ({
+      host: host.host,
+      path: host.path || '/',
+      service_port: host.servicePort || '',
+      tls: !!host.tls
+    })),
+    env_vars: (input.envVars || []).map((env) => ({ name: env.name, value: env.value })),
+    config_files: (input.configFiles || []).map((file) => ({ mount_path: file.mountPath, content: file.content })),
+    writable_dirs: (input.writableDirs || []).map((dir) => ({ mount_path: dir.mountPath, size_limit: dir.sizeLimit || '' }))
+  };
 }
 
 function normalizeWorkloadType(value: string): mock.WorkloadType {

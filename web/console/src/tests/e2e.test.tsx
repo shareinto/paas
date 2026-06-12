@@ -96,7 +96,7 @@ test('应用详情中创建流水线后列表展示新流水线', async () => {
   window.localStorage.setItem('paas_token', 'test');
   useSession.setState({ token: 'test', userName: '测试用户' });
   renderFlow('/apps/app_1');
-  await userEvent.click(await screen.findByRole('tab', { name: '镜像构建' }));
+  await userEvent.click(await screen.findByRole('tab', { name: '构建' }));
   expect(await screen.findByText('主流水线')).toBeInTheDocument();
 
   await userEvent.click(await screen.findByRole('button', { name: /创建流水线/ }));
@@ -106,11 +106,11 @@ test('应用详情中创建流水线后列表展示新流水线', async () => {
   expect(within(dialog).getAllByLabelText('显示名称')[0]).toHaveValue('流水线 2');
   await userEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
 
-  const pipelinePanel = screen.getByText('构建流水线').closest('.ant-card') as HTMLElement;
+  const pipelinePanel = await screen.findByTestId('pipeline-panel');
   expect(await within(pipelinePanel).findByText('流水线 2')).toBeInTheDocument();
 
-  const pipelineRow = within(pipelinePanel).getByText('流水线 2').closest('tr') as HTMLElement;
-  await userEvent.click(within(pipelineRow).getByRole('button', { name: /编\s*辑/ }));
+  const pipelineCard = within(pipelinePanel).getByText('流水线 2').closest('.resource-card') as HTMLElement;
+  await userEvent.click(within(pipelineCard).getByRole('button', { name: /编\s*辑/ }));
   const editDialog = (await screen.findByText('编辑构建流水线')).closest('.ant-modal') as HTMLElement;
   const displayName = within(editDialog).getAllByLabelText('显示名称')[0];
   await userEvent.clear(displayName);
@@ -199,8 +199,8 @@ test('核心控制台页面可以通过 mock API 独立渲染', async () => {
   renderFlow('/apps/app_1');
   expect(await screen.findByRole('heading', { name: '订单服务' })).toBeInTheDocument();
   expect(await screen.findByText('应用标识')).toBeInTheDocument();
-  await userEvent.click(await screen.findByRole('tab', { name: '镜像构建' }));
-  expect(await screen.findByText('构建流水线')).toBeInTheDocument();
+  await userEvent.click(await screen.findByRole('tab', { name: '构建' }));
+  expect(await screen.findByRole('heading', { name: '流水线' })).toBeInTheDocument();
 
   cleanup();
   renderFlow('/builds');

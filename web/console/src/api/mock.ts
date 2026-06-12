@@ -12,6 +12,7 @@ export type Freight = { id: string; version: string; image: string; digest: stri
 export type WorkloadType = 'deployment' | 'statefulset';
 export type WorkloadImageSourceMode = 'pipeline_artifact' | 'custom_image' | 'mixed' | 'none';
 export type WorkloadEnvironmentStatus = { envName: string; releaseVersion: string; syncStatus: string; healthStatus: string };
+export type Environment = { id: string; applicationId: string; name: string; displayName: string; description?: string };
 export type Workload = {
   id: string;
   applicationId: string;
@@ -110,6 +111,14 @@ const promotionStages: StageDefinition[] = [
   { id: 'stage_staging', name: 'staging', environmentId: 'env_staging', currentFreightVersion: '20260609.1', replicasSummary: '2 / 2 / 1', domainSummary: 'staging-order.example.com', configSummary: 'staging values' },
   { id: 'stage_prod', name: 'prod', environmentId: 'env_prod', approvalRequired: true, approvalCount: 2, approverScope: '生产审批人', selfApprovalForbidden: true, currentFreightVersion: '20260609.1', replicasSummary: '2 / 4 / 2', domainSummary: 'order.example.com', configSummary: 'prod values' }
 ];
+const environments: Record<string, Environment[]> = {
+  app_1: [
+    { id: 'env_dev', applicationId: 'app_1', name: 'dev', displayName: '开发环境' },
+    { id: 'env_test', applicationId: 'app_1', name: 'test', displayName: '测试环境' },
+    { id: 'env_staging', applicationId: 'app_1', name: 'staging', displayName: '预发环境' },
+    { id: 'env_prod', applicationId: 'app_1', name: 'prod', displayName: '生产环境' }
+  ]
+};
 const enabledWorkloads: Workload[] = [
   {
     id: 'workload_frontend',
@@ -379,9 +388,14 @@ export async function deleteApplication(id: string) {
 export async function listBuilds(): Promise<BuildRun[]> {
   await wait();
   return [
-    { id: 'build_128', application: '订单服务', status: '成功', ref: 'main', commit: '8c1a09f', startedAt: '2026-05-30 10:01', duration: '3 分 12 秒' },
-    { id: 'build_127', application: '订单服务', status: '失败', ref: 'main', commit: '61b9120', startedAt: '2026-05-29 16:40', duration: '2 分 03 秒' }
+    { id: 'build_128', application: '订单服务', pipeline: '主流水线', pipelineId: 'pipeline_1', status: '成功', ref: 'main', commit: '8c1a09f', startedAt: '2026-05-30 10:01', duration: '3 分 12 秒' },
+    { id: 'build_127', application: '订单服务', pipeline: '主流水线', pipelineId: 'pipeline_1', status: '失败', ref: 'main', commit: '61b9120', startedAt: '2026-05-29 16:40', duration: '2 分 03 秒' },
+    { id: 'build_worker_1', application: '订单服务', pipeline: '任务流水线', pipelineId: 'pipeline_worker', status: '成功', ref: 'main', commit: '9f0a12b', startedAt: '2026-05-28 14:20', duration: '4 分 01 秒' }
   ];
+}
+
+export async function listApplicationBuilds(_applicationId: string): Promise<BuildRun[]> {
+  return listBuilds();
 }
 
 export async function buildLog() {
@@ -500,6 +514,20 @@ export async function createWorkload(applicationId: string, input: { name: strin
   return cloneWorkload(workload);
 }
 
+export async function updateWorkload(applicationId: string, workloadId: string, input: { name?: string; displayName: string; description?: string; workloadType?: WorkloadType; imageSourceMode?: WorkloadImageSourceMode }) {
+  await wait();
+  const workload = (workloads[applicationId] || []).find((item) => item.id === workloadId);
+  if (!workload || workload.status === 'deleted') throw new Error('Workload 不存在');
+  workload.name = input.name || workload.name;
+  workload.displayName = input.displayName || workload.name;
+  workload.description = input.description || '';
+  workload.workloadType = input.workloadType || workload.workloadType;
+  workload.imageSourceMode = input.imageSourceMode || workload.imageSourceMode;
+  workload.imageSourceName = workload.imageSourceMode === 'custom_image' ? '发布时选择自定义镜像' : workload.imageSourceName || '流水线产物';
+  workload.updatedAt = '刚刚';
+  return cloneWorkload(workload);
+}
+
 export async function deleteWorkload(applicationId: string, workloadId: string): Promise<Workload> {
   await wait();
   const workload = (workloads[applicationId] || []).find((item) => item.id === workloadId);
@@ -512,6 +540,34 @@ export async function deleteWorkload(applicationId: string, workloadId: string):
 export async function listWorkloadEnvironmentConfigs(_applicationId: string, workloadId: string): Promise<WorkloadEnvironmentConfig[]> {
   await wait();
   return (workloadEnvironmentConfigs[workloadId] || []).map(cloneWorkloadEnvironmentConfig);
+}
+
+export async function listApplicationEnvironments(applicationId: string): Promise<Environment[]> {
+  await wait();
+  return (environments[applicationId] || []).map((item) => ({ ...item }));
+}
+
+export async function saveWorkloadEnvironmentConfig(_applicationId: string, workloadId: string, environmentId: string, input: Partial<WorkloadEnvironmentConfig>) {
+  await wait();
+  const current = workloadEnvironmentConfigs[workloadId] || [];
+  const env = Object.values(environments).flat().find((item) => item.id === environmentId);
+  const next: WorkloadEnvironmentConfig = {
+    id: current.find((item) => item.environmentId === environmentId)?.id || `workload_env_config_${workloadId}_${environmentId}`,
+    workloadId,
+    environmentId,
+    envName: env?.name || environmentId,
+    replicas: input.replicas ?? 1,
+    servicePorts: input.servicePorts || [],
+    resourceRequests: input.resourceRequests || {},
+    resourceLimits: input.resourceLimits || {},
+    probes: input.probes || [],
+    ingressHosts: input.ingressHosts || [],
+    envVars: input.envVars || [],
+    configFiles: input.configFiles || [],
+    writableDirs: input.writableDirs || []
+  };
+  workloadEnvironmentConfigs[workloadId] = [next, ...current.filter((item) => item.environmentId !== environmentId)];
+  return cloneWorkloadEnvironmentConfig(next);
 }
 
 export async function listSourceRepositories(projectId?: string): Promise<SourceRepository[]> {

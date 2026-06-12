@@ -153,22 +153,24 @@ type SetEnvironmentSecretInput struct {
 }
 
 type CreateWorkloadInput struct {
-	Actor         identityaccess.Subject `json:"actor"`
-	ApplicationID shared.ID              `json:"application_id"`
-	Name          string                 `json:"name"`
-	DisplayName   string                 `json:"display_name"`
-	WorkloadType  WorkloadType           `json:"workload_type"`
-	Description   string                 `json:"description"`
+	Actor           identityaccess.Subject `json:"actor"`
+	ApplicationID   shared.ID              `json:"application_id"`
+	Name            string                 `json:"name"`
+	DisplayName     string                 `json:"display_name"`
+	WorkloadType    WorkloadType           `json:"workload_type"`
+	Description     string                 `json:"description"`
+	ImageSourceMode string                 `json:"image_source_mode"`
 }
 
 type UpdateWorkloadInput struct {
-	Actor         identityaccess.Subject `json:"actor"`
-	ApplicationID shared.ID              `json:"application_id"`
-	WorkloadID    shared.ID              `json:"workload_id"`
-	Name          string                 `json:"name"`
-	DisplayName   string                 `json:"display_name"`
-	WorkloadType  WorkloadType           `json:"workload_type"`
-	Description   string                 `json:"description"`
+	Actor           identityaccess.Subject `json:"actor"`
+	ApplicationID   shared.ID              `json:"application_id"`
+	WorkloadID      shared.ID              `json:"workload_id"`
+	Name            string                 `json:"name"`
+	DisplayName     string                 `json:"display_name"`
+	WorkloadType    WorkloadType           `json:"workload_type"`
+	Description     string                 `json:"description"`
+	ImageSourceMode string                 `json:"image_source_mode"`
 }
 
 type WorkloadStatusInput struct {
@@ -550,6 +552,10 @@ func (s *Service) CreateWorkload(ctx context.Context, input CreateWorkloadInput)
 	if err := validateWorkloadType(workloadType); err != nil {
 		return Workload{}, err
 	}
+	imageSourceMode, err := normalizeWorkloadImageSourceMode(input.ImageSourceMode)
+	if err != nil {
+		return Workload{}, err
+	}
 	if _, err := s.repo.FindWorkloadByApplicationAndName(ctx, app.ID, name); err == nil {
 		return Workload{}, shared.NewError(shared.CodeConflict, "workload name already exists in application")
 	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
@@ -570,7 +576,7 @@ func (s *Service) CreateWorkload(ctx context.Context, input CreateWorkloadInput)
 		WorkloadType:    workloadType,
 		Description:     strings.TrimSpace(input.Description),
 		Status:          WorkloadStatusEnabled,
-		ImageSourceMode: "pipeline_artifact",
+		ImageSourceMode: imageSourceMode,
 		CreatedBy:       input.Actor.ID,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -607,6 +613,13 @@ func (s *Service) UpdateWorkload(ctx context.Context, input UpdateWorkloadInput)
 	if err := validateWorkloadType(workloadType); err != nil {
 		return Workload{}, err
 	}
+	imageSourceMode := workload.ImageSourceMode
+	if strings.TrimSpace(input.ImageSourceMode) != "" {
+		imageSourceMode, err = normalizeWorkloadImageSourceMode(input.ImageSourceMode)
+		if err != nil {
+			return Workload{}, err
+		}
+	}
 	if name != workload.Name {
 		if existing, err := s.repo.FindWorkloadByApplicationAndName(ctx, workload.ApplicationID, name); err == nil && existing.ID != workload.ID {
 			return Workload{}, shared.NewError(shared.CodeConflict, "workload name already exists in application")
@@ -618,6 +631,7 @@ func (s *Service) UpdateWorkload(ctx context.Context, input UpdateWorkloadInput)
 	workload.DisplayName = normalizeDisplayName(input.DisplayName, name)
 	workload.Description = strings.TrimSpace(input.Description)
 	workload.WorkloadType = workloadType
+	workload.ImageSourceMode = imageSourceMode
 	workload.UpdatedAt = s.clock.Now()
 	if err := s.repo.UpdateWorkload(ctx, workload); err != nil {
 		return Workload{}, err
