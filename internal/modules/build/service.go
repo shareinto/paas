@@ -1239,12 +1239,34 @@ func (s *Service) CancelBuild(ctx context.Context, actor identityaccess.Subject,
 	if err != nil {
 		return BuildRun{}, err
 	}
+	runner := s.runnerOrError()
+	now := s.clock.Now()
+	if run.JenkinsBuildNumber == 0 && run.JenkinsQueueID != "" {
+		queue, err := runner.GetQueueItem(ctx, run.JenkinsQueueID)
+		if err != nil {
+			return BuildRun{}, err
+		}
+		switch {
+		case queue.Canceled:
+			run.Status = BuildRunAborted
+			run.FinishedAt = &now
+		case queue.BuildNumber > 0:
+			run.JenkinsBuildNumber = queue.BuildNumber
+			run.Status = BuildRunRunning
+			if run.StartedAt == nil {
+				run.StartedAt = &now
+			}
+		default:
+			if err := runner.CancelQueueItem(ctx, run.JenkinsQueueID); err != nil {
+				return BuildRun{}, err
+			}
+		}
+	}
 	if run.JenkinsBuildNumber > 0 {
-		if err := s.runnerOrError().CancelBuild(ctx, pipeline.ExternalJobName, run.JenkinsBuildNumber); err != nil {
+		if err := runner.CancelBuild(ctx, pipeline.ExternalJobName, run.JenkinsBuildNumber); err != nil {
 			return BuildRun{}, err
 		}
 	}
-	now := s.clock.Now()
 	run.Status = BuildRunAborted
 	run.FinishedAt = &now
 	run.UpdatedAt = now
@@ -2792,5 +2814,9 @@ func (failingRunner) ProgressiveText(context.Context, string, int64, int64) (Pro
 }
 
 func (failingRunner) CancelBuild(context.Context, string, int64) error {
+	return shared.NewError(shared.CodeFailedPrecondition, "build runner port is required")
+}
+
+func (failingRunner) CancelQueueItem(context.Context, string) error {
 	return shared.NewError(shared.CodeFailedPrecondition, "build runner port is required")
 }

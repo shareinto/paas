@@ -15,6 +15,7 @@ import (
 )
 
 func TestAdapterTriggerQueueLogAndCancel(t *testing.T) {
+	var canceledQueueID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.EscapedPath()
 		switch {
@@ -37,6 +38,9 @@ func TestAdapterTriggerQueueLogAndCancel(t *testing.T) {
 			w.Header().Set("X-More-Data", "false")
 			_, _ = w.Write([]byte("token=secret build ok"))
 		case r.Method == http.MethodPost && path == "/job/paas/job/order/9/stop":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && path == "/queue/cancelItem":
+			canceledQueueID = r.URL.Query().Get("id")
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && path == "/job/paas/job/order/doDelete":
 			w.WriteHeader(http.StatusOK)
@@ -70,6 +74,12 @@ func TestAdapterTriggerQueueLogAndCancel(t *testing.T) {
 	}
 	if err := adapter.CancelBuild(context.Background(), "paas/order", item.BuildNumber); err != nil {
 		t.Fatalf("cancel: %v", err)
+	}
+	if err := adapter.CancelQueueItem(context.Background(), server.URL+"/queue/item/1"); err != nil {
+		t.Fatalf("cancel queue: %v", err)
+	}
+	if canceledQueueID != "1" {
+		t.Fatalf("queue cancel should send parsed queue id, got %q", canceledQueueID)
 	}
 	if err := adapter.DeleteJob(context.Background(), "paas/order"); err != nil {
 		t.Fatalf("delete job: %v", err)
@@ -148,7 +158,10 @@ func TestJenkinsFakeAdapterFollowsPortContract(t *testing.T) {
 	if err := fake.CancelBuild(context.Background(), "paas/order", 1); err != nil {
 		t.Fatalf("fake cancel: %v", err)
 	}
-	if len(fake.Jobs) != 1 || len(fake.DeletedJobs) != 1 || len(fake.Triggers) != 1 || fake.CancelCalls != 1 {
+	if err := fake.CancelQueueItem(context.Background(), "queue_fake"); err != nil {
+		t.Fatalf("fake queue cancel: %v", err)
+	}
+	if len(fake.Jobs) != 1 || len(fake.DeletedJobs) != 1 || len(fake.Triggers) != 1 || fake.CancelCalls != 1 || fake.CancelQueueCalls != 1 {
 		t.Fatalf("fake calls not recorded: %#v", fake)
 	}
 }
@@ -233,6 +246,9 @@ func TestJenkinsAdapterReturnsRequestConstructionErrors(t *testing.T) {
 	}
 	if err := adapter.CancelBuild(context.Background(), "paas/order", 1); err == nil {
 		t.Fatalf("cancel should fail on invalid base URL")
+	}
+	if err := adapter.CancelQueueItem(context.Background(), "http://[::1"); err == nil {
+		t.Fatalf("queue cancel should fail on invalid queue URL")
 	}
 }
 

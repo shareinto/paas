@@ -7,12 +7,13 @@ import (
 )
 
 type FakeAdapter struct {
-	Jobs        []build.BuildJobSpec
-	DeletedJobs []string
-	Triggers    []map[string]string
-	Logs        map[int64]build.ProgressiveText
-	Statuses    map[int64]build.BuildStatus
-	CancelCalls int
+	Jobs             []build.BuildJobSpec
+	DeletedJobs      []string
+	Triggers         []map[string]string
+	Logs             map[int64]build.ProgressiveText
+	Statuses         map[int64]build.BuildStatus
+	CancelCalls      int
+	CancelQueueCalls int
 }
 
 func (f *FakeAdapter) EnsureJob(_ context.Context, spec build.BuildJobSpec) error {
@@ -44,5 +45,9 @@ func (f *FakeAdapter) ProgressiveText(_ context.Context, _ string, buildNumber i
 }
 func (f *FakeAdapter) CancelBuild(context.Context, string, int64) error {
 	f.CancelCalls++
+	return nil
+}
+func (f *FakeAdapter) CancelQueueItem(context.Context, string) error {
+	f.CancelQueueCalls++
 	return nil
 }

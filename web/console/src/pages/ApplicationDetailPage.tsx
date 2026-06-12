@@ -1,15 +1,15 @@
-import { DeleteOutlined, EditOutlined, HistoryOutlined, PlusOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlusOutlined, PlayCircleOutlined, StopOutlined } from '@ant-design/icons';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Badge, Button, Card, Descriptions, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Segmented, Space, Spin, Steps, Tabs, Tag, Typography, message } from 'antd';
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   createBuildPipeline,
   createWorkload,
+  cancelBuild,
   deleteBuildPipeline,
   deleteWorkload,
   getApplication,
-  buildLog,
   listApplicationBuilds,
   listApplicationEnvironments,
   listBuildEnvironments,
@@ -31,6 +31,7 @@ import {
   type WorkloadImageSourceMode,
   type WorkloadType
 } from '../api';
+import { BuildLogViewer } from '../components/BuildLogViewer';
 import { PageHeader } from '../components/PageHeader';
 import { PromotionContent } from './PromotionPage';
 
@@ -368,7 +369,6 @@ function valuesPreview(workload: Workload | null, config?: WorkloadEnvironmentCo
 
 function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onPipelineChanged, onPipelineDeleted }: { applicationId: string; projectId?: string; localPipelines?: BuildPipeline[]; onPipelineChanged?: (pipeline: BuildPipeline) => void; onPipelineDeleted?: (pipelineId: string) => void }) {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const [createOpen, setCreateOpen] = useState(false);
   const [editingPipeline, setEditingPipeline] = useState<BuildPipeline | null>(null);
   const [historyPipeline, setHistoryPipeline] = useState<BuildPipeline | null>(null);
@@ -376,11 +376,6 @@ function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onP
   const { data: workloads = EMPTY_LIST } = useQuery({ queryKey: ['workloads', applicationId, 'pipeline-cards'], queryFn: () => listWorkloads(applicationId), enabled: !!applicationId });
   const workloadNameById = Object.fromEntries((workloads as Workload[]).map((item) => [item.id, item.displayName || item.name]));
   const visiblePipelines = mergePipelines(localPipelines, pipelines as BuildPipeline[]);
-  const triggerMutation = useMutation({
-    mutationFn: (pipeline: BuildPipeline) => triggerBuildPipeline(pipeline.id, { gitRef: pipeline.sources?.[0]?.defaultRef || 'main' }),
-    onSuccess: (run) => navigate(`/builds/${run.id}`),
-    onError: (error) => message.error(error instanceof Error ? error.message : '触发构建失败')
-  });
   const deleteMutation = useMutation({
     mutationFn: deleteBuildPipeline,
     onSuccess: (_, pipelineId) => {
@@ -419,8 +414,7 @@ function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onP
                 <MetaItem label="更新时间" value={item.updatedAt || '-'} />
               </div>
               <div className="resource-card-actions">
-                <Button icon={<PlayCircleOutlined />} loading={triggerMutation.isPending} onClick={() => triggerMutation.mutate(item)}>触发构建</Button>
-                <Button icon={<HistoryOutlined />} onClick={() => setHistoryPipeline(item)}>历史</Button>
+                <Button icon={<PlayCircleOutlined />} onClick={() => setHistoryPipeline(item)}>触发构建</Button>
                 <Button icon={<EditOutlined />} onClick={() => setEditingPipeline(item)}>编辑</Button>
                 <Button danger icon={<DeleteOutlined />} loading={deleteMutation.isPending} onClick={() => deleteMutation.mutate(item.id)}>删除</Button>
               </div>
@@ -455,8 +449,10 @@ function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onP
 }
 
 function BuildHistoryModal({ applicationId, pipeline, onClose }: { applicationId: string; pipeline: BuildPipeline | null; onClose: () => void }) {
+  const queryClient = useQueryClient();
   const [selectedBuild, setSelectedBuild] = useState<BuildRun | null>(null);
-  const { data: builds = EMPTY_LIST, isLoading } = useQuery({ queryKey: ['application-builds', applicationId, pipeline?.id], queryFn: () => listApplicationBuilds(applicationId), enabled: !!pipeline });
+  const buildsQueryKey = ['application-builds', applicationId, pipeline?.id];
+  const { data: builds = EMPTY_LIST, isLoading } = useQuery({ queryKey: buildsQueryKey, queryFn: () => listApplicationBuilds(applicationId), enabled: !!pipeline });
   const filteredBuilds = ((builds as BuildRun[]) || [])
     .filter((build) => !pipeline || build.pipelineId === pipeline.id)
     .map((build, index) => ({ build, index }))
@@ -465,31 +461,118 @@ function BuildHistoryModal({ applicationId, pipeline, onClose }: { applicationId
       return timeDelta || left.index - right.index;
     })
     .map((item) => item.build);
-  const { data: logText = '', isLoading: logLoading } = useQuery({ queryKey: ['build-log', selectedBuild?.id], queryFn: () => buildLog(selectedBuild!.id), enabled: !!selectedBuild });
+  const activeBuild = filteredBuilds.find(isUnfinishedBuild);
+  const triggerMutation = useMutation({
+    mutationFn: () => triggerBuildPipeline(pipeline!.id, { gitRef: pipeline?.sources?.[0]?.defaultRef || 'main' }),
+    onSuccess: (run) => {
+      setSelectedBuild(run);
+      queryClient.setQueryData<BuildRun[]>(buildsQueryKey, (current = []) => [run, ...current.filter((item) => item.id !== run.id)]);
+      queryClient.invalidateQueries({ queryKey: buildsQueryKey });
+      message.success('构建已触发');
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '触发构建失败')
+  });
+  const cancelMutation = useMutation({
+    mutationFn: (buildRunId: string) => cancelBuild(buildRunId),
+    onSuccess: (run) => {
+      setSelectedBuild(run);
+      queryClient.setQueryData<BuildRun[]>(buildsQueryKey, (current = []) => current.map((item) => item.id === run.id ? run : item));
+      queryClient.invalidateQueries({ queryKey: buildsQueryKey });
+      message.success('构建已取消');
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '取消构建失败')
+  });
+  const updateBuildStatusFromStream = useCallback((buildRunId: string, status: string) => {
+    const displayStatus = buildStatusFromStream(status);
+    if (!displayStatus) return;
+    const patchBuild = (build: BuildRun) => build.id === buildRunId ? { ...build, status: displayStatus } : build;
+    setSelectedBuild((current) => current?.id === buildRunId ? patchBuild(current) : current);
+    queryClient.setQueryData<BuildRun[]>(buildsQueryKey, (current = []) => current.map(patchBuild));
+  }, [buildsQueryKey, queryClient]);
 
   useEffect(() => {
     setSelectedBuild(null);
   }, [pipeline?.id]);
 
+  useEffect(() => {
+    if (selectedBuild || filteredBuilds.length === 0) return;
+    setSelectedBuild(filteredBuilds[0]);
+  }, [filteredBuilds, selectedBuild]);
+
   return (
-    <Modal title={`${pipeline?.displayName || pipeline?.name || ''} 构建历史`} open={!!pipeline} onCancel={onClose} width={860} footer={<Button onClick={onClose}>关闭</Button>} destroyOnHidden>
-      {isLoading ? <Spin /> : filteredBuilds.length === 0 ? <Empty description="暂无构建记录" /> : (
+    <Modal title={`${pipeline?.displayName || pipeline?.name || ''} 构建历史`} open={!!pipeline} onCancel={onClose} width={1180} footer={<Button onClick={onClose}>关闭</Button>} destroyOnHidden>
+      <div className="build-history-modal-toolbar">
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>历史构建</Typography.Text>
+          <Typography.Text type="secondary">{activeBuild ? '当前有未完成构建，完成或取消后可再次触发。' : '可直接触发新的流水线构建。'}</Typography.Text>
+        </Space>
+        <Button
+          type="primary"
+          aria-label="触发构建"
+          icon={<PlayCircleOutlined />}
+          disabled={!!activeBuild}
+          loading={triggerMutation.isPending}
+          onClick={() => triggerMutation.mutate()}
+        >
+          触发构建
+        </Button>
+      </div>
+      {isLoading ? <Spin /> : filteredBuilds.length === 0 ? (
+        <div className="build-history-empty">
+          <Empty description="暂无构建记录" />
+          <BuildLogViewer />
+        </div>
+      ) : (
         <div className="build-history-layout">
           <div className="build-history-list">
             <Typography.Text strong>构建时间</Typography.Text>
             {filteredBuilds.map((build, index) => (
               <button key={build.id} type="button" className={selectedBuild?.id === build.id ? 'build-history-item active' : 'build-history-item'} onClick={() => setSelectedBuild(build)}>
-                <span>构建 {index + 1}</span>
+                <span>构建 {filteredBuilds.length - index}</span>
                 <span>{build.startedAt}</span>
-                <Tag color={build.status === '成功' ? 'green' : build.status === '失败' ? 'red' : 'blue'}>{build.status}</Tag>
+                <Tag color={buildStatusColor(build.status)}>{build.status}</Tag>
               </button>
             ))}
           </div>
-          <pre className="build-log-preview">{selectedBuild ? (logLoading ? '日志读取中...' : logText) : '请选择一条构建记录查看日志。'}</pre>
+          <div className="build-history-log-panel">
+            <div className="build-history-log-actions">
+              <Space>
+                {selectedBuild && <Tag color={buildStatusColor(selectedBuild.status)}>{selectedBuild.status}</Tag>}
+                {selectedBuild && isUnfinishedBuild(selectedBuild) && (
+                  <Button danger icon={<StopOutlined />} loading={cancelMutation.isPending} onClick={() => cancelMutation.mutate(selectedBuild.id)}>取消构建</Button>
+                )}
+              </Space>
+            </div>
+            <BuildLogViewer buildRunId={selectedBuild?.id} onStatusChange={(status) => selectedBuild?.id && updateBuildStatusFromStream(selectedBuild.id, status)} />
+          </div>
         </div>
       )}
     </Modal>
   );
+}
+
+function isUnfinishedBuild(build: BuildRun) {
+  return ['构建中', '排队中', '运行中', 'queued', 'running'].includes(build.status);
+}
+
+function buildStatusColor(status: string) {
+  if (['成功', 'succeeded'].includes(status)) return 'green';
+  if (['失败', 'failed'].includes(status)) return 'red';
+  if (['已取消', '已中止', 'aborted'].includes(status)) return 'default';
+  if (['不稳定', 'unstable'].includes(status)) return 'orange';
+  return 'blue';
+}
+
+function buildStatusFromStream(status: string) {
+  const map: Record<string, string> = {
+    queued: '构建中',
+    running: '构建中',
+    succeeded: '成功',
+    failed: '失败',
+    aborted: '已取消',
+    unstable: '不稳定'
+  };
+  return map[status] || '';
 }
 
 function buildStartedAtValue(value?: string) {

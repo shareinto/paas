@@ -11,8 +11,6 @@ import { EditApplicationPage } from '../pages/EditApplicationPage';
 import { ApplicationDetailPage } from '../pages/ApplicationDetailPage';
 import { SourceRepositoriesPage } from '../pages/SourceRepositoriesPage';
 import { SourceRepositoryDetailPage } from '../pages/SourceRepositoryDetailPage';
-import { BuildDetailPage } from '../pages/BuildDetailPage';
-import { BuildsPage } from '../pages/BuildsPage';
 import { FreightsPage } from '../pages/FreightsPage';
 import { PromotionPage } from '../pages/PromotionPage';
 import { AuditPage } from '../pages/AuditPage';
@@ -41,8 +39,6 @@ export function App() {
         <Route path="apps/:id/edit" element={<EditApplicationPage />} />
         <Route path="apps/:id/promotions" element={<PromotionPage />} />
         <Route path="apps/:id" element={<ApplicationDetailPage />} />
-        <Route path="builds" element={<BuildsPage />} />
-        <Route path="builds/:id" element={<BuildDetailPage />} />
         <Route path="freights" element={<FreightsPage />} />
         <Route path="promotions" element={<Navigate to="/apps" replace />} />
         <Route path="audit" element={<AuditPage />} />

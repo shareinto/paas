@@ -114,8 +114,8 @@ export async function deleteApplication(id: string) {
 
 export async function listBuilds() {
   if (!hasAPIBaseURL()) return mock.listBuilds();
-  const data = await request<PageResult<mock.BuildRun>>('/api/builds?page=1&page_size=50');
-  return data.items;
+  const data = await request<PageResult<any>>('/api/builds?page=1&page_size=50');
+  return data.items.map(mapBuildRun);
 }
 
 export async function listApplicationBuilds(applicationId: string) {
@@ -127,6 +127,15 @@ export async function listApplicationBuilds(applicationId: string) {
 export async function buildLog(buildRunId = DEFAULT_BUILD_RUN_ID) {
   if (!hasAPIBaseURL()) return mock.buildLog();
   return parseSSELog(await requestText(`/api/builds/${encodeURIComponent(buildRunId)}/logs/stream`));
+}
+
+export async function cancelBuild(buildRunId: string) {
+  if (!hasAPIBaseURL()) return mock.cancelBuild(buildRunId);
+  const item = await request<any>(`/api/builds/${encodeURIComponent(buildRunId)}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' } })
+  });
+  return mapBuildRun(item);
 }
 
 export function streamBuildLog(buildRunId: string, onLog: (text: string) => void, onStatus?: (status: string) => void) {
@@ -1107,7 +1116,7 @@ function mapBuildRun(item: any): mock.BuildRun {
 }
 
 function buildStatusText(status: string) {
-  const map: Record<string, string> = { queued: '排队中', running: '运行中', succeeded: '成功', failed: '失败', aborted: '已中止', unstable: '不稳定', unknown: '未知' };
+  const map: Record<string, string> = { queued: '构建中', running: '构建中', succeeded: '成功', failed: '失败', aborted: '已取消', unstable: '不稳定', unknown: '未知' };
   return map[status] || status || '-';
 }
 

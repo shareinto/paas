@@ -194,6 +194,39 @@ func (a *Adapter) CancelBuild(ctx context.Context, jobName string, buildNumber i
 	return a.do(req, nil)
 }
 
+func (a *Adapter) CancelQueueItem(ctx context.Context, queueID string) error {
+	id, err := queueItemID(queueID)
+	if err != nil {
+		return err
+	}
+	req, err := a.request(ctx, http.MethodPost, "/queue/cancelItem?id="+url.QueryEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	return a.do(req, nil)
+}
+
+func queueItemID(queueID string) (string, error) {
+	value := strings.TrimSpace(queueID)
+	if value == "" {
+		return "", shared.NewError(shared.CodeInvalidArgument, "jenkins queue id is required")
+	}
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		parsed, err := url.Parse(value)
+		if err != nil {
+			return "", err
+		}
+		value = parsed.Path
+	}
+	value = strings.Trim(value, "/")
+	parts := strings.Split(value, "/")
+	id := strings.TrimSpace(parts[len(parts)-1])
+	if id == "" {
+		return "", shared.NewError(shared.CodeInvalidArgument, "jenkins queue id is required")
+	}
+	return id, nil
+}
+
 func jobSegments(jobName string) []string {
 	parts := strings.Split(strings.Trim(jobName, "/"), "/")
 	out := make([]string, 0, len(parts))

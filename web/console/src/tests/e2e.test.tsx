@@ -165,9 +165,14 @@ test('构建管理支持编辑构建环境和运行时环境', async () => {
 test('核心交付路径包含构建日志、版本、晋级审批、回滚和审计', async () => {
   window.localStorage.setItem('paas_token', 'test');
   useSession.setState({ token: 'test', userName: '测试用户' });
-  renderFlow('/builds/build_128');
-  expect(await screen.findByText('实时日志')).toBeInTheDocument();
-  expect(await screen.findByText(/构建并推送镜像/)).toBeInTheDocument();
+  renderFlow('/apps/app_1');
+  const pipelinePanel = await screen.findByTestId('pipeline-panel');
+  const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
+  await userEvent.click(within(pipelineCard).getByRole('button', { name: /触发构建/ }));
+  const buildDialog = await screen.findByRole('dialog', { name: /构建历史/ });
+  await userEvent.click(await within(buildDialog).findByText('构建 2'));
+  expect(await within(buildDialog).findByText('实时日志')).toBeInTheDocument();
+  expect(await within(buildDialog).findByText(/构建并推送镜像/)).toBeInTheDocument();
 
   cleanup();
   renderFlow('/freights');
@@ -201,11 +206,6 @@ test('核心控制台页面可以通过 mock API 独立渲染', async () => {
   expect(await screen.findByText('应用标识')).toBeInTheDocument();
   await userEvent.click(await screen.findByRole('tab', { name: '构建' }));
   expect(await screen.findByRole('heading', { name: '流水线' })).toBeInTheDocument();
-
-  cleanup();
-  renderFlow('/builds');
-  expect(await screen.findByRole('heading', { name: '构建' })).toBeInTheDocument();
-  expect(await screen.findByText('build_128')).toBeInTheDocument();
 
   cleanup();
   renderFlow('/templates');

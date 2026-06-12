@@ -590,6 +590,22 @@ func TestScopeCoversAndPermissionAllows(t *testing.T) {
 	if PermissionAllows("build:read", "build:create") {
 		t.Fatalf("different action should not allow")
 	}
+	roles := BuiltInRoles()
+	if !roleHasPermission(roles[RoleDeveloper], "build:cancel") {
+		t.Fatalf("developer should be allowed to cancel builds")
+	}
+	if roleHasPermission(Role{Permissions: []Permission{"build:read"}}, "build:cancel") {
+		t.Fatalf("build:read should not allow build cancel")
+	}
+}
+
+func roleHasPermission(role Role, required Permission) bool {
+	for _, granted := range role.Permissions {
+		if PermissionAllows(granted, required) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRepositoryListUsersAndConflictPaths(t *testing.T) {
