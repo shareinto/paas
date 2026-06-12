@@ -132,6 +132,7 @@ type BuildRunnerPort interface {
 	GetBuildStatus(ctx context.Context, jobName string, buildNumber int64) (BuildStatus, error)
 	ProgressiveText(ctx context.Context, jobName string, buildNumber int64, offset int64) (ProgressiveText, error)
 	CancelBuild(ctx context.Context, jobName string, buildNumber int64) error
+	CancelQueueItem(ctx context.Context, queueID string) error
 }
 
 type BuildJobSpec struct {

@@ -85,18 +85,20 @@ func (q fakeWorkloadQuery) ListEnabledWorkloads(_ context.Context, applicationID
 }
 
 type fakeRunner struct {
-	jobs        []BuildJobSpec
-	deletedJobs []string
-	triggers    []map[string]string
-	triggerErr  error
-	jobErr      error
-	queue       BuildQueueItem
-	queueItems  map[string]BuildQueueItem
-	statuses    map[int64]BuildStatus
-	logs        []ProgressiveText
-	logErr      error
-	cancelCalls []int64
-	cancelErr   error
+	jobs             []BuildJobSpec
+	deletedJobs      []string
+	triggers         []map[string]string
+	triggerErr       error
+	jobErr           error
+	queue            BuildQueueItem
+	queueItems       map[string]BuildQueueItem
+	statuses         map[int64]BuildStatus
+	logs             []ProgressiveText
+	logErr           error
+	cancelCalls      []int64
+	cancelErr        error
+	cancelQueueCalls []string
+	cancelQueueErr   error
 }
 
 func (r *fakeRunner) EnsureJob(_ context.Context, spec BuildJobSpec) error {
@@ -147,6 +149,11 @@ func (r *fakeRunner) ProgressiveText(_ context.Context, _ string, _ int64, _ int
 func (r *fakeRunner) CancelBuild(_ context.Context, _ string, buildNumber int64) error {
 	r.cancelCalls = append(r.cancelCalls, buildNumber)
 	return r.cancelErr
+}
+
+func (r *fakeRunner) CancelQueueItem(_ context.Context, queueID string) error {
+	r.cancelQueueCalls = append(r.cancelQueueCalls, queueID)
+	return r.cancelQueueErr
 }
 
 type recordingPermission struct {
@@ -1369,6 +1376,57 @@ func TestBuildCallbackDrainsFinalLogsBeforeTerminalStatus(t *testing.T) {
 	}
 }
 
+func TestCancelQueuedBuildCancelsJenkinsQueueItem(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	env.runner.queue = BuildQueueItem{QueueID: "queue-pending"}
+	pipeline := createDefaultPipeline(t, env)
+	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
+	if err != nil {
+		t.Fatalf("TriggerBuild() error = %v", err)
+	}
+
+	canceled, err := env.svc.CancelBuild(ctx, buildActor(), run.ID)
+	if err != nil {
+		t.Fatalf("CancelBuild() error = %v", err)
+	}
+	if canceled.Status != BuildRunAborted || canceled.FinishedAt == nil {
+		t.Fatalf("queued cancel should abort run, got %+v", canceled)
+	}
+	if len(env.runner.cancelQueueCalls) != 1 || env.runner.cancelQueueCalls[0] != "queue-pending" {
+		t.Fatalf("expected queued item to be canceled, calls=%+v", env.runner.cancelQueueCalls)
+	}
+	if len(env.runner.cancelCalls) != 0 {
+		t.Fatalf("queued item without build number should not stop build, calls=%+v", env.runner.cancelCalls)
+	}
+}
+
+func TestCancelQueuedBuildSyncsStartedQueueItemBeforeStoppingBuild(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	env.runner.queue = BuildQueueItem{QueueID: "queue-started"}
+	env.runner.queueItems["queue-started"] = BuildQueueItem{QueueID: "queue-started", Started: true, BuildNumber: 55}
+	pipeline := createDefaultPipeline(t, env)
+	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
+	if err != nil {
+		t.Fatalf("TriggerBuild() error = %v", err)
+	}
+
+	canceled, err := env.svc.CancelBuild(ctx, buildActor(), run.ID)
+	if err != nil {
+		t.Fatalf("CancelBuild() error = %v", err)
+	}
+	if canceled.Status != BuildRunAborted || canceled.JenkinsBuildNumber != 55 {
+		t.Fatalf("started queued cancel should persist build number and abort run, got %+v", canceled)
+	}
+	if len(env.runner.cancelCalls) != 1 || env.runner.cancelCalls[0] != 55 {
+		t.Fatalf("expected started queue item to stop Jenkins build, calls=%+v", env.runner.cancelCalls)
+	}
+	if len(env.runner.cancelQueueCalls) != 0 {
+		t.Fatalf("started queue item should not call queue cancel, calls=%+v", env.runner.cancelQueueCalls)
+	}
+}
+
 func TestTerminalBuildLogStreamWaitsForJenkinsLogCompletion(t *testing.T) {
 	env := newBuildTestEnv(t)
 	ctx := context.Background()
@@ -1505,6 +1563,9 @@ func TestHelpersAndNoopAdapters(t *testing.T) {
 	}
 	if err := runner.CancelBuild(ctx, "", 1); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("failing cancel should fail, got %v", err)
+	}
+	if err := runner.CancelQueueItem(ctx, "q"); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("failing queue cancel should fail, got %v", err)
 	}
 }
 

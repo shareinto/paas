@@ -105,6 +105,11 @@ const applications: Application[] = [
 const applicationSources: Record<string, ApplicationSource[]> = {
   app_1: [{ id: 'app_source_1', key: 'main', displayName: '主代码源', sourceRepositoryId: 'repo_1', buildEnvironmentId: 'build_env_java_springboot', sourcePath: 'services/order-api', defaultRef: 'main', isPrimary: true, buildSpec: { sourcePath: 'services/order-api', buildCommand: 'mvn clean package -DskipTests', artifactCopyCommand: 'cp -ar target/order-api.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"', defaultRef: 'main' } }]
 };
+let buildRuns: BuildRun[] = [
+  { id: 'build_128', application: '订单服务', pipeline: '主流水线', pipelineId: 'pipeline_1', status: '成功', ref: 'main', commit: '8c1a09f', startedAt: '2026-05-30 10:01', duration: '3 分 12 秒' },
+  { id: 'build_127', application: '订单服务', pipeline: '主流水线', pipelineId: 'pipeline_1', status: '失败', ref: 'main', commit: '61b9120', startedAt: '2026-05-29 16:40', duration: '2 分 03 秒' },
+  { id: 'build_worker_1', application: '订单服务', pipeline: '任务流水线', pipelineId: 'pipeline_worker', status: '成功', ref: 'main', commit: '9f0a12b', startedAt: '2026-05-28 14:20', duration: '4 分 01 秒' }
+];
 const promotionStages: StageDefinition[] = [
   { id: 'stage_dev', name: 'dev', environmentId: 'env_dev', currentFreightVersion: '20260611.1', replicasSummary: '1 / 1 / 1', domainSummary: 'dev-order.example.com', configSummary: 'dev values' },
   { id: 'stage_test', name: 'test', environmentId: 'env_test', currentFreightVersion: '20260610.1', replicasSummary: '1 / 1 / 1', domainSummary: 'test-order.example.com', configSummary: 'test values' },
@@ -387,11 +392,7 @@ export async function deleteApplication(id: string) {
 
 export async function listBuilds(): Promise<BuildRun[]> {
   await wait();
-  return [
-    { id: 'build_128', application: '订单服务', pipeline: '主流水线', pipelineId: 'pipeline_1', status: '成功', ref: 'main', commit: '8c1a09f', startedAt: '2026-05-30 10:01', duration: '3 分 12 秒' },
-    { id: 'build_127', application: '订单服务', pipeline: '主流水线', pipelineId: 'pipeline_1', status: '失败', ref: 'main', commit: '61b9120', startedAt: '2026-05-29 16:40', duration: '2 分 03 秒' },
-    { id: 'build_worker_1', application: '订单服务', pipeline: '任务流水线', pipelineId: 'pipeline_worker', status: '成功', ref: 'main', commit: '9f0a12b', startedAt: '2026-05-28 14:20', duration: '4 分 01 秒' }
-  ];
+  return buildRuns.map((item) => ({ ...item }));
 }
 
 export async function listApplicationBuilds(_applicationId: string): Promise<BuildRun[]> {
@@ -407,6 +408,14 @@ export async function buildLog() {
     '[INFO] 构建并推送镜像 registry.local/order-api:v1.8.2',
     '[INFO] 回调 PaaS 控制面完成'
   ].join('\n');
+}
+
+export async function cancelBuild(buildRunId: string) {
+  await wait();
+  const index = buildRuns.findIndex((item) => item.id === buildRunId);
+  if (index < 0) throw new Error('构建记录不存在');
+  buildRuns[index] = { ...buildRuns[index], status: '已取消', duration: buildRuns[index].duration || '-' };
+  return { ...buildRuns[index] };
 }
 
 export async function listAuditLogs(): Promise<AuditLog[]> {
@@ -877,7 +886,9 @@ export async function triggerBuildPipeline(pipelineId: string, input: { gitRef?:
   await wait();
   const pipeline = Object.values(buildPipelines).flat().find((item) => item.id === pipelineId);
   if (!pipeline) throw new Error('流水线不存在');
-  return { id: `build_${Date.now()}`, application: pipeline.applicationId, pipeline: pipeline.displayName, pipelineId, status: '排队中', ref: input.gitRef || pipeline.sources?.[0]?.defaultRef || 'main', commit: input.commitSha || '', startedAt: '刚刚', duration: '-' };
+  const run: BuildRun = { id: `build_${Date.now()}`, application: pipeline.applicationId, pipeline: pipeline.displayName, pipelineId, status: '构建中', ref: input.gitRef || pipeline.sources?.[0]?.defaultRef || 'main', commit: input.commitSha || '', startedAt: '刚刚', duration: '-' };
+  buildRuns = [run, ...buildRuns];
+  return { ...run };
 }
 
 export async function triggerBuild(applicationId: string, input: { gitRef?: string }) {

@@ -42,9 +42,10 @@ test('真实 API 分支使用 VITE_API_BASE_URL', async () => {
     if (url.endsWith('/api/tenants/tenant_2') && init?.method === 'PATCH') return new Response(JSON.stringify({ id: 'tenant_2', name: 'ops', display_name: '平台运维', description: '统一运维租户', updated_at: '2026-05-30T11:00:00Z' }), { status: 200 });
     if (url.endsWith('/api/projects?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'project_1' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
     if (url.endsWith('/api/applications?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'app_1' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
-    if (url.endsWith('/api/builds?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'build_1' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
+    if (url.endsWith('/api/builds?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'build_1', status: 'queued' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
     if (url.endsWith('/api/builds/build_128/logs/stream')) return new Response('日志', { status: 200 });
     if (url.endsWith('/api/builds/build_129/logs/stream')) return new Response('新日志', { status: 200 });
+    if (url.endsWith('/api/builds/build_130/cancel') && init?.method === 'POST') return new Response(JSON.stringify({ id: 'build_130', status: 'aborted' }), { status: 200 });
     if (url.endsWith('/api/audit/logs?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'audit_1', actor_id: 'usr_1', action: 'promotion.approve', resource_type: 'promotion', resource_id: 'promotion_1', result: 'succeeded', summary: '审批通过', occurred_at: '2026-05-30T10:00:00Z' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
     if (url.endsWith('/api/apps/app_1/freights?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'freight_1', name: 'v1.0.0', image_uri: 'registry.local/app:v1.0.0', image_digest: 'sha256:abc', commit_sha: 'abc123', created_at: '2026-05-30T10:00:00Z' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
     if (url.endsWith('/api/apps/app_2/freights?page=1&page_size=50')) return new Response(JSON.stringify({ items: [{ id: 'freight_2', name: 'v2.0.0', uri: 'registry.local/app:v2.0.0', digest: 'sha256:def', created_at: '2026-05-31T10:00:00Z' }], total: 1, page: 1, page_size: 50 }), { status: 200 });
@@ -59,9 +60,10 @@ test('真实 API 分支使用 VITE_API_BASE_URL', async () => {
   await expect(api.updateTenant('tenant_2', { displayName: '平台运维', description: '统一运维租户' })).resolves.toMatchObject({ id: 'tenant_2', displayName: '平台运维', description: '统一运维租户' });
   await expect(api.listProjects()).resolves.toEqual([{ id: 'project_1' }]);
   await expect(api.listApplications()).resolves.toMatchObject([{ id: 'app_1' }]);
-  await expect(api.listBuilds()).resolves.toEqual([{ id: 'build_1' }]);
+  await expect(api.listBuilds()).resolves.toMatchObject([{ id: 'build_1', status: '构建中' }]);
   await expect(api.buildLog()).resolves.toBe('日志');
   await expect(api.buildLog('build_129')).resolves.toBe('新日志');
+  await expect(api.cancelBuild('build_130')).resolves.toMatchObject({ id: 'build_130', status: '已取消' });
   await expect(api.listAuditLogs()).resolves.toMatchObject([{ id: 'audit_1', actor: 'usr_1', action: 'promotion.approve', resource: 'promotion promotion_1', result: '成功', summary: '审批通过' }]);
   await expect(api.listFreights()).resolves.toMatchObject([{ id: 'freight_1', version: 'v1.0.0', image: 'registry.local/app:v1.0.0', digest: 'sha256:abc', commit: 'abc123' }]);
   await expect(api.listFreights('app_2')).resolves.toMatchObject([{ id: 'freight_2', version: 'v2.0.0', image: 'registry.local/app:v2.0.0', digest: 'sha256:def', commit: '-' }]);

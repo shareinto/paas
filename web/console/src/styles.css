@@ -161,17 +161,30 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 .resource-meta-item > div { min-width: 0; color: var(--text); font-size: 13px; }
 .workload-env-status { min-height: 24px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .resource-card-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
-.build-history-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 14px; min-height: 360px; }
-.build-history-list { display: grid; align-content: start; gap: 8px; }
+.build-history-modal-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
+.build-history-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; height: min(560px, calc(100vh - 260px)); min-height: 360px; overflow: hidden; }
+.build-history-empty { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 14px; height: min(560px, calc(100vh - 260px)); min-height: 360px; overflow: hidden; }
+.build-history-list { min-height: 0; overflow: auto; display: grid; align-content: start; gap: 8px; padding-right: 2px; }
 .build-history-item { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 9px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: #fff; text-align: left; cursor: pointer; }
 .build-history-item.active, .build-history-item:hover { border-color: #8eb8ff; background: #eef5ff; }
-.build-log-preview { min-height: 360px; margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: #0f172a; color: #e5e7eb; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+.build-history-log-panel { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; }
+.build-history-log-actions { min-height: 32px; display: flex; justify-content: flex-end; align-items: center; }
 .build-detail-summary { margin-bottom: 10px; }
 .build-log-card { height: calc(100vh - 210px); min-height: 520px; display: flex; flex-direction: column; }
 .build-log-card .ant-card-body { flex: 1; min-height: 0; padding: 0; display: flex; }
+.build-log-viewer { height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: #07111f; }
+.build-log-toolbar { flex: 0 0 auto; min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); background: #fff; }
+.build-log-toolbar .ant-input-affix-wrapper { width: 180px; }
 .build-log-body { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #07111f; border-radius: 0 0 var(--radius) var(--radius); overflow: hidden; }
 .build-log-truncated-tip { flex: 0 0 auto; min-height: 34px; display: flex; align-items: center; padding: 7px 20px; background: #0d1b2e; color: #b7c7dc; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 12px; }
-.terminal-log { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 18px 20px; background: #07111f; color: #c7f9cc; border-radius: 0 0 var(--radius) var(--radius); line-height: 1.65; border: 0; white-space: pre-wrap; }
+.terminal-log { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 18px 20px; background: #07111f; color: #c7f9cc; border-radius: 0 0 var(--radius) var(--radius); line-height: 1.65; border: 0; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+.terminal-log-line { display: inline; }
+.log-color-red { color: #ff8a8a; }
+.log-color-yellow { color: #ffd166; }
+.log-color-green { color: #74e39a; }
+.log-color-blue { color: #9cc9ff; }
+.log-color-magenta { color: #f0abfc; }
+.log-color-cyan { color: #67e8f9; }
 .template-grid { display: grid; grid-template-columns: minmax(520px, 1.35fr) minmax(320px, 0.65fr); gap: 16px; }
 .groovy-template-editor { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: #fff; }
 .groovy-template-editor:focus-within { border-color: #8eb8ff; box-shadow: 0 0 0 2px rgba(21, 91, 212, 0.08); }

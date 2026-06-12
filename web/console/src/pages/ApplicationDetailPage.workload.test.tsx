@@ -58,7 +58,8 @@ test('应用详情只展示构建和部署两个页签并默认进入构建', as
   expect(within(pipelineCard).getByText('绑定 Workload')).toBeInTheDocument();
   expect(within(pipelineCard).getByText('代码源')).toBeInTheDocument();
   expect(within(pipelineCard).getByText('运行时环境')).toBeInTheDocument();
-  expect(within(pipelineCard).getByRole('button', { name: /历史/ })).toBeInTheDocument();
+  expect(within(pipelineCard).getByRole('button', { name: /触发构建/ })).toBeInTheDocument();
+  expect(within(pipelineCard).queryByRole('button', { name: /历史/ })).not.toBeInTheDocument();
 });
 
 test('部署页签嵌入发布晋级内容且保留旧路由兼容', async () => {
@@ -70,18 +71,19 @@ test('部署页签嵌入发布晋级内容且保留旧路由兼容', async () =>
   expect(screen.getByTestId('promotion-confirm-panel')).toBeInTheDocument();
 });
 
-test('流水线历史弹窗按序号展示构建并可查看日志', async () => {
+test('流水线构建弹窗按倒序号展示构建并可查看日志', async () => {
   renderPage();
 
   const pipelinePanel = await screen.findByTestId('pipeline-panel');
   const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
-  await userEvent.click(within(pipelineCard).getByRole('button', { name: /历史/ }));
+  await userEvent.click(within(pipelineCard).getByRole('button', { name: /触发构建/ }));
 
   const dialog = await screen.findByRole('dialog', { name: /构建历史/ });
-  expect(await within(dialog).findByText('构建 1')).toBeInTheDocument();
+  expect(await within(dialog).findByRole('button', { name: /触发构建/ })).toBeInTheDocument();
+  expect(await within(dialog).findByText('构建 2')).toBeInTheDocument();
   expect(within(dialog).getByText('构建时间')).toBeInTheDocument();
   expect(within(dialog).queryByText(/build_/)).not.toBeInTheDocument();
-  await userEvent.click(within(dialog).getByText('构建 1'));
+  await userEvent.click(within(dialog).getByText('构建 2'));
   expect(await within(dialog).findByText(/\[INFO\] 检出平台托管源码仓库/)).toBeInTheDocument();
 });
 
