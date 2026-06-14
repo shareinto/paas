@@ -1,5 +1,5 @@
 import * as mock from './mock';
-import { hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
+import { APIError, hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
 
 export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, Environment, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, AppStage, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
@@ -451,20 +451,21 @@ export async function saveWorkloadDefaultConfig(applicationId: string, workloadI
   return mapWorkloadEnvironmentConfig(item);
 }
 
-export async function createPromotion(input: mock.CreatePromotionInput) {
+export async function createPromotion(input: mock.CreatePromotionInput, applicationId?: string, stageId?: string) {
   if (!hasAPIBaseURL()) return mock.createPromotion(input);
-  return request<any>('/api/promotions', {
+  const options = {
     method: 'POST',
-    body: JSON.stringify({
-      actor: { type: 'user', id: 'usr_admin' },
-      freight_id: input.freightId,
-      target_environment_id: input.targetEnvironmentId || '',
-      target_stage_key: input.targetStageKey || '',
-      target_cluster_ids: input.targetClusterIds || [],
-      namespace_override: input.namespaceOverride || '',
-      message: input.message || ''
-    })
-  });
+    body: JSON.stringify(promotionPayload(input))
+  };
+  const path = applicationId && stageId
+    ? `/api/apps/${encodeURIComponent(applicationId)}/delivery/stages/${encodeURIComponent(stageId)}/promotions`
+    : '/api/promotions';
+  try {
+    return await request<any>(path, options);
+  } catch (error) {
+    if (!applicationId || !stageId || !isRouteNotFound(error)) throw error;
+    return request<any>('/api/promotions', options);
+  }
 }
 
 export async function completeFreightApproval(freightId: string, input: mock.FreightApprovalInput) {
@@ -814,6 +815,22 @@ function applicationPayload(input: { displayName: string; description?: string; 
     description: input.description || '',
     disabled: !!input.disabled
   };
+}
+
+function promotionPayload(input: mock.CreatePromotionInput) {
+  return {
+    actor: { type: 'user', id: 'usr_admin' },
+    freight_id: input.freightId,
+    target_environment_id: input.targetEnvironmentId || '',
+    target_stage_key: input.targetStageKey || '',
+    target_cluster_ids: input.targetClusterIds || [],
+    namespace_override: input.namespaceOverride || '',
+    message: input.message || ''
+  };
+}
+
+function isRouteNotFound(error: unknown) {
+  return error instanceof APIError && error.status === 404 && error.code === 'request_failed';
 }
 
 function formatTime(value?: string) {

@@ -32,6 +32,7 @@ type ManifestRepositoryPort interface {
 	CommitFiles(ctx context.Context, spec CommitSpec) (CommitResult, error)
 	CreateMergeRequest(ctx context.Context, spec MergeRequestSpec) (MergeRequestResult, error)
 	GetMergeRequest(ctx context.Context, mrID string) (MergeRequest, error)
+	CreateTag(ctx context.Context, name string, ref string) (TagResult, error)
 }
 
 type CommitFile struct {
@@ -40,9 +41,10 @@ type CommitFile struct {
 }
 
 type CommitSpec struct {
-	Branch  string
-	Message string
-	Files   []CommitFile
+	Branch      string
+	StartBranch string
+	Message     string
+	Files       []CommitFile
 }
 
 type CommitResult struct {
@@ -67,6 +69,11 @@ type MergeRequest struct {
 	State  string
 	WebURL string
 	Merged bool
+}
+
+type TagResult struct {
+	Name string
+	Ref  string
 }
 
 type ApplicationQuery interface {

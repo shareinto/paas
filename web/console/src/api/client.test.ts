@@ -32,6 +32,12 @@ test('request 映射后端错误响应', async () => {
   await expect(request('/api/fail')).rejects.toMatchObject({ code: 'invalid_argument', message: '参数错误' });
 });
 
+test('request 将非 JSON 错误响应映射为标准错误', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('404 page not found', { status: 404 })));
+  const { request } = await import('./client');
+  await expect(request('/api/missing')).rejects.toMatchObject({ code: 'request_failed', message: '请求处理失败' });
+});
+
 test('真实 API 分支使用 VITE_API_BASE_URL', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {

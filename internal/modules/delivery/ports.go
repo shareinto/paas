@@ -59,10 +59,11 @@ type Repository interface {
 }
 
 type ApplicationRef struct {
-	ID        shared.ID
-	TenantID  shared.ID
-	ProjectID shared.ID
-	Name      string
+	ID          shared.ID
+	TenantID    shared.ID
+	ProjectID   shared.ID
+	ProjectName string
+	Name        string
 }
 
 type EnvironmentRef struct {
@@ -84,6 +85,7 @@ type BuildRunRef struct {
 	PipelineName        string
 	PipelineDisplayName string
 	CommitSHA           string
+	Status              string
 }
 
 type BuildArtifactRef struct {
@@ -115,6 +117,7 @@ type WorkloadQuery interface {
 
 type BuildQuery interface {
 	GetBuildRun(ctx context.Context, id shared.ID) (BuildRunRef, error)
+	ListBuildRuns(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[BuildRunRef], error)
 	GetBuildArtifact(ctx context.Context, id shared.ID) (BuildArtifactRef, error)
 	ListBuildArtifacts(ctx context.Context, buildRunID shared.ID) ([]BuildArtifactRef, error)
 }

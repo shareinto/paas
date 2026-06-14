@@ -12,11 +12,12 @@ type FakeManifestRepository struct {
 	Files      map[string]string
 	Commits    []CommitSpec
 	MRs        []MergeRequestSpec
+	Tags       map[string]string
 	nextCommit int
 }
 
 func NewFakeManifestRepository() *FakeManifestRepository {
-	return &FakeManifestRepository{Files: map[string]string{}}
+	return &FakeManifestRepository{Files: map[string]string{}, Tags: map[string]string{}}
 }
 
 func (r *FakeManifestRepository) ReadFile(_ context.Context, path string, _ string) (string, error) {
@@ -54,4 +55,17 @@ func (r *FakeManifestRepository) CreateMergeRequest(_ context.Context, spec Merg
 
 func (r *FakeManifestRepository) GetMergeRequest(_ context.Context, mrID string) (MergeRequest, error) {
 	return MergeRequest{ID: mrID, State: "opened", WebURL: "https://gitlab.example/" + mrID}, nil
+}
+
+func (r *FakeManifestRepository) CreateTag(_ context.Context, name string, ref string) (TagResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.Tags == nil {
+		r.Tags = map[string]string{}
+	}
+	if existing := r.Tags[name]; existing != "" {
+		return TagResult{Name: name, Ref: existing}, nil
+	}
+	r.Tags[name] = ref
+	return TagResult{Name: name, Ref: ref}, nil
 }

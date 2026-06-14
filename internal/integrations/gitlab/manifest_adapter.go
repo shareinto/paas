@@ -3,10 +3,12 @@ package gitlab
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/url"
 
 	"github.com/shareinto/paas/internal/modules/gitops"
+	"github.com/shareinto/paas/internal/shared"
 )
 
 type ManifestRepositoryAdapter struct {
@@ -43,12 +45,24 @@ func (a *ManifestRepositoryAdapter) ReadFile(ctx context.Context, path string, r
 func (a *ManifestRepositoryAdapter) CommitFiles(ctx context.Context, spec gitops.CommitSpec) (gitops.CommitResult, error) {
 	actions := make([]map[string]string, 0, len(spec.Files))
 	for _, file := range spec.Files {
-		actions = append(actions, map[string]string{"action": "update", "file_path": file.Path, "content": file.Content})
+		action := "update"
+		ref := firstNonEmpty(spec.StartBranch, spec.Branch, "main")
+		if _, err := a.ReadFile(ctx, file.Path, ref); err != nil {
+			if shared.CodeOf(err) != shared.CodeNotFound {
+				return gitops.CommitResult{}, err
+			}
+			action = "create"
+		}
+		actions = append(actions, map[string]string{"action": action, "file_path": file.Path, "content": file.Content})
 	}
 	var out struct {
 		ID string `json:"id"`
 	}
-	req, err := a.client.newRequest(http.MethodPost, "/api/v4/projects/"+url.PathEscape(a.projectID)+"/repository/commits", map[string]any{"branch": spec.Branch, "commit_message": spec.Message, "actions": actions})
+	body := map[string]any{"branch": spec.Branch, "commit_message": spec.Message, "actions": actions}
+	if spec.StartBranch != "" {
+		body["start_branch"] = spec.StartBranch
+	}
+	req, err := a.client.newRequest(http.MethodPost, "/api/v4/projects/"+url.PathEscape(a.projectID)+"/repository/commits", body)
 	if err != nil {
 		return gitops.CommitResult{}, err
 	}
@@ -59,7 +73,7 @@ func (a *ManifestRepositoryAdapter) CommitFiles(ctx context.Context, spec gitops
 }
 
 func (a *ManifestRepositoryAdapter) CreateMergeRequest(ctx context.Context, spec gitops.MergeRequestSpec) (gitops.MergeRequestResult, error) {
-	if _, err := a.CommitFiles(ctx, gitops.CommitSpec{Branch: spec.SourceBranch, Message: spec.Title, Files: spec.Files}); err != nil {
+	if _, err := a.CommitFiles(ctx, gitops.CommitSpec{Branch: spec.SourceBranch, StartBranch: spec.TargetBranch, Message: spec.Title, Files: spec.Files}); err != nil {
 		return gitops.MergeRequestResult{}, err
 	}
 	var out struct {
@@ -91,6 +105,29 @@ func (a *ManifestRepositoryAdapter) GetMergeRequest(ctx context.Context, mrID st
 		return gitops.MergeRequest{}, err
 	}
 	return gitops.MergeRequest{ID: strconvFormat(out.IID), State: out.State, WebURL: out.WebURL, Merged: out.State == "merged"}, nil
+}
+
+func (a *ManifestRepositoryAdapter) CreateTag(ctx context.Context, name string, ref string) (gitops.TagResult, error) {
+	var out struct {
+		Name   string `json:"name"`
+		Target string `json:"target"`
+	}
+	req, err := a.client.newRequest(http.MethodPost, "/api/v4/projects/"+url.PathEscape(a.projectID)+"/repository/tags", map[string]any{"tag_name": name, "ref": ref})
+	if err != nil {
+		return gitops.TagResult{}, err
+	}
+	if err := decodeResponseFromClient(ctx, a.client, req, &out); err != nil {
+		if isAlreadyExistsError(err) || isConflict(err) {
+			return gitops.TagResult{Name: name, Ref: ref}, nil
+		}
+		return gitops.TagResult{}, err
+	}
+	return gitops.TagResult{Name: firstNonEmpty(out.Name, name), Ref: firstNonEmpty(out.Target, ref)}, nil
+}
+
+func isConflict(err error) bool {
+	var appErr *shared.AppError
+	return errors.As(err, &appErr) && appErr.Code == shared.CodeConflict
 }
 
 func decodeResponseFromClient(ctx context.Context, client *Client, req *http.Request, target any) error {

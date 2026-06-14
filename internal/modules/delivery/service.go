@@ -230,9 +230,6 @@ func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceed
 		}
 	}
 	primary := primaryArtifact(artifacts)
-	if strings.TrimSpace(primary.Digest) == "" || strings.TrimSpace(run.CommitSHA) == "" {
-		return Release{}, shared.NewError(shared.CodeFailedPrecondition, "pipeline artifact requires digest and commit")
-	}
 	releases := make([]Release, 0, len(workloadIDs))
 	for _, workloadID := range uniqueIDs(workloadIDs) {
 		if workloadID.IsZero() {
@@ -340,7 +337,9 @@ func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInpu
 	if strings.TrimSpace(input.TargetStageKey) != "" {
 		app, env, stage, targetClusters, err = s.validateStagePromotionTarget(ctx, freight.ApplicationID, normalizeStageKey(input.TargetStageKey), input.TargetClusterIDs, input.NamespaceOverride)
 		stageKey = normalizeStageKey(input.TargetStageKey)
-		namespaceOverride = strings.TrimSpace(input.NamespaceOverride)
+		if strings.TrimSpace(input.NamespaceOverride) != "" {
+			namespaceOverride = normalizeKubernetesNamespace(input.NamespaceOverride)
+		}
 	}
 	if err != nil {
 		return Promotion{}, err
@@ -946,6 +945,9 @@ func (s *Service) GetFreightCreationContext(ctx context.Context, applicationID s
 	if err != nil {
 		return FreightCreationContext{}, err
 	}
+	if err := s.backfillMissingReleasesFromSucceededBuilds(ctx, applicationID, workloads); err != nil {
+		return FreightCreationContext{}, err
+	}
 	releases, err := s.repo.ListReleasesByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
 	if err != nil {
 		return FreightCreationContext{}, err
@@ -989,13 +991,64 @@ func (s *Service) GetFreightCreationContext(ctx context.Context, applicationID s
 	return ctxOut, nil
 }
 
+func (s *Service) backfillMissingReleasesFromSucceededBuilds(ctx context.Context, applicationID shared.ID, workloads []WorkloadRef) error {
+	if len(workloads) == 0 {
+		return nil
+	}
+	builds := s.buildsOrError()
+	runs, err := builds.ListBuildRuns(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 100})
+	if err != nil {
+		if shared.CodeOf(err) == shared.CodeFailedPrecondition {
+			return nil
+		}
+		return err
+	}
+	enabledWorkloads := map[shared.ID]struct{}{}
+	for _, workload := range workloads {
+		if !workload.ID.IsZero() {
+			enabledWorkloads[workload.ID] = struct{}{}
+		}
+	}
+	for _, run := range runs.Items {
+		if !strings.EqualFold(strings.TrimSpace(run.Status), "succeeded") {
+			continue
+		}
+		artifacts, err := builds.ListBuildArtifacts(ctx, run.ID)
+		if err != nil || len(artifacts) == 0 {
+			continue
+		}
+		workloadIDs := make([]shared.ID, 0, len(workloads))
+		for _, artifact := range artifacts {
+			if artifact.ApplicationID != applicationID {
+				continue
+			}
+			if !artifact.WorkloadID.IsZero() {
+				if _, ok := enabledWorkloads[artifact.WorkloadID]; ok {
+					workloadIDs = append(workloadIDs, artifact.WorkloadID)
+				}
+			}
+		}
+		if len(workloadIDs) == 0 && len(workloads) == 1 {
+			workloadIDs = append(workloadIDs, workloads[0].ID)
+		}
+		if len(workloadIDs) == 0 {
+			continue
+		}
+		artifactIDs := make([]shared.ID, 0, len(artifacts))
+		for _, artifact := range artifacts {
+			artifactIDs = append(artifactIDs, artifact.ID)
+		}
+		if _, err := s.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: applicationID, WorkloadIDs: uniqueIDs(workloadIDs), BuildArtifactIDs: artifactIDs}); err != nil {
+			continue
+		}
+	}
+	return nil
+}
+
 func (s *Service) ListEligibleFreights(ctx context.Context, applicationID shared.ID, stageID shared.ID) ([]Freight, error) {
-	stage, err := s.repo.GetDeliveryStage(ctx, stageID)
+	stage, err := s.deliveryStageByIDOrKey(ctx, applicationID, stageID)
 	if err != nil {
 		return nil, err
-	}
-	if stage.ApplicationID != applicationID {
-		return nil, shared.NewError(shared.CodeInvalidArgument, "stage does not belong to application")
 	}
 	result, err := s.repo.ListFreightsByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
 	if err != nil {
@@ -1012,6 +1065,37 @@ func (s *Service) ListEligibleFreights(ctx context.Context, applicationID shared
 		out = append(out, freight)
 	}
 	return out, nil
+}
+
+func (s *Service) deliveryStageByIDOrKey(ctx context.Context, applicationID shared.ID, stageIDOrKey shared.ID) (DeliveryStage, error) {
+	stage, err := s.repo.GetDeliveryStage(ctx, stageIDOrKey)
+	if err == nil {
+		if stage.ApplicationID != applicationID {
+			return DeliveryStage{}, shared.NewError(shared.CodeInvalidArgument, "stage does not belong to application")
+		}
+		return stage, nil
+	}
+	if shared.CodeOf(err) != shared.CodeNotFound {
+		return DeliveryStage{}, err
+	}
+	stageKey := normalizeStageKey(string(stageIDOrKey))
+	if stageKey == "" {
+		return DeliveryStage{}, err
+	}
+	flow, flowErr := s.ensureDefaultFlow(ctx, applicationID)
+	if flowErr != nil {
+		return DeliveryStage{}, flowErr
+	}
+	stages, listErr := s.repo.ListDeliveryStages(ctx, flow.ID)
+	if listErr != nil {
+		return DeliveryStage{}, listErr
+	}
+	for _, stage := range stages {
+		if normalizeStageKey(stage.Name) == stageKey {
+			return stage, nil
+		}
+	}
+	return DeliveryStage{}, err
 }
 
 func (s *Service) CreateRollbackPromotion(ctx context.Context, input CreateRollbackPromotionInput) (Promotion, error) {
@@ -1460,8 +1544,9 @@ func (s *Service) validateStagePromotionTarget(ctx context.Context, applicationI
 	}
 	namespace := strings.TrimSpace(namespaceOverride)
 	if namespace == "" {
-		namespace = string(app.ProjectID)
+		namespace = firstNonEmpty(app.ProjectName, app.ProjectID.String())
 	}
+	namespace = normalizeKubernetesNamespace(namespace)
 	targets := make([]GitOpsPromotionTargetCluster, 0, len(clusterIDs))
 	seen := map[shared.ID]struct{}{}
 	for _, id := range clusterIDs {
@@ -1490,6 +1575,38 @@ func (s *Service) validateStagePromotionTarget(ctx context.Context, applicationI
 		targets = append(targets, GitOpsPromotionTargetCluster{ClusterID: id, ClusterName: binding.ClusterName, Namespace: namespace, Labels: labels})
 	}
 	return app, env, stage, targets, nil
+}
+
+func normalizeKubernetesNamespace(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if r == '-' || r == '_' || r == '.' {
+			if b.Len() > 0 && !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+			continue
+		}
+		if b.Len() > 0 && !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	namespace := strings.Trim(b.String(), "-")
+	if len(namespace) > 63 {
+		namespace = strings.Trim(namespace[:63], "-")
+	}
+	if namespace == "" {
+		return "default"
+	}
+	return namespace
 }
 
 func (s *Service) requireDeploymentRecordForVerification(ctx context.Context, applicationID shared.ID, stageKey string, freightID shared.ID) error {
@@ -1643,16 +1760,6 @@ func (s *Service) pipelineFreightItem(ctx context.Context, item FreightItem, inp
 	}
 	if artifact.ApplicationID != item.ApplicationID || artifact.WorkloadID != item.WorkloadID {
 		return FreightItem{}, shared.NewError(shared.CodeInvalidArgument, "pipeline artifact does not belong to workload")
-	}
-	if strings.TrimSpace(artifact.Digest) == "" {
-		return FreightItem{}, shared.NewError(shared.CodeFailedPrecondition, "pipeline artifact requires digest and commit")
-	}
-	run, err := s.buildsOrError().GetBuildRun(ctx, artifact.BuildRunID)
-	if err != nil {
-		return FreightItem{}, err
-	}
-	if strings.TrimSpace(run.CommitSHA) == "" {
-		return FreightItem{}, shared.NewError(shared.CodeFailedPrecondition, "pipeline artifact requires digest and commit")
 	}
 	repository, tag := splitImageRepositoryTag(artifact.URI)
 	item.BuildArtifactID = artifact.ID
@@ -2203,6 +2310,9 @@ type failingBuildQuery struct{}
 
 func (failingBuildQuery) GetBuildRun(context.Context, shared.ID) (BuildRunRef, error) {
 	return BuildRunRef{}, shared.NewError(shared.CodeFailedPrecondition, "build query port is required")
+}
+func (failingBuildQuery) ListBuildRuns(context.Context, shared.ID, shared.PageRequest) (shared.PageResult[BuildRunRef], error) {
+	return shared.PageResult[BuildRunRef]{}, shared.NewError(shared.CodeFailedPrecondition, "build query port is required")
 }
 func (failingBuildQuery) GetBuildArtifact(context.Context, shared.ID) (BuildArtifactRef, error) {
 	return BuildArtifactRef{}, shared.NewError(shared.CodeFailedPrecondition, "build query port is required")

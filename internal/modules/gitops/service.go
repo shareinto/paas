@@ -11,26 +11,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	defaultPlatformTemplateName    = "java"
+	defaultPlatformTemplateContent = "containers: []"
+	defaultTemplateActorID         = shared.ID("usr_admin")
+	defaultPlatformChartName       = "paas-app"
+	defaultPlatformChartVersion    = "0.1.0"
+)
+
 type Service struct {
-	repo      Repository
-	manifest  ManifestRepositoryPort
-	apps      ApplicationQuery
-	envs      EnvironmentQuery
-	workloads WorkloadQuery
-	audit     AuditLogger
-	ids       shared.IDGenerator
-	clock     shared.Clock
+	repo            Repository
+	manifest        ManifestRepositoryPort
+	chart           ManifestRepositoryPort
+	manifestRepoURL string
+	chartRepoURL    string
+	chartName       string
+	chartVersion    string
+	apps            ApplicationQuery
+	envs            EnvironmentQuery
+	workloads       WorkloadQuery
+	audit           AuditLogger
+	ids             shared.IDGenerator
+	clock           shared.Clock
 }
 
 type Options struct {
-	Repository   Repository
-	ManifestRepo ManifestRepositoryPort
-	Application  ApplicationQuery
-	Environment  EnvironmentQuery
-	Workload     WorkloadQuery
-	Audit        AuditLogger
-	IDGenerator  shared.IDGenerator
-	Clock        shared.Clock
+	Repository      Repository
+	ManifestRepo    ManifestRepositoryPort
+	ChartRepo       ManifestRepositoryPort
+	ManifestRepoURL string
+	ChartRepoURL    string
+	ChartName       string
+	ChartVersion    string
+	Application     ApplicationQuery
+	Environment     EnvironmentQuery
+	Workload        WorkloadQuery
+	Audit           AuditLogger
+	IDGenerator     shared.IDGenerator
+	Clock           shared.Clock
 }
 
 func NewService(opts Options) *Service {
@@ -46,7 +64,21 @@ func NewService(opts Options) *Service {
 	if audit == nil {
 		audit = NoopAuditLogger{}
 	}
-	return &Service{repo: opts.Repository, manifest: opts.ManifestRepo, apps: opts.Application, envs: opts.Environment, workloads: opts.Workload, audit: audit, ids: ids, clock: clock}
+	return &Service{
+		repo:            opts.Repository,
+		manifest:        opts.ManifestRepo,
+		chart:           opts.ChartRepo,
+		manifestRepoURL: strings.TrimSpace(opts.ManifestRepoURL),
+		chartRepoURL:    strings.TrimSpace(opts.ChartRepoURL),
+		chartName:       firstNonEmpty(opts.ChartName, defaultPlatformChartName),
+		chartVersion:    firstNonEmpty(opts.ChartVersion, defaultPlatformChartVersion),
+		apps:            opts.Application,
+		envs:            opts.Environment,
+		workloads:       opts.Workload,
+		audit:           audit,
+		ids:             ids,
+		clock:           clock,
+	}
 }
 
 func (s *Service) EnsurePlatformTemplate(ctx context.Context, name string, content string) (DeploymentTemplate, error) {
@@ -167,7 +199,10 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	if err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
-	template, err := s.repo.FindApplicationTemplate(ctx, app.ID)
+	if err := s.ensurePlatformChart(ctx); err != nil {
+		return delivery.GitOpsPromotionResult{}, err
+	}
+	template, err := s.ensureApplicationTemplateForPromotion(ctx, app.ID)
 	if err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
@@ -230,7 +265,13 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 			return delivery.GitOpsPromotionResult{}, err
 		}
 		argoPath := argoApplicationPathForBinding(app.Name, env.Name, binding)
-		argo := renderArgoApplication(app, env, binding, valuesPath)
+		argo := renderArgoApplication(app, env, binding, argoApplicationRenderOptions{
+			ValuesPath:      valuesPath,
+			ManifestRepoURL: s.manifestRepoURL,
+			ChartRepoURL:    s.chartRepoURL,
+			ChartName:       s.chartName,
+			ChartVersion:    s.chartVersion,
+		})
 		files = append(files, CommitFile{Path: valuesPath, Content: values}, CommitFile{Path: argoPath, Content: argo})
 		manifestRevision := ManifestRevision{ID: manifestRevisionID, DeploymentID: deploymentID, PromotionID: spec.PromotionID, ApplicationID: app.ID, EnvironmentID: env.ID, TemplateRevisionID: revision.ID, Path: valuesPath, ChangeType: changeType, CreatedAt: now}
 		deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: env.ID, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: resolvedPrimary.Digest, WorkloadSummary: workloadSummary, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
@@ -279,6 +320,20 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	return delivery.GitOpsPromotionResult{ManifestRevision: manifestRef}, nil
 }
 
+func (s *Service) ensureApplicationTemplateForPromotion(ctx context.Context, applicationID shared.ID) (DeploymentTemplate, error) {
+	template, err := s.repo.FindApplicationTemplate(ctx, applicationID)
+	if err == nil {
+		return template, nil
+	}
+	if shared.CodeOf(err) != shared.CodeNotFound {
+		return DeploymentTemplate{}, err
+	}
+	if _, err := s.EnsurePlatformTemplate(ctx, defaultPlatformTemplateName, defaultPlatformTemplateContent); err != nil {
+		return DeploymentTemplate{}, err
+	}
+	return s.CreateApplicationTemplate(ctx, applicationID, defaultPlatformTemplateName, defaultTemplateActorID)
+}
+
 func (s *Service) UpdateFromAgent(ctx context.Context, report clusteragent.StatusReport) error {
 	for _, appStatus := range report.Applications {
 		if appStatus.DeploymentID.IsZero() {
@@ -320,6 +375,9 @@ func (s *Service) promotionTargetBindings(ctx context.Context, env EnvironmentRe
 			return nil, err
 		}
 		return []ClusterBindingRef{binding}, nil
+	}
+	if len(targets) > 1 {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "一个环境只能绑定一个集群")
 	}
 	out := make([]ClusterBindingRef, 0, len(targets))
 	for _, target := range targets {
@@ -504,16 +562,16 @@ func (s *Service) renderPromotionValues(ctx context.Context, app ApplicationRef,
 		if err != nil {
 			return "", "", err
 		}
-			config, err := s.getWorkloadEnvironmentConfig(ctx, artifact.WorkloadID, env.ID)
-			if err != nil {
-				if shared.CodeOf(err) != shared.CodeNotFound {
-					return "", "", err
-				}
-				config, err = s.getWorkloadDefaultConfig(ctx, artifact.WorkloadID)
-				if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
-					return "", "", err
-				}
+		config, err := s.getWorkloadEnvironmentConfig(ctx, artifact.WorkloadID, env.ID)
+		if err != nil {
+			if shared.CodeOf(err) != shared.CodeNotFound {
+				return "", "", err
 			}
+			config, err = s.getWorkloadDefaultConfig(ctx, artifact.WorkloadID)
+			if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
+				return "", "", err
+			}
+		}
 		repository, tag := imageRepositoryTag(artifact)
 		name := strings.TrimSpace(workload.Name)
 		if name == "" {
@@ -655,12 +713,204 @@ func renderValues(app ApplicationRef, env EnvironmentRef, binding ClusterBinding
 	return fmt.Sprintf("application: %s\nenvironment: %s\nnamespace: %s\nimage:\n  repository: %s\n  tag: %s\n  digest: %s\ntemplate: |\n%s\n", app.Name, env.Name, binding.Namespace, repo, tag, digest, indent(template, "  "))
 }
 
-func renderArgoApplication(app ApplicationRef, env EnvironmentRef, binding ClusterBindingRef, valuesPath string) string {
-	name := fmt.Sprintf("%s-%s", app.Name, env.Name)
-	if !binding.ClusterID.IsZero() {
-		name = fmt.Sprintf("%s-%s", name, binding.ClusterID)
+type argoApplicationRenderOptions struct {
+	ValuesPath      string
+	ManifestRepoURL string
+	ChartRepoURL    string
+	ChartName       string
+	ChartVersion    string
+}
+
+func (s *Service) ensurePlatformChart(ctx context.Context) error {
+	if s.chart == nil {
+		return nil
 	}
-	return fmt.Sprintf("apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\nspec:\n  destination:\n    namespace: %s\n  source:\n    path: %s\n", name, binding.Namespace, valuesPath)
+	name := firstNonEmpty(s.chartName, defaultPlatformChartName)
+	version := firstNonEmpty(s.chartVersion, defaultPlatformChartVersion)
+	_, err := s.chart.CommitFiles(ctx, CommitSpec{
+		Branch:  "main",
+		Message: fmt.Sprintf("paas: ensure platform chart %s %s", name, version),
+		Files:   platformChartFiles(name, version),
+	})
+	if err != nil {
+		return err
+	}
+	_, err = s.chart.CreateTag(ctx, platformChartTag(name, version), "main")
+	return err
+}
+
+func platformChartTag(name string, version string) string {
+	return fmt.Sprintf("%s-v%s", firstNonEmpty(name, defaultPlatformChartName), firstNonEmpty(version, defaultPlatformChartVersion))
+}
+
+func platformChartFiles(name string, version string) []CommitFile {
+	name = firstNonEmpty(name, defaultPlatformChartName)
+	version = firstNonEmpty(version, defaultPlatformChartVersion)
+	base := "charts/" + name
+	return []CommitFile{
+		{Path: base + "/Chart.yaml", Content: fmt.Sprintf("apiVersion: v2\nname: %s\ndescription: PaaS standard application workload chart\ntype: application\nversion: %s\nappVersion: %s\n", name, version, version)},
+		{Path: base + "/values.yaml", Content: "application: \"\"\nenvironment: \"\"\nnamespace: \"\"\nimage:\n  repository: \"\"\n  tag: \"\"\n  digest: \"\"\nworkloads: {}\n"},
+		{Path: base + "/templates/_helpers.tpl", Content: platformChartHelpersTemplate(name)},
+		{Path: base + "/templates/workloads.yaml", Content: platformChartWorkloadsTemplate(name)},
+	}
+}
+
+func platformChartHelpersTemplate(name string) string {
+	return fmt.Sprintf(`{{- define "%s.labels" -}}
+app.kubernetes.io/managed-by: paas
+app.kubernetes.io/part-of: {{ default .Chart.Name .Values.application | quote }}
+{{- end -}}
+`, name)
+}
+
+func platformChartWorkloadsTemplate(chartName string) string {
+	return fmt.Sprintf(`{{- range $name, $workload := .Values.workloads }}
+{{- $resourceName := printf "%%s-%%s" $name $.Values.environment | trunc 63 | trimSuffix "-" }}
+---
+apiVersion: apps/v1
+kind: {{ default "Deployment" $workload.kind }}
+metadata:
+  name: {{ $resourceName | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    app.kubernetes.io/name: {{ $name | quote }}
+    app.kubernetes.io/instance: {{ $resourceName | quote }}
+{{ include "%s.labels" $ | indent 4 }}
+spec:
+  {{- if eq (default "Deployment" $workload.kind) "StatefulSet" }}
+  serviceName: {{ $resourceName | quote }}
+  {{- end }}
+  replicas: {{ default 1 $workload.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name | quote }}
+      app.kubernetes.io/instance: {{ $resourceName | quote }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $name | quote }}
+        app.kubernetes.io/instance: {{ $resourceName | quote }}
+{{ include "%s.labels" $ | indent 8 }}
+    spec:
+      {{- with $workload.initContainers }}
+      initContainers:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name | quote }}
+          image: {{ printf "%%s:%%s" $workload.image.repository $workload.image.tag | quote }}
+          imagePullPolicy: IfNotPresent
+          {{- with $workload.command }}
+          command:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          {{- with $workload.args }}
+          args:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          {{- with $workload.servicePorts }}
+          ports:
+          {{- range . }}
+            - name: {{ .name | quote }}
+              containerPort: {{ default .port .targetPort }}
+              protocol: {{ default "TCP" .protocol | quote }}
+          {{- end }}
+          {{- end }}
+          {{- with $workload.env }}
+          env:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          {{- with $workload.resources }}
+          resources:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          {{- with $workload.probes }}
+          {{- range . }}
+          {{- if eq .name "readiness" }}
+          readinessProbe:
+            httpGet:
+              path: {{ .path | quote }}
+              port: {{ .port }}
+            initialDelaySeconds: {{ default 0 .initialDelaySeconds }}
+            periodSeconds: {{ default 10 .periodSeconds }}
+          {{- end }}
+          {{- if eq .name "liveness" }}
+          livenessProbe:
+            httpGet:
+              path: {{ .path | quote }}
+              port: {{ .port }}
+            initialDelaySeconds: {{ default 0 .initialDelaySeconds }}
+            periodSeconds: {{ default 10 .periodSeconds }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+          {{- with $workload.volumeMounts }}
+          volumeMounts:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          {{- with $workload.securityContext }}
+          securityContext:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+      {{- with $workload.volumes }}
+      volumes:
+{{ toYaml . | indent 8 }}
+      {{- end }}
+{{- with $workload.servicePorts }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $resourceName | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    app.kubernetes.io/name: {{ $name | quote }}
+    app.kubernetes.io/instance: {{ $resourceName | quote }}
+{{ include "%s.labels" $ | indent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name | quote }}
+    app.kubernetes.io/instance: {{ $resourceName | quote }}
+  ports:
+  {{- range . }}
+    - name: {{ .name | quote }}
+      port: {{ .port }}
+      targetPort: {{ default .port .targetPort }}
+      protocol: {{ default "TCP" .protocol | quote }}
+  {{- end }}
+{{- end }}
+{{- with $workload.ingressHosts }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $resourceName | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+spec:
+  rules:
+  {{- range . }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: {{ default "/" .path | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $resourceName | quote }}
+                port:
+                  number: {{ default 80 .port }}
+  {{- end }}
+{{- end }}
+{{- end }}
+`, chartName, chartName, chartName)
+}
+
+func renderArgoApplication(app ApplicationRef, env EnvironmentRef, binding ClusterBindingRef, opts argoApplicationRenderOptions) string {
+	name := fmt.Sprintf("%s-%s", app.Name, env.Name)
+	valuesPath := strings.TrimPrefix(opts.ValuesPath, "/")
+	chartName := firstNonEmpty(opts.ChartName, defaultPlatformChartName)
+	chartVersion := firstNonEmpty(opts.ChartVersion, defaultPlatformChartVersion)
+	return fmt.Sprintf("apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\nspec:\n  project: default\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: %s\n  sources:\n    - repoURL: %s\n      targetRevision: %s\n      path: charts/%s\n      helm:\n        valueFiles:\n          - $values/%s\n    - repoURL: %s\n      targetRevision: main\n      ref: values\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n      - ServerSideApply=true\n", name, binding.Namespace, opts.ChartRepoURL, platformChartTag(chartName, chartVersion), chartName, valuesPath, opts.ManifestRepoURL)
 }
 
 func indent(value string, prefix string) string {

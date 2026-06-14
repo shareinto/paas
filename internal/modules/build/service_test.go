@@ -633,6 +633,12 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	if !strings.Contains(env.runner.jobs[0].TemplateXML, "abc123") || !strings.Contains(env.runner.jobs[0].TemplateXML, "/api/builds/"+run.ID.String()+"/callback") || !strings.Contains(env.runner.jobs[0].TemplateXML, "registry.example/paas/user-api:20260530-abc123-java17") {
 		t.Fatalf("rendered Jenkinsfile should contain build-specific commit, callback and image, got %s", env.runner.jobs[0].TemplateXML)
 	}
+	if !strings.Contains(env.runner.jobs[0].TemplateXML, "report/source-main-commit.txt") || !strings.Contains(env.runner.jobs[0].TemplateXML, "commit_sha") {
+		t.Fatalf("rendered Jenkinsfile should report resolved source commit in callback, got %s", env.runner.jobs[0].TemplateXML)
+	}
+	if strings.Contains(env.runner.jobs[0].TemplateXML, "--metadata-file") || strings.Contains(env.runner.jobs[0].TemplateXML, "image_digest") || strings.Contains(env.runner.jobs[0].TemplateXML, "containerimage.digest") {
+		t.Fatalf("rendered Jenkinsfile should not extract image digest, got %s", env.runner.jobs[0].TemplateXML)
+	}
 	if len(env.runner.triggers) != 1 {
 		t.Fatalf("expected trigger call")
 	}
@@ -1346,6 +1352,32 @@ func TestQueueSyncLogsCancelAndCallback(t *testing.T) {
 	cancelRun, err = env.svc.CancelBuild(ctx, buildActor(), cancelRun.ID)
 	if err != nil || cancelRun.Status != BuildRunAborted || len(env.runner.cancelCalls) != 1 || env.runner.cancelCalls[0] != 22 {
 		t.Fatalf("cancel failed: %+v, calls=%+v, err=%v", cancelRun, env.runner.cancelCalls, err)
+	}
+}
+
+func TestBuildCallbackRecordsSucceededEventPublishFailure(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	env.events.err = errors.New("delivery rejected build event")
+	pipeline := createDefaultPipeline(t, env)
+	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID, CommitSHA: "abc123"})
+	if err != nil {
+		t.Fatalf("TriggerBuild() error = %v", err)
+	}
+
+	succeeded, err := env.svc.HandleBuildCallback(ctx, BuildCallbackInput{BuildRunID: run.ID, Status: BuildRunSucceeded, ImageURI: "registry.example/paas/user-api:abc123"})
+	if err != nil {
+		t.Fatalf("HandleBuildCallback() should keep Jenkins success even when event publish fails: %v", err)
+	}
+	if succeeded.Status != BuildRunSucceeded {
+		t.Fatalf("build status should stay succeeded, got %+v", succeeded)
+	}
+	stored, err := env.svc.GetBuildRun(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("GetBuildRun() error = %v", err)
+	}
+	if !strings.Contains(stored.ErrorMessage, "BuildSucceeded event publish failed") || !strings.Contains(stored.ErrorMessage, "delivery rejected build event") {
+		t.Fatalf("build run should record event publish failure, got %+v", stored)
 	}
 }
 

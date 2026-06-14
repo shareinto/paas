@@ -84,12 +84,16 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   });
   const eligibleMutation = useMutation({ mutationFn: (stageId: string) => listEligibleFreights(applicationId, stageId) });
   const createPromotionMutation = useMutation({
-    mutationFn: (input: PendingPromotion) => createPromotion({
-      freightId: input.freight.id,
-      targetStageKey: input.stage.stageKey,
-      targetClusterIds: input.stage.boundClusterId ? [input.stage.boundClusterId] : [],
-      namespaceOverride: defaultNamespace
-    }),
+    mutationFn: (input: PendingPromotion) => createPromotion(
+      {
+        freightId: input.freight.id,
+        targetStageKey: input.stage.stageKey,
+        targetClusterIds: input.stage.boundClusterId ? [input.stage.boundClusterId] : [],
+        namespaceOverride: defaultNamespace
+      },
+      applicationId,
+      input.stage.deliveryStageId || input.stage.id
+    ),
     onSuccess: (_, input) => {
       setStageFreights((current) => ({ ...current, [input.stage.stageKey]: input.freight.version }));
       setPublishResult(`${input.freight.version} 已提交到 ${input.stage.stageKey}，等待同步结果。`);

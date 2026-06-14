@@ -2,7 +2,9 @@ package delivery
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
@@ -28,6 +30,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}/cluster-bindings", h.handleListStageClusterBindings)
 	mux.HandleFunc("PUT /api/tenants/{tenantId}/delivery-flow-template/stages/{stageKey}/cluster-bindings", h.handleReplaceStageClusterBindings)
 	mux.HandleFunc("GET /api/apps/{appId}/delivery/stages/{stageId}/eligible-freights", h.handleEligibleFreights)
+	mux.HandleFunc("POST /api/apps/{appId}/delivery/stages/{stageId}/promotions", h.handleCreateStagePromotion)
 	mux.HandleFunc("POST /api/apps/{appId}/stages/{stageKey}/verification", h.handleCompleteStageVerification)
 	mux.HandleFunc("POST /api/promotions", h.handleCreatePromotion)
 	mux.HandleFunc("POST /api/promotions/rollback", h.handleRollbackPromotion)
@@ -205,6 +208,25 @@ func (h *Handler) handleCreatePromotion(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusCreated, promotion)
 }
+func (h *Handler) handleCreateStagePromotion(w http.ResponseWriter, r *http.Request) {
+	var req CreatePromotionInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	appID := shared.ID(r.PathValue("appId"))
+	stage, err := h.service.deliveryStageByIDOrKey(r.Context(), appID, shared.ID(r.PathValue("stageId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	req.TargetStageKey = stage.Name
+	promotion, err := h.service.CreatePromotion(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, promotion)
+}
 func (h *Handler) handleCompleteStageVerification(w http.ResponseWriter, r *http.Request) {
 	var req StageVerificationInput
 	if !decodeJSON(w, r, &req) {
@@ -302,7 +324,100 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 func writeError(w http.ResponseWriter, err error) {
-	writeJSON(w, shared.HTTPStatusOf(err), map[string]any{"error": map[string]any{"code": shared.CodeOf(err), "message": "请求处理失败"}})
+	writeJSON(w, shared.HTTPStatusOf(err), map[string]any{"error": map[string]any{"code": shared.CodeOf(err), "message": readableErrorMessage(err)}})
+}
+func readableErrorMessage(err error) string {
+	var appErr *shared.AppError
+	if !errors.As(err, &appErr) {
+		return "请求处理失败"
+	}
+	switch appErr.Code {
+	case shared.CodeInvalidArgument:
+		return invalidArgumentMessage(appErr.Message)
+	case shared.CodeNotFound:
+		return notFoundMessage(appErr.Message)
+	case shared.CodeConflict:
+		return conflictMessage(appErr.Message)
+	case shared.CodeFailedPrecondition:
+		return failedPreconditionMessage(appErr.Message)
+	default:
+		return "请求处理失败"
+	}
+}
+func invalidArgumentMessage(message string) string {
+	switch strings.TrimSpace(message) {
+	case "stage can target only one bound cluster":
+		return "一个 Stage 只能绑定一个目标集群"
+	case "target cluster is not bound to stage":
+		return "目标集群未绑定到该 Stage"
+	case "target_cluster_ids is invalid":
+		return "目标集群参数无效"
+	case "stage does not belong to application":
+		return "目标 Stage 不属于当前应用"
+	default:
+		return "请求参数无效"
+	}
+}
+func notFoundMessage(message string) string {
+	switch strings.TrimSpace(message) {
+	case "stage template not found":
+		return "目标 Stage 模板不存在"
+	case "stage environment not found":
+		return "目标 Stage 对应环境不存在"
+	case "delivery stage not found":
+		return "目标 Stage 不存在"
+	case "freight not found":
+		return "Freight 不存在"
+	case "cluster not found":
+		return "目标集群不存在或已被删除，请重新绑定 Stage 集群"
+	case "application not found":
+		return "应用不存在或已被删除"
+	case "environment not found":
+		return "目标环境不存在或已被删除"
+	case "workload not found":
+		return "工作负载不存在或已被删除"
+	case "deployment template not found", "application template not found", "platform template not found":
+		return "部署模板不存在，请先初始化应用部署模板"
+	default:
+		return "请求资源不存在"
+	}
+}
+func conflictMessage(message string) string {
+	switch strings.TrimSpace(message) {
+	case "stage has multiple bound clusters":
+		return "该 Stage 绑定了多个集群，请明确选择目标集群"
+	case "target cluster is duplicated":
+		return "目标集群重复"
+	default:
+		return "请求存在冲突"
+	}
+}
+func failedPreconditionMessage(message string) string {
+	trimmed := strings.TrimSpace(message)
+	switch trimmed {
+	case "stage has no bound cluster":
+		return "该 Stage 未绑定集群，请先在交付流模板中绑定集群"
+	case "stage is disabled":
+		return "该 Stage 已禁用，不能发布"
+	case "freight must include every enabled workload":
+		return "该 Freight 未覆盖全部启用 Workload，请重新创建完整 Freight"
+	case "freight item workload is not enabled":
+		return "该 Freight 包含非启用 Workload，不能发布"
+	case "freight item workload is duplicated":
+		return "该 Freight 中存在重复 Workload，不能发布"
+	case "freight has not passed previous stage":
+		return "该 Freight 尚未通过全部上游 Stage，不能发布到目标 Stage"
+	case "freight has no items":
+		return "该 Freight 没有可部署镜像，不能发布"
+	case "stage has no deployment record for freight":
+		return "该 Stage 尚无此 Freight 的部署记录，不能验证"
+	case "gitops deployment command is required":
+		return "GitOps 发布能力未配置，不能执行部署"
+	}
+	if strings.HasPrefix(trimmed, "image bundle for workload ") {
+		return "镜像包与目标集群标签无法唯一匹配，请检查运行时环境和集群标签"
+	}
+	return "发布前置条件不满足"
 }
 func pageFromQuery(r *http.Request) shared.PageRequest {
 	q := r.URL.Query()

@@ -120,7 +120,7 @@ created_at
 
 - BuildSucceeded 只创建 Release 候选。
 - BuildSucceeded 不自动创建 Freight。
-- 缺少 digest 或 commit 的流水线产物不能作为可发布 Release 候选。
+- 缺少 digest 或 commit 的流水线产物仍可作为 Release 候选；commit 为空时版本使用 BuildRun ID 兜底。
 
 ### 2.5 Freight 和 FreightItem
 

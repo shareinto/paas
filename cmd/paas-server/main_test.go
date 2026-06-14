@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shareinto/paas/internal/integrations/gitlab"
 	"github.com/shareinto/paas/internal/migrations"
 	"github.com/shareinto/paas/internal/modules/appenv"
 	"github.com/shareinto/paas/internal/modules/build"
@@ -26,6 +27,7 @@ type serverTestFixture struct {
 	project      tenantproject.Project
 	source       shared.ID
 	application  appenv.Application
+	workload     appenv.Workload
 	pipeline     build.BuildPipeline
 	environments []appenv.Environment
 	buildRun     build.BuildRun
@@ -228,6 +230,57 @@ func TestTenantManagementUpdateRoute(t *testing.T) {
 	}
 }
 
+func TestManifestRepositoriesFromEnvUseRealGitLabWhenConfigured(t *testing.T) {
+	t.Setenv("GITLAB_BASE_URL", "https://gitlab.example")
+	t.Setenv("GITLAB_TOKEN", "secret")
+	t.Setenv("GITLAB_MANIFEST_PROJECT_ID", "99")
+	t.Setenv("GITLAB_CHART_PROJECT_ID", "100")
+	manifest, chart, manifestURL, chartURL := manifestRepositoriesFromEnv()
+	if _, ok := manifest.(*gitlab.ManifestRepositoryAdapter); !ok {
+		t.Fatalf("manifest repo should use real GitLab adapter, got %T", manifest)
+	}
+	if _, ok := chart.(*gitlab.ManifestRepositoryAdapter); !ok {
+		t.Fatalf("chart repo should use real GitLab adapter, got %T", chart)
+	}
+	if manifestURL != "https://gitlab.example/99.git" || chartURL != "https://gitlab.example/100.git" {
+		t.Fatalf("unexpected repo urls manifest=%q chart=%q", manifestURL, chartURL)
+	}
+}
+
+func TestManifestRepositoriesFromEnvUseSeparateGitOpsGitLabWhenConfigured(t *testing.T) {
+	t.Setenv("GITLAB_BASE_URL", "https://source-gitlab.example")
+	t.Setenv("GITLAB_TOKEN", "source-secret")
+	t.Setenv("GITOPS_GITLAB_BASE_URL", "https://gitops-gitlab.example")
+	t.Setenv("GITOPS_GITLAB_TOKEN", "gitops-secret")
+	t.Setenv("GITLAB_MANIFEST_PROJECT_ID", "99")
+	t.Setenv("GITLAB_CHART_PROJECT_ID", "100")
+
+	manifest, chart, manifestURL, chartURL := manifestRepositoriesFromEnv()
+	if _, ok := manifest.(*gitlab.ManifestRepositoryAdapter); !ok {
+		t.Fatalf("manifest repo should use real GitLab adapter, got %T", manifest)
+	}
+	if _, ok := chart.(*gitlab.ManifestRepositoryAdapter); !ok {
+		t.Fatalf("chart repo should use real GitLab adapter, got %T", chart)
+	}
+	if manifestURL != "https://gitops-gitlab.example/99.git" || chartURL != "https://gitops-gitlab.example/100.git" {
+		t.Fatalf("gitops repo urls should use separate gitops gitlab, manifest=%q chart=%q", manifestURL, chartURL)
+	}
+}
+
+func TestManifestRepositoriesFromEnvFallbackToFakeWhenUnconfigured(t *testing.T) {
+	t.Setenv("GITLAB_BASE_URL", "")
+	t.Setenv("GITLAB_TOKEN", "")
+	t.Setenv("GITLAB_MANIFEST_PROJECT_ID", "")
+	t.Setenv("GITLAB_CHART_PROJECT_ID", "")
+	manifest, chart, _, _ := manifestRepositoriesFromEnv()
+	if _, ok := manifest.(*gitlab.FakeManifestRepositoryAdapter); !ok {
+		t.Fatalf("manifest repo should use fake adapter, got %T", manifest)
+	}
+	if _, ok := chart.(*gitlab.FakeManifestRepositoryAdapter); !ok {
+		t.Fatalf("chart repo should use fake adapter, got %T", chart)
+	}
+}
+
 func TestModuleRoutesUseWiredPorts(t *testing.T) {
 	app := newTestApplication(t)
 	defer app.db.Close()
@@ -250,6 +303,46 @@ func TestModuleRoutesUseWiredPorts(t *testing.T) {
 	app.handler.ServeHTTP(stateRec, httptest.NewRequest(http.MethodGet, "/api/environments/"+fixture.environments[0].ID.String()+"/state", nil))
 	if stateRec.Code != http.StatusOK || !bytes.Contains(stateRec.Body.Bytes(), []byte("running")) {
 		t.Fatalf("state response = %d %s", stateRec.Code, stateRec.Body.String())
+	}
+}
+
+func TestBuildCallbackCreatesFreightReleaseCandidateThroughWiredEvent(t *testing.T) {
+	app := newTestApplication(t)
+	defer app.db.Close()
+	fixture := seedServerTestData(t, app)
+	ctx := context.Background()
+	actor := identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"}
+
+	run, err := app.builds.TriggerBuild(ctx, build.TriggerBuildInput{Actor: actor, PipelineID: fixture.pipeline.ID, GitRef: "main"})
+	if err != nil {
+		t.Fatalf("trigger build: %v", err)
+	}
+	if _, err := app.builds.HandleBuildCallback(ctx, build.BuildCallbackInput{BuildRunID: run.ID, Status: build.BuildRunSucceeded, JenkinsBuildNumber: 7, ImageURI: "registry.local/test-api:v2"}); err != nil {
+		t.Fatalf("finish build: %v", err)
+	}
+
+	contextRec := httptest.NewRecorder()
+	app.handler.ServeHTTP(contextRec, httptest.NewRequest(http.MethodGet, "/api/apps/"+fixture.application.ID.String()+"/freights/creation-context", nil))
+	if contextRec.Code != http.StatusOK {
+		t.Fatalf("creation context status = %d body = %s", contextRec.Code, contextRec.Body.String())
+	}
+	var contextOut delivery.FreightCreationContext
+	if err := json.Unmarshal(contextRec.Body.Bytes(), &contextOut); err != nil {
+		t.Fatalf("decode creation context: %v", err)
+	}
+	contextRelease := contextOut.LatestReleasesByWorkload[fixture.workload.ID]
+	if contextRelease.ID.IsZero() || contextRelease.WorkloadID != fixture.workload.ID {
+		t.Fatalf("creation context should expose workload release candidate, got %+v in context %+v", contextRelease, contextOut.LatestReleasesByWorkload)
+	}
+	if contextRelease.ImageURI != "registry.local/test-api:v2" || contextRelease.ImageDigest != "" {
+		t.Fatalf("creation context should expose latest callback release without digest, got %+v", contextRelease)
+	}
+	release, err := app.state.deliveryRepo.FindReleaseByBuildRunAndWorkload(ctx, run.ID, fixture.workload.ID)
+	if err != nil {
+		t.Fatalf("find release created from build callback: %v", err)
+	}
+	if release.ImageURI != "registry.local/test-api:v2" || release.ImageDigest != "" || release.PipelineID != fixture.pipeline.ID {
+		t.Fatalf("build callback should create workload release candidate from wired event, got %+v", release)
 	}
 }
 
@@ -522,7 +615,7 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	if _, err := app.delivery.CreateFreight(ctx, delivery.CreateFreightInput{Actor: actor, ApplicationID: created.ID, Name: "测试发布包", Items: []delivery.CreateFreightItemInput{{WorkloadID: workload.ID, SourceType: delivery.FreightItemPipelineArtifact, ReleaseID: release.ID}}}); err != nil {
 		t.Fatalf("create freight: %v", err)
 	}
-	return serverTestFixture{tenant: tenant, project: project, source: repo.ID, application: created, pipeline: pipeline, environments: envs, buildRun: run}
+	return serverTestFixture{tenant: tenant, project: project, source: repo.ID, application: created, workload: workload, pipeline: pipeline, environments: envs, buildRun: run}
 }
 
 func ensureDeploymentTemplate(t *testing.T, app *application, applicationID shared.ID) {

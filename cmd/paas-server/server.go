@@ -52,6 +52,22 @@ type serverState struct {
 	clusterRepo  clusteragent.Repository
 }
 
+type buildEventBridge struct {
+	delivery *delivery.Service
+}
+
+func (b *buildEventBridge) Publish(ctx context.Context, event shared.DomainEvent) error {
+	if event.EventType != "BuildSucceeded" || b.delivery == nil {
+		return nil
+	}
+	var payload delivery.BuildSucceededPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return shared.WrapError(shared.CodeInvalidArgument, "decode build succeeded payload failed", err)
+	}
+	_, err := b.delivery.HandleBuildSucceeded(ctx, payload)
+	return err
+}
+
 type projectDeletionGuard struct {
 	sourceSvc  *sourcerepository.Service
 	sourceRepo sourcerepository.Repository
@@ -118,14 +134,8 @@ func newApplication(ctx context.Context) (*application, error) {
 	buildRepo := repos.build
 	jenkinsAdapter := buildRunnerFromEnv()
 	templateID := firstNonEmpty(os.Getenv("JENKINS_DEFAULT_TEMPLATE_ID"), "java-unified-v1")
-	buildSvc := build.NewService(build.Options{Repository: buildRepo, SourceRepositoryQuery: sourceForBuild{service: sourceSvc}, BuildRunner: jenkinsAdapter, Audit: audit.BuildLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock, TemplateID: templateID, CallbackURL: firstNonEmpty(os.Getenv("JENKINS_CALLBACK_BASE_URL"), "http://127.0.0.1:8080"), ImageRepository: firstNonEmpty(os.Getenv("IMAGE_REPOSITORY"), "registry.local/order-api"), DockerfileRepository: build.DockerfileRepositoryConfig{URL: firstNonEmpty(os.Getenv("DOCKERFILE_REPOSITORY_URL"), "ssh://git@192.168.100.80:2422/paas/dockerfiles.git"), Ref: os.Getenv("DOCKERFILE_REPOSITORY_REF"), CredentialsID: os.Getenv("DOCKERFILE_REPOSITORY_CREDENTIALS_ID")}})
-	if err := buildSvc.EnsureDefaultJenkinsJobTemplate(ctx, "usr_admin"); err != nil {
-		return nil, err
-	}
-	if err := buildSvc.EnsureDefaultBuildConfiguration(ctx, "usr_admin"); err != nil {
-		return nil, err
-	}
-
+	buildEvents := &buildEventBridge{}
+	buildSvc := build.NewService(build.Options{Repository: buildRepo, SourceRepositoryQuery: sourceForBuild{service: sourceSvc}, BuildRunner: jenkinsAdapter, Audit: audit.BuildLogger{Logger: auditSvc}, EventPublisher: buildEvents, IDGenerator: ids, Clock: clock, TemplateID: templateID, CallbackURL: firstNonEmpty(os.Getenv("JENKINS_CALLBACK_BASE_URL"), "http://127.0.0.1:8080"), ImageRepository: firstNonEmpty(os.Getenv("IMAGE_REPOSITORY"), "registry.local/order-api"), DockerfileRepository: build.DockerfileRepositoryConfig{URL: firstNonEmpty(os.Getenv("DOCKERFILE_REPOSITORY_URL"), "ssh://git@192.168.100.80:2422/paas/dockerfiles.git"), Ref: os.Getenv("DOCKERFILE_REPOSITORY_REF"), CredentialsID: os.Getenv("DOCKERFILE_REPOSITORY_CREDENTIALS_ID")}})
 	appSvc := appenv.NewService(appenv.Options{
 		Repository:               appRepo,
 		ProjectQuery:             tenantSvc,
@@ -147,9 +157,30 @@ func newApplication(ctx context.Context) (*application, error) {
 
 	deliveryRepo := repos.delivery
 	gitopsRepo := repos.gitops
-	manifestRepo := gitlab.NewFakeManifestRepositoryAdapter()
-	gitopsSvc := gitops.NewService(gitops.Options{Repository: gitopsRepo, ManifestRepo: manifestRepo, Application: appForGitOps{service: appSvc}, Environment: envForGitOps{service: appSvc, repo: appRepo}, Workload: workloadForGitOps{service: appSvc}, Audit: audit.GitOpsLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
-	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, EnvironmentSync: envSyncForDelivery{service: appSvc}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	manifestRepo, chartRepo, manifestRepoURL, chartRepoURL := manifestRepositoriesFromEnv()
+	gitopsSvc := gitops.NewService(gitops.Options{
+		Repository:      gitopsRepo,
+		ManifestRepo:    manifestRepo,
+		ChartRepo:       chartRepo,
+		ManifestRepoURL: manifestRepoURL,
+		ChartRepoURL:    chartRepoURL,
+		ChartName:       firstNonEmpty(os.Getenv("PAAS_PLATFORM_CHART_NAME"), "paas-app"),
+		ChartVersion:    firstNonEmpty(os.Getenv("PAAS_PLATFORM_CHART_VERSION"), "0.1.0"),
+		Application:     appForGitOps{service: appSvc},
+		Environment:     envForGitOps{service: appSvc, repo: appRepo},
+		Workload:        workloadForGitOps{service: appSvc},
+		Audit:           audit.GitOpsLogger{Logger: auditSvc},
+		IDGenerator:     ids,
+		Clock:           clock,
+	})
+	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc, projects: tenantSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, EnvironmentSync: envSyncForDelivery{service: appSvc}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	buildEvents.delivery = deliverySvc
+	if err := buildSvc.EnsureDefaultJenkinsJobTemplate(ctx, "usr_admin"); err != nil {
+		return nil, err
+	}
+	if err := buildSvc.EnsureDefaultBuildConfiguration(ctx, "usr_admin"); err != nil {
+		return nil, err
+	}
 
 	clusterRepo := repos.cluster
 	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, TenantQuery: tenantForClusterAgent{service: tenantSvc}, PermissionChecker: identitySvc, EnvironmentState: envUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
@@ -253,14 +284,49 @@ func sourceGitAdapterFromEnv() (sourcerepository.GitSourceRepositoryPort, string
 	if baseURL == "" || token == "" {
 		return &gitlab.FakeSourceRepositoryAdapter{Files: []sourcerepository.RepositoryFile{{Path: "pom.xml", Type: "blob"}, {Path: "target/order-api.jar", Type: "blob"}}}, webhookURL
 	}
+	cfg := gitlabConfigFromValues(baseURL, token, os.Getenv("GITLAB_TIMEOUT_SECONDS"), os.Getenv("GITLAB_RETRY_MAX"))
+	return gitlab.NewSourceRepositoryAdapterWithNamespace(gitlab.NewClient(cfg), os.Getenv("GITLAB_ROOT_GROUP_PATH")), webhookURL
+}
+
+func manifestRepositoriesFromEnv() (gitops.ManifestRepositoryPort, gitops.ManifestRepositoryPort, string, string) {
+	baseURL := firstNonEmpty(os.Getenv("GITOPS_GITLAB_BASE_URL"), os.Getenv("GITLAB_BASE_URL"))
+	token := firstNonEmpty(os.Getenv("GITOPS_GITLAB_TOKEN"), os.Getenv("GITLAB_TOKEN"))
+	manifestProjectID := strings.TrimSpace(os.Getenv("GITLAB_MANIFEST_PROJECT_ID"))
+	chartProjectID := strings.TrimSpace(os.Getenv("GITLAB_CHART_PROJECT_ID"))
+	manifestRepoURL := strings.TrimSpace(os.Getenv("GITLAB_MANIFEST_REPO_URL"))
+	chartRepoURL := strings.TrimSpace(os.Getenv("GITLAB_CHART_REPO_URL"))
+	if baseURL == "" || token == "" || manifestProjectID == "" || chartProjectID == "" {
+		return gitlab.NewFakeManifestRepositoryAdapter(), gitlab.NewFakeManifestRepositoryAdapter(), manifestRepoURL, chartRepoURL
+	}
+	cfg := gitlabConfigFromValues(
+		baseURL,
+		token,
+		firstNonEmpty(os.Getenv("GITOPS_GITLAB_TIMEOUT_SECONDS"), os.Getenv("GITLAB_TIMEOUT_SECONDS")),
+		firstNonEmpty(os.Getenv("GITOPS_GITLAB_RETRY_MAX"), os.Getenv("GITLAB_RETRY_MAX")),
+	)
+	client := gitlab.NewClient(cfg)
+	if manifestRepoURL == "" {
+		manifestRepoURL = defaultGitLabProjectRepoURL(baseURL, manifestProjectID)
+	}
+	if chartRepoURL == "" {
+		chartRepoURL = defaultGitLabProjectRepoURL(baseURL, chartProjectID)
+	}
+	return gitlab.NewManifestRepositoryAdapter(client, manifestProjectID), gitlab.NewManifestRepositoryAdapter(client, chartProjectID), manifestRepoURL, chartRepoURL
+}
+
+func gitlabConfigFromValues(baseURL string, token string, timeoutValue string, retryValue string) gitlab.Config {
 	cfg := gitlab.Config{BaseURL: baseURL, Token: token}
-	if seconds, err := strconv.Atoi(strings.TrimSpace(os.Getenv("GITLAB_TIMEOUT_SECONDS"))); err == nil && seconds > 0 {
+	if seconds, err := strconv.Atoi(timeoutValue); err == nil && seconds > 0 {
 		cfg.Timeout = time.Duration(seconds) * time.Second
 	}
-	if retries, err := strconv.Atoi(strings.TrimSpace(os.Getenv("GITLAB_RETRY_MAX"))); err == nil && retries >= 0 {
+	if retries, err := strconv.Atoi(retryValue); err == nil && retries >= 0 {
 		cfg.RetryMax = retries
 	}
-	return gitlab.NewSourceRepositoryAdapterWithNamespace(gitlab.NewClient(cfg), os.Getenv("GITLAB_ROOT_GROUP_PATH")), webhookURL
+	return cfg
+}
+
+func defaultGitLabProjectRepoURL(baseURL string, projectID string) string {
+	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/" + strings.TrimSpace(projectID) + ".git"
 }
 
 func buildRunnerFromEnv() build.BuildRunnerPort {
@@ -774,14 +840,25 @@ func (s runtimeEnvironmentSyncerForAppEnv) SyncRuntimeEnvironment(ctx context.Co
 	return err
 }
 
-type appForDelivery struct{ service *appenv.Service }
+type appForDelivery struct {
+	service  *appenv.Service
+	projects *tenantproject.Service
+}
 
 func (q appForDelivery) GetApplication(ctx context.Context, id shared.ID) (delivery.ApplicationRef, error) {
 	app, err := q.service.GetApplication(ctx, id)
 	if err != nil {
 		return delivery.ApplicationRef{}, err
 	}
-	return delivery.ApplicationRef{ID: app.ID, TenantID: app.TenantID, ProjectID: app.ProjectID, Name: app.Name}, nil
+	ref := delivery.ApplicationRef{ID: app.ID, TenantID: app.TenantID, ProjectID: app.ProjectID, Name: app.Name}
+	if q.projects != nil {
+		project, err := q.projects.GetProject(ctx, app.ProjectID)
+		if err != nil {
+			return delivery.ApplicationRef{}, err
+		}
+		ref.ProjectName = project.Name
+	}
+	return ref, nil
 }
 
 type envForDelivery struct {
@@ -831,7 +908,19 @@ func (q buildForDelivery) GetBuildRun(ctx context.Context, id shared.ID) (delive
 	if err != nil {
 		return delivery.BuildRunRef{}, err
 	}
-	return delivery.BuildRunRef{ID: run.ID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, CommitSHA: run.CommitSHA}, nil
+	return toDeliveryBuildRunRef(run), nil
+}
+
+func (q buildForDelivery) ListBuildRuns(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[delivery.BuildRunRef], error) {
+	runs, err := q.service.ListBuildRuns(ctx, applicationID, page)
+	if err != nil {
+		return shared.PageResult[delivery.BuildRunRef]{}, err
+	}
+	items := make([]delivery.BuildRunRef, 0, len(runs.Items))
+	for _, run := range runs.Items {
+		items = append(items, toDeliveryBuildRunRef(run))
+	}
+	return shared.PageResult[delivery.BuildRunRef]{Items: items, Total: runs.Total, Page: runs.Page, PageSize: runs.PageSize}, nil
 }
 
 func (q buildForDelivery) GetBuildArtifact(ctx context.Context, id shared.ID) (delivery.BuildArtifactRef, error) {
@@ -990,6 +1079,10 @@ func toBuildRuntimeEnvironments(environments []appenv.ApplicationRuntimeEnvironm
 
 func toDeliveryBuildArtifactRef(artifact build.BuildArtifact) delivery.BuildArtifactRef {
 	return delivery.BuildArtifactRef{ID: artifact.ID, BuildRunID: artifact.BuildRunID, ApplicationID: artifact.ApplicationID, WorkloadID: artifact.WorkloadID, SourceKey: artifact.SourceKey, URI: artifact.URI, Digest: artifact.Digest, IsPrimary: artifact.IsPrimary, SelectorLabels: artifact.SelectorLabels, Metadata: artifact.Metadata}
+}
+
+func toDeliveryBuildRunRef(run build.BuildRun) delivery.BuildRunRef {
+	return delivery.BuildRunRef{ID: run.ID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, PipelineID: run.PipelineID, PipelineName: run.PipelineName, PipelineDisplayName: run.PipelineDisplayName, CommitSHA: run.CommitSHA, Status: string(run.Status)}
 }
 
 func applicationType(spec appenv.BuildSpec) string {

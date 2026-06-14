@@ -52,6 +52,17 @@ func (q fakeBuildQuery) ListBuildArtifacts(_ context.Context, buildRunID shared.
 	return out, nil
 }
 
+func (q fakeBuildQuery) ListBuildRuns(_ context.Context, applicationID shared.ID, _ shared.PageRequest) (shared.PageResult[BuildRunRef], error) {
+	out := make([]BuildRunRef, 0)
+	for _, run := range q.runs {
+		if run.ApplicationID == applicationID {
+			out = append(out, run)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	return shared.PageResult[BuildRunRef]{Items: out, Total: int64(len(out)), Page: 1, PageSize: len(out)}, nil
+}
+
 type fakeAppQuery struct{ apps map[shared.ID]ApplicationRef }
 
 func (q fakeAppQuery) GetApplication(_ context.Context, id shared.ID) (ApplicationRef, error) {
@@ -86,6 +97,16 @@ func (q fakeEnvQuery) GetEnvironment(_ context.Context, id shared.ID) (Environme
 	v, ok := q.envs[id]
 	if !ok {
 		return EnvironmentRef{}, shared.NewError(shared.CodeNotFound, "environment not found")
+	}
+	return v, nil
+}
+
+type fakeClusterQuery struct{ clusters map[shared.ID]ClusterRef }
+
+func (q fakeClusterQuery) GetCluster(_ context.Context, id shared.ID) (ClusterRef, error) {
+	v, ok := q.clusters[id]
+	if !ok {
+		return ClusterRef{}, shared.NewError(shared.CodeNotFound, "cluster not found")
 	}
 	return v, nil
 }
@@ -182,7 +203,7 @@ func newDeliveryEnv(t *testing.T) deliveryEnv {
 			runs:      map[shared.ID]BuildRunRef{"build_1": {ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: "pipeline_main", PipelineName: "main", PipelineDisplayName: "主流水线", CommitSHA: "abcdef1234567890"}},
 			artifacts: map[shared.ID]BuildArtifactRef{"artifact_1": {ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", URI: "registry.example/paas/user-api:abcdef", Digest: "sha256:abc", IsPrimary: true}},
 		},
-		ApplicationQuery:  fakeAppQuery{apps: map[shared.ID]ApplicationRef{"app_user": {ID: "app_user", TenantID: "tenant_a", ProjectID: "project_payment", Name: "user-api"}}},
+		ApplicationQuery:  fakeAppQuery{apps: map[shared.ID]ApplicationRef{"app_user": {ID: "app_user", TenantID: "tenant_a", ProjectID: "project_payment", ProjectName: "payment", Name: "user-api"}}},
 		WorkloadQuery:     fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"}}}},
 		EnvironmentQuery:  envs,
 		GitOpsDeployment:  gitops,
@@ -233,6 +254,27 @@ func TestBuildSucceededFansOutToPipelineBoundWorkloads(t *testing.T) {
 	}
 	if again.ID != apiRelease.ID {
 		t.Fatalf("fan-out should be idempotent for first workload, got %+v want %+v", again, apiRelease)
+	}
+}
+
+func TestBuildSucceededCreatesReleaseWithoutDigestOrCommit(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	env.svc.builds = fakeBuildQuery{
+		runs: map[shared.ID]BuildRunRef{
+			"build_1": {ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: "pipeline_main", PipelineName: "main", PipelineDisplayName: "主流水线", Status: "succeeded"},
+		},
+		artifacts: map[shared.ID]BuildArtifactRef{
+			"artifact_1": {ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", URI: "registry.example/paas/user-api:abcdef", IsPrimary: true},
+		},
+	}
+
+	release, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"})
+	if err != nil {
+		t.Fatalf("HandleBuildSucceeded() should allow release without digest or commit: %v", err)
+	}
+	if release.Version != "build-build_1" || release.CommitSHA != "" || release.ImageDigest != "" || release.ImageURI != "registry.example/paas/user-api:abcdef" {
+		t.Fatalf("release should use build id fallback and keep empty digest/commit, got %+v", release)
 	}
 }
 
@@ -591,6 +633,9 @@ func TestCreatePromotionWithSingleBoundStageCluster(t *testing.T) {
 	if inferred.Status != PromotionManifestUpdated || len(env.gitops.specs) != 1 || len(env.gitops.specs[0].TargetClusters) != 1 || env.gitops.specs[0].TargetClusters[0].ClusterID != "cluster_shanghai" {
 		t.Fatalf("stage promotion should use the single bound cluster, promotion=%+v specs=%+v", inferred, env.gitops.specs)
 	}
+	if got := env.gitops.specs[0].TargetClusters[0].Namespace; got != "payment" {
+		t.Fatalf("default namespace should be Kubernetes-compatible, got %q", got)
+	}
 	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev", TargetClusterIDs: []shared.ID{"cluster_missing"}}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("cluster outside stage pool should fail, got %v", err)
 	}
@@ -615,6 +660,66 @@ func TestCreatePromotionWithSingleBoundStageCluster(t *testing.T) {
 	target := env.gitops.specs[0].TargetClusters[0]
 	if target.ClusterID != "cluster_shanghai" || target.Namespace != "order-dev" || target.ClusterName != "上海集群" {
 		t.Fatalf("unexpected gitops target cluster: %+v", target)
+	}
+}
+
+func TestCreatePromotionWithDeletedStageClusterReturnsReadableMessage(t *testing.T) {
+	env := newDeliveryEnv(t)
+	env.svc.clusters = fakeClusterQuery{clusters: map[shared.ID]ClusterRef{}}
+	ctx := context.Background()
+	freight := seedFreight(t, env)
+	if _, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		StageKey: "dev",
+		Clusters: []StageClusterBindingInput{
+			{ClusterID: "cluster_shanghai", ClusterName: "上海集群"},
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceStageClusterBindings() error = %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(env.svc).Register(mux)
+	body := mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetClusterIDs: []shared.ID{"cluster_shanghai"}})
+	rec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/delivery/stages/dev/promotions", body)
+
+	assertStatus(t, rec, http.StatusNotFound)
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if payload.Error.Code != string(shared.CodeNotFound) || payload.Error.Message != "目标集群不存在或已被删除，请重新绑定 Stage 集群" {
+		t.Fatalf("unexpected error payload: %+v", payload.Error)
+	}
+}
+
+func TestReadableNotFoundMessagesForPromotionFlow(t *testing.T) {
+	cases := []struct {
+		name    string
+		message string
+		want    string
+	}{
+		{name: "cluster", message: "cluster not found", want: "目标集群不存在或已被删除，请重新绑定 Stage 集群"},
+		{name: "application", message: "application not found", want: "应用不存在或已被删除"},
+		{name: "environment", message: "environment not found", want: "目标环境不存在或已被删除"},
+		{name: "workload", message: "workload not found", want: "工作负载不存在或已被删除"},
+		{name: "deployment template", message: "deployment template not found", want: "部署模板不存在，请先初始化应用部署模板"},
+		{name: "application template", message: "application template not found", want: "部署模板不存在，请先初始化应用部署模板"},
+		{name: "platform template", message: "platform template not found", want: "部署模板不存在，请先初始化应用部署模板"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := readableErrorMessage(shared.NewError(shared.CodeNotFound, tt.message))
+			if got != tt.want {
+				t.Fatalf("readableErrorMessage(%q) = %q, want %q", tt.message, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -780,44 +885,59 @@ func TestGetFreightDetailIncludesItems(t *testing.T) {
 	}
 }
 
-func TestManualFreightRejectsDirectPipelineArtifactWithoutDigestOrCommit(t *testing.T) {
-	tests := []struct {
-		name     string
-		run      BuildRunRef
-		artifact BuildArtifactRef
-	}{
-		{
-			name:     "missing digest",
-			run:      BuildRunRef{ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", CommitSHA: "abcdef1234567890"},
-			artifact: BuildArtifactRef{ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:abcdef"},
+func TestManualFreightAcceptsDirectPipelineArtifactWithoutDigest(t *testing.T) {
+	env := newDeliveryEnv(t)
+	env.svc.builds = fakeBuildQuery{
+		runs: map[shared.ID]BuildRunRef{
+			"build_1": {ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", CommitSHA: "abcdef1234567890"},
 		},
-		{
-			name:     "missing commit",
-			run:      BuildRunRef{ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user"},
-			artifact: BuildArtifactRef{ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:abcdef", Digest: "sha256:abc"},
+		artifacts: map[shared.ID]BuildArtifactRef{
+			"artifact_1": {ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:abcdef"},
 		},
 	}
+	freight, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{
+		Actor:         actor("usr_dev"),
+		ApplicationID: "app_user",
+		Items: []CreateFreightItemInput{{
+			WorkloadID:      "workload_api",
+			SourceType:      FreightItemPipelineArtifact,
+			BuildArtifactID: "artifact_1",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateFreight() should allow pipeline artifact without digest: %v", err)
+	}
+	detail, err := env.svc.GetFreightDetail(context.Background(), freight.ID)
+	if err != nil || len(detail.Items) != 1 || detail.Items[0].Digest != "" || detail.Items[0].ImageRef != "registry.example/paas/user-api:abcdef" {
+		t.Fatalf("freight item should keep image without digest, got %+v, %v", detail, err)
+	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			env := newDeliveryEnv(t)
-			env.svc.builds = fakeBuildQuery{
-				runs:      map[shared.ID]BuildRunRef{tt.run.ID: tt.run},
-				artifacts: map[shared.ID]BuildArtifactRef{tt.artifact.ID: tt.artifact},
-			}
-			_, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{
-				Actor:         actor("usr_dev"),
-				ApplicationID: "app_user",
-				Items: []CreateFreightItemInput{{
-					WorkloadID:      "workload_api",
-					SourceType:      FreightItemPipelineArtifact,
-					BuildArtifactID: tt.artifact.ID,
-				}},
-			})
-			if shared.CodeOf(err) != shared.CodeFailedPrecondition {
-				t.Fatalf("CreateFreight() error = %v, want failed_precondition", err)
-			}
-		})
+func TestManualFreightAcceptsDirectPipelineArtifactWithoutCommit(t *testing.T) {
+	env := newDeliveryEnv(t)
+	env.svc.builds = fakeBuildQuery{
+		runs: map[shared.ID]BuildRunRef{
+			"build_1": {ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user"},
+		},
+		artifacts: map[shared.ID]BuildArtifactRef{
+			"artifact_1": {ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:abcdef", Digest: "sha256:abc"},
+		},
+	}
+	freight, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{
+		Actor:         actor("usr_dev"),
+		ApplicationID: "app_user",
+		Items: []CreateFreightItemInput{{
+			WorkloadID:      "workload_api",
+			SourceType:      FreightItemPipelineArtifact,
+			BuildArtifactID: "artifact_1",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateFreight() should allow pipeline artifact without commit: %v", err)
+	}
+	detail, err := env.svc.GetFreightDetail(context.Background(), freight.ID)
+	if err != nil || len(detail.Items) != 1 || detail.Items[0].Digest != "sha256:abc" || detail.Items[0].ImageRef != "registry.example/paas/user-api:abcdef" {
+		t.Fatalf("freight item should keep image without commit, got %+v, %v", detail, err)
 	}
 }
 
@@ -1097,6 +1217,21 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	assertStatus(t, promoRec, http.StatusCreated)
 	var promotion Promotion
 	_ = json.NewDecoder(promoRec.Body).Decode(&promotion)
+	stagePromotionBody := mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetClusterIDs: []shared.ID{"cluster_shanghai"}, NamespaceOverride: "order-dev"})
+	stagePromotionRec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/delivery/stages/"+appStagesOut.Items[0].DeliveryStageID.String()+"/promotions", stagePromotionBody)
+	assertStatus(t, stagePromotionRec, http.StatusCreated)
+	var stagePromotion Promotion
+	_ = json.NewDecoder(stagePromotionRec.Body).Decode(&stagePromotion)
+	if stagePromotion.TargetStageKey != "dev" || stagePromotion.NamespaceOverride != "order-dev" {
+		t.Fatalf("stage route should derive stage target from path, got %+v", stagePromotion)
+	}
+	stageKeyPromotionRec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/delivery/stages/dev/promotions", stagePromotionBody)
+	assertStatus(t, stageKeyPromotionRec, http.StatusCreated)
+	var stageKeyPromotion Promotion
+	_ = json.NewDecoder(stageKeyPromotionRec.Body).Decode(&stageKeyPromotion)
+	if stageKeyPromotion.TargetStageKey != "dev" {
+		t.Fatalf("stage route should accept stage key path value, got %+v", stageKeyPromotion)
+	}
 	freightApprovalRec := serveJSON(mux, http.MethodPost, "/api/freights/"+freight.ID.String()+"/approvals", mustJSON(t, FreightApprovalInput{Actor: actor("usr_ops"), TargetStageKey: "dev", Decision: FreightApprovalApproved, Comment: "同意"}))
 	assertStatus(t, freightApprovalRec, http.StatusCreated)
 	verificationRec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/stages/dev/verification", mustJSON(t, StageVerificationInput{Actor: actor("usr_ops"), FreightID: freight.ID, Status: StageVerificationPassed, Comment: "验证通过", SyncStatus: "Synced", HealthStatus: "Healthy", AgentStatus: "ready"}))
@@ -1137,6 +1272,55 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions/missing/reject", rejectBody), http.StatusNotFound)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/promotions/missing", nil), http.StatusNotFound)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights?page=x", nil), http.StatusOK)
+}
+
+func TestHandlerWritesReadablePromotionPreconditionError(t *testing.T) {
+	env := newDeliveryEnv(t)
+	mux := http.NewServeMux()
+	NewHandler(env.svc).Register(mux)
+	freight := seedFreight(t, env)
+
+	body := mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID})
+	rec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/delivery/stages/dev/promotions", body)
+	assertStatus(t, rec, http.StatusPreconditionFailed)
+
+	var out struct {
+		Error struct {
+			Code    shared.ErrorCode `json:"code"`
+			Message string           `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if out.Error.Code != shared.CodeFailedPrecondition || out.Error.Message != "该 Stage 未绑定集群，请先在交付流模板中绑定集群" {
+		t.Fatalf("unexpected error response: %+v", out.Error)
+	}
+}
+
+func TestFreightCreationContextBackfillsMissingReleaseFromSucceededBuild(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	env.svc.builds = fakeBuildQuery{
+		runs: map[shared.ID]BuildRunRef{
+			"build_2": {ID: "build_2", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: "pipeline_main", PipelineName: "main", PipelineDisplayName: "主流水线", Status: "succeeded"},
+		},
+		artifacts: map[shared.ID]BuildArtifactRef{
+			"artifact_2": {ID: "artifact_2", BuildRunID: "build_2", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:legacy", IsPrimary: true},
+		},
+	}
+
+	contextOut, err := env.svc.GetFreightCreationContext(ctx, "app_user")
+	if err != nil {
+		t.Fatalf("GetFreightCreationContext() error = %v", err)
+	}
+	release := contextOut.LatestReleasesByWorkload["workload_api"]
+	if release.ID.IsZero() || release.BuildRunID != "build_2" || release.Version != "build-build_2" || release.CommitSHA != "" || release.ImageDigest != "" || release.ImageURI != "registry.example/paas/user-api:legacy" {
+		t.Fatalf("creation context should backfill release from successful build without commit, got %+v", release)
+	}
+	if artifact := contextOut.LatestArtifactsByWorkload["workload_api"]; artifact.ID != "artifact_2" {
+		t.Fatalf("creation context should expose backfilled artifact, got %+v", contextOut.LatestArtifactsByWorkload)
+	}
 }
 
 func TestFailureBranchesAndRepositoryContracts(t *testing.T) {

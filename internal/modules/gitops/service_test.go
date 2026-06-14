@@ -153,6 +153,9 @@ func (m gitopsErrManifest) CreateMergeRequest(context.Context, MergeRequestSpec)
 func (m gitopsErrManifest) GetMergeRequest(context.Context, string) (MergeRequest, error) {
 	return MergeRequest{}, m.err
 }
+func (m gitopsErrManifest) CreateTag(context.Context, string, string) (TagResult, error) {
+	return TagResult{}, m.err
+}
 
 type errAppQuery struct{ err error }
 
@@ -242,6 +245,104 @@ func TestTemplatePolicyValidationRejectsPrivilegedAndAllowsInitContainer(t *test
 	}
 }
 
+func TestApplyPromotionInitializesMissingDeploymentTemplate(t *testing.T) {
+	svc, manifest, _ := newTestService(t, []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform",
+		"deployment_template_app", "deployment_template_revision_app",
+		"deployment_1", "manifest_revision_1", "deployment_event_1",
+	})
+
+	result, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID:   "promotion_dev",
+		FreightID:     "freight_1",
+		ApplicationID: "app_1",
+		EnvironmentID: "env_dev",
+		ImageURI:      "registry/order-api:v1",
+		ImageDigest:   "sha256:old",
+	})
+	if err != nil {
+		t.Fatalf("ApplyPromotion() should initialize missing deployment template: %v", err)
+	}
+	if result.ManifestRevision == "" || len(manifest.Commits) != 1 {
+		t.Fatalf("promotion should commit manifest after template initialization, result=%+v commits=%+v", result, manifest.Commits)
+	}
+	platform, err := svc.repo.FindPlatformTemplate(context.Background(), "java")
+	if err != nil || platform.Scope != TemplateScopePlatform || platform.Content == "" {
+		t.Fatalf("default platform template should be initialized, got %+v err=%v", platform, err)
+	}
+	appTemplate, err := svc.repo.FindApplicationTemplate(context.Background(), "app_1")
+	if err != nil || appTemplate.Scope != TemplateScopeApplication || appTemplate.Content != platform.Content {
+		t.Fatalf("application template should be initialized from platform template, got %+v err=%v", appTemplate, err)
+	}
+}
+
+func TestApplyPromotionWritesVersionedChartAndMultiSourceArgoApplication(t *testing.T) {
+	chartRepo := NewFakeManifestRepository()
+	svc, manifest, _ := newTestService(t, []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform",
+		"deployment_template_app", "deployment_template_revision_app",
+		"deployment_1", "manifest_revision_1", "deployment_event_1",
+	})
+	svc.chart = chartRepo
+	svc.manifestRepoURL = "ssh://git@gitlab.example/paas/manifests.git"
+	svc.chartRepoURL = "ssh://git@gitlab.example/paas/charts.git"
+	svc.chartName = "paas-app"
+	svc.chartVersion = "0.1.0"
+	svc.workloads = workloadQuery{
+		workloads: map[shared.ID]WorkloadRef{
+			"workload_api":    {ID: "workload_api", ApplicationID: "app_1", Name: "user-api", WorkloadType: "Deployment"},
+			"workload_worker": {ID: "workload_worker", ApplicationID: "app_1", Name: "order-worker", WorkloadType: "StatefulSet"},
+		},
+	}
+
+	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev",
+		Artifacts: []delivery.GitOpsArtifactSpec{
+			{WorkloadID: "workload_api", URI: "registry/user-api:v2", Repository: "registry/user-api", Tag: "v2", IsPrimary: true},
+			{WorkloadID: "workload_worker", URI: "registry/order-worker:v5", Repository: "registry/order-worker", Tag: "v5"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPromotion() error = %v", err)
+	}
+	if chartRepo.Files["charts/paas-app/Chart.yaml"] == "" || !strings.Contains(chartRepo.Files["charts/paas-app/templates/workloads.yaml"], "range $name, $workload := .Values.workloads") {
+		t.Fatalf("platform chart should be written to chart repo, files=%+v", chartRepo.Files)
+	}
+	if !strings.Contains(chartRepo.Files["charts/paas-app/templates/workloads.yaml"], "app.kubernetes.io/instance: {{ $resourceName | quote }}") {
+		t.Fatalf("platform chart should include workload instance labels:\n%s", chartRepo.Files["charts/paas-app/templates/workloads.yaml"])
+	}
+	if !strings.Contains(chartRepo.Files["charts/paas-app/templates/workloads.yaml"], `$resourceName := printf "%s-%s" $name $.Values.environment`) {
+		t.Fatalf("platform chart should derive environment-scoped resource names:\n%s", chartRepo.Files["charts/paas-app/templates/workloads.yaml"])
+	}
+	if len(chartRepo.Tags) != 1 || chartRepo.Tags["paas-app-v0.1.0"] != "main" {
+		t.Fatalf("chart repo should be tagged with fixed version, tags=%+v", chartRepo.Tags)
+	}
+	argo := manifest.Files["argocd/apps/dev/order-api-dev.yaml"]
+	if _, ok := manifest.Files["argocd/apps/order-api-dev.yaml"]; ok {
+		t.Fatalf("argo application should be written under environment directory, files=%+v", manifest.Files)
+	}
+	for _, expected := range []string{
+		"name: order-api-dev",
+		"project: default",
+		"server: https://kubernetes.default.svc",
+		"repoURL: ssh://git@gitlab.example/paas/charts.git",
+		"targetRevision: paas-app-v0.1.0",
+		"path: charts/paas-app",
+		"repoURL: ssh://git@gitlab.example/paas/manifests.git",
+		"ref: values",
+		"$values/apps/order-api/dev/values.yaml",
+		"syncPolicy:",
+		"prune: true",
+		"selfHeal: true",
+		"CreateNamespace=true",
+		"ServerSideApply=true",
+	} {
+		if !strings.Contains(argo, expected) {
+			t.Fatalf("argo application should contain %q:\n%s", expected, argo)
+		}
+	}
+}
+
 func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t *testing.T) {
 	ids := []shared.ID{
 		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
@@ -276,6 +377,19 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 	if !strings.Contains(manifest.Files["apps/order-api/dev/values.yaml"], "sha256:old") || !strings.Contains(manifest.Files["apps/order-api/test/values.yaml"], "sha256:test") || !strings.Contains(manifest.Files["apps/order-api/staging/values.yaml"], "sha256:staging") || !strings.Contains(manifest.Files["apps/order-api/prod/values.yaml"], "sha256:rollback") {
 		t.Fatalf("values files did not contain expected digests: %#v", manifest.Files)
 	}
+	for _, path := range []string{
+		"argocd/apps/dev/order-api-dev.yaml",
+		"argocd/apps/test/order-api-test.yaml",
+		"argocd/apps/staging/order-api-staging.yaml",
+		"argocd/apps/prod/order-api-prod.yaml",
+	} {
+		if manifest.Files[path] == "" {
+			t.Fatalf("argo application missing environment-scoped path %q: %#v", path, manifest.Files)
+		}
+	}
+	if _, ok := manifest.Files["argocd/apps/dev/order-api-dev-binding_dev.yaml"]; ok {
+		t.Fatalf("argo application name should not include cluster binding id: %#v", manifest.Files)
+	}
 	if err := svc.UpdateFromAgent(context.Background(), clusteragent.StatusReport{Applications: []clusteragent.ApplicationStatus{{DeploymentID: "deployment_1", SyncStatus: "Synced", HealthStatus: "Healthy", Message: "ok"}}}); err != nil {
 		t.Fatalf("agent update: %v", err)
 	}
@@ -295,7 +409,6 @@ func TestApplyPromotionCreatesDeploymentPerSelectedStageCluster(t *testing.T) {
 	ids := []shared.ID{
 		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
 		"deployment_shanghai", "manifest_shanghai", "event_shanghai",
-		"deployment_beijing", "manifest_beijing", "event_beijing",
 	}
 	svc, manifest, _ := newTestService(t, ids)
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
@@ -311,24 +424,50 @@ func TestApplyPromotionCreatesDeploymentPerSelectedStageCluster(t *testing.T) {
 		ImageDigest:   "sha256:multi",
 		TargetClusters: []delivery.GitOpsPromotionTargetCluster{
 			{ClusterID: "cluster_shanghai", ClusterName: "上海集群", Namespace: "order-dev"},
-			{ClusterID: "cluster_beijing", ClusterName: "北京集群", Namespace: "order-dev"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("ApplyPromotion() error = %v", err)
 	}
 	if result.ManifestRevision == "" || len(manifest.Commits) != 1 {
-		t.Fatalf("multi-cluster dev promotion should commit once, result=%+v commits=%d", result, len(manifest.Commits))
+		t.Fatalf("stage cluster promotion should commit once, result=%+v commits=%d", result, len(manifest.Commits))
 	}
-	if !strings.Contains(manifest.Files["apps/order-api/dev/cluster_shanghai/values.yaml"], "sha256:multi") || !strings.Contains(manifest.Files["apps/order-api/dev/cluster_beijing/values.yaml"], "sha256:multi") {
-		t.Fatalf("cluster-specific values files missing digest: %#v", manifest.Files)
+	if !strings.Contains(manifest.Files["apps/order-api/dev/values.yaml"], "sha256:multi") {
+		t.Fatalf("environment values file missing digest: %#v", manifest.Files)
+	}
+	if _, ok := manifest.Files["apps/order-api/dev/cluster_shanghai/values.yaml"]; ok {
+		t.Fatalf("environment bound to one cluster should not write cluster-specific values path: %#v", manifest.Files)
 	}
 	page, err := svc.ListDeployments(context.Background(), "app_1", shared.PageRequest{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("ListDeployments() error = %v", err)
 	}
-	if page.Total != 2 {
-		t.Fatalf("expected one deployment per target cluster, got %+v", page)
+	if page.Total != 1 {
+		t.Fatalf("expected one deployment for selected stage cluster, got %+v", page)
+	}
+}
+
+func TestApplyPromotionRejectsMultipleTargetClusters(t *testing.T) {
+	ids := []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
+	}
+	svc, _, _ := newTestService(t, ids)
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+
+	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID:   "promotion_dev_multi",
+		FreightID:     "freight_1",
+		ApplicationID: "app_1",
+		EnvironmentID: "env_dev",
+		ImageURI:      "registry/order-api:v2",
+		TargetClusters: []delivery.GitOpsPromotionTargetCluster{
+			{ClusterID: "cluster_shanghai", ClusterName: "上海集群", Namespace: "order-dev"},
+			{ClusterID: "cluster_beijing", ClusterName: "北京集群", Namespace: "order-dev"},
+		},
+	})
+	if shared.CodeOf(err) != shared.CodeInvalidArgument || !strings.Contains(err.Error(), "一个环境只能绑定一个集群") {
+		t.Fatalf("expected multiple target clusters to be rejected, got %v", err)
 	}
 }
 
@@ -346,15 +485,12 @@ func TestApplyPromotionSelectsImageBundleVariantByTargetClusterLabels(t *testing
 	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
 
 	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
-		PromotionID:   "promotion_bundle",
-		FreightID:     "freight_bundle",
-		ApplicationID: "app_1",
-		EnvironmentID: "env_dev",
-		StageKey:      "dev",
-		TargetClusters: []delivery.GitOpsPromotionTargetCluster{
-			{ClusterID: "cluster_aliyun", ClusterName: "阿里云集群", Namespace: "order-dev", Labels: map[string]string{"cloud": "aliyun"}},
-			{ClusterID: "cluster_aws", ClusterName: "AWS 集群", Namespace: "order-dev", Labels: map[string]string{"cloud": "aws"}},
-		},
+		PromotionID:    "promotion_bundle",
+		FreightID:      "freight_bundle",
+		ApplicationID:  "app_1",
+		EnvironmentID:  "env_dev",
+		StageKey:       "dev",
+		TargetClusters: []delivery.GitOpsPromotionTargetCluster{{ClusterID: "cluster_aliyun", ClusterName: "阿里云集群", Namespace: "order-dev", Labels: map[string]string{"cloud": "aliyun"}}},
 		Artifacts: []delivery.GitOpsArtifactSpec{{
 			WorkloadID: "workload_api",
 			Name:       "订单 API",
@@ -368,13 +504,9 @@ func TestApplyPromotionSelectsImageBundleVariantByTargetClusterLabels(t *testing
 	if err != nil {
 		t.Fatalf("ApplyPromotion() error = %v", err)
 	}
-	aliyunValues := manifest.Files["apps/order-api/dev/cluster_aliyun/values.yaml"]
-	awsValues := manifest.Files["apps/order-api/dev/cluster_aws/values.yaml"]
-	if !strings.Contains(aliyunValues, "tag: aliyun") || !strings.Contains(aliyunValues, "digest: sha256:aliyun") {
-		t.Fatalf("aliyun cluster should use aliyun image:\n%s", aliyunValues)
-	}
-	if !strings.Contains(awsValues, "tag: aws") || !strings.Contains(awsValues, "digest: sha256:aws") {
-		t.Fatalf("aws cluster should use aws image:\n%s", awsValues)
+	values := manifest.Files["apps/order-api/dev/values.yaml"]
+	if !strings.Contains(values, "tag: aliyun") || !strings.Contains(values, "digest: sha256:aliyun") {
+		t.Fatalf("selected cluster should use matching image:\n%s", values)
 	}
 }
 

@@ -58,10 +58,11 @@ type FakeManifestRepositoryAdapter struct {
 	Files   map[string]string
 	Commits []gitops.CommitSpec
 	MRs     []gitops.MergeRequestSpec
+	Tags    map[string]string
 }
 
 func NewFakeManifestRepositoryAdapter() *FakeManifestRepositoryAdapter {
-	return &FakeManifestRepositoryAdapter{Files: map[string]string{}}
+	return &FakeManifestRepositoryAdapter{Files: map[string]string{}, Tags: map[string]string{}}
 }
 
 func (f *FakeManifestRepositoryAdapter) ReadFile(_ context.Context, path string, _ string) (string, error) {
@@ -87,4 +88,15 @@ func (f *FakeManifestRepositoryAdapter) CreateMergeRequest(_ context.Context, sp
 }
 func (f *FakeManifestRepositoryAdapter) GetMergeRequest(_ context.Context, mrID string) (gitops.MergeRequest, error) {
 	return gitops.MergeRequest{ID: mrID, State: "opened", WebURL: "https://gitlab.example/mr/" + mrID}, nil
+}
+
+func (f *FakeManifestRepositoryAdapter) CreateTag(_ context.Context, name string, ref string) (gitops.TagResult, error) {
+	if f.Tags == nil {
+		f.Tags = map[string]string{}
+	}
+	if existing := f.Tags[name]; existing != "" {
+		return gitops.TagResult{Name: name, Ref: existing}, nil
+	}
+	f.Tags[name] = ref
+	return gitops.TagResult{Name: name, Ref: ref}, nil
 }

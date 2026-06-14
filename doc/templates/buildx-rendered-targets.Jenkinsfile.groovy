@@ -110,6 +110,8 @@ pipeline {
             git checkout --detach "$commit"
             git reset --hard "$commit"
             git clean -fdx
+            mkdir -p "$WORKSPACE/report"
+            printf '%s\n' "$commit" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
           '''
         }
       }
@@ -249,7 +251,8 @@ pipeline {
       script {
         if ((env.PAAS_CALLBACK_URL ?: '').trim() && fileExists('report/primary-image.txt')) {
           def image = readFile('report/primary-image.txt').trim()
-          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', image_uri: image])
+          def commit = fileExists('report/source-{{ .PrimarySourceKey }}-commit.txt') ? readFile('report/source-{{ .PrimarySourceKey }}-commit.txt').trim() : ''
+          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', image_uri: image, commit_sha: commit])
           sh 'curl -fsS -X POST "$PAAS_CALLBACK_URL" -H "Content-Type: application/json" --data-binary @report/callback-success.json'
         }
       }

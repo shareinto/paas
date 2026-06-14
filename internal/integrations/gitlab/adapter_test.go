@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -186,10 +187,23 @@ func TestGitLabClientRetriesUnavailableStatus(t *testing.T) {
 
 func TestManifestRepositoryAdapterCommitAndMR(t *testing.T) {
 	commitCalls := 0
+	var commitBodies []map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/repository/files/"):
+			if strings.Contains(r.URL.Path, "existing.yaml") {
+				_ = json.NewEncoder(w).Encode(map[string]any{"content": "b2xk", "encoding": "base64"})
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"404 File Not Found"}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v4/projects/99/repository/commits":
 			commitCalls++
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode commit body: %v", err)
+			}
+			commitBodies = append(commitBodies, body)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "abc123"})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v4/projects/99/merge_requests":
 			_ = json.NewEncoder(w).Encode(map[string]any{"iid": 7, "sha": "def456", "web_url": "https://gitlab.example/mr/7"})
@@ -199,7 +213,7 @@ func TestManifestRepositoryAdapterCommitAndMR(t *testing.T) {
 	}))
 	defer server.Close()
 	adapter := NewManifestRepositoryAdapter(NewClient(Config{BaseURL: server.URL}), "99")
-	commit, err := adapter.CommitFiles(context.Background(), gitops.CommitSpec{Branch: "main", Message: "deploy", Files: []gitops.CommitFile{{Path: "apps/order/dev/values.yaml", Content: "image: v1"}}})
+	commit, err := adapter.CommitFiles(context.Background(), gitops.CommitSpec{Branch: "main", Message: "deploy", Files: []gitops.CommitFile{{Path: "apps/order/dev/values.yaml", Content: "image: v1"}, {Path: "apps/order/dev/existing.yaml", Content: "image: v2"}}})
 	if err != nil {
 		t.Fatalf("commit: %v", err)
 	}
@@ -212,6 +226,37 @@ func TestManifestRepositoryAdapterCommitAndMR(t *testing.T) {
 	}
 	if mr.ID != "7" || commitCalls != 2 {
 		t.Fatalf("unexpected mr result: %#v commitCalls=%d", mr, commitCalls)
+	}
+	firstActions := commitBodies[0]["actions"].([]any)
+	if firstActions[0].(map[string]any)["action"] != "create" || firstActions[1].(map[string]any)["action"] != "update" {
+		t.Fatalf("commit should create missing files and update existing files, body=%+v", commitBodies[0])
+	}
+	if commitBodies[1]["start_branch"] != "main" {
+		t.Fatalf("MR commit should create source branch from target branch, body=%+v", commitBodies[1])
+	}
+}
+
+func TestManifestRepositoryAdapterCreatesTagAndReusesExistingTag(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v4/projects/99/repository/tags" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		calls++
+		if calls == 2 {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"message":"Tag already exists"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"name": "paas-app-v0.1.0", "target": "abc123"})
+	}))
+	defer server.Close()
+	adapter := NewManifestRepositoryAdapter(NewClient(Config{BaseURL: server.URL}), "99")
+	if tag, err := adapter.CreateTag(context.Background(), "paas-app-v0.1.0", "main"); err != nil || tag.Name != "paas-app-v0.1.0" {
+		t.Fatalf("create tag: tag=%+v err=%v", tag, err)
+	}
+	if tag, err := adapter.CreateTag(context.Background(), "paas-app-v0.1.0", "main"); err != nil || tag.Name != "paas-app-v0.1.0" {
+		t.Fatalf("existing tag should be reused: tag=%+v err=%v", tag, err)
 	}
 }
 

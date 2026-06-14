@@ -163,6 +163,16 @@ test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID',
         }]
       }), { status: 200 });
     }
+    if (url.endsWith('/api/apps/app_other/delivery/stages/delivery_stage_real_dev/promotions') && options?.method === 'POST') {
+      const body = JSON.parse(String(options.body || '{}'));
+      expect(body).toMatchObject({
+        freight_id: 'freight_other',
+        target_stage_key: 'dev',
+        target_cluster_ids: ['cluster_shanghai'],
+        namespace_override: '外部订单平台'
+      });
+      return new Response(JSON.stringify({ id: 'promotion_other', freight_id: 'freight_other', target_stage_key: 'dev', status: 'manifest_updated' }), { status: 201 });
+    }
     if (url.endsWith('/api/apps/app_other/freights') && options?.method === 'POST') {
       return new Response(JSON.stringify({ id: 'freight_created', name: '手工 Freight', created_at: '2026-06-13T10:00:00Z' }), { status: 201 });
     }
@@ -186,7 +196,8 @@ test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID',
 	  const devCard = await screen.findByLabelText('dev Stage');
 	  dragFreightToStage(await freightCardByName('20260613.1'), devCard);
 	  expect(await within(devCard).findByLabelText('dev 发布确认')).toBeInTheDocument();
-	  await userEvent.click(within(devCard).getByRole('button', { name: /取\s*消/ }));
+	  await userEvent.click(within(devCard).getByRole('button', { name: /确\s*认\s*发\s*布/ }));
+	  expect(await screen.findByText('20260613.1 已提交到 dev，等待同步结果。')).toBeInTheDocument();
 
 	  await userEvent.click(await screen.findByRole('button', { name: '创建 Freight' }));
   const drawer = await screen.findByRole('dialog', { name: '创建 Freight' });
@@ -196,7 +207,177 @@ test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID',
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/freights?page=1&page_size=50', expect.any(Object));
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/freights/creation-context', expect.any(Object));
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/delivery/stages/delivery_stage_real_dev/eligible-freights', expect.any(Object));
+  expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/delivery/stages/delivery_stage_real_dev/promotions', expect.objectContaining({ method: 'POST' }));
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/freights', expect.objectContaining({ method: 'POST' }));
+});
+
+test('真实 API 返回无 digest 和 commit 的 Release 时仍可选择流水线产物', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.endsWith('/api/apps/app_legacy/freights?page=1&page_size=50')) {
+      return new Response(JSON.stringify({ items: [], total: 0, page: 1, page_size: 50 }), { status: 200 });
+    }
+    if (url.endsWith('/api/applications/app_legacy')) {
+      return new Response(JSON.stringify({ id: 'app_legacy', name: 'legacy-order', display_name: '旧模板订单', project_id: 'project_legacy', project: '订单平台' }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_legacy/stages')) {
+      return new Response(JSON.stringify({ items: [{
+        delivery_stage_id: 'stage_dev',
+        environment_id: 'env_dev',
+        stage_key: 'dev',
+        display_name: '开发',
+        color: '#ED204E',
+        order: 1,
+        layout_column: 0,
+        layout_row: 0,
+        status: 'enabled',
+        cluster_pool_size: 1,
+        upstream_stage_keys: [],
+        downstream_stage_keys: []
+      }] }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_legacy/freights/creation-context')) {
+      return new Response(JSON.stringify({
+        enabled_workloads: [{ id: 'workload_legacy_api', name: 'api', display_name: '旧模板接口', status: 'enabled' }],
+        latest_releases_by_workload: {
+          workload_legacy_api: {
+            id: 'release_legacy',
+            workload_id: 'workload_legacy_api',
+            version: 'build-build_legacy',
+            image_uri: 'registry.local/legacy-api:latest',
+            image_repository: 'registry.local/legacy-api',
+            image_tag: 'latest',
+            image_digest: '',
+            commit_sha: '',
+            build_artifact_id: 'artifact_legacy',
+            created_at: '2026-06-14T08:00:00Z'
+          }
+        },
+        latest_artifacts_by_workload: {},
+        stage_eligibility: { stage_dev: [] },
+        stages: [{ id: 'stage_dev', name: 'dev', environment_id: 'env_dev', approval_required: false }]
+      }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_legacy/delivery/stages/stage_dev/eligible-freights')) {
+      return new Response(JSON.stringify([]), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_legacy/freights') && options?.method === 'POST') {
+      const body = JSON.parse(String(options.body || '{}'));
+      expect(body.items[0]).toMatchObject({
+        workload_id: 'workload_legacy_api',
+        source_type: 'pipeline_artifact',
+        release_id: 'release_legacy',
+        build_artifact_id: 'artifact_legacy'
+      });
+      return new Response(JSON.stringify({ id: 'freight_legacy_created', name: body.name, created_at: '2026-06-14T08:10:00Z' }), { status: 201 });
+    }
+    return new Response('', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const { PromotionPage } = await import('./PromotionPage');
+  render(
+    <ConfigProvider>
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/apps/app_legacy/promotions']}>
+          <Routes>
+            <Route path="/apps/:id/promotions" element={<PromotionPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </ConfigProvider>
+  );
+
+  await userEvent.click(await screen.findByRole('button', { name: '创建 Freight' }));
+  const drawer = await screen.findByRole('dialog', { name: '创建 Freight' });
+  await userEvent.click(within(drawer).getByRole('button', { name: '从最新成功版本填充' }));
+  expect(within(drawer).getByText('registry.local/legacy-api:latest')).toBeInTheDocument();
+  await userEvent.click(within(drawer).getByRole('button', { name: '创建 Freight' }));
+
+  expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_legacy/freights', expect.objectContaining({ method: 'POST' }));
+});
+
+test('创建 Promotion 的 Stage 路由 404 时回退到旧 Promotion 接口', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.endsWith('/api/apps/app_1/delivery/stages/stage_dev/promotions') && options?.method === 'POST') {
+      return new Response('404 page not found', { status: 404 });
+    }
+    if (url.endsWith('/api/promotions') && options?.method === 'POST') {
+      const body = JSON.parse(String(options.body || '{}'));
+      expect(body).toMatchObject({
+        freight_id: 'freight_1',
+        target_stage_key: 'dev',
+        target_cluster_ids: ['cluster_shanghai']
+      });
+      return new Response(JSON.stringify({ id: 'promotion_1', freight_id: 'freight_1', target_stage_key: 'dev', status: 'manifest_updated' }), { status: 201 });
+    }
+    return new Response('', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const { createPromotion } = await import('../api');
+  await expect(createPromotion({
+    freightId: 'freight_1',
+    targetStageKey: 'dev',
+    targetClusterIds: ['cluster_shanghai']
+  }, 'app_1', 'stage_dev')).resolves.toMatchObject({ id: 'promotion_1' });
+
+  expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_1/delivery/stages/stage_dev/promotions', expect.objectContaining({ method: 'POST' }));
+  expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/promotions', expect.objectContaining({ method: 'POST' }));
+});
+
+test('创建 Promotion 的前置条件错误不回退旧接口并保留中文原因', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.endsWith('/api/apps/app_1/delivery/stages/stage_dev/promotions') && options?.method === 'POST') {
+      return new Response(JSON.stringify({ error: { code: 'failed_precondition', message: '该 Stage 未绑定集群，请先在交付流模板中绑定集群' } }), { status: 412 });
+    }
+    if (url.endsWith('/api/promotions') && options?.method === 'POST') {
+      throw new Error('failed_precondition must not fallback to legacy promotions endpoint');
+    }
+    return new Response('', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const { createPromotion } = await import('../api');
+  await expect(createPromotion({
+    freightId: 'freight_1',
+    targetStageKey: 'dev'
+  }, 'app_1', 'stage_dev')).rejects.toMatchObject({
+    code: 'failed_precondition',
+    message: '该 Stage 未绑定集群，请先在交付流模板中绑定集群'
+  });
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_1/delivery/stages/stage_dev/promotions', expect.objectContaining({ method: 'POST' }));
+});
+
+test('创建 Promotion 的业务资源不存在不回退旧接口并保留中文原因', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.endsWith('/api/apps/app_1/delivery/stages/stage_dev/promotions') && options?.method === 'POST') {
+      return new Response(JSON.stringify({ error: { code: 'not_found', message: '目标集群不存在或已被删除，请重新绑定 Stage 集群' } }), { status: 404 });
+    }
+    if (url.endsWith('/api/promotions') && options?.method === 'POST') {
+      throw new Error('business not_found must not fallback to legacy promotions endpoint');
+    }
+    return new Response('', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const { createPromotion } = await import('../api');
+  await expect(createPromotion({
+    freightId: 'freight_1',
+    targetStageKey: 'dev',
+    targetClusterIds: ['cluster_shanghai']
+  }, 'app_1', 'stage_dev')).rejects.toMatchObject({
+    code: 'not_found',
+    message: '目标集群不存在或已被删除，请重新绑定 Stage 集群'
+  });
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_1/delivery/stages/stage_dev/promotions', expect.objectContaining({ method: 'POST' }));
 });
 
 async function freightCardByName(name: string) {

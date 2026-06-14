@@ -377,6 +377,8 @@ const defaultBuildTemplateContent = `pipeline {
             git checkout --detach "$commit"
             git reset --hard "$commit"
             git clean -fdx
+            mkdir -p "$WORKSPACE/report"
+            printf '%s\n' "$commit" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
           '''
         }
       }
@@ -515,7 +517,8 @@ const defaultBuildTemplateContent = `pipeline {
       script {
         if ((env.PAAS_CALLBACK_URL ?: '').trim() && fileExists('report/primary-image.txt')) {
           def image = readFile('report/primary-image.txt').trim()
-          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', image_uri: image])
+          def commit = fileExists('report/source-{{ .PrimarySourceKey }}-commit.txt') ? readFile('report/source-{{ .PrimarySourceKey }}-commit.txt').trim() : ''
+          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', image_uri: image, commit_sha: commit])
           sh 'curl -fsS -X POST "$PAAS_CALLBACK_URL" -H "Content-Type: application/json" --data-binary @report/callback-success.json'
         }
       }
@@ -1430,7 +1433,11 @@ func (s *Service) HandleBuildCallback(ctx context.Context, input BuildCallbackIn
 			artifactIDs = append(artifactIDs, artifact.ID)
 		}
 		workloadIDs, _ := s.pipelineBoundWorkloadIDs(ctx, run.ApplicationID, run.PipelineID)
-		_ = s.publish(ctx, "BuildSucceeded", now, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, WorkloadIDs: workloadIDs, PipelineID: run.PipelineID, PipelineName: run.PipelineName, PipelineDisplayName: run.PipelineDisplayName, BuildArtifactID: run.PrimaryArtifactID, BuildArtifactIDs: artifactIDs, CommitSHA: run.CommitSHA})
+		if err := s.publish(ctx, "BuildSucceeded", now, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, WorkloadIDs: workloadIDs, PipelineID: run.PipelineID, PipelineName: run.PipelineName, PipelineDisplayName: run.PipelineDisplayName, BuildArtifactID: run.PrimaryArtifactID, BuildArtifactIDs: artifactIDs, CommitSHA: run.CommitSHA}); err != nil {
+			run.ErrorMessage = "BuildSucceeded event publish failed: " + strings.TrimSpace(err.Error())
+			run.UpdatedAt = s.clock.Now()
+			_ = s.repo.UpdateRun(ctx, run)
+		}
 	} else if terminalStatus(input.Status) {
 		_ = s.publish(ctx, "BuildFailed", now, BuildFailedPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, Status: string(run.Status), Message: run.ErrorMessage})
 	}

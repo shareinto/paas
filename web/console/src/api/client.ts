@@ -6,10 +6,12 @@ export type PageResult<T> = { items: T[]; total: number; page: number; page_size
 
 export class APIError extends Error {
   code: string;
+  status?: number;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, status?: number) {
     super(message);
     this.code = code;
+    this.status = status;
   }
 }
 
@@ -30,13 +32,13 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   });
   if (response.status === 401) {
     useSession.getState().clear();
-    throw new APIError('unauthenticated', '会话已过期，请重新登录');
+    throw new APIError('unauthenticated', '会话已过期，请重新登录', response.status);
   }
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : undefined;
+  const payload = parseJSONPayload(text);
   if (!response.ok) {
     const error = payload?.error;
-    throw new APIError(error?.code || 'request_failed', error?.message || '请求处理失败');
+    throw new APIError(error?.code || 'request_failed', error?.message || '请求处理失败', response.status);
   }
   return payload as T;
 }
@@ -55,6 +57,15 @@ export async function requestText(path: string, options: RequestInit = {}): Prom
     throw new APIError('request_failed', '请求处理失败');
   }
   return text;
+}
+
+function parseJSONPayload(text: string) {
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 export type SSEEvent = { event: string; data: string };
