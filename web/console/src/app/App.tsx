@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { useSession } from './store';
 import { ConsoleLayout } from '../components/ConsoleLayout';
 import { LoginPage } from '../pages/LoginPage';
@@ -8,11 +8,10 @@ import { ProjectDetailPage } from '../pages/ProjectDetailPage';
 import { ApplicationsPage } from '../pages/ApplicationsPage';
 import { CreateApplicationPage } from '../pages/CreateApplicationPage';
 import { EditApplicationPage } from '../pages/EditApplicationPage';
-import { ApplicationDetailPage } from '../pages/ApplicationDetailPage';
+import { ApplicationWorkspacePage } from '../pages/ApplicationDetailPage';
 import { SourceRepositoriesPage } from '../pages/SourceRepositoriesPage';
 import { SourceRepositoryDetailPage } from '../pages/SourceRepositoryDetailPage';
 import { FreightsPage } from '../pages/FreightsPage';
-import { PromotionPage } from '../pages/PromotionPage';
 import { AuditPage } from '../pages/AuditPage';
 import { TemplateConfigPage } from '../pages/TemplateConfigPage';
 import { DeliveryFlowTemplatePage } from '../pages/DeliveryFlowTemplatePage';
@@ -38,8 +37,11 @@ export function App() {
         <Route path="apps" element={<ApplicationsPage />} />
         <Route path="apps/new" element={<CreateApplicationPage />} />
         <Route path="apps/:id/edit" element={<EditApplicationPage />} />
-        <Route path="apps/:id/promotions" element={<PromotionPage />} />
-        <Route path="apps/:id" element={<ApplicationDetailPage />} />
+        <Route path="apps/:id/build" element={<ApplicationWorkspacePage section="build" />} />
+        <Route path="apps/:id/deploy" element={<ApplicationWorkspacePage section="deploy" />} />
+        <Route path="apps/:id/config" element={<ApplicationWorkspacePage section="config" />} />
+        <Route path="apps/:id/promotions" element={<LegacyApplicationSectionRedirect section="deploy" />} />
+        <Route path="apps/:id" element={<LegacyApplicationSectionRedirect section="build" />} />
         <Route path="freights" element={<FreightsPage />} />
         <Route path="promotions" element={<Navigate to="/apps" replace />} />
         <Route path="audit" element={<AuditPage />} />
@@ -50,4 +52,9 @@ export function App() {
       </Route>
     </Routes>
   );
+}
+
+function LegacyApplicationSectionRedirect({ section }: { section: 'build' | 'deploy' | 'config' }) {
+  const { id = '' } = useParams();
+  return <Navigate to={id ? `/apps/${id}/${section}` : '/apps'} replace />;
 }

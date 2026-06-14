@@ -54,6 +54,7 @@ test('真实 API 创建 Workload 使用服务端响应作为缓存数据来源',
         display_name: '订单任务',
         workload_type: 'statefulset',
         image_source_mode: 'pipeline_artifact',
+        pipeline_id: 'pipeline_1',
         image_source_name: '主流水线',
         status: 'enabled'
       }, 201);
@@ -67,6 +68,7 @@ test('真实 API 创建 Workload 使用服务端响应作为缓存数据来源',
     displayName: '订单任务',
     workloadType: 'statefulset',
     imageSourceMode: 'custom_image',
+    pipelineId: 'pipeline_1',
     customImage: 'registry.example.com/order/worker:20260611',
     replicas: 2
   })).resolves.toMatchObject({
@@ -79,6 +81,7 @@ test('真实 API 创建 Workload 使用服务端响应作为缓存数据来源',
     display_name: '订单任务',
     workload_type: 'statefulset',
     image_source_mode: 'custom_image',
+    pipeline_id: 'pipeline_1',
     custom_image: 'registry.example.com/order/worker:20260611',
     replicas: 2
   });
@@ -99,6 +102,7 @@ test('真实 API 更新 Workload 调用 PUT 并映射 image_source_mode', async 
         display_name: '订单接口 v2',
         workload_type: 'Deployment',
         image_source_mode: 'mixed',
+        pipeline_id: 'pipeline_2',
         status: 'enabled'
       });
     }
@@ -110,7 +114,8 @@ test('真实 API 更新 Workload 调用 PUT 并映射 image_source_mode', async 
     name: 'order-api',
     displayName: '订单接口 v2',
     workloadType: 'deployment',
-    imageSourceMode: 'mixed'
+    imageSourceMode: 'mixed',
+    pipelineId: 'pipeline_2'
   })).resolves.toMatchObject({
     id: 'workload_api',
     displayName: '订单接口 v2',
@@ -120,7 +125,55 @@ test('真实 API 更新 Workload 调用 PUT 并映射 image_source_mode', async 
     name: 'order-api',
     display_name: '订单接口 v2',
     workload_type: 'deployment',
-    image_source_mode: 'mixed'
+    image_source_mode: 'mixed',
+    pipeline_id: 'pipeline_2'
+  });
+});
+
+test('真实 API 保存和查询工作负载默认配置映射扩展字段', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  let putBody: Record<string, any> = {};
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/applications/app_1/workloads/workload_api/default-config') && init?.method === 'PUT') {
+      putBody = JSON.parse(String(init.body));
+      return jsonResponse({
+        id: 'workload_default_config_api',
+        workload_id: 'workload_api',
+        environment_id: '',
+        replicas: 2,
+        env_vars: [{ name: 'group', value: 'iot' }],
+        config_files: [{ mount_path: '/etc/app/app.yaml', content: 'server.port: 8080', base64_encoded: true }],
+        writable_dirs: [{ mount_path: '/data', owner_group: 'app:app', mode: '0775' }]
+      });
+    }
+    if (url.endsWith('/api/applications/app_1/workloads/workload_api/default-config') && init?.method !== 'PUT') {
+      return jsonResponse({
+        id: 'workload_default_config_api',
+        workload_id: 'workload_api',
+        environment_id: '',
+        replicas: 2,
+        env_vars: [{ name: 'group', value: 'iot' }],
+        config_files: [{ mount_path: '/etc/app/app.yaml', content: 'server.port: 8080', base64_encoded: true }],
+        writable_dirs: [{ mount_path: '/data', owner_group: 'app:app', mode: '0775' }]
+      });
+    }
+    return jsonResponse({ error: { code: 'not_found', message: '未处理请求' } }, 404);
+  }));
+
+  const api = await import('./index');
+  const input = {
+    replicas: 2,
+    envVars: [{ name: 'group', value: 'iot' }],
+    configFiles: [{ mountPath: '/etc/app/app.yaml', content: 'server.port: 8080', base64Encoded: true }],
+    writableDirs: [{ mountPath: '/data', ownerGroup: 'app:app', mode: '0775' }]
+  };
+  await expect(api.saveWorkloadDefaultConfig('app_1', 'workload_api', input)).resolves.toMatchObject(input);
+  await expect(api.getWorkloadDefaultConfig('app_1', 'workload_api')).resolves.toMatchObject(input);
+  expect(putBody).toMatchObject({
+    replicas: 2,
+    env_vars: [{ name: 'group', value: 'iot' }],
+    config_files: [{ mount_path: '/etc/app/app.yaml', content: 'server.port: 8080', base64_encoded: true }],
+    writable_dirs: [{ mount_path: '/data', owner_group: 'app:app', mode: '0775' }]
   });
 });
 

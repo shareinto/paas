@@ -59,23 +59,22 @@ test('真实 API 创建流水线后即使列表接口暂未返回也立即显示
     }
     if (method === 'POST' && url.endsWith('/api/apps/app_1/build-pipelines')) {
       const body = JSON.parse(String(init?.body || '{}'));
-      expect(body.workload_id).toBe('workload_api');
-      return jsonResponse({ id: 'build_pipeline_2', application_id: 'app_1', workload_id: 'workload_api', name: 'main', display_name: '主流水线', status: 'active', updated_at: '2026-06-09T10:00:00Z' }, 201);
+      expect(body.workload_id).toBeUndefined();
+      return jsonResponse({ id: 'build_pipeline_2', application_id: 'app_1', name: 'main', display_name: '主流水线', status: 'active', updated_at: '2026-06-09T10:00:00Z' }, 201);
     }
     return jsonResponse({ error: { code: 'not_found', message: `未处理请求 ${method} ${url}` } }, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
 
-  renderApp('/apps/app_1', App);
+  renderApp('/apps/app_1/build', App);
 
   await userEvent.click(await screen.findByRole('button', { name: /创建流水线/ }));
   const dialog = await screen.findByRole('dialog', { name: '创建构建流水线' });
   expect(await within(dialog).findByText('主代码源')).toBeInTheDocument();
-  expect(within(dialog).getByText('订单接口 (order-api)')).toBeInTheDocument();
+  expect(within(dialog).queryByText('绑定 Workload')).not.toBeInTheDocument();
 
   await userEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
 
-  await userEvent.click(await screen.findByRole('tab', { name: '构建' }));
   const pipelinePanel = await screen.findByTestId('pipeline-panel');
   expect(await within(pipelinePanel).findByText('主流水线')).toBeInTheDocument();
   expect(within(pipelinePanel).getByText('主代码源')).toBeInTheDocument();
@@ -123,7 +122,7 @@ test('真实 API 构建历史按开始时间倒序编号', async () => {
   });
   vi.stubGlobal('fetch', fetchMock);
 
-  renderApp('/apps/app_1', App);
+  renderApp('/apps/app_1/build', App);
 
   const pipelinePanel = await screen.findByTestId('pipeline-panel');
   const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
@@ -175,7 +174,7 @@ test('真实 API 在构建弹窗触发构建后选中新构建并展示日志', 
   });
   vi.stubGlobal('fetch', fetchMock);
 
-  renderApp('/apps/app_1', App);
+  renderApp('/apps/app_1/build', App);
 
   const pipelinePanel = await screen.findByTestId('pipeline-panel');
   const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
@@ -221,7 +220,7 @@ test('真实 API 有未完成构建时禁用触发并可取消当前构建', asy
   });
   vi.stubGlobal('fetch', fetchMock);
 
-  renderApp('/apps/app_1', App);
+  renderApp('/apps/app_1/build', App);
 
   const pipelinePanel = await screen.findByTestId('pipeline-panel');
   const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
@@ -263,7 +262,7 @@ test('真实 API 构建弹窗随日志流状态自动更新构建状态', async 
   });
   vi.stubGlobal('fetch', fetchMock);
 
-  renderApp('/apps/app_1', App);
+  renderApp('/apps/app_1/build', App);
 
   const pipelinePanel = await screen.findByTestId('pipeline-panel');
   const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
@@ -292,7 +291,15 @@ test('真实 API 创建 Workload 后使用服务端镜像来源展示', async ()
     if (method === 'GET' && url.endsWith('/api/applications/app_1/workloads')) {
       return jsonResponse({ items: [] });
     }
+    if (method === 'GET' && url.endsWith('/api/apps/app_1/build-pipelines?page=1&page_size=50')) {
+      return jsonResponse({ items: [{ id: 'pipeline_1', application_id: 'app_1', name: 'main', display_name: '主流水线', status: 'active' }], total: 1, page: 1, page_size: 50 });
+    }
+    if (method === 'GET' && url.endsWith('/api/build-pipelines/pipeline_1/sources')) {
+      return jsonResponse({ items: [] });
+    }
     if (method === 'POST' && url.endsWith('/api/applications/app_1/workloads')) {
+      const body = JSON.parse(String(init?.body || '{}'));
+      expect(body.pipeline_id).toBe('pipeline_1');
       return jsonResponse({
         id: 'workload_worker',
         application_id: 'app_1',
@@ -300,6 +307,7 @@ test('真实 API 创建 Workload 后使用服务端镜像来源展示', async ()
         display_name: '订单任务',
         workload_type: 'statefulset',
         image_source_mode: 'pipeline_artifact',
+        pipeline_id: 'pipeline_1',
         image_source_name: '主流水线',
         status: 'enabled'
       }, 201);
@@ -308,17 +316,17 @@ test('真实 API 创建 Workload 后使用服务端镜像来源展示', async ()
   });
   vi.stubGlobal('fetch', fetchMock);
 
-  renderApp('/apps/app_1', App);
+  renderApp('/apps/app_1/config', App);
 
-  expect(await screen.findByRole('tab', { name: '构建' })).toHaveAttribute('aria-selected', 'true');
+  expect(await screen.findByTestId('workload-panel')).toBeInTheDocument();
   await userEvent.click(await screen.findByRole('button', { name: /创建 Workload/ }));
   const dialog = await screen.findByRole('dialog', { name: '创建 Workload' });
   await userEvent.type(within(dialog).getByLabelText('Workload 标识'), 'order-worker');
   await userEvent.type(within(dialog).getByLabelText('显示名称'), '订单任务');
   await userEvent.click(within(dialog).getByText('StatefulSet'));
   await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
-  await userEvent.click(within(dialog).getByLabelText('镜像来源偏好'));
-  await userEvent.click(await screen.findByTitle('发布时选择自定义镜像'));
+  expect(await within(dialog).findByText('关联流水线')).toBeInTheDocument();
+  expect(await within(dialog).findByText('主流水线 (main)')).toBeInTheDocument();
   for (let i = 0; i < 4; i += 1) {
     await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
   }

@@ -180,7 +180,7 @@ func newDeliveryEnv(t *testing.T) deliveryEnv {
 		Repository: repo,
 		BuildQuery: fakeBuildQuery{
 			runs:      map[shared.ID]BuildRunRef{"build_1": {ID: "build_1", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: "pipeline_main", PipelineName: "main", PipelineDisplayName: "主流水线", CommitSHA: "abcdef1234567890"}},
-			artifacts: map[shared.ID]BuildArtifactRef{"artifact_1": {ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", URI: "registry.example/paas/user-api:abcdef", Digest: "sha256:abc", IsPrimary: true}},
+			artifacts: map[shared.ID]BuildArtifactRef{"artifact_1": {ID: "artifact_1", BuildRunID: "build_1", ApplicationID: "app_user", URI: "registry.example/paas/user-api:abcdef", Digest: "sha256:abc", IsPrimary: true}},
 		},
 		ApplicationQuery:  fakeAppQuery{apps: map[shared.ID]ApplicationRef{"app_user": {ID: "app_user", TenantID: "tenant_a", ProjectID: "project_payment", Name: "user-api"}}},
 		WorkloadQuery:     fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"}}}},
@@ -198,6 +198,42 @@ func newDeliveryEnv(t *testing.T) deliveryEnv {
 
 func actor(id shared.ID) identityaccess.Subject {
 	return identityaccess.Subject{Type: identityaccess.SubjectUser, ID: id}
+}
+
+func TestBuildSucceededFansOutToPipelineBoundWorkloads(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	env.svc.workloads = fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {
+		{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"},
+		{ID: "workload_worker", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "worker", DisplayName: "后台任务", Status: "enabled"},
+	}}}
+	payload := BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadIDs: []shared.ID{"workload_api", "workload_worker"}, BuildArtifactID: "artifact_1"}
+
+	release, err := env.svc.HandleBuildSucceeded(ctx, payload)
+	if err != nil {
+		t.Fatalf("HandleBuildSucceeded() error = %v", err)
+	}
+	if release.WorkloadID != "workload_api" {
+		t.Fatalf("first release should be returned, got %+v", release)
+	}
+	apiRelease, err := env.repo.FindReleaseByBuildRunAndWorkload(ctx, "build_1", "workload_api")
+	if err != nil {
+		t.Fatalf("api release missing: %v", err)
+	}
+	workerRelease, err := env.repo.FindReleaseByBuildRunAndWorkload(ctx, "build_1", "workload_worker")
+	if err != nil {
+		t.Fatalf("worker release missing: %v", err)
+	}
+	if apiRelease.ID == workerRelease.ID || apiRelease.ImageBundleID == workerRelease.ImageBundleID {
+		t.Fatalf("fan-out releases should have distinct release and bundle ids, api=%+v worker=%+v", apiRelease, workerRelease)
+	}
+	again, err := env.svc.HandleBuildSucceeded(ctx, payload)
+	if err != nil {
+		t.Fatalf("HandleBuildSucceeded(second) error = %v", err)
+	}
+	if again.ID != apiRelease.ID {
+		t.Fatalf("fan-out should be idempotent for first workload, got %+v want %+v", again, apiRelease)
+	}
 }
 
 func seedFreight(t *testing.T, env deliveryEnv) Freight {
@@ -1353,6 +1389,7 @@ func TestMigrationsAddWorkloadColumnsWithoutBlockingLegacyMultiItemFreight(t *te
 		"  image_repository VARCHAR(1024) NOT NULL DEFAULT '',\n",
 		"  image_tag VARCHAR(255) NOT NULL DEFAULT '',\n",
 		"  UNIQUE KEY uk_freight_items_workload (freight_id, workload_id),\n",
+		"  UNIQUE KEY uk_releases_build_run_workload (build_run_id, workload_id),\n",
 	}
 	for _, replacement := range replacements {
 		oldCore.Up = strings.Replace(oldCore.Up, replacement, "", 1)

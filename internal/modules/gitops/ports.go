@@ -88,6 +88,7 @@ type EnvironmentQuery interface {
 type WorkloadQuery interface {
 	GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error)
 	GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfigRef, error)
+	GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfigRef, error)
 }
 
 type AuditLogger interface {

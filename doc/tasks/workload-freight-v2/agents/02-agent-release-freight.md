@@ -22,8 +22,8 @@
 
 只实现以下能力：
 
-- BuildPipeline、BuildRun、BuildArtifact 绑定 `workload_id`。
-- BuildSucceeded 事件 payload 包含 `app_id`、`workload_id`、`build_run_id`、`build_artifact_id`。
+- Workload 通过 `pipeline_id` 关联 BuildPipeline；`build_pipelines.workload_id` 废除。
+- BuildSucceeded 事件 payload 包含 `app_id`、`workload_ids`、`build_run_id`、`build_artifact_id`。
 - BuildSucceeded 只创建 Workload Release 候选。
 - 停用或删除自动创建 Freight 的事件处理路径。
 - Release 补充 Workload 和镜像信息。

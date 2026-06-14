@@ -2,8 +2,9 @@ import { ConfigProvider } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
+import { readFileSync } from 'node:fs';
 import { PromotionPage } from './PromotionPage';
 
 function renderPromotionPage() {
@@ -26,7 +27,7 @@ test('Freight 按创建时间从左到右显示并展示流程引导', async () 
   renderPromotionPage();
 
   expect(await screen.findByLabelText('应用部署 DAG')).toBeInTheDocument();
-  expect(screen.getByText('拖拽 Freight 到目标 Stage，系统按交付流 DAG 校验上游依赖、审批和验证要求。')).toBeInTheDocument();
+  expect(screen.queryByText('拖拽 Freight 到目标 Stage，系统按交付流 DAG 校验上游依赖、审批和验证要求。')).not.toBeInTheDocument();
   const timeline = await screen.findByLabelText('Freight 时间轴');
   const cards = within(timeline).getAllByTestId('freight-card');
 
@@ -35,6 +36,19 @@ test('Freight 按创建时间从左到右显示并展示流程引导', async () 
     '20260610.1',
     '20260611.1'
   ]);
+});
+
+test('部署 DAG 画布锁定且不显示缩放控制器', () => {
+  const pageSource = readFileSync('src/pages/PromotionPage.tsx', 'utf8');
+
+  expect(pageSource).toContain('nodesDraggable={false}');
+  expect(pageSource).toContain('panOnDrag={false}');
+  expect(pageSource).toContain('zoomOnScroll={false}');
+  expect(pageSource).toContain('zoomOnDoubleClick={false}');
+  expect(pageSource).toContain('zoomOnPinch={false}');
+  expect(pageSource).toContain('panOnScroll={false}');
+  expect(pageSource).toContain('selectNodesOnDrag={false}');
+  expect(pageSource).not.toContain('<Controls />');
 });
 
 test('Stage 卡片显示 DAG 投影和部署状态', async () => {
@@ -49,7 +63,86 @@ test('Stage 卡片显示 DAG 投影和部署状态', async () => {
     expect(within(card).getByText('上游 Stage')).toBeInTheDocument();
     expect(within(card).getByText('验证状态')).toBeInTheDocument();
   }
+  const devCard = await screen.findByLabelText('dev Stage');
+  expect(within(devCard).getByText('开发')).toHaveClass('deployment-stage-title');
+  expect(within(devCard).queryByText('dev')).not.toBeInTheDocument();
+  expect(devCard.style.getPropertyValue('--stage-color')).toBeTruthy();
   expect(within(await screen.findByLabelText('prod Stage')).getByText('需审批')).toBeInTheDocument();
+});
+
+test('部署画布和 Stage 节点使用更大的尺寸和间距', () => {
+  const pageSource = readFileSync('src/pages/PromotionPage.tsx', 'utf8');
+  const styles = readFileSync('src/styles.css', 'utf8');
+
+  expect(pageSource).toContain('const COLUMN_WIDTH = 340;');
+  expect(pageSource).toContain('const ROW_HEIGHT = 280;');
+  expect(styles).toMatch(/\.deployment-dag-canvas \{[^}]*height: 720px;/);
+  expect(styles).toMatch(/\.deployment-stage-node \{[^}]*width: 232px;[^}]*border-radius: 8px;/);
+  expect(styles).toMatch(/\.deployment-stage-title \{[^}]*font-size: 18px;[^}]*font-weight: 700;/);
+});
+
+test('验证入口使用紧凑图标按钮并提供中文提示', async () => {
+  renderPromotionPage();
+
+  const devCard = await screen.findByLabelText('dev Stage');
+  const verifyButton = within(devCard).getByRole('button', { name: '验证' });
+
+  expect(verifyButton).toHaveClass('stage-verify-button');
+  await userEvent.hover(verifyButton);
+
+  expect(await screen.findByText('人工验证')).toBeInTheDocument();
+});
+
+test('Stage 卡片可编辑该 Stage 的工作负载配置', async () => {
+  renderPromotionPage();
+
+  const devCard = await screen.findByLabelText('dev Stage');
+  await userEvent.click(within(devCard).getByRole('button', { name: '编辑配置' }));
+
+  const dialog = await screen.findByRole('dialog', { name: '编辑 Stage 配置' });
+  expect(within(dialog).getByLabelText('选择工作负载')).toBeInTheDocument();
+  expect(within(dialog).getByText('环境变量')).toBeInTheDocument();
+  expect(within(dialog).getByText('配置文件')).toBeInTheDocument();
+  expect(within(dialog).getByText('可写目录')).toBeInTheDocument();
+  await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '编辑 Stage 配置' })).not.toBeInTheDocument());
+});
+
+test('Freight 左侧显示当前部署到的 Stage 颜色', async () => {
+  renderPromotionPage();
+
+  await screen.findByLabelText('test Stage');
+  const freightCard = await freightCardByName('20260610.1');
+
+  await waitFor(() => {
+    expect(within(freightCard).getByLabelText('当前部署 Stage：测试')).toBeInTheDocument();
+  });
+});
+
+test('拖拽 Freight 时未达成部署条件的 Stage 置灰', async () => {
+  renderPromotionPage();
+
+  const testCard = await screen.findByLabelText('test Stage');
+  const devCard = await screen.findByLabelText('dev Stage');
+  const dataTransfer = startDragFreight(await freightCardByName('20260610.1'));
+
+  fireEvent.dragOver(testCard, { dataTransfer });
+
+  await waitFor(() => {
+    expect(testCard).toHaveClass('drop-ready');
+    expect(devCard).toHaveClass('drop-blocked');
+  });
+  expect(within(devCard).getByText('未达成部署条件')).toBeInTheDocument();
+});
+
+test('拖拽 Freight 使用小包裹预览', async () => {
+  renderPromotionPage();
+
+  const setDragImage = vi.fn();
+  startDragFreight(await freightCardByName('20260609.1'), setDragImage);
+
+  expect(setDragImage).toHaveBeenCalledTimes(1);
+  expect((setDragImage.mock.calls[0][0] as HTMLElement).className).toBe('freight-drag-package');
 });
 
 test('拖拽不可发布 Freight 到 dev 后提示不可发布', async () => {
@@ -177,12 +270,20 @@ async function freightCardByName(name: string) {
 }
 
 function dragFreightToStage(freightCard: HTMLElement, stageCard: HTMLElement) {
-  const data = new Map<string, string>();
-  const dataTransfer = {
-    setData: (type: string, value: string) => data.set(type, value),
-    getData: (type: string) => data.get(type) || ''
-  } as DataTransfer;
-  fireEvent.dragStart(freightCard, { dataTransfer });
+  const dataTransfer = startDragFreight(freightCard);
   fireEvent.dragOver(stageCard, { dataTransfer });
   fireEvent.drop(stageCard, { dataTransfer });
+}
+
+function startDragFreight(freightCard: HTMLElement, setDragImage = vi.fn()) {
+  const data = new Map<string, string>();
+  const dataTransfer = {
+    effectAllowed: 'all',
+    dropEffect: 'move',
+    setData: (type: string, value: string) => data.set(type, value),
+    getData: (type: string) => data.get(type) || '',
+    setDragImage
+  } as unknown as DataTransfer;
+  fireEvent.dragStart(freightCard, { dataTransfer });
+  return dataTransfer;
 }

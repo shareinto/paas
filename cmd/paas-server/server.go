@@ -134,6 +134,7 @@ func newApplication(ctx context.Context) (*application, error) {
 		BuildEnvironmentQuery:    buildEnvironmentForAppEnv{repo: buildRepo},
 		RuntimeEnvironmentQuery:  runtimeEnvironmentForAppEnv{repo: buildRepo},
 		BuildPipelineProvisioner: buildSvc,
+		BuildPipelineQuery:       buildPipelineForAppEnv{service: buildSvc},
 		ClusterQuery:             clusterForAppEnv{repo: repos.cluster},
 		Audit:                    audit.ApplicationEnvironmentLogger{Logger: auditSvc},
 		IDGenerator:              ids,
@@ -618,7 +619,7 @@ func (q workloadForBuild) GetWorkload(ctx context.Context, applicationID shared.
 	if err != nil {
 		return build.WorkloadRef{}, err
 	}
-	return build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)}, nil
+	return build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, PipelineID: workload.PipelineID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)}, nil
 }
 
 func (q workloadForBuild) ListEnabledWorkloads(ctx context.Context, applicationID shared.ID) ([]build.WorkloadRef, error) {
@@ -628,9 +629,33 @@ func (q workloadForBuild) ListEnabledWorkloads(ctx context.Context, applicationI
 	}
 	out := make([]build.WorkloadRef, 0, len(workloads))
 	for _, workload := range workloads {
-		out = append(out, build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)})
+		out = append(out, build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, PipelineID: workload.PipelineID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)})
 	}
 	return out, nil
+}
+
+func (q workloadForBuild) ListEnabledWorkloadsByPipeline(ctx context.Context, applicationID shared.ID, pipelineID shared.ID) ([]build.WorkloadRef, error) {
+	workloads, err := q.service.ListEnabledWorkloads(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]build.WorkloadRef, 0, len(workloads))
+	for _, workload := range workloads {
+		if workload.PipelineID == pipelineID {
+			out = append(out, build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, PipelineID: workload.PipelineID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)})
+		}
+	}
+	return out, nil
+}
+
+type buildPipelineForAppEnv struct{ service *build.Service }
+
+func (q buildPipelineForAppEnv) GetBuildPipeline(ctx context.Context, id shared.ID) (appenv.BuildPipelineRef, error) {
+	pipeline, err := q.service.GetBuildPipeline(ctx, id)
+	if err != nil {
+		return appenv.BuildPipelineRef{}, err
+	}
+	return appenv.BuildPipelineRef{ID: pipeline.ID, ApplicationID: pipeline.ApplicationID, Name: pipeline.Name, DisplayName: pipeline.DisplayName, Status: string(pipeline.Status)}, nil
 }
 
 type workloadForDelivery struct{ service *appenv.Service }
@@ -878,6 +903,14 @@ func (q workloadForGitOps) GetWorkloadEnvironmentConfig(ctx context.Context, wor
 	return toGitOpsWorkloadEnvironmentConfig(config), nil
 }
 
+func (q workloadForGitOps) GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (gitops.WorkloadEnvironmentConfigRef, error) {
+	config, err := q.service.GetWorkloadDefaultConfig(ctx, workloadID)
+	if err != nil {
+		return gitops.WorkloadEnvironmentConfigRef{}, err
+	}
+	return toGitOpsWorkloadEnvironmentConfig(config), nil
+}
+
 func toGitOpsWorkloadEnvironmentConfig(config appenv.WorkloadEnvironmentConfig) gitops.WorkloadEnvironmentConfigRef {
 	out := gitops.WorkloadEnvironmentConfigRef{
 		Replicas:         config.Replicas,
@@ -901,10 +934,10 @@ func toGitOpsWorkloadEnvironmentConfig(config appenv.WorkloadEnvironmentConfig) 
 		out.SecretRefs = append(out.SecretRefs, gitops.WorkloadSecretRef{Name: secret.Name, SecretRef: secret.SecretRef})
 	}
 	for _, file := range config.ConfigFiles {
-		out.ConfigFiles = append(out.ConfigFiles, gitops.WorkloadConfigFileRef{MountPath: file.MountPath, Content: file.Content})
+		out.ConfigFiles = append(out.ConfigFiles, gitops.WorkloadConfigFileRef{MountPath: file.MountPath, Content: file.Content, Base64Encoded: file.Base64Encoded})
 	}
 	for _, dir := range config.WritableDirs {
-		out.WritableDirs = append(out.WritableDirs, gitops.WorkloadWritableDirRef{MountPath: dir.MountPath, SizeLimit: dir.SizeLimit})
+		out.WritableDirs = append(out.WritableDirs, gitops.WorkloadWritableDirRef{MountPath: dir.MountPath, SizeLimit: dir.SizeLimit, OwnerGroup: dir.OwnerGroup, Mode: dir.Mode})
 	}
 	for _, mount := range config.VolumeMounts {
 		out.VolumeMounts = append(out.VolumeMounts, gitops.WorkloadVolumeMountRef{Name: mount.Name, MountPath: mount.MountPath})

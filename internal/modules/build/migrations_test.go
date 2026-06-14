@@ -44,7 +44,7 @@ func TestMigrationsBackfillBuildCorePipelineColumns(t *testing.T) {
 	}
 
 	for table, columns := range map[string][]string{
-		"build_pipelines":        {"name", "display_name", "description", "template_id", "config_hash", "managed_by_platform", "workload_id"},
+		"build_pipelines":        {"name", "display_name", "description", "template_id", "config_hash", "managed_by_platform"},
 		"build_runs":             {"pipeline_name", "pipeline_display_name", "workload_id"},
 		"build_artifacts":        {"workload_id"},
 		"build_pipeline_sources": {"build_environment_id"},
@@ -53,6 +53,7 @@ func TestMigrationsBackfillBuildCorePipelineColumns(t *testing.T) {
 			assertMySQLColumnExists(t, ctx, db, table, column)
 		}
 	}
+	assertMySQLColumnNotExists(t, ctx, db, "build_pipelines", "workload_id")
 
 	repo, err := NewMySQLRepository(ctx, db)
 	if err != nil {
@@ -357,6 +358,26 @@ func TestMigrationsBackfillBuildPipelineIdentityColumnsAfterCoreBackfillWasAppli
 	}
 }
 
+func TestMigrationsDropBuildPipelineWorkloadID(t *testing.T) {
+	ctx := context.Background()
+	db := testsupport.MySQLDB(t)
+	migrator := database.NewMigrator(db)
+
+	if err := migrator.Up(ctx, []database.Migration{Migrations[0]}); err != nil {
+		t.Fatalf("apply core migration: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "ALTER TABLE build_pipelines ADD COLUMN workload_id VARCHAR(64) NOT NULL DEFAULT '' AFTER application_id"); err != nil {
+		t.Fatalf("add legacy workload_id: %v", err)
+	}
+	assertMySQLColumnExists(t, ctx, db, "build_pipelines", "workload_id")
+
+	drop := findBuildMigration(t, "drop_build_pipeline_workload_id")
+	if err := migrator.Up(ctx, []database.Migration{drop}); err != nil {
+		t.Fatalf("apply drop migration: %v", err)
+	}
+	assertMySQLColumnNotExists(t, ctx, db, "build_pipelines", "workload_id")
+}
+
 type columnQueryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
@@ -373,6 +394,21 @@ WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, table, 
 	}
 	if count != 1 {
 		t.Fatalf("column %s.%s count = %d, want 1", table, column, count)
+	}
+}
+
+func assertMySQLColumnNotExists(t *testing.T, ctx context.Context, db columnQueryer, table string, column string) {
+	t.Helper()
+	var count int
+	err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM information_schema.columns
+WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`, table, column).Scan(&count)
+	if err != nil {
+		t.Fatalf("query column %s.%s: %v", table, column, err)
+	}
+	if count != 0 {
+		t.Fatalf("column %s.%s count = %d, want 0", table, column, count)
 	}
 }
 

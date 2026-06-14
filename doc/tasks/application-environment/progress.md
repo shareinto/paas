@@ -32,5 +32,5 @@
 
 - 控制台主路径调整为 `租户 -> 项目 -> 应用`，项目详情页通过 `应用` 和 `源码仓库` 页签展示项目内资源。
 - SourceRepository 是 Project 下的独立资源，创建 Application 时不再选择源码仓库，也不固化 BuildSpec。
-- 用户在应用详情中创建 BuildPipeline 时选择 Workload、SourceRepository、source_path、构建环境、运行时环境和 BuildSpec。
+- 用户在应用详情中创建 BuildPipeline 时选择 SourceRepository、source_path、构建环境、运行时环境和 BuildSpec；Workload 在创建或编辑时选择关联流水线。
 - application-environment 模块继续维护 Application、Environment、Workload 和历史兼容的 ApplicationSource 查询；新的源码绑定入口归属 build 模块。

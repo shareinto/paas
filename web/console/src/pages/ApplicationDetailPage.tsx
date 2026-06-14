@@ -1,8 +1,8 @@
 import { DeleteOutlined, EditOutlined, PlusOutlined, PlayCircleOutlined, StopOutlined } from '@ant-design/icons';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Badge, Button, Card, Descriptions, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Segmented, Space, Spin, Steps, Tabs, Tag, Typography, message } from 'antd';
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Badge, Button, Card, Checkbox, Empty, Form, Input, Modal, Popconfirm, Select, Segmented, Space, Spin, Tag, Typography, message } from 'antd';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import {
   createBuildPipeline,
   createWorkload,
@@ -10,21 +10,24 @@ import {
   deleteBuildPipeline,
   deleteWorkload,
   getApplication,
+  getWorkloadDefaultConfig,
+  listApplications,
   listApplicationBuilds,
-  listApplicationEnvironments,
   listBuildEnvironments,
   listBuildPipelines,
+  listProjects,
   listRuntimeEnvironments,
   listSourceRepositories,
   listWorkloadEnvironmentConfigs,
   listWorkloads,
-  saveWorkloadEnvironmentConfig,
+  saveWorkloadDefaultConfig,
   triggerBuildPipeline,
   updateBuildPipeline,
   updateWorkload,
+  type Application,
   type BuildPipeline,
   type BuildRun,
-  type Environment,
+  type Project,
   type RuntimeEnvironment,
   type Workload,
   type WorkloadEnvironmentConfig,
@@ -32,71 +35,105 @@ import {
   type WorkloadType
 } from '../api';
 import { BuildLogViewer } from '../components/BuildLogViewer';
-import { PageHeader } from '../components/PageHeader';
 import { PromotionContent } from './PromotionPage';
+import { ConfigValueLists, WorkloadRuntimeFields, workloadConfigFormValues, workloadConfigPayload } from './workloadConfigForm';
 
 const EMPTY_LIST: any[] = [];
 const WORKLOAD_TYPE_OPTIONS = [
-  { label: 'Deployment', value: 'deployment' },
-  { label: 'StatefulSet', value: 'statefulset' }
+  { label: '无状态', value: 'deployment' },
+  { label: '有状态', value: 'statefulset' }
 ];
 const IMAGE_SOURCE_OPTIONS = [
-  { label: '流水线产物', value: 'pipeline_artifact' },
-  { label: '发布时选择自定义镜像', value: 'custom_image' },
-  { label: '混合来源', value: 'mixed' },
-  { label: '暂不绑定', value: 'none' }
+  { label: '流水线', value: 'pipeline_artifact' },
+  { label: '自定义镜像', value: 'custom_image' }
 ];
-const WORKLOAD_WIZARD_STEPS = ['基础信息', '镜像来源', '运行参数', '网络访问', '配置与目录', '预览校验'];
+type ApplicationSection = 'build' | 'deploy' | 'config';
 
 export function ApplicationDetailPage() {
+  return <ApplicationWorkspacePage section="build" />;
+}
+
+export function ApplicationWorkspacePage({ section }: { section: ApplicationSection }) {
   const { id = 'app_1' } = useParams();
-  const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState('build');
   const [createdPipelines, setCreatedPipelines] = useState<BuildPipeline[]>([]);
   const { data: app } = useQuery({ queryKey: ['application', id], queryFn: () => getApplication(id), enabled: !!id });
 
   return (
     <>
-      <PageHeader
-        title={app?.displayName || '应用详情'}
-        breadcrumb={[
-          { title: <Link to="/projects">项目</Link> },
-          { title: app?.projectId ? <Link to={`/projects/${app.projectId}`}>{app?.project || app.projectId}</Link> : (app?.project || '-') },
-          { title: app?.displayName || '应用详情' }
-        ]}
-        extra={(
-          <Space>
-            <Button icon={<EditOutlined />} onClick={() => navigate(`/apps/${id}/edit`)}>编辑应用</Button>
-          </Space>
-        )}
-      />
-      <Card className="summary-card">
-        <Descriptions column={4} size="small" items={[
-          { key: 'name', label: '应用标识', children: app?.name || '-' },
-          { key: 'project', label: '所属项目', children: app?.project || app?.projectId || '-' },
-          { key: 'type', label: '应用类型', children: <Tag color="blue">{app?.type || '-'}</Tag> },
-          { key: 'status', label: '状态', children: <Badge status={app?.status === 'disabled' ? 'default' : 'success'} text={app?.status === 'disabled' ? '已禁用' : '启用'} /> }
-        ]} />
-      </Card>
-      <Tabs
-        activeKey={activeTab}
-        onChange={setActiveTab}
-        className="detail-tabs"
-        items={[
-        { key: 'build', label: '构建', children: <BuildTab applicationId={id} projectId={app?.projectId} localPipelines={createdPipelines} onPipelineChanged={(pipeline) => setCreatedPipelines((current) => [pipeline, ...current.filter((item) => item.id !== pipeline.id)])} onPipelineDeleted={(pipelineId) => setCreatedPipelines((current) => current.filter((item) => item.id !== pipelineId))} /> },
-        { key: 'deploy', label: '部署', children: <PromotionContent applicationId={id} /> }
-      ]} />
+      <ApplicationContextSelector applicationId={id} currentProjectId={app?.projectId} section={section} />
+      {section === 'build' && (
+        <BuildPipelinePanel
+          applicationId={id}
+          projectId={app?.projectId}
+          localPipelines={createdPipelines}
+          onPipelineChanged={(pipeline) => setCreatedPipelines((current) => [pipeline, ...current.filter((item) => item.id !== pipeline.id)])}
+          onPipelineDeleted={(pipelineId) => setCreatedPipelines((current) => current.filter((item) => item.id !== pipelineId))}
+        />
+      )}
+      {section === 'deploy' && <PromotionContent applicationId={id} />}
+      {section === 'config' && <WorkloadPanel applicationId={id} />}
     </>
   );
 }
 
-function BuildTab({ applicationId, projectId, localPipelines, onPipelineChanged, onPipelineDeleted }: { applicationId: string; projectId?: string; localPipelines?: BuildPipeline[]; onPipelineChanged?: (pipeline: BuildPipeline) => void; onPipelineDeleted?: (pipelineId: string) => void }) {
+function ApplicationContextSelector({ applicationId, currentProjectId, section }: { applicationId: string; currentProjectId?: string; section: ApplicationSection }) {
+  const navigate = useNavigate();
+  const [selectedProjectId, setSelectedProjectId] = useState<string>();
+  const [pendingProjectId, setPendingProjectId] = useState('');
+  const { data: projects = EMPTY_LIST } = useQuery({ queryKey: ['projects'], queryFn: listProjects });
+  const activeProjectId = selectedProjectId || currentProjectId || (projects as Project[])[0]?.id;
+  const { data: applications = EMPTY_LIST, isFetching } = useQuery({
+    queryKey: ['apps', activeProjectId || 'none'],
+    queryFn: () => listApplications(activeProjectId),
+    enabled: !!activeProjectId
+  });
+  const projectOptions = useMemo(() => (projects as Project[]).map((project) => ({ value: project.id, label: project.displayName || project.name })), [projects]);
+  const applicationOptions = useMemo(() => {
+    const options = (applications as Application[]).map((app) => ({ value: app.id, label: app.displayName || app.name }));
+    if (applicationId && !options.some((item) => item.value === applicationId)) {
+      options.unshift({ value: applicationId, label: applicationId });
+    }
+    return options;
+  }, [applicationId, applications]);
+
+  useEffect(() => {
+    if (currentProjectId) setSelectedProjectId(currentProjectId);
+  }, [applicationId, currentProjectId]);
+
+  useEffect(() => {
+    if (!pendingProjectId || pendingProjectId !== activeProjectId || isFetching) return;
+    const firstApp = (applications as Application[])[0];
+    if (firstApp) navigate(`/apps/${firstApp.id}/${section}`);
+    setPendingProjectId('');
+  }, [activeProjectId, applications, isFetching, navigate, pendingProjectId, section]);
+
   return (
-    <div data-testid="build-tab" className="build-tab-layout">
-      <BuildPipelinePanel applicationId={applicationId} projectId={projectId} localPipelines={localPipelines} onPipelineChanged={onPipelineChanged} onPipelineDeleted={onPipelineDeleted} />
-      <WorkloadPanel applicationId={applicationId} />
+    <div className="application-context-selector">
+      <Select
+        aria-label="选择项目"
+        placeholder="请选择项目"
+        value={activeProjectId}
+        options={projectOptions}
+        onChange={(nextProjectId) => {
+          setSelectedProjectId(nextProjectId);
+          setPendingProjectId(nextProjectId);
+        }}
+      />
+      <Select
+        aria-label="选择应用"
+        placeholder="请选择应用"
+        value={applicationId}
+        loading={isFetching}
+        options={applicationOptions}
+        onChange={(nextApplicationId) => navigate(`/apps/${nextApplicationId}/${section}`)}
+      />
     </div>
   );
+}
+
+export function ApplicationSectionRedirect({ section }: { section: ApplicationSection }) {
+  const { id } = useParams();
+  return <Navigate to={id ? `/apps/${id}/${section}` : '/apps'} replace />;
 }
 
 function WorkloadPanel({ applicationId }: { applicationId: string }) {
@@ -115,24 +152,21 @@ function WorkloadPanel({ applicationId }: { applicationId: string }) {
   const deleteMutation = useMutation({
     mutationFn: (workloadId: string) => deleteWorkload(applicationId, workloadId),
     onSuccess: (workload) => {
-      message.success('Workload 已删除');
+      message.success('工作负载已删除');
       queryClient.setQueryData<Workload[]>(['workloads', applicationId], (current = []) => current.filter((item) => item.id !== workload.id));
       queryClient.invalidateQueries({ queryKey: ['workloads', applicationId], refetchType: 'none' });
       if (editingWorkload?.id === workload.id) setEditingWorkload(null);
     },
-    onError: (error) => message.error(error instanceof Error ? error.message : '删除 Workload 失败')
+    onError: (error) => message.error(error instanceof Error ? error.message : '删除工作负载失败')
   });
 
   return (
     <section data-testid="workload-panel" className="resource-section">
       <div className="section-heading">
-        <div>
-          <Typography.Title level={4}>工作负载管理</Typography.Title>
-          <Typography.Text type="secondary">按最小可独立部署单元管理 Workload。</Typography.Text>
-        </div>
-        <Button type="primary" aria-label="创建 Workload" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>创建 Workload</Button>
+        <div />
+        <Button type="primary" aria-label="创建工作负载" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>创建工作负载</Button>
       </div>
-      {isLoading ? <Spin /> : (workloads as Workload[]).length === 0 ? <Empty description="暂无 Workload" /> : (
+      {isLoading ? <Spin /> : (workloads as Workload[]).length === 0 ? <Empty description="暂无工作负载" /> : (
         <div className="resource-card-grid">
           {(workloads as Workload[]).map((item) => (
             <article key={item.id} className="resource-card">
@@ -155,7 +189,7 @@ function WorkloadPanel({ applicationId }: { applicationId: string }) {
               <div className="resource-card-actions">
                 <Button aria-label="编辑" icon={<EditOutlined />} onClick={() => setEditingWorkload(item)}>编辑</Button>
                 <Popconfirm
-                  title="删除 Workload"
+                  title="删除工作负载"
                   description={`确认删除 ${item.name}？删除后不会进入新的 Freight。`}
                   okText="确认删除"
                   cancelText="取消"
@@ -176,104 +210,98 @@ function WorkloadPanel({ applicationId }: { applicationId: string }) {
 
 function WorkloadWizardModal({ applicationId, workload, open, onClose }: { applicationId: string; workload?: Workload | null; open: boolean; onClose: () => void }) {
   const [form] = Form.useForm();
-  const [step, setStep] = useState(0);
   const initializedRef = useRef(false);
+  const configInitializedRef = useRef(false);
   const queryClient = useQueryClient();
   const isEditing = !!workload;
   const imageSourceMode = Form.useWatch('imageSourceMode', form);
-  const { data: environments = EMPTY_LIST } = useQuery({ queryKey: ['application-environments', applicationId], queryFn: () => listApplicationEnvironments(applicationId), enabled: open });
-  const { data: configs = EMPTY_LIST } = useQuery({ queryKey: ['workload-environment-configs', applicationId, workload?.id, 'wizard'], queryFn: () => listWorkloadEnvironmentConfigs(applicationId, workload!.id), enabled: open && !!workload });
+  const { data: pipelines = EMPTY_LIST } = useQuery({ queryKey: ['build-pipelines', applicationId, 'workload-wizard'], queryFn: () => listBuildPipelines(applicationId), enabled: open && !!applicationId });
+  const { data: defaultConfig } = useQuery({ queryKey: ['workload-default-config', applicationId, workload?.id], queryFn: () => getWorkloadDefaultConfig(applicationId, workload!.id), enabled: open && !!workload });
+  const needsPipeline = imageSourceMode === 'pipeline_artifact';
   const mutation = useMutation({
     mutationFn: async () => {
       await form.validateFields();
       const values = form.getFieldsValue(true);
+      const workloadInput = {
+        name: values.name,
+        displayName: values.displayName,
+        description: values.description,
+        workloadType: values.workloadType,
+        imageSourceMode: values.imageSourceMode,
+        pipelineId: values.imageSourceMode === 'pipeline_artifact' ? values.pipelineId : ''
+      };
       const saved = isEditing
-        ? await updateWorkload(applicationId, workload!.id, values)
-        : await createWorkload(applicationId, values);
-      if (values.environmentId) {
-        await saveWorkloadEnvironmentConfig(applicationId, saved.id, values.environmentId, wizardConfigPayload(values));
-      }
+        ? await updateWorkload(applicationId, workload!.id, workloadInput)
+        : await createWorkload(applicationId, workloadInput);
+      await saveWorkloadDefaultConfig(applicationId, saved.id, workloadConfigPayload(values));
       return saved;
     },
     onSuccess: (workload) => {
-      message.success(isEditing ? 'Workload 已保存' : 'Workload 已创建');
+      message.success(isEditing ? '工作负载已保存' : '工作负载已创建');
       queryClient.setQueryData<Workload[]>(['workloads', applicationId], (current = []) => [workload, ...current.filter((item) => item.id !== workload.id)]);
       queryClient.invalidateQueries({ queryKey: ['workloads', applicationId], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['workloads', applicationId, 'pipeline-cards'], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['workload-default-config', applicationId, workload.id], refetchType: 'none' });
       queryClient.invalidateQueries({ queryKey: ['workload-environment-configs', applicationId, workload.id], refetchType: 'none' });
       onClose();
       form.resetFields();
-      setStep(0);
     },
-    onError: (error) => message.error(error instanceof Error ? error.message : (isEditing ? '保存 Workload 失败' : '创建 Workload 失败'))
+    onError: (error) => message.error(error instanceof Error ? error.message : (isEditing ? '保存工作负载失败' : '创建工作负载失败'))
   });
 
   useEffect(() => {
     if (!open) {
       form.resetFields();
-      setStep(0);
       initializedRef.current = false;
+      configInitializedRef.current = false;
       return;
     }
     if (initializedRef.current) return;
-    const firstConfig = (configs as WorkloadEnvironmentConfig[])[0];
-    const firstEnv = (environments as Environment[])[0];
     form.setFieldsValue({
       name: workload?.name,
       displayName: workload?.displayName,
       description: workload?.description,
       workloadType: workload?.workloadType || 'deployment',
-      imageSourceMode: workload?.imageSourceMode || 'pipeline_artifact',
-      environmentId: firstConfig?.environmentId || firstEnv?.id,
-      replicas: firstConfig?.replicas ?? 1,
-      containerPort: firstConfig?.servicePorts?.[0]?.targetPort || 8080,
-      servicePort: firstConfig?.servicePorts?.[0]?.port || 80,
-      domain: firstConfig?.ingressHosts?.[0]?.host || '',
-      envVarsText: (firstConfig?.envVars || []).map((item) => `${item.name}=${item.value}`).join('\n'),
-      configPath: firstConfig?.configFiles?.[0]?.mountPath || '',
-      configContent: firstConfig?.configFiles?.[0]?.content || '',
-      writableDir: firstConfig?.writableDirs?.[0]?.mountPath || '',
-      writableDirSize: firstConfig?.writableDirs?.[0]?.sizeLimit || ''
+      imageSourceMode: workload?.imageSourceMode === 'custom_image' ? 'custom_image' : 'pipeline_artifact',
+      pipelineId: workload?.pipelineId || (pipelines as BuildPipeline[])[0]?.id,
+      ...workloadConfigFormValues()
     });
     initializedRef.current = true;
-  }, [configs, environments, form, open, workload]);
+  }, [form, open, pipelines, workload]);
 
   useEffect(() => {
-    if (!open || form.getFieldValue('environmentId')) return;
-    const firstEnv = (environments as Environment[])[0];
-    if (firstEnv?.id) form.setFieldValue('environmentId', firstEnv.id);
-  }, [environments, form, open]);
+    if (!open || configInitializedRef.current) return;
+    if (isEditing && !defaultConfig) return;
+    const config = defaultConfig;
+    form.setFieldsValue(config ? workloadConfigFormValues(config) : workloadConfigFormValues());
+    configInitializedRef.current = true;
+  }, [defaultConfig, form, isEditing, open]);
+
+  useEffect(() => {
+    if (!open || !needsPipeline || form.getFieldValue('pipelineId')) return;
+    const firstPipeline = (pipelines as BuildPipeline[]).find((item) => item.status === 'active') || (pipelines as BuildPipeline[])[0];
+    if (firstPipeline?.id) form.setFieldValue('pipelineId', firstPipeline.id);
+  }, [form, needsPipeline, open, pipelines]);
 
   const footer = (
     <Space>
       <Button onClick={onClose}>取消</Button>
-      {step > 0 && <Button onClick={() => setStep((current) => current - 1)}>上一步</Button>}
-      {step < WORKLOAD_WIZARD_STEPS.length - 1 ? (
-        <Button type="primary" onClick={() => setStep((current) => current + 1)}>下一步</Button>
-      ) : (
-        <Button type="primary" aria-label={isEditing ? '保存' : '创建'} loading={mutation.isPending} onClick={() => mutation.mutate()}>{isEditing ? '保存' : '创建'}</Button>
-      )}
+      <Button type="primary" aria-label={isEditing ? '保存' : '创建'} loading={mutation.isPending} onClick={() => mutation.mutate()}>{isEditing ? '保存' : '创建'}</Button>
     </Space>
   );
 
   return (
-    <Modal title={isEditing ? '编辑 Workload' : '创建 Workload'} open={open} onCancel={onClose} width={980} destroyOnHidden footer={footer}>
-      <Steps size="small" current={step} items={WORKLOAD_WIZARD_STEPS.map((title) => ({ title }))} />
-      <div className="workload-create-grid">
-        <Form form={form} layout="vertical" className="workload-create-form" preserve>
-          {step === 0 && <><Form.Item label="Workload 标识" name="name" rules={[{ required: true, message: '请输入 Workload 标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}><Input placeholder="order-api" disabled={isEditing} /></Form.Item><Form.Item label="显示名称" name="displayName" rules={[{ required: true, message: '请输入显示名称' }]}><Input placeholder="订单接口" /></Form.Item><Form.Item label="Workload 类型" name="workloadType" rules={[{ required: true, message: '请选择 Workload 类型' }]}><Segmented aria-label="Workload 类型" options={WORKLOAD_TYPE_OPTIONS} /></Form.Item><Form.Item label="描述" name="description"><Input.TextArea rows={2} /></Form.Item></>}
-          {step === 1 && <><Form.Item label="镜像来源偏好" name="imageSourceMode" rules={[{ required: true, message: '请选择镜像来源偏好' }]}><Select options={IMAGE_SOURCE_OPTIONS} /></Form.Item>{imageSourceMode === 'custom_image' && <Alert showIcon type="warning" message="自定义镜像只保存来源偏好，实际镜像版本在创建 Freight 时选择。" description="镜像 tag 可能被覆盖，创建 Freight 时建议使用 digest。" />}</>}
-          {step === 2 && <><Form.Item label="环境" name="environmentId" rules={[{ required: true, message: '请选择环境' }]}><Select options={(environments as Environment[]).map((item) => ({ value: item.id, label: `${item.displayName || item.name} (${item.name})` }))} /></Form.Item><Form.Item label="副本数" name="replicas"><InputNumber min={0} precision={0} style={{ width: '100%' }} /></Form.Item><Form.Item label="容器端口" name="containerPort"><InputNumber min={1} max={65535} precision={0} style={{ width: '100%' }} /></Form.Item><Form.Item label="Service 端口" name="servicePort"><InputNumber min={1} max={65535} precision={0} style={{ width: '100%' }} /></Form.Item></>}
-          {step === 3 && <><Form.Item label="访问域名" name="domain"><Input placeholder="dev-order.example.com" /></Form.Item></>}
-          {step === 4 && <><Form.Item label="环境变量" name="envVarsText"><Input.TextArea rows={4} placeholder="SPRING_PROFILES_ACTIVE=dev" /></Form.Item><Form.Item label="配置文件路径" name="configPath"><Input placeholder="/app/config/application.yaml" /></Form.Item><Form.Item label="配置文件内容" name="configContent"><Input.TextArea rows={4} /></Form.Item><Form.Item label="可写目录" name="writableDir"><Input placeholder="/data" /></Form.Item><Form.Item label="目录容量" name="writableDirSize"><Input placeholder="5Gi" /></Form.Item></>}
-          {step === 5 && <Input.TextArea readOnly rows={10} value={valuesPreviewFromForm(form.getFieldsValue())} />}
-        </Form>
-        <aside className="workload-check-panel">
-          <Typography.Title level={5}>校验清单</Typography.Title>
-          <Alert showIcon type="success" message="基础信息完整" />
-          <Alert showIcon type={imageSourceMode === 'custom_image' ? 'warning' : 'success'} message={imageSourceMode === 'custom_image' ? '自定义镜像将在 Freight 中选择' : '默认使用流水线产物'} />
-          <Alert showIcon type="success" message="环境配置将保存到选中环境" />
-        </aside>
-      </div>
+    <Modal title={isEditing ? '编辑工作负载' : '创建工作负载'} open={open} onCancel={onClose} width={920} destroyOnHidden footer={footer}>
+      <Form form={form} layout="vertical" className="workload-large-form" data-testid="workload-large-form" preserve>
+        <Form.Item label="工作负载标识" name="name" rules={[{ required: true, message: '请输入工作负载标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}><Input aria-label="工作负载标识" placeholder="order-api" disabled={isEditing} /></Form.Item>
+        <Form.Item label="显示名称" name="displayName" rules={[{ required: true, message: '请输入显示名称' }]}><Input aria-label="显示名称" placeholder="订单接口" /></Form.Item>
+        <Form.Item label="工作负载类型" name="workloadType" rules={[{ required: true, message: '请选择工作负载类型' }]}><Segmented aria-label="工作负载类型" options={WORKLOAD_TYPE_OPTIONS} block /></Form.Item>
+        <Form.Item label="镜像来源" name="imageSourceMode" rules={[{ required: true, message: '请选择镜像来源' }]}><Segmented aria-label="镜像来源" options={IMAGE_SOURCE_OPTIONS} block /></Form.Item>
+        {needsPipeline && <Form.Item label="关联流水线" name="pipelineId" rules={[{ required: true, message: '请选择关联流水线' }]}><Select placeholder="请选择流水线" options={(pipelines as BuildPipeline[]).map((item) => ({ value: item.id, label: `${item.displayName || item.name} (${item.name})`, disabled: item.status !== 'active' }))} /></Form.Item>}
+        <Form.Item label="描述" name="description"><Input.TextArea rows={2} /></Form.Item>
+        <WorkloadRuntimeFields />
+        <ConfigValueLists />
+      </Form>
     </Modal>
   );
 }
@@ -282,41 +310,17 @@ function MetaItem({ label, value }: { label: string; value: ReactNode }) {
   return <div className="resource-meta-item"><span>{label}</span><div>{value}</div></div>;
 }
 
-function wizardConfigPayload(values: any): Partial<WorkloadEnvironmentConfig> {
-  const containerPort = Number(values.containerPort || 0);
-  const servicePort = Number(values.servicePort || containerPort || 0);
-  return {
-    replicas: Number(values.replicas ?? 1),
-    servicePorts: containerPort ? [{ name: 'http', port: servicePort || containerPort, targetPort: containerPort, protocol: 'TCP' }] : [],
-    resourceRequests: {},
-    resourceLimits: {},
-    probes: [],
-    ingressHosts: values.domain ? [{ host: values.domain, path: '/', servicePort: 'http', tls: false }] : [],
-    envVars: parseEnvVars(values.envVarsText),
-    configFiles: values.configPath ? [{ mountPath: values.configPath, content: values.configContent || '' }] : [],
-    writableDirs: values.writableDir ? [{ mountPath: values.writableDir, sizeLimit: values.writableDirSize || '' }] : []
-  };
-}
-
-function parseEnvVars(text?: string): { name: string; value: string }[] {
-  return String(text || '').split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
-    const [name, ...rest] = line.split('=');
-    return { name: name.trim(), value: rest.join('=').trim() };
-  }).filter((item) => item.name);
-}
-
-function valuesPreviewFromForm(values: any) {
-  return valuesPreview({ name: values.name, workloadType: values.workloadType || 'deployment' } as Workload, wizardConfigPayload(values) as WorkloadEnvironmentConfig);
+function pipelineWorkloadSummary(workloads?: Workload[]) {
+  if (!workloads?.length) return <Typography.Text type="secondary">暂无关联</Typography.Text>;
+  return <Space wrap size={[4, 4]}>{workloads.map((workload) => <Tag key={workload.id}>{workload.displayName || workload.name}</Tag>)}</Space>;
 }
 
 function workloadTypeText(type: WorkloadType) {
-  return type === 'statefulset' ? 'StatefulSet' : 'Deployment';
+  return type === 'statefulset' ? '有状态' : '无状态';
 }
 
 function imageSourceText(mode: WorkloadImageSourceMode) {
   if (mode === 'custom_image') return '自定义镜像';
-  if (mode === 'mixed') return '混合来源';
-  if (mode === 'none') return '暂不绑定';
   return '流水线产物';
 }
 
@@ -333,25 +337,6 @@ function domainSummary(configs: WorkloadEnvironmentConfig[] = []) {
   return <Space wrap size={[4, 4]}>{Array.from(new Set(hosts)).map((host) => <Tag color="green" key={host}>{host}</Tag>)}</Space>;
 }
 
-function valuesPreview(workload: Workload | null, config?: WorkloadEnvironmentConfig) {
-  return [
-    'workload:',
-    `  name: ${workload?.name || '-'}`,
-    `  type: ${workload ? workloadTypeText(workload.workloadType) : 'Deployment'}`,
-    `  replicas: ${config?.replicas ?? 1}`,
-    'image:',
-    '  source: freight',
-    'service:',
-    `  enabled: ${(config?.servicePorts || []).length > 0}`,
-    'ingress:',
-    `  enabled: ${(config?.ingressHosts || []).length > 0}`,
-    'configFiles:',
-    ...((config?.configFiles || []).length ? (config?.configFiles || []).map((file) => `  - mountPath: ${file.mountPath}`) : ['  []']),
-    'writableDirs:',
-    ...((config?.writableDirs || []).length ? (config?.writableDirs || []).map((dir) => `  - mountPath: ${dir.mountPath}`) : ['  []'])
-  ].join('\n');
-}
-
 function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onPipelineChanged, onPipelineDeleted }: { applicationId: string; projectId?: string; localPipelines?: BuildPipeline[]; onPipelineChanged?: (pipeline: BuildPipeline) => void; onPipelineDeleted?: (pipelineId: string) => void }) {
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
@@ -359,7 +344,14 @@ function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onP
   const [historyPipeline, setHistoryPipeline] = useState<BuildPipeline | null>(null);
   const { data: pipelines = EMPTY_LIST, isLoading } = useQuery({ queryKey: ['build-pipelines', applicationId], queryFn: () => listBuildPipelines(applicationId), enabled: !!applicationId, staleTime: 1000 });
   const { data: workloads = EMPTY_LIST } = useQuery({ queryKey: ['workloads', applicationId, 'pipeline-cards'], queryFn: () => listWorkloads(applicationId), enabled: !!applicationId });
-  const workloadNameById = Object.fromEntries((workloads as Workload[]).map((item) => [item.id, item.displayName || item.name]));
+  const workloadsByPipelineId = useMemo(() => {
+    const grouped: Record<string, Workload[]> = {};
+    (workloads as Workload[]).forEach((workload) => {
+      if (!workload.pipelineId) return;
+      grouped[workload.pipelineId] = [...(grouped[workload.pipelineId] || []), workload];
+    });
+    return grouped;
+  }, [workloads]);
   const visiblePipelines = mergePipelines(localPipelines, pipelines as BuildPipeline[]);
   const deleteMutation = useMutation({
     mutationFn: deleteBuildPipeline,
@@ -375,10 +367,7 @@ function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onP
   return (
     <section data-testid="pipeline-panel" className="resource-section">
       <div className="section-heading">
-        <div>
-          <Typography.Title level={4}>流水线</Typography.Title>
-          <Typography.Text type="secondary">流水线绑定 Workload、代码源和运行时环境。</Typography.Text>
-        </div>
+        <div />
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>创建流水线</Button>
       </div>
       {isLoading ? <Spin /> : visiblePipelines.length === 0 ? <Empty description="暂无流水线" /> : (
@@ -393,7 +382,7 @@ function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onP
                 <Badge status={item.status === 'active' ? 'success' : 'default'} text={item.status === 'active' ? '启用' : '停用'} />
               </div>
               <div className="resource-meta-grid">
-                <MetaItem label="绑定 Workload" value={workloadNameById[item.workloadId || ''] || item.workloadId || '-'} />
+                <MetaItem label="关联 Workload" value={pipelineWorkloadSummary(workloadsByPipelineId[item.id])} />
                 <MetaItem label="代码源" value={<Space wrap size={[4, 4]}>{(item.sources || []).map((source) => <Tag key={source.key}>{source.displayName || source.key}</Tag>)}</Space>} />
                 <MetaItem label="运行时环境" value={<Space wrap size={[4, 4]}>{(item.runtimeEnvironments || []).map((runtime) => <Tag key={runtime.id}>{runtime.name}</Tag>)}</Space>} />
                 <MetaItem label="更新时间" value={item.updatedAt || '-'} />
@@ -573,7 +562,6 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
   const initializedRef = useRef(false);
   const isEditing = !!editingPipeline;
   const { data: repositories = EMPTY_LIST } = useQuery({ queryKey: ['source-repositories', projectId], queryFn: () => listSourceRepositories(projectId), enabled: open });
-  const { data: workloads = EMPTY_LIST } = useQuery({ queryKey: ['workloads', applicationId, 'pipeline-modal'], queryFn: () => listWorkloads(applicationId), enabled: open && !!applicationId });
   const { data: buildEnvironments = EMPTY_LIST } = useQuery({ queryKey: ['build-environments'], queryFn: listBuildEnvironments, enabled: open });
   const { data: runtimeEnvironments = EMPTY_LIST } = useQuery({ queryKey: ['runtime-environments'], queryFn: listRuntimeEnvironments, enabled: open });
   const { data: pipelines = EMPTY_LIST, isFetched: pipelinesFetched } = useQuery({ queryKey: ['build-pipelines', applicationId], queryFn: () => listBuildPipelines(applicationId), enabled: open && !!applicationId });
@@ -588,10 +576,9 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
       form.resetFields();
       return;
     }
-    if (initializedRef.current || !repositories.length || !buildEnvironments.length || !runtimeEnvironments.length || !workloads.length) return;
+    if (initializedRef.current || !repositories.length || !buildEnvironments.length || !runtimeEnvironments.length) return;
     if (editingPipeline) {
       form.setFieldsValue({
-        workloadId: editingPipeline.workloadId,
         name: editingPipeline.name,
         displayName: editingPipeline.displayName || editingPipeline.name,
         description: editingPipeline.description,
@@ -614,10 +601,8 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
     const runtime = runtimeEnvironments.find((item: any) => item.isDefault) || runtimeEnvironments[0];
     const buildEnv = buildEnvironments.find((item: any) => item.isDefault) || buildEnvironments[0];
     const repo = repositories.find((item: any) => item.status === 'ready') || repositories[0];
-    const workload = workloads.find((item: any) => item.status === 'enabled') || workloads[0];
     const defaultPipeline = nextPipelineDefaults(pipelines as BuildPipeline[]);
     form.setFieldsValue({
-      workloadId: workload?.id,
       name: defaultPipeline.name,
       displayName: defaultPipeline.displayName,
       runtimeEnvironmentIds: runtime?.id ? [runtime.id] : [],
@@ -633,7 +618,7 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
       }]
     });
     initializedRef.current = true;
-  }, [buildEnvironments, editingPipeline, form, open, pipelines, pipelinesFetched, repositories, runtimeEnvironments, workloads]);
+  }, [buildEnvironments, editingPipeline, form, open, pipelines, pipelinesFetched, repositories, runtimeEnvironments]);
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -660,8 +645,8 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
         };
       });
       const pipeline = editingPipeline
-        ? await updateBuildPipeline(editingPipeline.id, { workloadId: values.workloadId, displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources })
-        : await createBuildPipeline(applicationId, { workloadId: values.workloadId, name: values.name, displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources });
+        ? await updateBuildPipeline(editingPipeline.id, { displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources })
+        : await createBuildPipeline(applicationId, { name: values.name, displayName: values.displayName, description: values.description, runtimeEnvironmentIds, sources });
       return { ...pipeline, sources };
     },
     onSuccess: (pipeline) => {
@@ -678,69 +663,95 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
   });
 
   return (
-    <Modal title={isEditing ? '编辑构建流水线' : '创建构建流水线'} open={open} onCancel={onClose} onOk={() => mutation.mutate()} confirmLoading={mutation.isPending} width={760} okText={isEditing ? '保存' : '创建'} cancelText="取消">
-      <Form form={form} layout="vertical">
-        <Form.Item label="绑定 Workload" name="workloadId" rules={[{ required: true, message: '请选择绑定 Workload' }]}>
-          <Select options={workloads.map((item: Workload) => ({ value: item.id, label: `${item.displayName || item.name} (${item.name})`, disabled: item.status !== 'enabled' }))} />
-        </Form.Item>
-        <Form.Item label="流水线标识" name="name" rules={[{ required: true, message: '请输入流水线标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
-          <Input placeholder="main" disabled={isEditing} />
-        </Form.Item>
-        <Form.Item label="显示名称" name="displayName" rules={[{ required: true, message: '请输入显示名称' }]}>
-          <Input placeholder="主流水线" />
-        </Form.Item>
-        <Form.Item label="描述" name="description">
-          <Input.TextArea rows={2} />
-        </Form.Item>
-        <Form.Item label="运行时环境" name="runtimeEnvironmentIds" rules={[{ required: true, message: '请选择运行时环境' }]}>
-          <Select
-            mode="multiple"
-            options={runtimeEnvironments.map((item: any) => ({
-              value: item.id,
-              label: `${item.name} ${item.runtimeBaseImage ? `(${item.runtimeBaseImage})` : ''}`
-            }))}
-          />
-        </Form.Item>
-        <Space wrap size={[8, 8]} style={{ marginBottom: 16 }}>
-          {selectedRuntimes.length > 0 ? selectedRuntimes.map((runtime: RuntimeEnvironment, index: number) => (
-            <Tag key={runtime.id} color={index === 0 ? 'blue' : 'default'}>{index === 0 ? '主产物' : '附加'} {runtime.name}</Tag>
-          )) : <Typography.Text type="secondary">请选择流水线运行时环境</Typography.Text>}
-        </Space>
-        <Form.List name="sources">
-          {(fields, { add, remove }) => (
-            <Space direction="vertical" size={16} style={{ width: '100%' }}>
-              {fields.map((field, index) => (
-                <Card key={field.key} size="small" title={index === 0 ? '主代码源' : `代码源 ${index + 1}`} extra={<Button danger type="text" icon={<DeleteOutlined />} disabled={fields.length <= 1} onClick={() => remove(field.name)}>删除</Button>}>
-                  <Form.Item label="代码源标识" name={[field.name, 'key']} rules={[{ required: true, message: '请输入代码源标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
-                    <Input />
-                  </Form.Item>
-                  <Form.Item label="显示名称" name={[field.name, 'displayName']}>
-                    <Input />
-                  </Form.Item>
-                  <Form.Item label="源码仓库" name={[field.name, 'sourceRepositoryId']} rules={[{ required: true, message: '请选择源码仓库' }]}>
-                    <Select options={repositories.map((repo: any) => ({ value: repo.id, label: repo.displayName || repo.name, disabled: repo.status !== 'ready' }))} />
-                  </Form.Item>
-                  <Form.Item label="默认分支" name={[field.name, 'defaultRef']} rules={[{ required: true, message: '请输入默认分支' }]}>
-                    <Input placeholder={selectedRepository?.defaultBranch || 'main'} />
-                  </Form.Item>
-                  <Form.Item label="源码子目录" name={[field.name, 'sourcePath']} rules={[{ required: true, message: '请输入源码子目录' }]}>
-                    <Input placeholder="services/order-api" />
-                  </Form.Item>
-                  <Form.Item label="构建环境" name={[field.name, 'buildEnvironmentId']} rules={[{ required: true, message: '请选择构建环境' }]}>
-                    <Select options={buildEnvironments.map((item: any) => ({ value: item.id, label: item.name }))} />
-                  </Form.Item>
-                  <Form.Item label="构建命令" name={[field.name, 'buildCommand']} rules={[{ required: true, message: '请输入构建命令' }]}>
-                    <Input.TextArea rows={3} />
-                  </Form.Item>
-                  <Form.Item label="产物拷贝命令" name={[field.name, 'artifactCopyCommand']} rules={[{ required: true, message: '请输入产物拷贝命令' }]}>
-                    <Input.TextArea rows={3} />
-                  </Form.Item>
-                </Card>
-              ))}
-              <Button icon={<PlusOutlined />} onClick={() => add({ key: `source-${fields.length + 1}`, displayName: '代码源', sourcePath: '.', defaultRef: 'main' })}>添加代码源</Button>
-            </Space>
-          )}
-        </Form.List>
+    <Modal title={isEditing ? '编辑构建流水线' : '创建构建流水线'} open={open} onCancel={onClose} onOk={() => mutation.mutate()} confirmLoading={mutation.isPending} width={980} okText={isEditing ? '保存' : '创建'} cancelText="取消">
+      <Form form={form} layout="horizontal" labelCol={{ flex: '120px' }} wrapperCol={{ flex: '1 1 auto' }} colon={false} className="pipeline-editor-form">
+        <section className="pipeline-form-section">
+          <div className="pipeline-form-section-title">基本信息</div>
+          <div className="pipeline-form-stack">
+            <Form.Item label="流水线标识" name="name" rules={[{ required: true, message: '请输入流水线标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
+              <Input placeholder="main" disabled={isEditing} />
+            </Form.Item>
+            <Form.Item label="显示名称" name="displayName" rules={[{ required: true, message: '请输入显示名称' }]}>
+              <Input placeholder="主流水线" />
+            </Form.Item>
+            <Form.Item label="描述" name="description" className="pipeline-form-span">
+              <Input.TextArea rows={2} />
+            </Form.Item>
+          </div>
+        </section>
+
+        <section className="pipeline-form-section">
+          <div className="pipeline-form-section-title">运行时环境</div>
+          <Form.Item name="runtimeEnvironmentIds" rules={[{ required: true, message: '请选择运行时环境' }]} className="pipeline-runtime-field">
+            <div className="pipeline-runtime-table">
+              {(runtimeEnvironments as RuntimeEnvironment[]).map((runtime) => {
+                const checked = selectedRuntimeIds.includes(runtime.id);
+                const nextIds = checked ? selectedRuntimeIds.filter((id: string) => id !== runtime.id) : [...selectedRuntimeIds, runtime.id];
+                const isPrimary = selectedRuntimeIds[0] === runtime.id;
+                return (
+                  <button key={runtime.id} type="button" className={checked ? 'pipeline-runtime-row selected' : 'pipeline-runtime-row'} onClick={() => form.setFieldValue('runtimeEnvironmentIds', nextIds)}>
+                    <Checkbox checked={checked} onChange={() => form.setFieldValue('runtimeEnvironmentIds', nextIds)} />
+                    <span className="pipeline-runtime-name">{runtime.name}</span>
+                    <span className="pipeline-runtime-image">{runtime.runtimeBaseImage || '-'}</span>
+                    <span className="pipeline-runtime-state">{isPrimary ? '主产物' : checked ? '附加' : '未选择'}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </Form.Item>
+          <Space wrap size={[8, 8]}>
+            {selectedRuntimes.length > 0 ? selectedRuntimes.map((runtime: RuntimeEnvironment, index: number) => (
+              <Tag key={runtime.id} color={index === 0 ? 'blue' : 'default'}>{index === 0 ? '主产物' : '附加'} {runtime.name}</Tag>
+            )) : <Typography.Text type="secondary">请选择流水线运行时环境</Typography.Text>}
+          </Space>
+        </section>
+
+        <section className="pipeline-form-section">
+          <div className="pipeline-form-section-head">
+            <div className="pipeline-form-section-title">代码源</div>
+          </div>
+          <Form.List name="sources">
+            {(fields, { add, remove }) => (
+              <div className="pipeline-source-list">
+                {fields.map((field, index) => (
+                  <div key={field.key} className="pipeline-source-row">
+                    <div className="pipeline-source-row-head">
+                      <Typography.Text strong>{index === 0 ? '主代码源' : `代码源 ${index + 1}`}</Typography.Text>
+                      <Button danger type="text" icon={<DeleteOutlined />} disabled={fields.length <= 1} onClick={() => remove(field.name)}>删除</Button>
+                    </div>
+                    <div className="pipeline-form-stack">
+                      <Form.Item label="代码源标识" name={[field.name, 'key']} rules={[{ required: true, message: '请输入代码源标识' }, { pattern: /^[a-z][a-z0-9-]{0,62}$/, message: '仅支持小写字母、数字和连字符' }]}>
+                        <Input />
+                      </Form.Item>
+                      <Form.Item label="显示名称" name={[field.name, 'displayName']}>
+                        <Input />
+                      </Form.Item>
+                      <Form.Item label="源码仓库" name={[field.name, 'sourceRepositoryId']} rules={[{ required: true, message: '请选择源码仓库' }]}>
+                        <Select options={repositories.map((repo: any) => ({ value: repo.id, label: repo.displayName || repo.name, disabled: repo.status !== 'ready' }))} />
+                      </Form.Item>
+                      <Form.Item label="默认分支" name={[field.name, 'defaultRef']} rules={[{ required: true, message: '请输入默认分支' }]}>
+                        <Input placeholder={selectedRepository?.defaultBranch || 'main'} />
+                      </Form.Item>
+                      <Form.Item label="源码子目录" name={[field.name, 'sourcePath']} rules={[{ required: true, message: '请输入源码子目录' }]}>
+                        <Input placeholder="services/order-api" />
+                      </Form.Item>
+                      <Form.Item label="构建环境" name={[field.name, 'buildEnvironmentId']} rules={[{ required: true, message: '请选择构建环境' }]}>
+                        <Select options={buildEnvironments.map((item: any) => ({ value: item.id, label: item.name }))} />
+                      </Form.Item>
+                      <Form.Item label="构建命令" name={[field.name, 'buildCommand']} rules={[{ required: true, message: '请输入构建命令' }]} className="pipeline-form-span">
+                        <Input.TextArea rows={3} />
+                      </Form.Item>
+                      <Form.Item label="产物拷贝命令" name={[field.name, 'artifactCopyCommand']} rules={[{ required: true, message: '请输入产物拷贝命令' }]} className="pipeline-form-span">
+                        <Input.TextArea rows={3} />
+                      </Form.Item>
+                    </div>
+                  </div>
+                ))}
+                <Button className="pipeline-source-add" icon={<PlusOutlined />} onClick={() => add({ key: `source-${fields.length + 1}`, displayName: '代码源', sourcePath: '.', defaultRef: 'main' })}>添加代码源</Button>
+              </div>
+            )}
+          </Form.List>
+        </section>
       </Form>
     </Modal>
   );

@@ -4,16 +4,17 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { ApplicationDetailPage } from './ApplicationDetailPage';
+import { ApplicationWorkspacePage } from './ApplicationDetailPage';
 
-function renderPage() {
+function renderPage(path = '/apps/app_1/build') {
   return render(
     <ConfigProvider>
       <QueryClientProvider client={new QueryClient()}>
-        <MemoryRouter initialEntries={['/apps/app_1']}>
+        <MemoryRouter initialEntries={[path]}>
           <Routes>
-            <Route path="/apps/:id" element={<ApplicationDetailPage />} />
-            <Route path="/apps/:id/promotions" element={<div>应用发布晋级页面</div>} />
+            <Route path="/apps/:id/build" element={<ApplicationWorkspacePage section="build" />} />
+            <Route path="/apps/:id/deploy" element={<ApplicationWorkspacePage section="deploy" />} />
+            <Route path="/apps/:id/config" element={<ApplicationWorkspacePage section="config" />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>
@@ -25,48 +26,60 @@ afterEach(() => {
   cleanup();
 });
 
-test('应用详情只展示构建和部署两个页签并默认进入构建', async () => {
+test('应用构建页只展示流水线并移除摘要和页签', async () => {
   renderPage();
 
-  expect(await screen.findByRole('tab', { name: '构建' })).toHaveAttribute('aria-selected', 'true');
-  expect(screen.getByRole('tab', { name: '部署' })).toBeInTheDocument();
-  ['应用 Workload', '镜像构建', '发布晋级', '总览', '环境', '版本', '配置', '日志', '监控', '设置'].forEach((name) => {
+  expect((await screen.findAllByLabelText('选择项目')).length).toBeGreaterThan(0);
+  expect(screen.getAllByLabelText('选择应用').length).toBeGreaterThan(0);
+  expect(screen.queryByText('应用标识')).not.toBeInTheDocument();
+  expect(screen.queryByText('所属项目')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /编辑应用/ })).not.toBeInTheDocument();
+  expect(screen.queryByText('流水线绑定 Workload、代码源和运行时环境。')).not.toBeInTheDocument();
+  ['构建', '部署', '应用 Workload', '镜像构建', '发布晋级', '总览', '环境', '版本', '配置', '日志', '监控', '设置'].forEach((name) => {
     expect(screen.queryByRole('tab', { name })).not.toBeInTheDocument();
   });
   expect(screen.queryByLabelText('交付流程')).not.toBeInTheDocument();
 
-  const buildTab = await screen.findByTestId('build-tab');
-  expect(within(buildTab).getByRole('heading', { name: '流水线' })).toBeInTheDocument();
-  expect(within(buildTab).getByRole('heading', { name: '工作负载管理' })).toBeInTheDocument();
-  expect(within(buildTab).getByRole('button', { name: /创建流水线/ })).toBeInTheDocument();
-  expect(within(buildTab).getByRole('button', { name: /创建 Workload/ })).toBeInTheDocument();
-  expect(within(buildTab).queryByRole('columnheader', { name: '端口' })).not.toBeInTheDocument();
-
-  const workloadPanel = await screen.findByTestId('workload-panel');
-  expect(await within(workloadPanel).findByText('Deployment')).toBeInTheDocument();
-  expect(within(workloadPanel).getByText('StatefulSet')).toBeInTheDocument();
-  expect(within(workloadPanel).getByText('流水线产物')).toBeInTheDocument();
-  expect(within(workloadPanel).getByText('自定义镜像')).toBeInTheDocument();
-  expect(await within(workloadPanel).findByText('8080/TCP')).toBeInTheDocument();
-  expect(within(workloadPanel).getByText('order.example.com')).toBeInTheDocument();
-
   const pipelinePanel = await screen.findByTestId('pipeline-panel');
+  expect(within(pipelinePanel).queryByRole('heading', { name: '流水线' })).not.toBeInTheDocument();
+  expect(within(pipelinePanel).getByRole('button', { name: /创建流水线/ })).toBeInTheDocument();
+  expect(screen.queryByTestId('workload-panel')).not.toBeInTheDocument();
   const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
-  expect(within(pipelineCard).getByText('绑定 Workload')).toBeInTheDocument();
+  expect(within(pipelineCard).getByText('关联 Workload')).toBeInTheDocument();
   expect(within(pipelineCard).getByText('代码源')).toBeInTheDocument();
   expect(within(pipelineCard).getByText('运行时环境')).toBeInTheDocument();
   expect(within(pipelineCard).getByRole('button', { name: /触发构建/ })).toBeInTheDocument();
   expect(within(pipelineCard).queryByRole('button', { name: /历史/ })).not.toBeInTheDocument();
 });
 
-test('部署页签嵌入发布晋级内容且保留旧路由兼容', async () => {
-  renderPage();
-
-  await userEvent.click(await screen.findByRole('tab', { name: '部署' }));
+test('部署页展示发布晋级内容', async () => {
+  renderPage('/apps/app_1/deploy');
 
   expect(await screen.findByText('Freight 时间轴')).toBeInTheDocument();
   expect(await screen.findByLabelText('应用部署 DAG')).toBeInTheDocument();
   expect(screen.getByTestId('promotion-confirm-panel')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /编辑应用/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: '发布晋级' })).not.toBeInTheDocument();
+  expect(screen.queryByText('拖拽 Freight 到目标 Stage，系统按交付流 DAG 校验上游依赖、审批和验证要求。')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('pipeline-panel')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('workload-panel')).not.toBeInTheDocument();
+});
+
+test('配置页只展示工作负载管理', async () => {
+  renderPage('/apps/app_1/config');
+
+  const workloadPanel = await screen.findByTestId('workload-panel');
+  expect(screen.queryByRole('button', { name: /编辑应用/ })).not.toBeInTheDocument();
+  expect(within(workloadPanel).queryByRole('heading', { name: '工作负载管理' })).not.toBeInTheDocument();
+  expect(within(workloadPanel).queryByText('按最小可独立部署单元管理 Workload。')).not.toBeInTheDocument();
+  expect(within(workloadPanel).getByRole('button', { name: /创建工作负载/ })).toBeInTheDocument();
+  expect(await within(workloadPanel).findByText('无状态')).toBeInTheDocument();
+  expect(within(workloadPanel).getByText('有状态')).toBeInTheDocument();
+  expect(within(workloadPanel).getByText('流水线产物')).toBeInTheDocument();
+  expect(within(workloadPanel).getByText('自定义镜像')).toBeInTheDocument();
+  expect(await within(workloadPanel).findByText('8080/TCP')).toBeInTheDocument();
+  expect(within(workloadPanel).getByText('order.example.com')).toBeInTheDocument();
+  expect(screen.queryByTestId('pipeline-panel')).not.toBeInTheDocument();
 });
 
 test('流水线构建弹窗按倒序号展示构建并可查看日志', async () => {
@@ -85,53 +98,55 @@ test('流水线构建弹窗按倒序号展示构建并可查看日志', async ()
   expect(await within(dialog).findByText(/\[INFO\] 检出平台托管源码仓库/)).toBeInTheDocument();
 });
 
-test('Workload 创建弹层支持分步并最终创建', async () => {
-  renderPage();
-  await userEvent.click(await screen.findByRole('button', { name: /创建 Workload/ }));
+test('工作负载创建弹层使用滚动大页并最终创建', async () => {
+  renderPage('/apps/app_1/config');
+  await userEvent.click(await screen.findByRole('button', { name: /创建工作负载/ }));
 
-  const dialog = await screen.findByRole('dialog', { name: '创建 Workload' });
-  ['基础信息', '镜像来源', '运行参数', '网络访问', '配置与目录', '预览校验'].forEach((name) => {
-    expect(within(dialog).getByText(name)).toBeInTheDocument();
-  });
-  await userEvent.type(within(dialog).getByLabelText('Workload 标识'), 'order-search');
+  const dialog = await screen.findByRole('dialog', { name: '创建工作负载' });
+  expect(within(dialog).queryByText('校验清单')).not.toBeInTheDocument();
+  expect(within(dialog).queryByRole('button', { name: '下一步' })).not.toBeInTheDocument();
+  expect(within(dialog).queryByRole('button', { name: '上一步' })).not.toBeInTheDocument();
+  expect(within(dialog).queryByText('预览校验')).not.toBeInTheDocument();
+  expect(within(dialog).getByTestId('workload-large-form')).toBeInTheDocument();
+  await userEvent.type(within(dialog).getByLabelText('工作负载标识'), 'order-search');
   await userEvent.type(within(dialog).getByLabelText('显示名称'), '订单搜索');
-  await userEvent.click(within(dialog).getByText('StatefulSet'));
-  expect(within(dialog).getByText('StatefulSet').closest('.ant-segmented-item')).toHaveClass('ant-segmented-item-selected');
-  await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
-
-  await userEvent.click(within(dialog).getByLabelText('镜像来源偏好'));
-  await userEvent.click(await screen.findByTitle('发布时选择自定义镜像'));
-  expect(within(dialog).getByText('自定义镜像只保存来源偏好，实际镜像版本在创建 Freight 时选择。')).toBeInTheDocument();
-  await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
-  await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
-  await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
-  await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
+  await userEvent.click(within(dialog).getByText('有状态'));
+  expect(within(dialog).getByText('有状态').closest('.ant-segmented-item')).toHaveClass('ant-segmented-item-selected');
+  await userEvent.click(within(dialog).getByText('自定义镜像'));
+  expect(within(dialog).getByText('自定义镜像').closest('.ant-segmented-item')).toHaveClass('ant-segmented-item-selected');
+  await userEvent.click(within(dialog).getByRole('button', { name: '添加环境变量' }));
+  await userEvent.type(within(dialog).getByLabelText('环境变量键 1'), 'group');
+  await userEvent.type(within(dialog).getByLabelText('环境变量值 1'), 'iot');
+  await userEvent.click(within(dialog).getByRole('button', { name: '添加配置文件' }));
+  await userEvent.type(within(dialog).getByLabelText('配置文件路径 1'), '/etc/app/app.yaml');
+  await userEvent.type(within(dialog).getByLabelText('配置文件内容 1'), 'server.port: 8080');
+  await userEvent.click(within(dialog).getByRole('button', { name: '添加可写目录' }));
+  await userEvent.type(within(dialog).getByLabelText('可写目录 1'), '/data');
+  await userEvent.type(within(dialog).getByLabelText('目录属主 1'), 'app:app');
+  await userEvent.type(within(dialog).getByLabelText('目录权限 1'), '0775');
   await userEvent.click(within(dialog).getByRole('button', { name: '创建' }));
 
   expect(await screen.findByText('order-search')).toBeInTheDocument();
 });
 
-test('Workload 编辑使用弹窗保存后更新卡片', async () => {
-  renderPage();
+test('工作负载编辑使用中文弹窗保存后更新卡片', async () => {
+  renderPage('/apps/app_1/config');
   const workloadPanel = await screen.findByTestId('workload-panel');
   const apiCard = (await within(workloadPanel).findByText('order-api')).closest('.resource-card') as HTMLElement;
 
   await userEvent.click(within(apiCard).getByRole('button', { name: '编辑' }));
 
-  const dialog = await screen.findByRole('dialog', { name: '编辑 Workload' });
+  const dialog = await screen.findByRole('dialog', { name: '编辑工作负载' });
   expect(document.querySelector('.ant-drawer')).not.toBeInTheDocument();
   await userEvent.clear(within(dialog).getByLabelText('显示名称'));
   await userEvent.type(within(dialog).getByLabelText('显示名称'), '订单接口 v2');
-  for (let i = 0; i < 5; i += 1) {
-    await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
-  }
   await userEvent.click(within(dialog).getByRole('button', { name: '保存' }));
 
   expect(await within(workloadPanel).findByText('订单接口 v2')).toBeInTheDocument();
 });
 
-test('Workload 列表支持确认后删除 Workload', async () => {
-  renderPage();
+test('工作负载列表支持确认后删除', async () => {
+  renderPage('/apps/app_1/config');
   const workloadPanel = await screen.findByTestId('workload-panel');
   const workerCard = (await within(workloadPanel).findByText('order-worker')).closest('.resource-card') as HTMLElement;
 
@@ -144,17 +159,18 @@ test('Workload 列表支持确认后删除 Workload', async () => {
   expect(within(workloadPanel).getByText('order-api')).toBeInTheDocument();
 });
 
-test('Workload 页面标题和按钮不使用英文用户文案', async () => {
-  renderPage();
+test('工作负载页面标题和按钮不使用英文用户文案', async () => {
+  renderPage('/apps/app_1/config');
   const workloadPanel = await screen.findByTestId('workload-panel');
-  await within(workloadPanel).findByText('Deployment');
+  await within(workloadPanel).findByText('无状态');
   const visibleControls = within(workloadPanel)
     .getAllByRole('button')
     .map((item) => item.textContent?.trim() || '');
 
-  expect(visibleControls).toEqual(expect.arrayContaining(['创建 Workload', '编辑']));
+  expect(visibleControls).toEqual(expect.arrayContaining(['创建工作负载', '编辑']));
   expect(visibleControls).toEqual(expect.arrayContaining(['删除']));
-  expect(visibleControls).not.toEqual(expect.arrayContaining(['Create Workload', 'Deploy Config']));
+  expect(visibleControls).not.toEqual(expect.arrayContaining(['创建 Workload', 'Create Workload', 'Deploy Config']));
+  expect(within(workloadPanel).queryByText('Workload')).not.toBeInTheDocument();
   expect(within(workloadPanel).queryByText('Create Workload')).not.toBeInTheDocument();
   expect(within(workloadPanel).queryByText('Deploy Config')).not.toBeInTheDocument();
 });

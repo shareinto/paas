@@ -35,6 +35,8 @@ type Repository interface {
 	SaveWorkloadEnvironmentConfig(ctx context.Context, config WorkloadEnvironmentConfig) error
 	GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error)
 	ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error)
+	SaveWorkloadDefaultConfig(ctx context.Context, config WorkloadEnvironmentConfig) error
+	GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfig, error)
 
 	CreateEnvironment(ctx context.Context, environment Environment) error
 	UpdateEnvironment(ctx context.Context, environment Environment) error
@@ -112,6 +114,18 @@ type RuntimeEnvironmentQuery interface {
 type BuildPipelineProvisioner interface {
 	EnsureBuildPipeline(ctx context.Context, applicationID shared.ID) error
 	DeleteBuildPipeline(ctx context.Context, applicationID shared.ID) error
+}
+
+type BuildPipelineRef struct {
+	ID            shared.ID
+	ApplicationID shared.ID
+	Name          string
+	DisplayName   string
+	Status        string
+}
+
+type BuildPipelineQuery interface {
+	GetBuildPipeline(ctx context.Context, id shared.ID) (BuildPipelineRef, error)
 }
 
 type ClusterCandidate struct {
@@ -198,6 +212,7 @@ type WorkloadCommand interface {
 	DisableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
 	DeleteWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
 	SaveWorkloadEnvironmentConfig(ctx context.Context, input SaveWorkloadEnvironmentConfigInput) (WorkloadEnvironmentConfig, error)
+	SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkloadDefaultConfigInput) (WorkloadEnvironmentConfig, error)
 }
 
 type WorkloadQuery interface {
@@ -207,6 +222,7 @@ type WorkloadQuery interface {
 	GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error)
 	ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error)
 	ListWorkloadEnvironmentConfigsForApplication(ctx context.Context, applicationID shared.ID, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error)
+	GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfig, error)
 }
 
 type EnvironmentCommand interface {

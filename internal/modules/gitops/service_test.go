@@ -408,8 +408,9 @@ func TestApplyPromotionRejectsImageBundleWithoutUniqueClusterMatch(t *testing.T)
 }
 
 type workloadQuery struct {
-	workloads map[shared.ID]WorkloadRef
-	configs   map[string]WorkloadEnvironmentConfigRef
+	workloads      map[shared.ID]WorkloadRef
+	configs        map[string]WorkloadEnvironmentConfigRef
+	defaultConfigs map[shared.ID]WorkloadEnvironmentConfigRef
 }
 
 func (q workloadQuery) GetWorkload(_ context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error) {
@@ -426,6 +427,61 @@ func (q workloadQuery) GetWorkloadEnvironmentConfig(_ context.Context, workloadI
 		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload environment config not found")
 	}
 	return config, nil
+}
+
+func (q workloadQuery) GetWorkloadDefaultConfig(_ context.Context, workloadID shared.ID) (WorkloadEnvironmentConfigRef, error) {
+	config, ok := q.defaultConfigs[workloadID]
+	if !ok {
+		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload default config not found")
+	}
+	return config, nil
+}
+
+func TestApplyPromotionFallsBackToWorkloadDefaultConfig(t *testing.T) {
+	ids := []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
+		"deployment_1", "manifest_revision_1", "deployment_event_1",
+	}
+	svc, manifest, _ := newTestService(t, ids)
+	svc.workloads = workloadQuery{
+		workloads: map[shared.ID]WorkloadRef{
+			"workload_api": {ID: "workload_api", ApplicationID: "app_1", Name: "user-api", DisplayName: "用户 API", WorkloadType: "Deployment"},
+		},
+		configs: map[string]WorkloadEnvironmentConfigRef{},
+		defaultConfigs: map[shared.ID]WorkloadEnvironmentConfigRef{
+			"workload_api": {
+				Replicas:     2,
+				ServicePorts: []WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
+				EnvVars:      []WorkloadEnvVarRef{{Name: "LOG_LEVEL", Value: "info"}},
+				ConfigFiles:  []WorkloadConfigFileRef{{MountPath: "/etc/app/application.yaml", Content: "bG9nOiBpbmZv", Base64Encoded: true}},
+				WritableDirs: []WorkloadWritableDirRef{{MountPath: "/data", OwnerGroup: "app:app", Mode: "0775"}},
+			},
+		},
+	}
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+
+	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev",
+		Artifacts: []delivery.GitOpsArtifactSpec{{WorkloadID: "workload_api", URI: "registry/user-api:v2", Repository: "registry/user-api", Tag: "v2", Digest: "sha256:api", IsPrimary: true}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPromotion() error = %v", err)
+	}
+	values := manifest.Files["apps/order-api/dev/values.yaml"]
+	for _, expected := range []string{
+		"replicas: 2",
+		"name: LOG_LEVEL",
+		"value: info",
+		"mountPath: /etc/app/application.yaml",
+		"base64Encoded: true",
+		"ownerGroup: app:app",
+		"mode: \"0775\"",
+	} {
+		if !strings.Contains(values, expected) {
+			t.Fatalf("values should contain %q:\n%s", expected, values)
+		}
+	}
 }
 
 func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing.T) {

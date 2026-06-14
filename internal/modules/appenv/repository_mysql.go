@@ -189,9 +189,9 @@ func (r *MySQLRepository) CreateWorkload(ctx context.Context, workload Workload)
 		return err
 	}
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO workloads (id, tenant_id, project_id, application_id, name, display_name, workload_type, description, status, image_source_mode, created_by, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		workload.ID, workload.TenantID, workload.ProjectID, workload.ApplicationID, workload.Name, workload.DisplayName, workload.WorkloadType, workload.Description, workload.Status, workload.ImageSourceMode, workload.CreatedBy, mysqlTime(workload.CreatedAt), mysqlTime(workload.UpdatedAt))
+INSERT INTO workloads (id, tenant_id, project_id, application_id, name, display_name, workload_type, description, status, image_source_mode, pipeline_id, created_by, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		workload.ID, workload.TenantID, workload.ProjectID, workload.ApplicationID, workload.Name, workload.DisplayName, workload.WorkloadType, workload.Description, workload.Status, workload.ImageSourceMode, workload.PipelineID, workload.CreatedBy, mysqlTime(workload.CreatedAt), mysqlTime(workload.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "workload name already exists in application", "create workload failed")
 }
 
@@ -205,9 +205,9 @@ func (r *MySQLRepository) UpdateWorkload(ctx context.Context, workload Workload)
 	}
 	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE workloads
-SET name = ?, display_name = ?, workload_type = ?, description = ?, status = ?, image_source_mode = ?, updated_at = ?
+SET name = ?, display_name = ?, workload_type = ?, description = ?, status = ?, image_source_mode = ?, pipeline_id = ?, updated_at = ?
 WHERE id = ?`,
-		workload.Name, workload.DisplayName, workload.WorkloadType, workload.Description, workload.Status, workload.ImageSourceMode, mysqlTime(workload.UpdatedAt), workload.ID)
+		workload.Name, workload.DisplayName, workload.WorkloadType, workload.Description, workload.Status, workload.ImageSourceMode, workload.PipelineID, mysqlTime(workload.UpdatedAt), workload.ID)
 	if err != nil {
 		return database.ConflictOrUnavailable(err, "workload name already exists in application", "update workload failed")
 	}
@@ -251,51 +251,7 @@ func (r *MySQLRepository) SaveWorkloadEnvironmentConfig(ctx context.Context, con
 	if _, err := r.GetEnvironment(ctx, config.EnvironmentID); err != nil {
 		return err
 	}
-	servicePorts, err := jsonText(config.ServicePorts)
-	if err != nil {
-		return err
-	}
-	resourceRequests, err := jsonText(config.ResourceRequests)
-	if err != nil {
-		return err
-	}
-	resourceLimits, err := jsonText(config.ResourceLimits)
-	if err != nil {
-		return err
-	}
-	probes, err := jsonText(config.Probes)
-	if err != nil {
-		return err
-	}
-	ingressHosts, err := jsonText(config.IngressHosts)
-	if err != nil {
-		return err
-	}
-	envVars, err := jsonText(config.EnvVars)
-	if err != nil {
-		return err
-	}
-	secretRefs, err := jsonText(config.SecretRefs)
-	if err != nil {
-		return err
-	}
-	configFiles, err := jsonText(config.ConfigFiles)
-	if err != nil {
-		return err
-	}
-	writableDirs, err := jsonText(config.WritableDirs)
-	if err != nil {
-		return err
-	}
-	volumeMounts, err := jsonText(config.VolumeMounts)
-	if err != nil {
-		return err
-	}
-	initContainers, err := jsonText(config.InitContainers)
-	if err != nil {
-		return err
-	}
-	valuesOverride, err := jsonText(config.ValuesOverride)
+	encoded, err := encodeWorkloadConfigJSON(config)
 	if err != nil {
 		return err
 	}
@@ -322,9 +278,76 @@ ON DUPLICATE KEY UPDATE
   values_override_json = VALUES(values_override_json),
   updated_at = VALUES(updated_at)`,
 		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.WorkloadID, config.EnvironmentID, config.Replicas,
-		servicePorts, resourceRequests, resourceLimits, probes, ingressHosts, envVars, secretRefs, configFiles, writableDirs, volumeMounts, initContainers, valuesOverride,
+		encoded.servicePorts, encoded.resourceRequests, encoded.resourceLimits, encoded.probes, encoded.ingressHosts, encoded.envVars, encoded.secretRefs, encoded.configFiles, encoded.writableDirs, encoded.volumeMounts, encoded.initContainers, encoded.valuesOverride,
 		mysqlTime(config.CreatedAt), mysqlTime(config.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "workload environment config already exists", "save workload environment config failed")
+}
+
+type encodedWorkloadConfig struct {
+	servicePorts     string
+	resourceRequests string
+	resourceLimits   string
+	probes           string
+	ingressHosts     string
+	envVars          string
+	secretRefs       string
+	configFiles      string
+	writableDirs     string
+	volumeMounts     string
+	initContainers   string
+	valuesOverride   string
+}
+
+func encodeWorkloadConfigJSON(config WorkloadEnvironmentConfig) (encodedWorkloadConfig, error) {
+	servicePorts, err := jsonText(config.ServicePorts)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	resourceRequests, err := jsonText(config.ResourceRequests)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	resourceLimits, err := jsonText(config.ResourceLimits)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	probes, err := jsonText(config.Probes)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	ingressHosts, err := jsonText(config.IngressHosts)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	envVars, err := jsonText(config.EnvVars)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	secretRefs, err := jsonText(config.SecretRefs)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	configFiles, err := jsonText(config.ConfigFiles)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	writableDirs, err := jsonText(config.WritableDirs)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	volumeMounts, err := jsonText(config.VolumeMounts)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	initContainers, err := jsonText(config.InitContainers)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	valuesOverride, err := jsonText(config.ValuesOverride)
+	if err != nil {
+		return encodedWorkloadConfig{}, err
+	}
+	return encodedWorkloadConfig{servicePorts: servicePorts, resourceRequests: resourceRequests, resourceLimits: resourceLimits, probes: probes, ingressHosts: ingressHosts, envVars: envVars, secretRefs: secretRefs, configFiles: configFiles, writableDirs: writableDirs, volumeMounts: volumeMounts, initContainers: initContainers, valuesOverride: valuesOverride}, nil
 }
 
 func (r *MySQLRepository) GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error) {
@@ -354,6 +377,50 @@ func (r *MySQLRepository) ListWorkloadEnvironmentConfigs(ctx context.Context, wo
 		items = append(items, config)
 	}
 	return items, rows.Err()
+}
+
+func (r *MySQLRepository) SaveWorkloadDefaultConfig(ctx context.Context, config WorkloadEnvironmentConfig) error {
+	if _, err := r.GetWorkload(ctx, config.WorkloadID); err != nil {
+		return err
+	}
+	encoded, err := encodeWorkloadConfigJSON(config)
+	if err != nil {
+		return err
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO workload_default_configs (
+  id, tenant_id, project_id, application_id, workload_id, replicas,
+  service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
+  env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
+  init_containers_json, values_override_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), ?, ?)
+ON DUPLICATE KEY UPDATE
+  replicas = VALUES(replicas),
+  service_ports_json = VALUES(service_ports_json),
+  resource_requests_json = VALUES(resource_requests_json),
+  resource_limits_json = VALUES(resource_limits_json),
+  probes_json = VALUES(probes_json),
+  ingress_hosts_json = VALUES(ingress_hosts_json),
+  env_vars_json = VALUES(env_vars_json),
+  secret_refs_json = VALUES(secret_refs_json),
+  config_files_json = VALUES(config_files_json),
+  writable_dirs_json = VALUES(writable_dirs_json),
+  volume_mounts_json = VALUES(volume_mounts_json),
+  init_containers_json = VALUES(init_containers_json),
+  values_override_json = VALUES(values_override_json),
+  updated_at = VALUES(updated_at)`,
+		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.WorkloadID, config.Replicas,
+		encoded.servicePorts, encoded.resourceRequests, encoded.resourceLimits, encoded.probes, encoded.ingressHosts, encoded.envVars, encoded.secretRefs, encoded.configFiles, encoded.writableDirs, encoded.volumeMounts, encoded.initContainers, encoded.valuesOverride,
+		mysqlTime(config.CreatedAt), mysqlTime(config.UpdatedAt))
+	return database.ConflictOrUnavailable(err, "workload default config already exists", "save workload default config failed")
+}
+
+func (r *MySQLRepository) GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfig, error) {
+	config, err := scanWorkloadEnvironmentConfig(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, workloadDefaultConfigSelect()+" WHERE workload_id = ?", workloadID))
+	if err != nil {
+		return WorkloadEnvironmentConfig{}, database.NotFound(err, "workload default config not found")
+	}
+	return config, nil
 }
 
 func (r *MySQLRepository) CreateEnvironment(ctx context.Context, env Environment) error {
@@ -659,13 +726,19 @@ func applicationSourceSelect() string {
 	return "SELECT id, tenant_id, project_id, application_id, source_key, display_name, source_repository_id, jenkins_template_id, build_environment_id, source_path, build_command, artifact_copy_command, runtime_base_image, artifact_deploy_path, default_ref, is_primary, created_at, updated_at FROM application_sources"
 }
 func workloadSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, name, display_name, workload_type, description, status, image_source_mode, created_by, created_at, updated_at FROM workloads"
+	return "SELECT id, tenant_id, project_id, application_id, name, display_name, workload_type, description, status, image_source_mode, pipeline_id, created_by, created_at, updated_at FROM workloads"
 }
 func workloadEnvironmentConfigSelect() string {
 	return `SELECT id, tenant_id, project_id, application_id, workload_id, environment_id, replicas,
 service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
 env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
 init_containers_json, values_override_json, created_at, updated_at FROM workload_environment_configs`
+}
+func workloadDefaultConfigSelect() string {
+	return `SELECT id, tenant_id, project_id, application_id, workload_id, '' AS environment_id, replicas,
+service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
+env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
+init_containers_json, values_override_json, created_at, updated_at FROM workload_default_configs`
 }
 func environmentSelect() string {
 	return "SELECT id, tenant_id, project_id, application_id, name, display_name, description, created_at, updated_at FROM environments"
@@ -690,7 +763,7 @@ func scanApplicationSource(scanner appenvScanner) (ApplicationSource, error) {
 }
 func scanWorkload(scanner appenvScanner) (Workload, error) {
 	var workload Workload
-	err := scanner.Scan(&workload.ID, &workload.TenantID, &workload.ProjectID, &workload.ApplicationID, &workload.Name, &workload.DisplayName, &workload.WorkloadType, &workload.Description, &workload.Status, &workload.ImageSourceMode, &workload.CreatedBy, &workload.CreatedAt, &workload.UpdatedAt)
+	err := scanner.Scan(&workload.ID, &workload.TenantID, &workload.ProjectID, &workload.ApplicationID, &workload.Name, &workload.DisplayName, &workload.WorkloadType, &workload.Description, &workload.Status, &workload.ImageSourceMode, &workload.PipelineID, &workload.CreatedBy, &workload.CreatedAt, &workload.UpdatedAt)
 	return workload, err
 }
 func scanWorkloadEnvironmentConfig(scanner appenvScanner) (WorkloadEnvironmentConfig, error) {

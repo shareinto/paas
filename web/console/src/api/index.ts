@@ -194,14 +194,13 @@ export async function listBuildPipelineSources(pipelineId: string) {
   return data.items.map(mapBuildPipelineSource);
 }
 
-export async function createBuildPipeline(applicationId: string, input: { workloadId?: string; name: string; displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
+export async function createBuildPipeline(applicationId: string, input: { name: string; displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
   if (!hasAPIBaseURL()) return mock.createBuildPipeline(applicationId, input as any);
   const runtimeEnvironmentIds = cleanRuntimeEnvironmentIds(input.runtimeEnvironmentIds);
   const item = await request<any>(`/api/apps/${encodeURIComponent(applicationId)}/build-pipelines`, {
     method: 'POST',
     body: JSON.stringify({
       actor: { type: 'user', id: 'usr_admin' },
-      workload_id: input.workloadId || '',
       name: input.name,
       display_name: input.displayName,
       description: input.description || '',
@@ -212,14 +211,13 @@ export async function createBuildPipeline(applicationId: string, input: { worklo
   return mapBuildPipeline(item);
 }
 
-export async function updateBuildPipeline(pipelineId: string, input: { workloadId?: string; displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
+export async function updateBuildPipeline(pipelineId: string, input: { displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: mock.BuildPipelineSource[] }) {
   if (!hasAPIBaseURL()) return mock.updateBuildPipeline(pipelineId, input as any);
   const runtimeEnvironmentIds = cleanRuntimeEnvironmentIds(input.runtimeEnvironmentIds);
   const item = await request<any>(`/api/build-pipelines/${encodeURIComponent(pipelineId)}`, {
     method: 'PATCH',
     body: JSON.stringify({
       actor: { type: 'user', id: 'usr_admin' },
-      workload_id: input.workloadId || '',
       display_name: input.displayName,
       description: input.description || '',
       runtime_environment_ids: runtimeEnvironmentIds,
@@ -309,7 +307,7 @@ export async function listWorkloads(applicationId: string) {
   return data.items.map(mapWorkload);
 }
 
-export async function createWorkload(applicationId: string, input: { name: string; displayName: string; description?: string; workloadType: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode; customImage?: string; pipelineName?: string; replicas?: number }) {
+export async function createWorkload(applicationId: string, input: { name: string; displayName: string; description?: string; workloadType: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode; pipelineId?: string; customImage?: string; pipelineName?: string; replicas?: number }) {
   if (!hasAPIBaseURL()) return mock.createWorkload(applicationId, input);
   const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads`, {
     method: 'POST',
@@ -320,6 +318,7 @@ export async function createWorkload(applicationId: string, input: { name: strin
       description: input.description || '',
       workload_type: input.workloadType,
       image_source_mode: input.imageSourceMode || 'pipeline_artifact',
+      pipeline_id: input.pipelineId || '',
       custom_image: input.customImage || '',
       pipeline_name: input.pipelineName || '',
       replicas: input.replicas
@@ -328,7 +327,7 @@ export async function createWorkload(applicationId: string, input: { name: strin
   return mapWorkload(item);
 }
 
-export async function updateWorkload(applicationId: string, workloadId: string, input: { name?: string; displayName: string; description?: string; workloadType?: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode }) {
+export async function updateWorkload(applicationId: string, workloadId: string, input: { name?: string; displayName: string; description?: string; workloadType?: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode; pipelineId?: string }) {
   if (!hasAPIBaseURL()) return mock.updateWorkload(applicationId, workloadId, input);
   const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}`, {
     method: 'PUT',
@@ -338,7 +337,8 @@ export async function updateWorkload(applicationId: string, workloadId: string, 
       display_name: input.displayName,
       description: input.description || '',
       workload_type: input.workloadType || '',
-      image_source_mode: input.imageSourceMode || ''
+      image_source_mode: input.imageSourceMode || '',
+      pipeline_id: input.pipelineId || ''
     })
   });
   return mapWorkload(item);
@@ -357,6 +357,12 @@ export async function listWorkloadEnvironmentConfigs(applicationId: string, work
   if (!hasAPIBaseURL()) return mock.listWorkloadEnvironmentConfigs(applicationId, workloadId);
   const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/environment-configs`);
   return data.items.map(mapWorkloadEnvironmentConfig);
+}
+
+export async function getWorkloadDefaultConfig(applicationId: string, workloadId: string) {
+  if (!hasAPIBaseURL()) return mock.getWorkloadDefaultConfig(applicationId, workloadId);
+  const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/default-config`);
+  return mapWorkloadEnvironmentConfig(item);
 }
 
 export async function listApplicationEnvironments(applicationId: string) {
@@ -430,6 +436,15 @@ export async function listAppStages(applicationId: string) {
 export async function saveWorkloadEnvironmentConfig(applicationId: string, workloadId: string, environmentId: string, input: Partial<mock.WorkloadEnvironmentConfig>) {
   if (!hasAPIBaseURL()) return mock.saveWorkloadEnvironmentConfig(applicationId, workloadId, environmentId, input);
   const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/environment-configs/${encodeURIComponent(environmentId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(workloadEnvironmentConfigPayload(input))
+  });
+  return mapWorkloadEnvironmentConfig(item);
+}
+
+export async function saveWorkloadDefaultConfig(applicationId: string, workloadId: string, input: Partial<mock.WorkloadEnvironmentConfig>) {
+  if (!hasAPIBaseURL()) return mock.saveWorkloadDefaultConfig(applicationId, workloadId, input);
+  const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/default-config`, {
     method: 'PUT',
     body: JSON.stringify(workloadEnvironmentConfigPayload(input))
   });
@@ -977,6 +992,7 @@ function mapWorkload(item: any): mock.Workload {
     description: item.description || '',
     workloadType: normalizeWorkloadType(item.workload_type || item.workloadType),
     imageSourceMode: normalizeImageSourceMode(item.image_source_mode || item.imageSourceMode),
+    pipelineId: item.pipeline_id || item.pipelineId || '',
     imageSourceName: item.image_source_name || item.imageSourceName || '',
     latestRelease: item.latest_release || item.latestRelease || item.release || '',
     status: item.status || 'enabled',
@@ -1118,8 +1134,8 @@ function mapWorkloadEnvironmentConfig(item: any): mock.WorkloadEnvironmentConfig
       tls: !!host.tls
     })),
     envVars: (item.env_vars || item.envVars || []).map((env: any) => ({ name: env.name || env.key || '', value: env.value || '' })),
-    configFiles: (item.config_files || item.configFiles || []).map((file: any) => ({ mountPath: file.mount_path || file.mountPath || '', content: file.content || '' })),
-    writableDirs: (item.writable_dirs || item.writableDirs || []).map((dir: any) => ({ mountPath: dir.mount_path || dir.mountPath || '', sizeLimit: dir.size_limit || dir.sizeLimit || '' }))
+    configFiles: (item.config_files || item.configFiles || []).map((file: any) => ({ mountPath: file.mount_path || file.mountPath || '', content: file.content || '', base64Encoded: !!(file.base64_encoded || file.base64Encoded) })),
+    writableDirs: (item.writable_dirs || item.writableDirs || []).map((dir: any) => ({ mountPath: dir.mount_path || dir.mountPath || '', sizeLimit: dir.size_limit || dir.sizeLimit || '', ownerGroup: dir.owner_group || dir.ownerGroup || '', mode: dir.mode || '' }))
   };
 }
 
@@ -1153,8 +1169,8 @@ function workloadEnvironmentConfigPayload(input: Partial<mock.WorkloadEnvironmen
       tls: !!host.tls
     })),
     env_vars: (input.envVars || []).map((env) => ({ name: env.name, value: env.value })),
-    config_files: (input.configFiles || []).map((file) => ({ mount_path: file.mountPath, content: file.content })),
-    writable_dirs: (input.writableDirs || []).map((dir) => ({ mount_path: dir.mountPath, size_limit: dir.sizeLimit || '' }))
+    config_files: (input.configFiles || []).map((file) => ({ mount_path: file.mountPath, content: file.content, base64_encoded: !!file.base64Encoded })),
+    writable_dirs: (input.writableDirs || []).map((dir) => ({ mount_path: dir.mountPath, size_limit: dir.sizeLimit || '', owner_group: dir.ownerGroup || '', mode: dir.mode || '' }))
   };
 }
 
@@ -1197,7 +1213,6 @@ function mapBuildPipeline(item: any): mock.BuildPipeline {
   return {
     id: item.id,
     applicationId: item.application_id || item.applicationId || '',
-    workloadId: item.workload_id || item.workloadId || '',
     name: item.name || '',
     displayName: item.display_name || item.displayName || item.name || '',
     description: item.description || '',

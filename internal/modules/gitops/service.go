@@ -504,10 +504,16 @@ func (s *Service) renderPromotionValues(ctx context.Context, app ApplicationRef,
 		if err != nil {
 			return "", "", err
 		}
-		config, err := s.getWorkloadEnvironmentConfig(ctx, artifact.WorkloadID, env.ID)
-		if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
-			return "", "", err
-		}
+			config, err := s.getWorkloadEnvironmentConfig(ctx, artifact.WorkloadID, env.ID)
+			if err != nil {
+				if shared.CodeOf(err) != shared.CodeNotFound {
+					return "", "", err
+				}
+				config, err = s.getWorkloadDefaultConfig(ctx, artifact.WorkloadID)
+				if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
+					return "", "", err
+				}
+			}
 		repository, tag := imageRepositoryTag(artifact)
 		name := strings.TrimSpace(workload.Name)
 		if name == "" {
@@ -538,6 +544,13 @@ func (s *Service) getWorkloadEnvironmentConfig(ctx context.Context, workloadID s
 		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload environment config not found")
 	}
 	return s.workloads.GetWorkloadEnvironmentConfig(ctx, workloadID, environmentID)
+}
+
+func (s *Service) getWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfigRef, error) {
+	if s.workloads == nil {
+		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload default config not found")
+	}
+	return s.workloads.GetWorkloadDefaultConfig(ctx, workloadID)
 }
 
 func imageValues(repository string, tag string, digest string) map[string]any {

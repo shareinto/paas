@@ -127,20 +127,19 @@ test('真实 API 更新流水线时过滤空运行时环境 ID', async () => {
   expect(patchBody.runtime_environment_ids).toEqual(['runtime_env_java17']);
 });
 
-test('真实 API 创建流水线提交绑定的 Workload ID', async () => {
+test('真实 API 创建流水线不提交 Workload ID', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
   let postBody: any;
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/api/apps/app_1/build-pipelines') && init?.method === 'POST') {
       postBody = JSON.parse(String(init.body));
-      return new Response(JSON.stringify({ id: 'pipeline_1', application_id: 'app_1', workload_id: 'workload_api', name: 'main', display_name: '主流水线', status: 'active' }), { status: 201 });
+      return new Response(JSON.stringify({ id: 'pipeline_1', application_id: 'app_1', name: 'main', display_name: '主流水线', status: 'active' }), { status: 201 });
     }
     return new Response('', { status: 404 });
   }));
 
   const api = await import('./index');
   await expect(api.createBuildPipeline('app_1', {
-    workloadId: 'workload_api',
     name: 'main',
     displayName: '主流水线',
     runtimeEnvironmentIds: ['runtime_env_java17'],
@@ -164,8 +163,8 @@ test('真实 API 创建流水线提交绑定的 Workload ID', async () => {
         defaultRef: 'main'
       }
     }]
-  })).resolves.toMatchObject({ id: 'pipeline_1', workloadId: 'workload_api' });
-  expect(postBody.workload_id).toBe('workload_api');
+  })).resolves.toMatchObject({ id: 'pipeline_1', name: 'main' });
+  expect(postBody.workload_id).toBeUndefined();
 });
 
 test('streamBuildLog 使用 fetch 流式读取 SSE 并携带 token', async () => {

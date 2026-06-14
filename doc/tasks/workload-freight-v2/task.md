@@ -256,10 +256,10 @@ POST /api/v1/applications/{app_id}/delivery/stages/{stage_id}/promotions
 **Files:**
 - Modify: `build` domain、service、callback、repository。
 
-- [ ] BuildPipeline 绑定目标 Workload。
-- [ ] BuildRun 和 BuildArtifact 保存 `workload_id`。
-- [ ] Jenkins 回调写入 BuildArtifact 时带上 `workload_id`。
-- [ ] BuildSucceeded 事件 payload 包含 `app_id`、`workload_id`、`build_run_id`、`build_artifact_id`。
+- [ ] Workload 通过 `pipeline_id` 关联目标 BuildPipeline，一条 BuildPipeline 可被多个 Workload 关联。
+- [ ] BuildRun 和 BuildArtifact 不再从 BuildPipeline 直接继承 `workload_id`。
+- [ ] Jenkins 回调写入 BuildArtifact 时保留流水线级产物，Workload 归属由关联流水线的 Workload 列表扇出。
+- [ ] BuildSucceeded 事件 payload 包含 `app_id`、`workload_ids`、`build_run_id`、`build_artifact_id`。
 - [ ] 确认 build 模块仍不生成 Release 或 Freight。
 - [ ] 补充构建成功、构建失败、重复回调的测试。
 

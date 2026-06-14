@@ -315,6 +315,7 @@ CREATE TABLE workloads (
   status VARCHAR(32) NOT NULL,
   active_name VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN status = 'deleted' THEN NULL ELSE name END) STORED,
   image_source_mode VARCHAR(32) NOT NULL DEFAULT 'pipeline_artifact',
+  pipeline_id VARCHAR(64) NOT NULL DEFAULT '',
   created_by VARCHAR(64) NOT NULL DEFAULT '',
   created_at DATETIME(6) NOT NULL,
   updated_at DATETIME(6) NOT NULL,
@@ -352,8 +353,35 @@ CREATE TABLE workload_environment_configs (
   CONSTRAINT fk_workload_environment_configs_workload FOREIGN KEY (workload_id) REFERENCES workloads(id),
   CONSTRAINT fk_workload_environment_configs_environment FOREIGN KEY (environment_id) REFERENCES environments(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE workload_default_configs (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  tenant_id VARCHAR(64) NOT NULL,
+  project_id VARCHAR(64) NOT NULL,
+  application_id VARCHAR(64) NOT NULL,
+  workload_id VARCHAR(64) NOT NULL,
+  replicas INT NOT NULL DEFAULT 1,
+  service_ports_json JSON NOT NULL,
+  resource_requests_json JSON NOT NULL,
+  resource_limits_json JSON NOT NULL,
+  probes_json JSON NOT NULL,
+  ingress_hosts_json JSON NOT NULL,
+  env_vars_json JSON NOT NULL,
+  secret_refs_json JSON NOT NULL,
+  config_files_json JSON NOT NULL,
+  writable_dirs_json JSON NOT NULL,
+  volume_mounts_json JSON NOT NULL,
+  init_containers_json JSON NOT NULL,
+  values_override_json JSON NOT NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_workload_default_configs_workload (workload_id),
+  KEY idx_workload_default_configs_app_workload (application_id, workload_id),
+  CONSTRAINT fk_workload_default_configs_workload FOREIGN KEY (workload_id) REFERENCES workloads(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `,
-		Down: `
+			Down: `
+DROP TABLE IF EXISTS workload_default_configs;
 DROP TABLE IF EXISTS workload_environment_configs;
 DROP TABLE IF EXISTS workloads;
 `,

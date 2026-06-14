@@ -111,6 +111,7 @@ type WorkloadRef struct {
 	TenantID      shared.ID
 	ProjectID     shared.ID
 	ApplicationID shared.ID
+	PipelineID    shared.ID
 	Name          string
 	DisplayName   string
 	Status        string
@@ -119,6 +120,7 @@ type WorkloadRef struct {
 type WorkloadQuery interface {
 	GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error)
 	ListEnabledWorkloads(ctx context.Context, applicationID shared.ID) ([]WorkloadRef, error)
+	ListEnabledWorkloadsByPipeline(ctx context.Context, applicationID shared.ID, pipelineID shared.ID) ([]WorkloadRef, error)
 }
 
 type SourceRepositoryQuery interface {

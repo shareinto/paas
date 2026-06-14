@@ -12,6 +12,7 @@ type Repository interface {
 	CreateRelease(ctx context.Context, release Release) error
 	GetRelease(ctx context.Context, id shared.ID) (Release, error)
 	FindReleaseByBuildRun(ctx context.Context, buildRunID shared.ID) (Release, error)
+	FindReleaseByBuildRunAndWorkload(ctx context.Context, buildRunID shared.ID, workloadID shared.ID) (Release, error)
 	ListReleasesByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Release], error)
 	CreateImageBundle(ctx context.Context, bundle ImageBundle) error
 	CreateImageBundleImage(ctx context.Context, image ImageBundleImage) error

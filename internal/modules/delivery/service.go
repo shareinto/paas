@@ -202,11 +202,12 @@ type FreightCreationStage struct {
 }
 
 func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceededPayload) (Release, error) {
-	if payload.BuildRunID.IsZero() || payload.ApplicationID.IsZero() || payload.WorkloadID.IsZero() {
-		return Release{}, shared.NewError(shared.CodeInvalidArgument, "build_run_id, application_id and workload_id are required")
+	workloadIDs := payload.WorkloadIDs
+	if len(workloadIDs) == 0 && !payload.WorkloadID.IsZero() {
+		workloadIDs = []shared.ID{payload.WorkloadID}
 	}
-	if existing, err := s.repo.FindReleaseByBuildRun(ctx, payload.BuildRunID); err == nil {
-		return existing, nil
+	if payload.BuildRunID.IsZero() || payload.ApplicationID.IsZero() || len(workloadIDs) == 0 {
+		return Release{}, shared.NewError(shared.CodeInvalidArgument, "build_run_id, application_id and workload_ids are required")
 	}
 	run, err := s.buildsOrError().GetBuildRun(ctx, payload.BuildRunID)
 	if err != nil {
@@ -224,7 +225,7 @@ func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceed
 		return Release{}, shared.NewError(shared.CodeInvalidArgument, "build payload ownership mismatch")
 	}
 	for _, artifact := range artifacts {
-		if artifact.BuildRunID != run.ID || artifact.ApplicationID != run.ApplicationID || artifact.WorkloadID != payload.WorkloadID {
+		if artifact.BuildRunID != run.ID || artifact.ApplicationID != run.ApplicationID {
 			return Release{}, shared.NewError(shared.CodeInvalidArgument, "build payload ownership mismatch")
 		}
 	}
@@ -232,12 +233,40 @@ func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceed
 	if strings.TrimSpace(primary.Digest) == "" || strings.TrimSpace(run.CommitSHA) == "" {
 		return Release{}, shared.NewError(shared.CodeFailedPrecondition, "pipeline artifact requires digest and commit")
 	}
+	releases := make([]Release, 0, len(workloadIDs))
+	for _, workloadID := range uniqueIDs(workloadIDs) {
+		if workloadID.IsZero() {
+			return Release{}, shared.NewError(shared.CodeInvalidArgument, "workload_id is required")
+		}
+		release, err := s.ensureBuildReleaseForWorkload(ctx, payload, run, artifacts, primary, workloadID)
+		if err != nil {
+			return Release{}, err
+		}
+		releases = append(releases, release)
+	}
+	if _, err := s.ensureDefaultFlow(ctx, run.ApplicationID); err != nil {
+		return Release{}, err
+	}
+	return releases[0], nil
+}
+
+func (s *Service) ensureBuildReleaseForWorkload(ctx context.Context, payload BuildSucceededPayload, run BuildRunRef, artifacts []BuildArtifactRef, primary BuildArtifactRef, workloadID shared.ID) (Release, error) {
+	if existing, err := s.repo.FindReleaseByBuildRunAndWorkload(ctx, run.ID, workloadID); err == nil {
+		return existing, nil
+	} else if shared.CodeOf(err) != shared.CodeNotFound {
+		return Release{}, err
+	}
+	for _, artifact := range artifacts {
+		if !artifact.WorkloadID.IsZero() && artifact.WorkloadID != workloadID {
+			return Release{}, shared.NewError(shared.CodeInvalidArgument, "build payload ownership mismatch")
+		}
+	}
 	now := s.clock.Now()
 	bundleID, err := s.ids.NewID("image_bundle")
 	if err != nil {
 		return Release{}, err
 	}
-	bundle := ImageBundle{ID: bundleID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, WorkloadID: payload.WorkloadID, BuildRunID: run.ID, CommitSHA: firstNonEmpty(payload.CommitSHA, run.CommitSHA), CreatedAt: now}
+	bundle := ImageBundle{ID: bundleID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, WorkloadID: workloadID, BuildRunID: run.ID, CommitSHA: firstNonEmpty(payload.CommitSHA, run.CommitSHA), CreatedAt: now}
 	if err := s.repo.CreateImageBundle(ctx, bundle); err != nil {
 		return Release{}, err
 	}
@@ -279,14 +308,24 @@ func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceed
 	pipelineName := firstNonEmpty(run.PipelineName, payload.PipelineName)
 	pipelineDisplayName := firstNonEmpty(run.PipelineDisplayName, payload.PipelineDisplayName)
 	imageRepository, imageTag := splitImageRepositoryTag(imageURI)
-	release := Release{ID: releaseID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, WorkloadID: payload.WorkloadID, PipelineID: pipelineID, PipelineName: pipelineName, PipelineDisplayName: pipelineDisplayName, BuildRunID: run.ID, BuildArtifactID: primary.ID, ImageBundleID: bundle.ID, Version: releaseVersion(commit, run.ID), CommitSHA: commit, ImageURI: imageURI, ImageRepository: imageRepository, ImageTag: imageTag, ImageDigest: imageDigest, SourceType: ReleaseSourcePipelineArtifact, Status: ReleaseReady, CreatedAt: now}
+	release := Release{ID: releaseID, TenantID: run.TenantID, ProjectID: run.ProjectID, ApplicationID: run.ApplicationID, WorkloadID: workloadID, PipelineID: pipelineID, PipelineName: pipelineName, PipelineDisplayName: pipelineDisplayName, BuildRunID: run.ID, BuildArtifactID: primary.ID, ImageBundleID: bundle.ID, Version: releaseVersion(commit, run.ID), CommitSHA: commit, ImageURI: imageURI, ImageRepository: imageRepository, ImageTag: imageTag, ImageDigest: imageDigest, SourceType: ReleaseSourcePipelineArtifact, Status: ReleaseReady, CreatedAt: now}
 	if err := s.repo.CreateRelease(ctx, release); err != nil {
 		return Release{}, err
 	}
-	if _, err := s.ensureDefaultFlow(ctx, run.ApplicationID); err != nil {
-		return Release{}, err
-	}
 	return release, nil
+}
+
+func uniqueIDs(ids []shared.ID) []shared.ID {
+	out := make([]shared.ID, 0, len(ids))
+	seen := map[shared.ID]struct{}{}
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInput) (Promotion, error) {

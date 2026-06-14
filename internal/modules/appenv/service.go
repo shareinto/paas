@@ -20,6 +20,7 @@ type Service struct {
 	buildEnvironments   BuildEnvironmentQuery
 	runtimeEnvironments RuntimeEnvironmentQuery
 	buildPipelines      BuildPipelineProvisioner
+	buildPipelineQuery  BuildPipelineQuery
 	clusters            ClusterPlacementQuery
 	clusterQuery        ClusterQuery
 	gitops              GitOpsEnvironmentProvisioner
@@ -38,6 +39,7 @@ type Options struct {
 	BuildEnvironmentQuery        BuildEnvironmentQuery
 	RuntimeEnvironmentQuery      RuntimeEnvironmentQuery
 	BuildPipelineProvisioner     BuildPipelineProvisioner
+	BuildPipelineQuery           BuildPipelineQuery
 	ClusterPlacementQuery        ClusterPlacementQuery
 	ClusterQuery                 ClusterQuery
 	GitOpsEnvironmentProvisioner GitOpsEnvironmentProvisioner
@@ -73,6 +75,7 @@ func NewService(opts Options) *Service {
 		buildEnvironments:   opts.BuildEnvironmentQuery,
 		runtimeEnvironments: opts.RuntimeEnvironmentQuery,
 		buildPipelines:      opts.BuildPipelineProvisioner,
+		buildPipelineQuery:  opts.BuildPipelineQuery,
 		clusters:            opts.ClusterPlacementQuery,
 		clusterQuery:        opts.ClusterQuery,
 		gitops:              opts.GitOpsEnvironmentProvisioner,
@@ -160,6 +163,7 @@ type CreateWorkloadInput struct {
 	WorkloadType    WorkloadType           `json:"workload_type"`
 	Description     string                 `json:"description"`
 	ImageSourceMode string                 `json:"image_source_mode"`
+	PipelineID      shared.ID              `json:"pipeline_id"`
 }
 
 type UpdateWorkloadInput struct {
@@ -171,6 +175,7 @@ type UpdateWorkloadInput struct {
 	WorkloadType    WorkloadType           `json:"workload_type"`
 	Description     string                 `json:"description"`
 	ImageSourceMode string                 `json:"image_source_mode"`
+	PipelineID      shared.ID              `json:"pipeline_id"`
 }
 
 type WorkloadStatusInput struct {
@@ -184,6 +189,25 @@ type SaveWorkloadEnvironmentConfigInput struct {
 	ApplicationID    shared.ID               `json:"application_id"`
 	WorkloadID       shared.ID               `json:"workload_id"`
 	EnvironmentID    shared.ID               `json:"environment_id"`
+	Replicas         int                     `json:"replicas"`
+	ServicePorts     []WorkloadServicePort   `json:"service_ports"`
+	ResourceRequests WorkloadResourceList    `json:"resource_requests"`
+	ResourceLimits   WorkloadResourceList    `json:"resource_limits"`
+	Probes           []WorkloadProbe         `json:"probes"`
+	IngressHosts     []WorkloadIngressHost   `json:"ingress_hosts"`
+	EnvVars          []WorkloadEnvVar        `json:"env_vars"`
+	SecretRefs       []WorkloadSecretRef     `json:"secret_refs"`
+	ConfigFiles      []WorkloadConfigFile    `json:"config_files"`
+	WritableDirs     []WorkloadWritableDir   `json:"writable_dirs"`
+	VolumeMounts     []WorkloadVolumeMount   `json:"volume_mounts"`
+	InitContainers   []WorkloadInitContainer `json:"init_containers"`
+	ValuesOverride   map[string]any          `json:"values_override"`
+}
+
+type SaveWorkloadDefaultConfigInput struct {
+	Actor            identityaccess.Subject  `json:"actor"`
+	ApplicationID    shared.ID               `json:"application_id"`
+	WorkloadID       shared.ID               `json:"workload_id"`
 	Replicas         int                     `json:"replicas"`
 	ServicePorts     []WorkloadServicePort   `json:"service_ports"`
 	ResourceRequests WorkloadResourceList    `json:"resource_requests"`
@@ -562,6 +586,10 @@ func (s *Service) CreateWorkload(ctx context.Context, input CreateWorkloadInput)
 	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
 		return Workload{}, err
 	}
+	pipelineID, err := s.normalizeWorkloadPipeline(ctx, app.ID, input.PipelineID)
+	if err != nil {
+		return Workload{}, err
+	}
 	id, err := s.ids.NewID("workload")
 	if err != nil {
 		return Workload{}, err
@@ -578,6 +606,7 @@ func (s *Service) CreateWorkload(ctx context.Context, input CreateWorkloadInput)
 		Description:     strings.TrimSpace(input.Description),
 		Status:          WorkloadStatusEnabled,
 		ImageSourceMode: imageSourceMode,
+		PipelineID:      pipelineID,
 		CreatedBy:       input.Actor.ID,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -621,6 +650,13 @@ func (s *Service) UpdateWorkload(ctx context.Context, input UpdateWorkloadInput)
 			return Workload{}, err
 		}
 	}
+	pipelineID := workload.PipelineID
+	if strings.TrimSpace(string(input.PipelineID)) != "" {
+		pipelineID, err = s.normalizeWorkloadPipeline(ctx, workload.ApplicationID, input.PipelineID)
+		if err != nil {
+			return Workload{}, err
+		}
+	}
 	if name != workload.Name {
 		if existing, err := s.repo.FindWorkloadByApplicationAndName(ctx, workload.ApplicationID, name); err == nil && existing.ID != workload.ID {
 			return Workload{}, shared.NewError(shared.CodeConflict, "workload name already exists in application")
@@ -633,11 +669,32 @@ func (s *Service) UpdateWorkload(ctx context.Context, input UpdateWorkloadInput)
 	workload.Description = strings.TrimSpace(input.Description)
 	workload.WorkloadType = workloadType
 	workload.ImageSourceMode = imageSourceMode
+	workload.PipelineID = pipelineID
 	workload.UpdatedAt = s.clock.Now()
 	if err := s.repo.UpdateWorkload(ctx, workload); err != nil {
 		return Workload{}, err
 	}
 	return workload, nil
+}
+
+func (s *Service) normalizeWorkloadPipeline(ctx context.Context, applicationID shared.ID, pipelineID shared.ID) (shared.ID, error) {
+	if pipelineID.IsZero() {
+		return "", nil
+	}
+	if s.buildPipelineQuery == nil {
+		return pipelineID, nil
+	}
+	pipeline, err := s.buildPipelineQuery.GetBuildPipeline(ctx, pipelineID)
+	if err != nil {
+		return "", err
+	}
+	if pipeline.ApplicationID != applicationID {
+		return "", shared.NewError(shared.CodeInvalidArgument, "build pipeline does not belong to workload application")
+	}
+	if strings.EqualFold(pipeline.Status, "disabled") {
+		return "", shared.NewError(shared.CodeFailedPrecondition, "build pipeline is disabled")
+	}
+	return pipeline.ID, nil
 }
 
 func (s *Service) EnableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error) {
@@ -731,8 +788,65 @@ func (s *Service) SaveWorkloadEnvironmentConfig(ctx context.Context, input SaveW
 	return config, nil
 }
 
+func (s *Service) SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkloadDefaultConfigInput) (WorkloadEnvironmentConfig, error) {
+	workload, err := s.requireWorkloadInApplication(ctx, input.ApplicationID, input.WorkloadID)
+	if err != nil {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	if workload.Status == WorkloadStatusDeleted {
+		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeFailedPrecondition, "deleted workload cannot be configured")
+	}
+	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeApplication, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID}, "application:update"); err != nil {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	if input.Replicas < 0 {
+		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeInvalidArgument, "replicas cannot be negative")
+	}
+	now := s.clock.Now()
+	id, err := s.ids.NewID("workload_default_config")
+	if err != nil {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	if existing, err := s.repo.GetWorkloadDefaultConfig(ctx, workload.ID); err == nil {
+		id = existing.ID
+	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	config := WorkloadEnvironmentConfig{
+		ID:               id,
+		TenantID:         workload.TenantID,
+		ProjectID:        workload.ProjectID,
+		ApplicationID:    workload.ApplicationID,
+		WorkloadID:       workload.ID,
+		Replicas:         input.Replicas,
+		ServicePorts:     input.ServicePorts,
+		ResourceRequests: input.ResourceRequests,
+		ResourceLimits:   input.ResourceLimits,
+		Probes:           input.Probes,
+		IngressHosts:     input.IngressHosts,
+		EnvVars:          input.EnvVars,
+		SecretRefs:       input.SecretRefs,
+		ConfigFiles:      input.ConfigFiles,
+		WritableDirs:     input.WritableDirs,
+		VolumeMounts:     input.VolumeMounts,
+		InitContainers:   input.InitContainers,
+		ValuesOverride:   input.ValuesOverride,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := s.repo.SaveWorkloadDefaultConfig(ctx, config); err != nil {
+		return WorkloadEnvironmentConfig{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload_default_config.update", ResourceType: "workload_default_config", ResourceID: config.ID, Result: "succeeded", Summary: "修改 Workload 默认部署配置", OccurredAt: now})
+	return config, nil
+}
+
 func (s *Service) GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error) {
 	return s.repo.GetWorkloadEnvironmentConfig(ctx, workloadID, environmentID)
+}
+
+func (s *Service) GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfig, error) {
+	return s.repo.GetWorkloadDefaultConfig(ctx, workloadID)
 }
 
 func (s *Service) ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error) {

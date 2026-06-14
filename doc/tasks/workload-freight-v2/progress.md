@@ -19,6 +19,7 @@
 - [x] 权限和审计
 - [x] 应用详情导航调整
 - [x] 应用 Workload 页面
+- [x] Workload 默认配置与 Stage 覆盖配置
 - [x] 创建 Freight 抽屉
 - [x] 发布晋级页类 Kargo 交互
 - [x] 后端测试
@@ -32,6 +33,7 @@
 - 2026-06-11：已合并 `feature/workload-v2-gitops`，提交 `47db0f3`，包含多 Workload values 渲染、WorkloadEnvironmentConfig 写入、Deployment workload_summary、回滚镜像写回和 GitOps 失败 Deployment 记录。
 - 2026-06-11：已合并 `feature/workload-v2-web-workload`，提交 `e26c006`，包含应用详情默认 Workload 入口、Workload 列表、创建 Workload 抽屉、部署配置展示、真实 API 映射和前端测试。
 - 2026-06-11：已合并 `feature/workload-v2-web-promotion`，提交 `5625190`，包含 Freight 详情 items、creation-context 真实 Stage、创建 Freight 抽屉、发布晋级页类 Kargo 交互、真实应用路由和前端测试。
+- 2026-06-14：补充工作负载默认配置和 Stage 覆盖配置。创建/编辑工作负载改为中文单页滚动弹窗，默认配置作为 Helm values 默认值；部署页 Stage 卡片增加编辑配置入口，保存该 Stage 对应 Environment 的覆盖值。
 
 ## 已运行测试
 
@@ -56,6 +58,8 @@
 - `feature/workload-v2-web-promotion` 合并后：`go test -count=1 ./internal/modules/delivery` 通过。
 - `feature/workload-v2-web-promotion` 合并后：`cd web/console && npm test -- src/api/index.workload.test.ts src/pages/ApplicationDetailPage.workload.test.tsx src/pages/ApplicationDetailPage.api.test.tsx src/pages/PromotionPage.api.test.tsx src/pages/PromotionPage.test.tsx` 通过。
 - `feature/workload-v2-web-promotion` 合并后：`cd web/console && npm run build` 通过，仅 Vite chunk size 警告。
+- 2026-06-14：`cd web/console && npm test -- src/api/index.workload.test.ts src/pages/ApplicationDetailPage.workload.test.tsx src/pages/PromotionPage.test.tsx src/pages/PromotionPage.api.test.tsx` 通过。
+- 2026-06-14：`go test -p 1 -count=1 ./internal/modules/appenv ./internal/modules/gitops ./cmd/paas-server` 中 `internal/modules/gitops` 和 `cmd/paas-server` 通过，`internal/modules/appenv` 的既有 `TestHandlerApplicationEnvironmentFlow` 在删除应用数据时返回 503。
 - 最终验收：`scripts/test-full.sh` 通过。脚本自动启动 1 个临时 MySQL 容器并设置 `PAAS_TEST_MYSQL_DSN`，串行执行 `go test -p 1 -count=1 ./...`、`cd web/console && npm test -- --coverage`、`cd web/console && npm run build`，结束后自动清理临时 MySQL 容器；前端构建仅有 Vite chunk size 警告。
 
 ## 当前结论

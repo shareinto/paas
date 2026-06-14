@@ -164,13 +164,16 @@ type WorkloadSecretRef struct {
 }
 
 type WorkloadConfigFileRef struct {
-	MountPath string `yaml:"mountPath"`
-	Content   string `yaml:"content"`
+	MountPath     string `yaml:"mountPath"`
+	Content       string `yaml:"content"`
+	Base64Encoded bool   `yaml:"base64Encoded,omitempty"`
 }
 
 type WorkloadWritableDirRef struct {
-	MountPath string `yaml:"mountPath"`
-	SizeLimit string `yaml:"sizeLimit,omitempty"`
+	MountPath  string `yaml:"mountPath"`
+	SizeLimit  string `yaml:"sizeLimit,omitempty"`
+	OwnerGroup string `yaml:"ownerGroup,omitempty"`
+	Mode       string `yaml:"mode,omitempty"`
 }
 
 type WorkloadVolumeMountRef struct {

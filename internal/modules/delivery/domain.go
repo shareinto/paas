@@ -359,6 +359,7 @@ type BuildSucceededPayload struct {
 	BuildRunID          shared.ID   `json:"build_run_id"`
 	ApplicationID       shared.ID   `json:"application_id"`
 	WorkloadID          shared.ID   `json:"workload_id"`
+	WorkloadIDs         []shared.ID `json:"workload_ids"`
 	PipelineID          shared.ID   `json:"pipeline_id"`
 	PipelineName        string      `json:"pipeline_name"`
 	PipelineDisplayName string      `json:"pipeline_display_name"`

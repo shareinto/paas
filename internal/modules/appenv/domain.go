@@ -94,6 +94,7 @@ type Workload struct {
 	Description     string         `json:"description"`
 	Status          WorkloadStatus `json:"status"`
 	ImageSourceMode string         `json:"image_source_mode"`
+	PipelineID      shared.ID      `json:"pipeline_id"`
 	CreatedBy       shared.ID      `json:"created_by"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
@@ -137,13 +138,16 @@ type WorkloadSecretRef struct {
 }
 
 type WorkloadConfigFile struct {
-	MountPath string `json:"mount_path"`
-	Content   string `json:"content"`
+	MountPath     string `json:"mount_path"`
+	Content       string `json:"content"`
+	Base64Encoded bool   `json:"base64_encoded,omitempty"`
 }
 
 type WorkloadWritableDir struct {
-	MountPath string `json:"mount_path"`
-	SizeLimit string `json:"size_limit,omitempty"`
+	MountPath  string `json:"mount_path"`
+	SizeLimit  string `json:"size_limit,omitempty"`
+	OwnerGroup string `json:"owner_group,omitempty"`
+	Mode       string `json:"mode,omitempty"`
 }
 
 type WorkloadVolumeMount struct {

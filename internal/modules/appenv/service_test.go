@@ -154,6 +154,18 @@ type recordingBuildPipelineProvisioner struct {
 	err            error
 }
 
+type fakeBuildPipelineQuery struct {
+	pipelines map[shared.ID]BuildPipelineRef
+}
+
+func (q fakeBuildPipelineQuery) GetBuildPipeline(_ context.Context, id shared.ID) (BuildPipelineRef, error) {
+	pipeline, ok := q.pipelines[id]
+	if !ok {
+		return BuildPipelineRef{}, shared.NewError(shared.CodeNotFound, "build pipeline not found")
+	}
+	return pipeline, nil
+}
+
 func (p *recordingBuildPipelineProvisioner) EnsureBuildPipeline(_ context.Context, applicationID shared.ID) error {
 	p.applicationIDs = append(p.applicationIDs, applicationID)
 	return p.err
@@ -207,6 +219,10 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 	}}
 	gitops := &recordingGitOps{}
 	pipelines := &recordingBuildPipelineProvisioner{}
+	pipelineQuery := fakeBuildPipelineQuery{pipelines: map[shared.ID]BuildPipelineRef{
+		"pipeline_main":  {ID: "pipeline_main", ApplicationID: "app_1", Name: "main", DisplayName: "主流水线", Status: "active"},
+		"pipeline_other": {ID: "pipeline_other", ApplicationID: "other_app", Name: "other", DisplayName: "其他流水线", Status: "active"},
+	}}
 	audit := &recordingAudit{}
 	events := &recordingPublisher{}
 	svc := NewService(Options{
@@ -223,6 +239,7 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 		ClusterQuery:                 clusterQ,
 		GitOpsEnvironmentProvisioner: gitops,
 		BuildPipelineProvisioner:     pipelines,
+		BuildPipelineQuery:           pipelineQuery,
 		PermissionChecker:            permission,
 		Audit:                        audit,
 		EventPublisher:               events,
@@ -646,19 +663,20 @@ func TestWorkloadLifecycleValidationEnabledListAndAudit(t *testing.T) {
 		DisplayName:     "接口服务",
 		WorkloadType:    WorkloadTypeDeployment,
 		ImageSourceMode: "custom_image",
+		PipelineID:      "pipeline_main",
 	})
 	if err != nil {
 		t.Fatalf("CreateWorkload() error = %v", err)
 	}
-	if workload.ApplicationID != app.ID || workload.Name != "api" || workload.WorkloadType != WorkloadTypeDeployment || workload.Status != WorkloadStatusEnabled || workload.ImageSourceMode != "custom_image" {
+	if workload.ApplicationID != app.ID || workload.Name != "api" || workload.WorkloadType != WorkloadTypeDeployment || workload.Status != WorkloadStatusEnabled || workload.ImageSourceMode != "custom_image" || workload.PipelineID != "pipeline_main" {
 		t.Fatalf("unexpected workload: %+v", workload)
 	}
 	persisted, err := env.repo.GetWorkload(ctx, workload.ID)
 	if err != nil {
 		t.Fatalf("GetWorkload() error = %v", err)
 	}
-	if persisted.ImageSourceMode != "custom_image" {
-		t.Fatalf("image_source_mode should persist, got %+v", persisted)
+	if persisted.ImageSourceMode != "custom_image" || persisted.PipelineID != "pipeline_main" {
+		t.Fatalf("image_source_mode and pipeline_id should persist, got %+v", persisted)
 	}
 	lowercase, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{
 		Actor:         appenvActor(),
@@ -686,12 +704,15 @@ func TestWorkloadLifecycleValidationEnabledListAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWorkload(worker) error = %v", err)
 	}
-	updated, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", Description: "handles async jobs", ImageSourceMode: "mixed"})
+	updated, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", Description: "handles async jobs", ImageSourceMode: "mixed", PipelineID: "pipeline_main"})
 	if err != nil {
 		t.Fatalf("UpdateWorkload() error = %v", err)
 	}
-	if updated.DisplayName != "后台任务" || updated.Description != "handles async jobs" || updated.WorkloadType != WorkloadTypeStatefulSet || updated.ImageSourceMode != "mixed" {
+	if updated.DisplayName != "后台任务" || updated.Description != "handles async jobs" || updated.WorkloadType != WorkloadTypeStatefulSet || updated.ImageSourceMode != "mixed" || updated.PipelineID != "pipeline_main" {
 		t.Fatalf("unexpected updated workload: %+v", updated)
+	}
+	if _, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", PipelineID: "pipeline_other"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("cross-application pipeline should fail, got %v", err)
 	}
 	if _, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", ImageSourceMode: "bad_mode"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("unsupported update image_source_mode should fail, got %v", err)
@@ -857,6 +878,59 @@ func TestWorkloadEnvironmentConfigSaveQueryAndAudit(t *testing.T) {
 		Replicas:      1,
 	}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("deleted workload should not accept environment config, got %v", err)
+	}
+}
+
+func TestWorkloadDefaultConfigSaveQueryAndAudit(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "default-workload", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+	workload, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeDeployment})
+	if err != nil {
+		t.Fatalf("CreateWorkload() error = %v", err)
+	}
+
+	config, err := env.svc.SaveWorkloadDefaultConfig(ctx, SaveWorkloadDefaultConfigInput{
+		Actor:         appenvActor(),
+		ApplicationID: app.ID,
+		WorkloadID:    workload.ID,
+		Replicas:      2,
+		ServicePorts:  []WorkloadServicePort{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
+		EnvVars:       []WorkloadEnvVar{{Name: "SPRING_PROFILES_ACTIVE", Value: "default"}},
+		ConfigFiles:   []WorkloadConfigFile{{MountPath: "/etc/app/application.yaml", Content: "spring.profiles.active: default", Base64Encoded: true}},
+		WritableDirs:  []WorkloadWritableDir{{MountPath: "/data", OwnerGroup: "app:app", Mode: "0775"}},
+	})
+	if err != nil {
+		t.Fatalf("SaveWorkloadDefaultConfig() error = %v", err)
+	}
+	if config.EnvironmentID != "" {
+		t.Fatalf("default config should not bind an environment, got %+v", config)
+	}
+	got, err := env.svc.GetWorkloadDefaultConfig(ctx, workload.ID)
+	if err != nil {
+		t.Fatalf("GetWorkloadDefaultConfig() error = %v", err)
+	}
+	if got.ID != config.ID || got.ConfigFiles[0].Base64Encoded != true || got.WritableDirs[0].OwnerGroup != "app:app" || got.WritableDirs[0].Mode != "0775" {
+		t.Fatalf("unexpected default config: %+v", got)
+	}
+	var audited bool
+	for _, event := range env.audit.events {
+		if event.Action == "workload_default_config.update" && event.ResourceID == config.ID {
+			audited = true
+		}
+	}
+	if !audited {
+		t.Fatalf("default config change should be audited, got %+v", env.audit.events)
+	}
+
+	if _, err := env.svc.DeleteWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: workload.ID}); err != nil {
+		t.Fatalf("DeleteWorkload() error = %v", err)
+	}
+	if _, err := env.svc.SaveWorkloadDefaultConfig(ctx, SaveWorkloadDefaultConfigInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: workload.ID, Replicas: 1}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("deleted workload should not accept default config, got %v", err)
 	}
 }
 
@@ -1331,6 +1405,23 @@ func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
 	})
 	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/environment-configs/"+environmentID, configPayload), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/environment-configs", nil), http.StatusOK)
+	defaultConfigPayload, _ := json.Marshal(SaveWorkloadDefaultConfigInput{
+		Actor:        appenvActor(),
+		Replicas:     2,
+		ServicePorts: []WorkloadServicePort{{Name: "http", Port: 80, TargetPort: 8080}},
+		ConfigFiles:  []WorkloadConfigFile{{MountPath: "/etc/app/default.yml", Content: "server.port: 8080", Base64Encoded: true}},
+		WritableDirs: []WorkloadWritableDir{{MountPath: "/data", OwnerGroup: "app:app", Mode: "0775"}},
+	})
+	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/default-config", defaultConfigPayload), http.StatusOK)
+	defaultConfigRec := serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/default-config", nil)
+	assertStatus(t, defaultConfigRec, http.StatusOK)
+	var defaultConfig WorkloadEnvironmentConfig
+	if err := json.NewDecoder(defaultConfigRec.Body).Decode(&defaultConfig); err != nil {
+		t.Fatalf("decode default config: %v", err)
+	}
+	if defaultConfig.EnvironmentID != "" || !defaultConfig.ConfigFiles[0].Base64Encoded || defaultConfig.WritableDirs[0].OwnerGroup != "app:app" || defaultConfig.WritableDirs[0].Mode != "0775" {
+		t.Fatalf("unexpected default config response: %+v", defaultConfig)
+	}
 	otherBody, _ := json.Marshal(CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "other-api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
 	otherRec := serveJSON(mux, http.MethodPost, "/api/applications", otherBody)
 	assertStatus(t, otherRec, http.StatusCreated)

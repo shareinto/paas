@@ -88,7 +88,15 @@ func (r *MySQLRepository) GetRelease(ctx context.Context, id shared.ID) (Release
 }
 
 func (r *MySQLRepository) FindReleaseByBuildRun(ctx context.Context, buildRunID shared.ID) (Release, error) {
-	release, err := scanRelease(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, releaseSelect()+" WHERE build_run_id = ?", buildRunID))
+	release, err := scanRelease(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, releaseSelect()+" WHERE build_run_id = ? ORDER BY created_at ASC, id ASC LIMIT 1", buildRunID))
+	if err != nil {
+		return Release{}, database.NotFound(err, "release not found")
+	}
+	return release, nil
+}
+
+func (r *MySQLRepository) FindReleaseByBuildRunAndWorkload(ctx context.Context, buildRunID shared.ID, workloadID shared.ID) (Release, error) {
+	release, err := scanRelease(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, releaseSelect()+" WHERE build_run_id = ? AND workload_id = ?", buildRunID, workloadID))
 	if err != nil {
 		return Release{}, database.NotFound(err, "release not found")
 	}

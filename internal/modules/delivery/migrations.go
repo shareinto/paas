@@ -27,7 +27,7 @@ CREATE TABLE releases (
   source_type VARCHAR(64) NOT NULL DEFAULT 'pipeline_artifact',
   status VARCHAR(64) NOT NULL,
   created_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_releases_build_run (build_run_id),
+  UNIQUE KEY uk_releases_build_run_workload (build_run_id, workload_id),
   KEY idx_releases_application (application_id),
   KEY idx_releases_workload_created (application_id, workload_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS image_bundles (
   build_run_id VARCHAR(64) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
   created_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_image_bundles_build_run (build_run_id),
+  UNIQUE KEY uk_image_bundles_build_run_workload (build_run_id, workload_id),
   KEY idx_image_bundles_workload_created (application_id, workload_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

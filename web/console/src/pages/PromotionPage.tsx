@@ -1,15 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type DragEvent } from 'react';
+import { CheckCircleOutlined, EditOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, Modal, Select, Space, Spin, Table, Tag, Typography, message } from 'antd';
-import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Select, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Background, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useParams } from 'react-router-dom';
-import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, getApplication, getFreight, getFreightCreationContext, listAppStages, listEligibleFreights, listFreights, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type Workload } from '../api';
-import { PageHeader } from '../components/PageHeader';
+import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, getApplication, getFreight, getFreightCreationContext, listAppStages, listEligibleFreights, listFreights, listWorkloadEnvironmentConfigs, listWorkloads, saveWorkloadEnvironmentConfig, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type Workload, type WorkloadEnvironmentConfig } from '../api';
+import { ConfigValueLists, WorkloadRuntimeFields, workloadConfigFormValues, workloadConfigPayload } from './workloadConfigForm';
 
 const DEFAULT_APPLICATION_ID = 'app_1';
-const COLUMN_WIDTH = 260;
-const ROW_HEIGHT = 170;
+const COLUMN_WIDTH = 340;
+const ROW_HEIGHT = 280;
 
 type FreightDraftItem = {
   sourceType: 'pipeline_artifact' | 'custom_image';
@@ -34,9 +35,11 @@ type PendingPromotion = {
 type StageNodeData = {
   stage: StageView;
   active: boolean;
+  dropState: 'idle' | 'ready' | 'blocked';
   pending?: PendingPromotion;
   onDropFreight: (stage: StageView, freightId: string) => void;
   onVerify: (stage: StageView) => void;
+  onEditConfig: (stage: StageView) => void;
   onConfirm: () => void;
   onCancel: () => void;
   confirming: boolean;
@@ -59,16 +62,26 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const [approvalComment, setApprovalComment] = useState('');
   const [verificationStage, setVerificationStage] = useState<StageView | null>(null);
   const [verificationComment, setVerificationComment] = useState('');
+  const [configStage, setConfigStage] = useState<StageView | null>(null);
+  const [selectedConfigWorkloadId, setSelectedConfigWorkloadId] = useState('');
+  const [configForm] = Form.useForm();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [draftName, setDraftName] = useState('');
   const [draftItems, setDraftItems] = useState<Record<string, FreightDraftItem>>({});
   const [stageFreights, setStageFreights] = useState<Record<string, string>>({});
   const [publishResult, setPublishResult] = useState('');
+  const [draggingFreightId, setDraggingFreightId] = useState('');
 
   const freightsQuery = useQuery({ queryKey: ['freights', applicationId], queryFn: () => listFreights(applicationId) });
   const applicationQuery = useQuery({ queryKey: ['application', applicationId], queryFn: () => getApplication(applicationId) });
   const contextQuery = useQuery({ queryKey: ['freight-creation-context', applicationId], queryFn: () => getFreightCreationContext(applicationId) });
   const appStagesQuery = useQuery({ queryKey: ['app-stages', applicationId], queryFn: () => listAppStages(applicationId) });
+  const workloadsQuery = useQuery({ queryKey: ['workloads', applicationId, 'stage-config'], queryFn: () => listWorkloads(applicationId), enabled: !!applicationId });
+  const stageConfigQuery = useQuery({
+    queryKey: ['workload-environment-configs', applicationId, selectedConfigWorkloadId, configStage?.environmentId, 'stage-config'],
+    queryFn: () => listWorkloadEnvironmentConfigs(applicationId, selectedConfigWorkloadId),
+    enabled: !!configStage?.environmentId && !!selectedConfigWorkloadId
+  });
   const eligibleMutation = useMutation({ mutationFn: (stageId: string) => listEligibleFreights(applicationId, stageId) });
   const createPromotionMutation = useMutation({
     mutationFn: (input: PendingPromotion) => createPromotion({
@@ -106,6 +119,21 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
       queryClient.invalidateQueries({ queryKey: ['app-stages', applicationId] });
     }
   });
+  const stageConfigMutation = useMutation({
+    mutationFn: async () => {
+      if (!configStage?.environmentId || !selectedConfigWorkloadId) throw new Error('请选择工作负载和 Stage');
+      await configForm.validateFields();
+      return saveWorkloadEnvironmentConfig(applicationId, selectedConfigWorkloadId, configStage.environmentId, workloadConfigPayload(configForm.getFieldsValue(true)));
+    },
+    onSuccess: () => {
+      message.success('Stage 配置已保存');
+      queryClient.invalidateQueries({ queryKey: ['workload-environment-configs', applicationId] });
+      setConfigStage(null);
+      setSelectedConfigWorkloadId('');
+      configForm.resetFields();
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '保存 Stage 配置失败')
+  });
   const createFreightMutation = useMutation({
     mutationFn: (input: CreateFreightInput) => createFreight(applicationId, input),
     onSuccess: () => {
@@ -119,6 +147,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
 
   const sortedFreights = useMemo(() => [...(freightsQuery.data || [])].sort((a, b) => timeValue(a.createdAt) - timeValue(b.createdAt)), [freightsQuery.data]);
   const enabledWorkloads = contextQuery.data?.enabledWorkloads || [];
+  const configWorkloads = workloadsQuery.data || enabledWorkloads;
   const workloadNameById = useMemo(() => Object.fromEntries(enabledWorkloads.map((workload) => [workload.id, workload.displayName || workload.name])), [enabledWorkloads]);
   const stages = useMemo(() => (appStagesQuery.data || []).map((stage) => withStageDefaults(stage, sortedFreights, stageFreights)), [appStagesQuery.data, sortedFreights, stageFreights]);
   const defaultNamespace = applicationQuery.data?.project || applicationQuery.data?.projectId || 'default';
@@ -132,14 +161,16 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     data: {
       stage,
       active: activeStage?.stageKey === stage.stageKey,
+      dropState: draggingFreightId ? stageDropState(stage, draggingFreightId, contextQuery.data?.stageEligibility) : 'idle',
       pending: pendingPromotion?.stage.stageKey === stage.stageKey ? pendingPromotion : undefined,
       onDropFreight: handleDropFreight,
       onVerify: setVerificationStage,
+      onEditConfig: handleOpenStageConfig,
       onConfirm: () => pendingPromotion && createPromotionMutation.mutate(pendingPromotion),
       onCancel: () => setPendingPromotion(undefined),
       confirming: createPromotionMutation.isPending && pendingPromotion?.stage.stageKey === stage.stageKey
     }
-  })), [stages, activeStage?.stageKey, pendingPromotion, createPromotionMutation.isPending]);
+  })), [stages, activeStage?.stageKey, draggingFreightId, contextQuery.data?.stageEligibility, pendingPromotion, createPromotionMutation.isPending]);
 
   const edges = useMemo<Edge[]>(() => {
     const out: Edge[] = [];
@@ -214,6 +245,25 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     })));
   };
 
+  function handleOpenStageConfig(stage: StageView) {
+    setConfigStage(stage);
+    setSelectedConfigWorkloadId(configWorkloads[0]?.id || '');
+    configForm.setFieldsValue(workloadConfigFormValues());
+  }
+
+  useEffect(() => {
+    if (!configStage) return;
+    if (!selectedConfigWorkloadId && configWorkloads[0]?.id) {
+      setSelectedConfigWorkloadId(configWorkloads[0].id);
+    }
+  }, [configStage, configWorkloads, selectedConfigWorkloadId]);
+
+  useEffect(() => {
+    if (!configStage || !selectedConfigWorkloadId) return;
+    const currentConfig = (stageConfigQuery.data || []).find((item: WorkloadEnvironmentConfig) => item.environmentId === configStage.environmentId);
+    configForm.setFieldsValue(workloadConfigFormValues(currentConfig));
+  }, [configForm, configStage, selectedConfigWorkloadId, stageConfigQuery.data]);
+
   const handleCreateFreight = () => {
     createFreightMutation.mutate({
       name: draftName.trim() || `freight-${Date.now()}`,
@@ -226,39 +276,67 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
 
   return (
     <div data-testid={showHeader ? undefined : 'promotion-confirm-panel'}>
-      {showHeader && <PageHeader title="发布晋级" extra={contextQuery.isLoading ? null : <Button type="primary" aria-label="创建 Freight" onClick={() => setDrawerOpen(true)}>创建 Freight</Button>} />}
-      {!showHeader && <div className="embedded-section-head"><Typography.Title level={4}>发布晋级</Typography.Title>{contextQuery.isLoading ? null : <Button type="primary" aria-label="创建 Freight" onClick={() => setDrawerOpen(true)}>创建 Freight</Button>}</div>}
-      <Typography.Paragraph type="secondary">拖拽 Freight 到目标 Stage，系统按交付流 DAG 校验上游依赖、审批和验证要求。</Typography.Paragraph>
+      <div className="embedded-section-head promotion-actions-only">{contextQuery.isLoading ? null : <Button type="primary" aria-label="创建 Freight" onClick={() => setDrawerOpen(true)}>创建 Freight</Button>}</div>
 
       <div className="promotion-workspace">
         <div className="promotion-main-column">
           <Card title="Freight 时间轴" className="promotion-timeline-card">
             {freightsQuery.isLoading ? <Spin /> : (
               <div className="freight-timeline" aria-label="Freight 时间轴">
-                {sortedFreights.length === 0 ? <Empty description="暂无 Freight" /> : sortedFreights.map((freight) => (
-                  <article key={freight.id} className="freight-timeline-card" data-testid="freight-card" draggable onDragStart={(event) => event.dataTransfer.setData('text/plain', freight.id)}>
-                    <div className="freight-card-head">
-                      <Typography.Text strong data-testid="freight-name">{freight.version}</Typography.Text>
-                      <Tag color="blue">拖拽发布</Tag>
-                    </div>
-                    <div className="muted">{freight.createdAt}</div>
-                    <div className="freight-card-items">
-                      {(freight.items || []).map((item) => <div key={item.id} className="freight-card-item"><span>{item.workloadDisplayName}</span><Typography.Text ellipsis>{item.image}</Typography.Text>{item.bundleImages?.length ? <Tag color="blue">{item.bundleImages.length} 个镜像</Tag> : null}</div>)}
-                    </div>
-                    <Space className="freight-card-actions">
-                      <Button aria-label="审批" className="nodrag nopan" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); handleOpenApproval(freight); }}>审批</Button>
-                    </Space>
-                  </article>
-                ))}
+                {sortedFreights.length === 0 ? <Empty description="暂无 Freight" /> : sortedFreights.map((freight) => {
+                  const stageColors = freightStageColors(freight, stages);
+                  return (
+                    <article
+                      key={freight.id}
+                      className={draggingFreightId === freight.id ? 'freight-timeline-card dragging' : 'freight-timeline-card'}
+                      data-testid="freight-card"
+                      draggable
+                      onDragStart={(event) => {
+                        event.dataTransfer.setData('text/plain', freight.id);
+                        event.dataTransfer.effectAllowed = 'move';
+                        setDraggingFreightId(freight.id);
+                        setFreightDragImage(event, freight.version);
+                      }}
+                      onDragEnd={() => setDraggingFreightId('')}
+                    >
+                      <div className="freight-stage-rail" aria-label={stageColors.length ? `当前部署 Stage：${stageColors.map((item) => item.name).join('、')}` : '当前未部署到 Stage'}>
+                        {stageColors.length ? stageColors.map((item) => <span key={item.key} style={{ backgroundColor: item.color }} />) : <span />}
+                      </div>
+                      <div className="freight-card-head">
+                        <Typography.Text strong data-testid="freight-name">{freight.version}</Typography.Text>
+                        <Tag color="blue">拖拽</Tag>
+                      </div>
+                      <div className="muted">{freight.createdAt}</div>
+                      <div className="freight-card-items">
+                        {(freight.items || []).map((item) => <div key={item.id} className="freight-card-item"><span>{item.workloadDisplayName}</span><Typography.Text ellipsis>{item.image}</Typography.Text>{item.bundleImages?.length ? <Tag color="blue">{item.bundleImages.length} 个镜像</Tag> : null}</div>)}
+                      </div>
+                      <Space className="freight-card-actions">
+                        <Button aria-label="审批" className="nodrag nopan" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); handleOpenApproval(freight); }}>审批</Button>
+                      </Space>
+                    </article>
+                  );
+                })}
               </div>
             )}
           </Card>
 
           <section className="deployment-dag-canvas" aria-label="应用部署 DAG">
             {appStagesQuery.isLoading ? <Spin /> : (
-              <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} nodesDraggable={false} fitView>
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                nodeTypes={nodeTypes}
+                nodesDraggable={false}
+                nodesConnectable={false}
+                panOnDrag={false}
+                panOnScroll={false}
+                zoomOnScroll={false}
+                zoomOnDoubleClick={false}
+                zoomOnPinch={false}
+                selectNodesOnDrag={false}
+                fitView
+              >
                 <Background />
-                <Controls />
               </ReactFlow>
             )}
           </section>
@@ -308,6 +386,27 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
         </Space>
       </Modal>
 
+      <Modal title="编辑 Stage 配置" open={!!configStage} onCancel={() => setConfigStage(null)} width={920} destroyOnHidden footer={[
+        <Button key="cancel" onClick={() => setConfigStage(null)}>取消</Button>,
+        <Button key="save" aria-label="保存" type="primary" loading={stageConfigMutation.isPending} onClick={() => stageConfigMutation.mutate()}>保存</Button>
+      ]}>
+        <Form form={configForm} layout="vertical" className="workload-large-form">
+          <Form.Item label="选择工作负载" required>
+            <select
+              aria-label="选择工作负载"
+              className="native-select"
+              value={selectedConfigWorkloadId}
+              disabled={workloadsQuery.isLoading}
+              onChange={(event) => setSelectedConfigWorkloadId(event.target.value)}
+            >
+              {configWorkloads.map((workload) => <option key={workload.id} value={workload.id}>{workload.displayName || workload.name}</option>)}
+            </select>
+          </Form.Item>
+          <WorkloadRuntimeFields />
+          <ConfigValueLists />
+        </Form>
+      </Modal>
+
       <Drawer title="创建 Freight" open={drawerOpen} width={980} onClose={() => setDrawerOpen(false)} extra={<Button type="primary" aria-label="创建 Freight" disabled={submitDisabled} loading={createFreightMutation.isPending} onClick={handleCreateFreight}>创建 Freight</Button>}>
         <Space direction="vertical" size={16} className="full-width">
           <Form layout="vertical"><Form.Item label="Freight 名称"><Input value={draftName} onChange={(event) => setDraftName(event.target.value)} placeholder="请输入 Freight 名称" /></Form.Item></Form>
@@ -326,12 +425,20 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
 function DeployStageNode({ data }: NodeProps<Node<StageNodeData>>) {
   const stage = data.stage;
   const pending = data.pending;
+  const className = ['deployment-stage-node', 'nodrag', 'nopan'];
+  if (data.active) className.push('active');
+  if (data.dropState === 'ready') className.push('drop-ready');
+  if (data.dropState === 'blocked') className.push('drop-blocked');
   return (
     <div
-      className={data.active ? 'deployment-stage-node active nodrag nopan' : 'deployment-stage-node nodrag nopan'}
+      className={className.join(' ')}
+      style={{ '--stage-color': stage.color } as CSSProperties}
       aria-label={`${stage.stageKey} Stage`}
       onMouseDown={(event) => event.stopPropagation()}
-      onDragOver={(event) => event.preventDefault()}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = data.dropState === 'blocked' ? 'none' : 'move';
+      }}
       onDrop={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -339,14 +446,34 @@ function DeployStageNode({ data }: NodeProps<Node<StageNodeData>>) {
       }}
     >
       <Handle type="target" position={Position.Left} />
-      <div className="dag-stage-strip" style={{ backgroundColor: stage.color }} />
-      <div className="deployment-stage-head">
-        <Space direction="vertical" size={2}>
-          <Typography.Text strong>{stage.displayName || stage.stageKey}</Typography.Text>
-          <Typography.Text type="secondary">{stage.stageKey}</Typography.Text>
+      <div className="deployment-stage-strip">
+        <div>
+          <span className="deployment-stage-title">{stage.displayName || stage.stageKey}</span>
+        </div>
+        <Space size={4}>
+          <Tooltip title="编辑配置">
+            <Button
+              aria-label="编辑配置"
+              className="stage-verify-button nodrag nopan"
+              icon={<EditOutlined />}
+              shape="circle"
+              size="small"
+              onClick={(event) => { event.stopPropagation(); data.onEditConfig(stage); }}
+            />
+          </Tooltip>
+          <Tooltip title="人工验证">
+            <Button
+              aria-label="验证"
+              className="stage-verify-button nodrag nopan"
+              icon={<CheckCircleOutlined />}
+              shape="circle"
+              size="small"
+              onClick={(event) => { event.stopPropagation(); data.onVerify(stage); }}
+            />
+          </Tooltip>
         </Space>
-        <Button aria-label="验证" className="nodrag nopan" size="small" onClick={(event) => { event.stopPropagation(); data.onVerify(stage); }}>验证</Button>
       </div>
+      {data.dropState === 'blocked' && <div className="stage-drop-mask">未达成部署条件</div>}
       <Descriptions size="small" column={1} items={[
         { key: 'cluster', label: '绑定集群', children: stage.boundClusterName || '未绑定' },
         { key: 'freight', label: '当前 Freight', children: stage.currentFreightVersion || '-' },
@@ -435,4 +562,28 @@ function withStageDefaults(stage: AppStage, freights: Freight[], current: Record
 
 function bundleSummary(images?: ImageBundleImage[]) {
   return images?.length ? `ImageBundle · ${images.length} 个镜像` : '流水线产物';
+}
+
+function stageDropState(stage: StageView, freightId: string, stageEligibility?: Record<string, string[]>): 'ready' | 'blocked' {
+  if (stage.status === 'disabled' || !stage.boundClusterId) return 'blocked';
+  if (!stageEligibility) return 'ready';
+  const keys = [stage.deliveryStageId, stage.id, stage.stageKey, stage.environmentId].filter(Boolean) as string[];
+  const eligibleIds = new Set(keys.flatMap((key) => stageEligibility[key] || []));
+  return eligibleIds.has(freightId) ? 'ready' : 'blocked';
+}
+
+function freightStageColors(freight: Freight, stages: StageView[]) {
+  return stages
+    .filter((stage) => stage.currentFreightId === freight.id || stage.currentFreightVersion === freight.version)
+    .map((stage) => ({ key: stage.stageKey, name: stage.displayName || stage.stageKey, color: stage.color }));
+}
+
+function setFreightDragImage(event: DragEvent<HTMLElement>, version: string) {
+  if (!event.dataTransfer.setDragImage || typeof document === 'undefined') return;
+  const packageNode = document.createElement('div');
+  packageNode.className = 'freight-drag-package';
+  packageNode.textContent = version;
+  document.body.appendChild(packageNode);
+  event.dataTransfer.setDragImage(packageNode, 28, 24);
+  window.setTimeout(() => packageNode.remove(), 0);
 }

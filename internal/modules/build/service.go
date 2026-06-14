@@ -135,7 +135,6 @@ type TriggerBuildSourceInput struct {
 type CreateBuildPipelineInput struct {
 	Actor                 identityaccess.Subject     `json:"actor"`
 	ApplicationID         shared.ID                  `json:"application_id"`
-	WorkloadID            shared.ID                  `json:"workload_id"`
 	Name                  string                     `json:"name"`
 	DisplayName           string                     `json:"display_name"`
 	Description           string                     `json:"description"`
@@ -146,7 +145,6 @@ type CreateBuildPipelineInput struct {
 type UpdateBuildPipelineInput struct {
 	Actor                 identityaccess.Subject     `json:"actor"`
 	PipelineID            shared.ID                  `json:"pipeline_id"`
-	WorkloadID            shared.ID                  `json:"workload_id"`
 	DisplayName           string                     `json:"display_name"`
 	Description           string                     `json:"description"`
 	RuntimeEnvironmentIDs []shared.ID                `json:"runtime_environment_ids"`
@@ -859,33 +857,6 @@ func (s *Service) DeleteBuildPipeline(ctx context.Context, applicationID shared.
 	return nil
 }
 
-func (s *Service) resolvePipelineWorkloadID(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (shared.ID, error) {
-	if workloadID.IsZero() {
-		if s.workloads == nil {
-			return "", nil
-		}
-		workloads, err := s.workloads.ListEnabledWorkloads(ctx, applicationID)
-		if err != nil {
-			return "", err
-		}
-		if len(workloads) != 1 {
-			return "", shared.NewError(shared.CodeInvalidArgument, "workload_id is required")
-		}
-		return workloads[0].ID, nil
-	}
-	if s.workloads == nil {
-		return workloadID, nil
-	}
-	workload, err := s.workloads.GetWorkload(ctx, applicationID, workloadID)
-	if err != nil {
-		return "", err
-	}
-	if workload.ApplicationID != applicationID {
-		return "", shared.NewError(shared.CodeInvalidArgument, "workload does not belong to application")
-	}
-	return workload.ID, nil
-}
-
 func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipelineInput) (BuildPipeline, error) {
 	app, err := s.requireApplication(ctx, input.ApplicationID)
 	if err != nil {
@@ -907,10 +878,6 @@ func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipe
 	if err != nil {
 		return BuildPipeline{}, err
 	}
-	workloadID, err := s.resolvePipelineWorkloadID(ctx, app.ID, input.WorkloadID)
-	if err != nil {
-		return BuildPipeline{}, err
-	}
 	sources, err := s.preparePipelineSources(ctx, app, "", input.Sources, runtimes)
 	if err != nil {
 		return BuildPipeline{}, err
@@ -925,7 +892,6 @@ func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipe
 		TenantID:            app.TenantID,
 		ProjectID:           app.ProjectID,
 		ApplicationID:       app.ID,
-		WorkloadID:          workloadID,
 		Name:                name,
 		DisplayName:         normalizeDisplayName(input.DisplayName, name),
 		Description:         strings.TrimSpace(input.Description),
@@ -1014,13 +980,6 @@ func (s *Service) UpdateBuildPipeline(ctx context.Context, input UpdateBuildPipe
 			return BuildPipeline{}, err
 		}
 	}
-	if !input.WorkloadID.IsZero() && input.WorkloadID != pipeline.WorkloadID {
-		workloadID, err := s.resolvePipelineWorkloadID(ctx, app.ID, input.WorkloadID)
-		if err != nil {
-			return BuildPipeline{}, err
-		}
-		pipeline.WorkloadID = workloadID
-	}
 	pipeline.DisplayName = normalizeDisplayName(input.DisplayName, pipeline.Name)
 	pipeline.Description = strings.TrimSpace(input.Description)
 	pipeline.RuntimeEnvironments = runtimes
@@ -1098,7 +1057,6 @@ func (s *Service) TriggerBuild(ctx context.Context, input TriggerBuildInput) (Bu
 		TenantID:            app.TenantID,
 		ProjectID:           app.ProjectID,
 		ApplicationID:       app.ID,
-		WorkloadID:          pipeline.WorkloadID,
 		PipelineName:        pipeline.Name,
 		PipelineDisplayName: pipeline.DisplayName,
 		SourceRepositoryID:  primary.SourceRepositoryID,
@@ -1471,7 +1429,8 @@ func (s *Service) HandleBuildCallback(ctx context.Context, input BuildCallbackIn
 		for _, artifact := range artifacts {
 			artifactIDs = append(artifactIDs, artifact.ID)
 		}
-		_ = s.publish(ctx, "BuildSucceeded", now, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, PipelineID: run.PipelineID, PipelineName: run.PipelineName, PipelineDisplayName: run.PipelineDisplayName, BuildArtifactID: run.PrimaryArtifactID, BuildArtifactIDs: artifactIDs, CommitSHA: run.CommitSHA})
+		workloadIDs, _ := s.pipelineBoundWorkloadIDs(ctx, run.ApplicationID, run.PipelineID)
+		_ = s.publish(ctx, "BuildSucceeded", now, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, WorkloadIDs: workloadIDs, PipelineID: run.PipelineID, PipelineName: run.PipelineName, PipelineDisplayName: run.PipelineDisplayName, BuildArtifactID: run.PrimaryArtifactID, BuildArtifactIDs: artifactIDs, CommitSHA: run.CommitSHA})
 	} else if terminalStatus(input.Status) {
 		_ = s.publish(ctx, "BuildFailed", now, BuildFailedPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, Status: string(run.Status), Message: run.ErrorMessage})
 	}
@@ -1487,6 +1446,23 @@ func (s *Service) RedactLog(text string) string {
 		redacted = redactAssignment(redacted, marker)
 	}
 	return redacted
+}
+
+func (s *Service) pipelineBoundWorkloadIDs(ctx context.Context, applicationID shared.ID, pipelineID shared.ID) ([]shared.ID, error) {
+	if s.workloads == nil || pipelineID.IsZero() {
+		return nil, nil
+	}
+	workloads, err := s.workloads.ListEnabledWorkloadsByPipeline(ctx, applicationID, pipelineID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]shared.ID, 0, len(workloads))
+	for _, workload := range workloads {
+		if workload.ID != "" {
+			out = append(out, workload.ID)
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) ensurePipeline(ctx context.Context, app ApplicationRef, pipeline BuildPipeline, sources []ApplicationSourceRef, repos map[string]SourceRepositoryRef, runSources []BuildRunSource, run BuildRun) (BuildPipeline, error) {

@@ -300,7 +300,6 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 	pipeline, err := app.builds.CreateBuildPipeline(context.Background(), build.CreateBuildPipelineInput{
 		Actor:         identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"},
 		ApplicationID: created.ID,
-		WorkloadID:    workload.ID,
 		Name:          "main",
 		DisplayName:   "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{
@@ -316,6 +315,9 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create build pipeline: %v", err)
+	}
+	if _, err := app.apps.UpdateWorkload(context.Background(), appenv.UpdateWorkloadInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"}, ApplicationID: created.ID, WorkloadID: workload.ID, Name: workload.Name, DisplayName: workload.DisplayName, WorkloadType: workload.WorkloadType, ImageSourceMode: string(workload.ImageSourceMode), PipelineID: pipeline.ID}); err != nil {
+		t.Fatalf("bind workload pipeline: %v", err)
 	}
 	run, err := app.builds.TriggerBuild(context.Background(), build.TriggerBuildInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"}, PipelineID: pipeline.ID, GitRef: "main"})
 	if err != nil || run.ID.IsZero() {
@@ -486,7 +488,6 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	pipeline, err := app.builds.CreateBuildPipeline(ctx, build.CreateBuildPipelineInput{
 		Actor:         actor,
 		ApplicationID: created.ID,
-		WorkloadID:    workload.ID,
 		Name:          "main",
 		DisplayName:   "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{
@@ -502,6 +503,9 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	})
 	if err != nil {
 		t.Fatalf("create build pipeline: %v", err)
+	}
+	if _, err := app.apps.UpdateWorkload(ctx, appenv.UpdateWorkloadInput{Actor: actor, ApplicationID: created.ID, WorkloadID: workload.ID, Name: workload.Name, DisplayName: workload.DisplayName, WorkloadType: workload.WorkloadType, ImageSourceMode: string(workload.ImageSourceMode), PipelineID: pipeline.ID}); err != nil {
+		t.Fatalf("bind workload pipeline: %v", err)
 	}
 	run, err := app.builds.TriggerBuild(ctx, build.TriggerBuildInput{Actor: actor, PipelineID: pipeline.ID, GitRef: "main", CommitSHA: "8c1a09f"})
 	if err != nil {

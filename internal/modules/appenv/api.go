@@ -31,6 +31,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}", h.handleUpdateWorkload)
 	mux.HandleFunc("DELETE /api/applications/{applicationId}/workloads/{workloadId}", h.handleDeleteWorkload)
 	mux.HandleFunc("POST /api/applications/{applicationId}/workloads/{workloadAction}", h.handleWorkloadAction)
+	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}/default-config", h.handleGetWorkloadDefaultConfig)
+	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}/default-config", h.handleSaveWorkloadDefaultConfig)
 	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}/environment-configs", h.handleListWorkloadEnvironmentConfigs)
 	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}/environment-configs/{environmentId}", h.handleSaveWorkloadEnvironmentConfig)
 	mux.HandleFunc("GET /api/applications/{applicationId}/environments", h.handleListEnvironments)
@@ -223,6 +225,35 @@ func (h *Handler) handleSaveWorkloadEnvironmentConfig(w http.ResponseWriter, r *
 	req.WorkloadID = shared.ID(r.PathValue("workloadId"))
 	req.EnvironmentID = shared.ID(r.PathValue("environmentId"))
 	config, err := h.service.SaveWorkloadEnvironmentConfig(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+func (h *Handler) handleSaveWorkloadDefaultConfig(w http.ResponseWriter, r *http.Request) {
+	var req SaveWorkloadDefaultConfigInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.ApplicationID = shared.ID(r.PathValue("applicationId"))
+	req.WorkloadID = shared.ID(r.PathValue("workloadId"))
+	config, err := h.service.SaveWorkloadDefaultConfig(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
+}
+
+func (h *Handler) handleGetWorkloadDefaultConfig(w http.ResponseWriter, r *http.Request) {
+	workload, err := h.service.GetWorkload(r.Context(), shared.ID(r.PathValue("applicationId")), shared.ID(r.PathValue("workloadId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	config, err := h.service.GetWorkloadDefaultConfig(r.Context(), workload.ID)
 	if err != nil {
 		writeError(w, err)
 		return

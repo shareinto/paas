@@ -50,7 +50,6 @@ CREATE TABLE build_pipelines (
   tenant_id VARCHAR(64) NOT NULL,
   project_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
-  workload_id VARCHAR(64) NOT NULL DEFAULT '',
   name VARCHAR(64) NOT NULL DEFAULT '',
   display_name VARCHAR(128) NOT NULL DEFAULT '',
   description VARCHAR(1024) NOT NULL DEFAULT '',
@@ -487,18 +486,6 @@ CREATE TABLE IF NOT EXISTS build_run_sources (
 		Version: 202606100301,
 		Name:    "workload_binding_columns",
 		Up: `
-SET @build_pipelines_workload_missing := (
-  SELECT COUNT(*) = 0
-  FROM information_schema.columns
-  WHERE table_schema = DATABASE()
-    AND table_name = 'build_pipelines'
-    AND column_name = 'workload_id'
-);
-SET @build_pipelines_workload_ddl := IF(@build_pipelines_workload_missing, 'ALTER TABLE build_pipelines ADD COLUMN workload_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER application_id', 'SELECT 1');
-PREPARE build_pipelines_workload_stmt FROM @build_pipelines_workload_ddl;
-EXECUTE build_pipelines_workload_stmt;
-DEALLOCATE PREPARE build_pipelines_workload_stmt;
-
 SET @build_runs_workload_missing := (
   SELECT COUNT(*) = 0
   FROM information_schema.columns
@@ -576,6 +563,24 @@ SET @build_artifacts_workload_index_ddl := IF(@build_artifacts_workload_index_mi
 PREPARE build_artifacts_workload_index_stmt FROM @build_artifacts_workload_index_ddl;
 EXECUTE build_artifacts_workload_index_stmt;
 DEALLOCATE PREPARE build_artifacts_workload_index_stmt;
+`,
+		Down: `SELECT 1;`,
+	},
+	{
+		Version: 202606131401,
+		Name:    "drop_build_pipeline_workload_id",
+		Up: `
+SET @build_pipelines_workload_exists := (
+  SELECT COUNT(*) > 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipelines'
+    AND column_name = 'workload_id'
+);
+SET @build_pipelines_workload_drop_ddl := IF(@build_pipelines_workload_exists, 'ALTER TABLE build_pipelines DROP COLUMN workload_id', 'SELECT 1');
+PREPARE build_pipelines_workload_drop_stmt FROM @build_pipelines_workload_drop_ddl;
+EXECUTE build_pipelines_workload_drop_stmt;
+DEALLOCATE PREPARE build_pipelines_workload_drop_stmt;
 `,
 		Down: `SELECT 1;`,
 	},

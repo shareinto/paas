@@ -281,9 +281,9 @@ func (r *MySQLRepository) CreatePipeline(ctx context.Context, pipeline BuildPipe
 		return err
 	}
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-	INSERT INTO build_pipelines (id, tenant_id, project_id, application_id, workload_id, name, display_name, description, provider, external_job_name, template_id, config_hash, status, managed_by_platform, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		pipeline.ID, pipeline.TenantID, pipeline.ProjectID, pipeline.ApplicationID, pipeline.WorkloadID, strings.TrimSpace(pipeline.Name),
+	INSERT INTO build_pipelines (id, tenant_id, project_id, application_id, name, display_name, description, provider, external_job_name, template_id, config_hash, status, managed_by_platform, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		pipeline.ID, pipeline.TenantID, pipeline.ProjectID, pipeline.ApplicationID, strings.TrimSpace(pipeline.Name),
 		pipeline.DisplayName, pipeline.Description, pipeline.Provider, pipeline.ExternalJobName, pipeline.TemplateID,
 		pipeline.ConfigHash, pipeline.Status, pipeline.ManagedByPlatform, mysqlTime(pipeline.CreatedAt), mysqlTime(pipeline.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "build pipeline already exists", "create build pipeline failed")
@@ -306,10 +306,10 @@ func (r *MySQLRepository) UpdatePipeline(ctx context.Context, pipeline BuildPipe
 	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE build_pipelines
 	SET name = ?, display_name = ?, description = ?, provider = ?, external_job_name = ?, template_id = ?,
-	    config_hash = ?, workload_id = ?, status = ?, managed_by_platform = ?, created_at = ?, updated_at = ?
+	    config_hash = ?, status = ?, managed_by_platform = ?, created_at = ?, updated_at = ?
 WHERE id = ?`,
 		strings.TrimSpace(pipeline.Name), pipeline.DisplayName, pipeline.Description, pipeline.Provider,
-		pipeline.ExternalJobName, pipeline.TemplateID, pipeline.ConfigHash, pipeline.WorkloadID, pipeline.Status, pipeline.ManagedByPlatform,
+		pipeline.ExternalJobName, pipeline.TemplateID, pipeline.ConfigHash, pipeline.Status, pipeline.ManagedByPlatform,
 		mysqlTime(pipeline.CreatedAt), mysqlTime(pipeline.UpdatedAt), pipeline.ID)
 	if err != nil {
 		return database.WrapUnavailable(err, "update build pipeline failed")
@@ -808,12 +808,12 @@ func scanJenkinsJobTemplate(scanner buildScanner) (JenkinsJobTemplate, error) {
 }
 
 func buildPipelineSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, workload_id, name, display_name, description, provider, external_job_name, template_id, config_hash, status, managed_by_platform, created_at, updated_at FROM build_pipelines"
+	return "SELECT id, tenant_id, project_id, application_id, name, display_name, description, provider, external_job_name, template_id, config_hash, status, managed_by_platform, created_at, updated_at FROM build_pipelines"
 }
 
 func scanBuildPipeline(scanner buildScanner) (BuildPipeline, error) {
 	var pipeline BuildPipeline
-	err := scanner.Scan(&pipeline.ID, &pipeline.TenantID, &pipeline.ProjectID, &pipeline.ApplicationID, &pipeline.WorkloadID, &pipeline.Name, &pipeline.DisplayName, &pipeline.Description, &pipeline.Provider, &pipeline.ExternalJobName, &pipeline.TemplateID, &pipeline.ConfigHash, &pipeline.Status, &pipeline.ManagedByPlatform, &pipeline.CreatedAt, &pipeline.UpdatedAt)
+	err := scanner.Scan(&pipeline.ID, &pipeline.TenantID, &pipeline.ProjectID, &pipeline.ApplicationID, &pipeline.Name, &pipeline.DisplayName, &pipeline.Description, &pipeline.Provider, &pipeline.ExternalJobName, &pipeline.TemplateID, &pipeline.ConfigHash, &pipeline.Status, &pipeline.ManagedByPlatform, &pipeline.CreatedAt, &pipeline.UpdatedAt)
 	return pipeline, err
 }
 
