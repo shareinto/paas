@@ -91,44 +91,6 @@ func (p *recordingPermission) Check(_ context.Context, _ identityaccess.Subject,
 	return p.err
 }
 
-type fakeClusterPlacement struct {
-	candidate ClusterCandidate
-	ok        bool
-	err       error
-	calls     []Environment
-}
-
-func (p *fakeClusterPlacement) SelectCluster(_ context.Context, environment Environment) (ClusterCandidate, bool, error) {
-	p.calls = append(p.calls, environment)
-	return p.candidate, p.ok, p.err
-}
-
-type fakeClusterQuery struct {
-	clusters map[shared.ID]ClusterRef
-	err      error
-}
-
-func (q fakeClusterQuery) GetCluster(_ context.Context, id shared.ID) (ClusterRef, error) {
-	if q.err != nil {
-		return ClusterRef{}, q.err
-	}
-	cluster, ok := q.clusters[id]
-	if !ok {
-		return ClusterRef{}, shared.NewError(shared.CodeNotFound, "cluster not found")
-	}
-	return cluster, nil
-}
-
-type recordingGitOps struct {
-	specs []GitOpsEnvironmentSpec
-	err   error
-}
-
-func (g *recordingGitOps) ProvisionEnvironment(_ context.Context, spec GitOpsEnvironmentSpec) error {
-	g.specs = append(g.specs, spec)
-	return g.err
-}
-
 type recordingAudit struct {
 	events []AuditEvent
 }
@@ -180,9 +142,6 @@ type appenvTestEnv struct {
 	svc        *Service
 	repo       Repository
 	permission *recordingPermission
-	clusters   *fakeClusterPlacement
-	clusterQ   fakeClusterQuery
-	gitops     *recordingGitOps
 	pipelines  *recordingBuildPipelineProvisioner
 	audit      *recordingAudit
 	events     *recordingPublisher
@@ -207,17 +166,7 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 	t.Helper()
 	repo := newTestRepository(t)
 	permission := &recordingPermission{}
-	clusters := &fakeClusterPlacement{
-		candidate: ClusterCandidate{ClusterID: "cluster_dev", ClusterName: "dev-cluster", Namespace: "payment"},
-		ok:        clusterAvailable,
-	}
-	clusterQ := fakeClusterQuery{clusters: map[shared.ID]ClusterRef{
-		"cluster_dev":    {ID: "cluster_dev", TenantID: "tenant_a", Name: "dev-cluster"},
-		"cluster_manual": {ID: "cluster_manual", TenantID: "tenant_a", Name: "真实集群名称"},
-		"cluster_2":      {ID: "cluster_2", TenantID: "tenant_a", Name: "二号集群"},
-		"cluster_other":  {ID: "cluster_other", TenantID: "tenant_b", Name: "其他租户集群"},
-	}}
-	gitops := &recordingGitOps{}
+	_ = clusterAvailable
 	pipelines := &recordingBuildPipelineProvisioner{}
 	pipelineQuery := fakeBuildPipelineQuery{pipelines: map[shared.ID]BuildPipelineRef{
 		"pipeline_main":  {ID: "pipeline_main", ApplicationID: "app_1", Name: "main", DisplayName: "主流水线", Status: "active"},
@@ -235,18 +184,15 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 			"repo_other": {ID: "repo_other", TenantID: "tenant_b", ProjectID: "project_other", DefaultBranch: "main", Status: "ready"},
 			"repo_busy":  {ID: "repo_busy", TenantID: "tenant_a", ProjectID: "project_payment", DefaultBranch: "main", Status: "migrating"},
 		}},
-		ClusterPlacementQuery:        clusters,
-		ClusterQuery:                 clusterQ,
-		GitOpsEnvironmentProvisioner: gitops,
-		BuildPipelineProvisioner:     pipelines,
-		BuildPipelineQuery:           pipelineQuery,
-		PermissionChecker:            permission,
-		Audit:                        audit,
-		EventPublisher:               events,
-		IDGenerator:                  testutil.NewFakeIDGenerator(1),
-		Clock:                        testutil.NewFakeClock(time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)),
+		BuildPipelineProvisioner: pipelines,
+		BuildPipelineQuery:       pipelineQuery,
+		PermissionChecker:        permission,
+		Audit:                    audit,
+		EventPublisher:           events,
+		IDGenerator:              testutil.NewFakeIDGenerator(1),
+		Clock:                    testutil.NewFakeClock(time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)),
 	})
-	return appenvTestEnv{svc: svc, repo: repo, permission: permission, clusters: clusters, clusterQ: clusterQ, gitops: gitops, pipelines: pipelines, audit: audit, events: events}
+	return appenvTestEnv{svc: svc, repo: repo, permission: permission, pipelines: pipelines, audit: audit, events: events}
 }
 
 func TestNoopAuditAndEventPublisher(t *testing.T) {
@@ -276,7 +222,7 @@ func validSourceInput(repoID shared.ID, spec BuildSpec) CreateApplicationSourceI
 	return CreateApplicationSourceInput{Key: "main", SourceRepositoryID: repoID, BuildSpec: spec, IsPrimary: true}
 }
 
-func TestCreateApplicationPersistsSourceAndPendingDefaultEnvironmentsWhenNoCluster(t *testing.T) {
+func TestCreateApplicationPersistsSourceWithoutApplicationEnvironments(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 
@@ -297,30 +243,12 @@ func TestCreateApplicationPersistsSourceAndPendingDefaultEnvironmentsWhenNoClust
 	if len(env.pipelines.applicationIDs) != 0 {
 		t.Fatalf("application creation must not provision Jenkins pipeline, got %+v", env.pipelines.applicationIDs)
 	}
-	environments, err := env.svc.ListEnvironments(ctx, app.ID)
+	states, err := env.svc.ListApplicationStageStates(ctx, app.ID)
 	if err != nil {
-		t.Fatalf("ListEnvironments() error = %v", err)
+		t.Fatalf("ListApplicationStageStates() error = %v", err)
 	}
-	if got := environmentNames(environments); got != "dev,test,staging,prod" {
-		t.Fatalf("unexpected default environments: %s", got)
-	}
-	states, err := env.svc.ListEnvironmentStates(ctx, app.ID)
-	if err != nil {
-		t.Fatalf("ListEnvironmentStates() error = %v", err)
-	}
-	if len(states) != 4 {
-		t.Fatalf("expected states for all environments, got %+v", states)
-	}
-	for _, state := range states {
-		if state.Status != EnvironmentStatusPendingClusterBinding {
-			t.Fatalf("environment without cluster should be pending, got %+v", state)
-		}
-		if _, err := env.repo.GetEnvironmentClusterBinding(ctx, state.EnvironmentID); shared.CodeOf(err) != shared.CodeNotFound {
-			t.Fatalf("pending environment should not have binding, err = %v", err)
-		}
-	}
-	if len(env.gitops.specs) != 0 {
-		t.Fatalf("gitops should not be called without cluster, got %+v", env.gitops.specs)
+	if len(states) != 0 {
+		t.Fatalf("application creation must not create stage states before reports, got %+v", states)
 	}
 	if len(env.permission.calls) != 1 || env.permission.calls[0].action != "application:create" || env.permission.calls[0].resource.ProjectID != "project_payment" {
 		t.Fatalf("unexpected permission calls: %+v", env.permission.calls)
@@ -343,13 +271,6 @@ func TestCreateApplicationDoesNotRequireSourceConfiguration(t *testing.T) {
 	}
 	if _, err := env.svc.GetApplicationSource(ctx, app.ID); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("application source should not be created, got %v", err)
-	}
-	environments, err := env.svc.ListEnvironments(ctx, app.ID)
-	if err != nil {
-		t.Fatalf("ListEnvironments() error = %v", err)
-	}
-	if got := environmentNames(environments); got != "dev,test,staging,prod" {
-		t.Fatalf("unexpected default environments: %s", got)
 	}
 	if len(env.pipelines.applicationIDs) != 0 {
 		t.Fatalf("application creation must not provision Jenkins pipeline, got %+v", env.pipelines.applicationIDs)
@@ -546,45 +467,6 @@ func TestSyncRuntimeEnvironmentSnapshotDoesNotUpdateNewApplications(t *testing.T
 	}
 }
 
-func TestCreateApplicationBindsDefaultEnvironmentsWhenClusterAvailable(t *testing.T) {
-	env := newAppenvTestEnv(t, true)
-	ctx := context.Background()
-
-	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "worker", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", BuildSpec{
-		SourcePath:          ".",
-		BuildCommand:        "mvn clean package -DskipTests",
-		ArtifactCopyCommand: "cp -ar target/worker.war \"$PAAS_ARTIFACT_OUTPUT/app.war\"",
-		RuntimeBaseImage:    "registry.example/runtime/tomcat8:1.0",
-		DefaultRef:          "release/1.0",
-	})}})
-	if err != nil {
-		t.Fatalf("CreateApplication() error = %v", err)
-	}
-	bindings, err := env.repo.ListEnvironmentClusterBindingsByApplication(ctx, app.ID)
-	if err != nil {
-		t.Fatalf("ListEnvironmentClusterBindingsByApplication() error = %v", err)
-	}
-	if len(bindings) != 4 {
-		t.Fatalf("expected binding for all default environments, got %+v", bindings)
-	}
-	states, err := env.svc.ListEnvironmentStates(ctx, app.ID)
-	if err != nil {
-		t.Fatalf("ListEnvironmentStates() error = %v", err)
-	}
-	for _, state := range states {
-		if state.Status != EnvironmentStatusClusterBound {
-			t.Fatalf("bound environment should be cluster_bound, got %+v", state)
-		}
-	}
-	if len(env.gitops.specs) != 4 {
-		t.Fatalf("expected gitops provisioning for all environments, got %+v", env.gitops.specs)
-	}
-	first := env.gitops.specs[0]
-	if first.ApplicationName != "worker" || first.SourceRepositoryID != "repo_user" || first.SourcePath != "." || first.ClusterID != "cluster_dev" {
-		t.Fatalf("unexpected gitops spec: %+v", first)
-	}
-}
-
 func TestCreateApplicationAcceptsNodeStaticSource(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
@@ -606,45 +488,6 @@ func TestCreateApplicationAcceptsNodeStaticSource(t *testing.T) {
 	}
 	if source.BuildSpec.ArtifactCopyCommand != "cp -ar dist/. \"$PAAS_ARTIFACT_OUTPUT/\"" {
 		t.Fatalf("artifact copy command should be fixed, got %+v", source.BuildSpec)
-	}
-}
-
-func TestSetEnvironmentConfigAndSecretAuditWithoutSecretValue(t *testing.T) {
-	env := newAppenvTestEnv(t, false)
-	ctx := context.Background()
-	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "config-api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
-	if err != nil {
-		t.Fatalf("CreateApplication() error = %v", err)
-	}
-	environments, err := env.svc.ListEnvironments(ctx, app.ID)
-	if err != nil {
-		t.Fatalf("ListEnvironments() error = %v", err)
-	}
-	config, err := env.svc.SetEnvironmentConfig(ctx, SetEnvironmentConfigInput{Actor: appenvActor(), EnvironmentID: environments[0].ID, Key: "JAVA_OPTS", Value: "-Xmx512m"})
-	if err != nil {
-		t.Fatalf("SetEnvironmentConfig() error = %v", err)
-	}
-	secret, err := env.svc.SetEnvironmentSecret(ctx, SetEnvironmentSecretInput{Actor: appenvActor(), EnvironmentID: environments[0].ID, Key: "DB_PASSWORD", SecretRef: "secret/data/order/db"})
-	if err != nil {
-		t.Fatalf("SetEnvironmentSecret() error = %v", err)
-	}
-	if config.Value != "-Xmx512m" || secret.SecretRef != "secret/data/order/db" {
-		t.Fatalf("unexpected config or secret metadata: %+v %+v", config, secret)
-	}
-	var configAudit, secretAudit bool
-	for _, event := range env.audit.events {
-		if event.Action == "environment_config.update" {
-			configAudit = true
-		}
-		if event.Action == "environment_secret.update" {
-			secretAudit = true
-			if event.Summary == "secret/data/order/db" {
-				t.Fatalf("secret ref should not be used as audit summary")
-			}
-		}
-	}
-	if !configAudit || !secretAudit {
-		t.Fatalf("expected config and secret audit events, got %+v", env.audit.events)
 	}
 }
 
@@ -796,27 +639,44 @@ func TestWorkloadNameCanBeReusedAfterSoftDelete(t *testing.T) {
 	}
 }
 
-func TestWorkloadEnvironmentConfigSaveQueryAndAudit(t *testing.T) {
+func TestApplicationStageStateAndWorkloadStageConfigUseStageKey(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
-	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "config-workload", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "stage-api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
 	if err != nil {
 		t.Fatalf("CreateApplication() error = %v", err)
-	}
-	environments, err := env.svc.ListEnvironments(ctx, app.ID)
-	if err != nil {
-		t.Fatalf("ListEnvironments() error = %v", err)
 	}
 	workload, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeDeployment})
 	if err != nil {
 		t.Fatalf("CreateWorkload() error = %v", err)
 	}
-
-	config, err := env.svc.SaveWorkloadEnvironmentConfig(ctx, SaveWorkloadEnvironmentConfigInput{
+	reportedAt := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	state, err := env.svc.UpdateApplicationStageState(ctx, UpdateApplicationStageStateInput{ApplicationID: app.ID, StageKey: "dev", Status: ApplicationStageStatusRunning, Message: "运行中", ReportedAt: &reportedAt})
+	if err != nil {
+		t.Fatalf("UpdateApplicationStageState() error = %v", err)
+	}
+	if state.ApplicationID != app.ID || state.StageKey != "dev" || state.Status != ApplicationStageStatusRunning || state.LastReportedAt == nil || !state.LastReportedAt.Equal(reportedAt) {
+		t.Fatalf("unexpected stage state: %+v", state)
+	}
+	states, err := env.svc.ListApplicationStageStates(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("ListApplicationStageStates() error = %v", err)
+	}
+	if len(states) != 1 || states[0].StageKey != "dev" {
+		t.Fatalf("unexpected stage states: %+v", states)
+	}
+	events, err := env.svc.ListApplicationStageEvents(ctx, app.ID, "dev", shared.PageRequest{})
+	if err != nil {
+		t.Fatalf("ListApplicationStageEvents() error = %v", err)
+	}
+	if events.Total != 1 {
+		t.Fatalf("expected one stage state event, got %+v", events)
+	}
+	config, err := env.svc.SaveWorkloadStageConfig(ctx, SaveWorkloadStageConfigInput{
 		Actor:         appenvActor(),
 		ApplicationID: app.ID,
 		WorkloadID:    workload.ID,
-		EnvironmentID: environments[0].ID,
+		StageKey:      "dev",
 		Replicas:      2,
 		ServicePorts:  []WorkloadServicePort{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
 		ResourceRequests: WorkloadResourceList{
@@ -838,46 +698,42 @@ func TestWorkloadEnvironmentConfigSaveQueryAndAudit(t *testing.T) {
 		ValuesOverride: map[string]any{"podAnnotations": map[string]any{"prometheus.io/scrape": "true"}},
 	})
 	if err != nil {
-		t.Fatalf("SaveWorkloadEnvironmentConfig() error = %v", err)
+		t.Fatalf("SaveWorkloadStageConfig() error = %v", err)
 	}
-	if config.Replicas != 2 || len(config.ServicePorts) != 1 || len(config.Probes) != 1 || len(config.IngressHosts) != 1 || len(config.ConfigFiles) != 1 || len(config.WritableDirs) != 1 {
-		t.Fatalf("deployment config should preserve structured fields: %+v", config)
+	if config.ApplicationID != app.ID || config.WorkloadID != workload.ID || config.StageKey != "dev" || config.Replicas != 2 {
+		t.Fatalf("unexpected stage config: %+v", config)
 	}
-	got, err := env.svc.GetWorkloadEnvironmentConfig(ctx, workload.ID, environments[0].ID)
+	got, err := env.svc.GetWorkloadStageConfig(ctx, workload.ID, "dev")
 	if err != nil {
-		t.Fatalf("GetWorkloadEnvironmentConfig() error = %v", err)
+		t.Fatalf("GetWorkloadStageConfig() error = %v", err)
 	}
-	if got.ID != config.ID || got.ServicePorts[0].TargetPort != 8080 || got.ResourceLimits.Memory != "512Mi" || got.ConfigFiles[0].MountPath != "/etc/app/app.yml" || got.WritableDirs[0].MountPath != "/data/uploads" {
-		t.Fatalf("unexpected saved config: %+v", got)
+	if got.ID != config.ID || got.StageKey != "dev" || got.ServicePorts[0].TargetPort != 8080 || got.ResourceLimits.Memory != "512Mi" || got.ConfigFiles[0].MountPath != "/etc/app/app.yml" || got.WritableDirs[0].MountPath != "/data/uploads" {
+		t.Fatalf("unexpected saved stage config: %+v", got)
 	}
-	configs, err := env.svc.ListWorkloadEnvironmentConfigs(ctx, workload.ID)
+	configs, err := env.svc.ListWorkloadStageConfigs(ctx, workload.ID)
 	if err != nil {
-		t.Fatalf("ListWorkloadEnvironmentConfigs() error = %v", err)
+		t.Fatalf("ListWorkloadStageConfigs() error = %v", err)
 	}
 	if len(configs) != 1 || configs[0].ID != config.ID {
-		t.Fatalf("unexpected config list: %+v", configs)
+		t.Fatalf("unexpected stage config list: %+v", configs)
 	}
 	var audited bool
 	for _, event := range env.audit.events {
-		if event.Action == "workload_environment_config.update" && event.ResourceID == config.ID {
+		if event.Action == "workload_stage_config.update" && event.ResourceID == config.ID {
 			audited = true
 		}
 	}
 	if !audited {
-		t.Fatalf("config change should be audited, got %+v", env.audit.events)
+		t.Fatalf("stage config change should be audited, got %+v", env.audit.events)
 	}
-
+	if _, err := env.svc.UpdateApplicationStageState(ctx, UpdateApplicationStageStateInput{ApplicationID: app.ID, StageKey: "dev", Status: "unknown"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("invalid stage status should fail, got %v", err)
+	}
 	if _, err := env.svc.DeleteWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: workload.ID}); err != nil {
 		t.Fatalf("DeleteWorkload() error = %v", err)
 	}
-	if _, err := env.svc.SaveWorkloadEnvironmentConfig(ctx, SaveWorkloadEnvironmentConfigInput{
-		Actor:         appenvActor(),
-		ApplicationID: app.ID,
-		WorkloadID:    workload.ID,
-		EnvironmentID: environments[0].ID,
-		Replicas:      1,
-	}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("deleted workload should not accept environment config, got %v", err)
+	if _, err := env.svc.SaveWorkloadStageConfig(ctx, SaveWorkloadStageConfigInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: workload.ID, StageKey: "dev", Replicas: 1}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("deleted workload should not accept stage config, got %v", err)
 	}
 }
 
@@ -906,9 +762,6 @@ func TestWorkloadDefaultConfigSaveQueryAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveWorkloadDefaultConfig() error = %v", err)
 	}
-	if config.EnvironmentID != "" {
-		t.Fatalf("default config should not bind an environment, got %+v", config)
-	}
 	got, err := env.svc.GetWorkloadDefaultConfig(ctx, workload.ID)
 	if err != nil {
 		t.Fatalf("GetWorkloadDefaultConfig() error = %v", err)
@@ -934,7 +787,7 @@ func TestWorkloadDefaultConfigSaveQueryAndAudit(t *testing.T) {
 	}
 }
 
-func TestWorkloadEnvironmentConfigRequiresApplicationOwnership(t *testing.T) {
+func TestWorkloadStageConfigRequiresApplicationOwnership(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 	firstApp, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "first-app", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
@@ -945,24 +798,20 @@ func TestWorkloadEnvironmentConfigRequiresApplicationOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateApplication(second) error = %v", err)
 	}
-	environments, err := env.svc.ListEnvironments(ctx, firstApp.ID)
-	if err != nil {
-		t.Fatalf("ListEnvironments() error = %v", err)
-	}
 	workload, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: firstApp.ID, Name: "api", WorkloadType: WorkloadTypeDeployment})
 	if err != nil {
 		t.Fatalf("CreateWorkload() error = %v", err)
 	}
-	if _, err := env.svc.SaveWorkloadEnvironmentConfig(ctx, SaveWorkloadEnvironmentConfigInput{
+	if _, err := env.svc.SaveWorkloadStageConfig(ctx, SaveWorkloadStageConfigInput{
 		Actor:         appenvActor(),
 		ApplicationID: firstApp.ID,
 		WorkloadID:    workload.ID,
-		EnvironmentID: environments[0].ID,
+		StageKey:      "dev",
 		Replicas:      1,
 	}); err != nil {
-		t.Fatalf("SaveWorkloadEnvironmentConfig() error = %v", err)
+		t.Fatalf("SaveWorkloadStageConfig() error = %v", err)
 	}
-	if _, err := env.svc.ListWorkloadEnvironmentConfigsForApplication(ctx, secondApp.ID, workload.ID); shared.CodeOf(err) != shared.CodeNotFound {
+	if _, err := env.svc.GetWorkload(ctx, secondApp.ID, workload.ID); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("cross-application config list should fail, got %v", err)
 	}
 }
@@ -1007,22 +856,10 @@ func TestCreateApplicationPropagatesPermissionAndProvisionFailures(t *testing.T)
 	if _, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); shared.CodeOf(err) != shared.CodePermissionDenied {
 		t.Fatalf("permission denial should fail, got %v", err)
 	}
-
-	env = newAppenvTestEnv(t, true)
-	env.gitops.err = errors.New("gitops unavailable")
-	if _, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); err == nil {
-		t.Fatalf("gitops provisioning failure should fail")
-	}
 }
 
-func TestCreateApplicationPropagatesClusterAndEventFailures(t *testing.T) {
+func TestCreateApplicationPropagatesEventAndIDFailures(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
-	env.clusters.err = errors.New("cluster placement failed")
-	if _, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); err == nil {
-		t.Fatalf("cluster placement failure should fail")
-	}
-
-	env = newAppenvTestEnv(t, false)
 	env.events.err = errors.New("event bus failed")
 	if _, err := env.svc.CreateApplication(context.Background(), CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); err == nil {
 		t.Fatalf("event publish failure should fail")
@@ -1064,35 +901,7 @@ func TestServiceGuardBranches(t *testing.T) {
 	}
 }
 
-func TestEnvironmentStateAndEvents(t *testing.T) {
-	env := newAppenvTestEnv(t, false)
-	ctx := context.Background()
-	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
-	if err != nil {
-		t.Fatalf("CreateApplication() error = %v", err)
-	}
-	environments, _ := env.svc.ListEnvironments(ctx, app.ID)
-	reportedAt := time.Date(2026, 5, 30, 5, 10, 0, 0, time.UTC)
-	state, err := env.svc.UpdateEnvironmentState(ctx, UpdateEnvironmentStateInput{EnvironmentID: environments[0].ID, Status: EnvironmentStatusRunning, Message: "运行中", ReportedAt: &reportedAt})
-	if err != nil {
-		t.Fatalf("UpdateEnvironmentState() error = %v", err)
-	}
-	if state.Status != EnvironmentStatusRunning || state.LastReportedAt == nil || !state.LastReportedAt.Equal(reportedAt) {
-		t.Fatalf("unexpected state: %+v", state)
-	}
-	events, err := env.svc.ListEnvironmentEvents(ctx, environments[0].ID, shared.PageRequest{})
-	if err != nil {
-		t.Fatalf("ListEnvironmentEvents() error = %v", err)
-	}
-	if events.Total != 2 {
-		t.Fatalf("expected creation and state events, got %+v", events)
-	}
-	if _, err := env.svc.UpdateEnvironmentState(ctx, UpdateEnvironmentStateInput{EnvironmentID: environments[0].ID, Status: "unknown"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
-		t.Fatalf("invalid status should fail, got %v", err)
-	}
-}
-
-func TestApplicationQueriesUpdateDeleteAndManualBinding(t *testing.T) {
+func TestApplicationQueriesUpdateDelete(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
@@ -1133,33 +942,8 @@ func TestApplicationQueriesUpdateDeleteAndManualBinding(t *testing.T) {
 	if err != nil || editedSource.BuildSpec.BuildCommand != "mvn verify" || editedSource.BuildSpec.ArtifactCopyCommand != "cp -ar target/edited.jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"" {
 		t.Fatalf("source should be editable, got %+v, %v", editedSource, err)
 	}
-	environments, _ := env.svc.ListEnvironments(ctx, app.ID)
-	gotEnv, err := env.svc.GetEnvironment(ctx, environments[0].ID)
-	if err != nil || gotEnv.Name != "dev" {
-		t.Fatalf("GetEnvironment() = %+v, %v", gotEnv, err)
-	}
-	binding, err := env.svc.BindEnvironmentCluster(ctx, BindEnvironmentClusterInput{Actor: appenvActor(), EnvironmentID: gotEnv.ID, ClusterID: "cluster_manual", ClusterName: "manual", Namespace: "api-dev"})
-	if err != nil {
-		t.Fatalf("BindEnvironmentCluster() error = %v", err)
-	}
-	if binding.EnvironmentID != gotEnv.ID || binding.Namespace != "api-dev" || binding.ClusterName != "真实集群名称" {
-		t.Fatalf("unexpected binding: %+v", binding)
-	}
-	state, err := env.svc.GetEnvironmentState(ctx, gotEnv.ID)
-	if err != nil || state.Status != EnvironmentStatusClusterBound {
-		t.Fatalf("GetEnvironmentState() = %+v, %v", state, err)
-	}
-	if len(env.gitops.specs) != 1 || env.gitops.specs[0].EnvironmentName != "dev" {
-		t.Fatalf("manual binding should provision gitops once, got %+v", env.gitops.specs)
-	}
-	if _, err := env.svc.BindEnvironmentCluster(ctx, BindEnvironmentClusterInput{Actor: appenvActor(), EnvironmentID: environments[1].ID, ClusterName: "manual", Namespace: "api-test"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
-		t.Fatalf("incomplete binding should fail, got %v", err)
-	}
-	if _, err := env.svc.BindEnvironmentCluster(ctx, BindEnvironmentClusterInput{Actor: appenvActor(), EnvironmentID: environments[1].ID, ClusterID: "cluster_other", ClusterName: "other", Namespace: "api-test"}); shared.CodeOf(err) != shared.CodePermissionDenied {
-		t.Fatalf("cross-tenant cluster binding should fail, got %v", err)
-	}
-	if _, err := env.svc.BindEnvironmentCluster(ctx, BindEnvironmentClusterInput{Actor: identityaccess.Subject{}, EnvironmentID: environments[1].ID, ClusterID: "cluster_2", ClusterName: "manual", Namespace: "api-test"}); shared.CodeOf(err) != shared.CodeUnauthenticated {
-		t.Fatalf("binding without actor should fail, got %v", err)
+	if _, err := env.svc.UpdateApplicationStageState(ctx, UpdateApplicationStageStateInput{ApplicationID: app.ID, StageKey: "dev", Status: ApplicationStageStatusRunning, Message: "运行中"}); err != nil {
+		t.Fatalf("UpdateApplicationStageState() error = %v", err)
 	}
 	if err := env.svc.DeleteApplication(ctx, appenvActor(), app.ID); err != nil {
 		t.Fatalf("DeleteApplication() error = %v", err)
@@ -1173,11 +957,8 @@ func TestApplicationQueriesUpdateDeleteAndManualBinding(t *testing.T) {
 	if _, err := env.svc.GetApplicationSource(ctx, app.ID); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("deleted app source should be removed, got %v", err)
 	}
-	if _, err := env.svc.ListEnvironments(ctx, app.ID); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("deleted app environments should be removed, got %v", err)
-	}
-	if _, err := env.svc.GetEnvironment(ctx, gotEnv.ID); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("deleted app environment should be removed, got %v", err)
+	if _, err := env.svc.ListApplicationStageStates(ctx, app.ID); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("deleted app stage states should be removed with app, got %v", err)
 	}
 }
 
@@ -1208,22 +989,16 @@ func TestRepositoryDirectMethods(t *testing.T) {
 	if err := repo.UpdateApplicationSource(ctx, source); err != nil {
 		t.Fatalf("UpdateApplicationSource() error = %v", err)
 	}
-	environment := Environment{ID: "env_1", TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, Name: "qa", CreatedAt: now, UpdatedAt: now}
-	if err := repo.CreateEnvironment(ctx, environment); err != nil {
-		t.Fatalf("CreateEnvironment() error = %v", err)
+	stageState := ApplicationStageState{TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, StageKey: "qa", Status: ApplicationStageStatusRunning, Message: "运行中", UpdatedAt: now}
+	if err := repo.SaveApplicationStageState(ctx, stageState); err != nil {
+		t.Fatalf("SaveApplicationStageState() error = %v", err)
 	}
-	environment.DisplayName = "验证环境"
-	if err := repo.UpdateEnvironment(ctx, environment); err != nil {
-		t.Fatalf("UpdateEnvironment() error = %v", err)
+	if err := repo.AppendApplicationStageEvent(ctx, ApplicationStageEvent{ID: "stage_event_1", TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, StageKey: "qa", Type: "application_stage_state.updated", Status: ApplicationStageStatusRunning, Message: "运行中", OccurredAt: now}); err != nil {
+		t.Fatalf("AppendApplicationStageEvent() error = %v", err)
 	}
-	if err := repo.CreateEnvironmentConfig(ctx, EnvironmentConfig{ID: "cfg_1", TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: environment.ID, Key: "LOG_LEVEL", Value: "info"}); err != nil {
-		t.Fatalf("CreateEnvironmentConfig() error = %v", err)
-	}
-	if err := repo.CreateEnvironmentSecret(ctx, EnvironmentSecret{ID: "sec_1", TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: environment.ID, Key: "DB_PASSWORD", SecretRef: "secret/db"}); err != nil {
-		t.Fatalf("CreateEnvironmentSecret() error = %v", err)
-	}
-	if err := repo.CreateEnvironmentRoute(ctx, EnvironmentRoute{ID: "route_1", TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: environment.ID, Host: "api.example.com", Path: "/"}); err != nil {
-		t.Fatalf("CreateEnvironmentRoute() error = %v", err)
+	stageEvents, err := repo.ListApplicationStageEvents(ctx, app.ID, "qa", shared.PageRequest{})
+	if err != nil || stageEvents.Total != 1 {
+		t.Fatalf("ListApplicationStageEvents() = %+v, %v", stageEvents, err)
 	}
 	if _, err := repo.GetApplication(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("missing app should be not_found, got %v", err)
@@ -1259,64 +1034,24 @@ func TestRepositoryDirectMethods(t *testing.T) {
 	if _, err := repo.GetApplicationSource(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("get missing source should fail, got %v", err)
 	}
-	if err := repo.CreateEnvironment(ctx, Environment{ID: "bad", ApplicationID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("environment for missing app should fail, got %v", err)
+	if err := repo.SaveApplicationStageState(ctx, ApplicationStageState{ApplicationID: "missing", StageKey: "dev"}); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("stage state missing application should fail, got %v", err)
 	}
-	if err := repo.CreateEnvironment(ctx, Environment{ID: "env_2", TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, Name: "qa"}); shared.CodeOf(err) != shared.CodeConflict {
-		t.Fatalf("duplicate environment name should conflict, got %v", err)
+	if _, err := repo.GetApplicationStageState(ctx, "missing", "dev"); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("missing stage state should fail, got %v", err)
 	}
-	if err := repo.UpdateEnvironment(ctx, Environment{ID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("update missing environment should fail, got %v", err)
+	if _, err := repo.ListApplicationStageStatesByApplication(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("list missing stage states should fail, got %v", err)
 	}
-	if _, err := repo.GetEnvironment(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("get missing environment should fail, got %v", err)
+	if err := repo.AppendApplicationStageEvent(ctx, ApplicationStageEvent{ID: "bad", ApplicationID: "missing", StageKey: "dev"}); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("stage event missing application should fail, got %v", err)
 	}
-	if _, err := repo.ListEnvironmentsByApplication(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("list missing environments should fail, got %v", err)
-	}
-	if err := repo.CreateEnvironmentConfig(ctx, EnvironmentConfig{ID: "bad", EnvironmentID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("config missing environment should fail, got %v", err)
-	}
-	if err := repo.CreateEnvironmentSecret(ctx, EnvironmentSecret{ID: "bad", EnvironmentID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("secret missing environment should fail, got %v", err)
-	}
-	if err := repo.CreateEnvironmentRoute(ctx, EnvironmentRoute{ID: "bad", EnvironmentID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("route missing environment should fail, got %v", err)
-	}
-	binding := EnvironmentClusterBinding{ID: "binding_1", TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: environment.ID, ClusterID: "cluster_1", ClusterName: "cluster", Namespace: "api", Status: EnvironmentClusterBindingActive}
-	if err := repo.CreateEnvironmentClusterBinding(ctx, EnvironmentClusterBinding{ID: "bad", EnvironmentID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("binding missing environment should fail, got %v", err)
-	}
-	if err := repo.CreateEnvironmentClusterBinding(ctx, binding); err != nil {
-		t.Fatalf("CreateEnvironmentClusterBinding() error = %v", err)
-	}
-	if err := repo.CreateEnvironmentClusterBinding(ctx, binding); shared.CodeOf(err) != shared.CodeConflict {
-		t.Fatalf("duplicate binding should conflict, got %v", err)
-	}
-	if _, err := repo.GetEnvironmentClusterBinding(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("missing binding should fail, got %v", err)
-	}
-	if _, err := repo.ListEnvironmentClusterBindingsByApplication(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("list missing bindings should fail, got %v", err)
-	}
-	if err := repo.SaveEnvironmentState(ctx, EnvironmentState{EnvironmentID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("state missing environment should fail, got %v", err)
-	}
-	if _, err := repo.GetEnvironmentState(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("missing state should fail, got %v", err)
-	}
-	if _, err := repo.ListEnvironmentStatesByApplication(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("list missing states should fail, got %v", err)
-	}
-	if err := repo.AppendEnvironmentEvent(ctx, EnvironmentEvent{ID: "bad", EnvironmentID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("event missing environment should fail, got %v", err)
-	}
-	if _, err := repo.ListEnvironmentEvents(ctx, "missing", shared.PageRequest{}); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("list missing events should fail, got %v", err)
+	if _, err := repo.ListApplicationStageEvents(ctx, "missing", "dev", shared.PageRequest{}); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("list missing stage events should fail, got %v", err)
 	}
 }
 
-func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
+func TestHandlerApplicationAndWorkloadFlow(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
@@ -1343,30 +1078,6 @@ func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
 	assertStatus(t, serveJSON(mux, http.MethodPatch, "/api/applications/"+app.ID.String(), patchBody), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/projects/project_payment/applications?page=1&page_size=10", nil), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/source", nil), http.StatusOK)
-
-	envListRec := serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/environments", nil)
-	assertStatus(t, envListRec, http.StatusOK)
-	var envList struct {
-		Items []Environment `json:"items"`
-	}
-	if err := json.NewDecoder(envListRec.Body).Decode(&envList); err != nil {
-		t.Fatalf("decode environments: %v", err)
-	}
-	if len(envList.Items) != 4 {
-		t.Fatalf("expected 4 environments, got %+v", envList)
-	}
-	environmentID := envList.Items[0].ID.String()
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/environments/"+environmentID, nil), http.StatusOK)
-	bindBody, _ := json.Marshal(BindEnvironmentClusterInput{Actor: appenvActor(), ClusterID: "cluster_manual", ClusterName: "manual", Namespace: "api-dev"})
-	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/environments/"+environmentID+"/cluster-binding", bindBody), http.StatusCreated)
-	configBody, _ := json.Marshal(SetEnvironmentConfigInput{Actor: appenvActor(), Key: "JAVA_OPTS", Value: "-Xmx512m"})
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/"+environmentID+"/configs", configBody), http.StatusOK)
-	secretBody, _ := json.Marshal(SetEnvironmentSecretInput{Actor: appenvActor(), Key: "DB_PASSWORD", SecretRef: "secret/data/api/db"})
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/"+environmentID+"/secrets", secretBody), http.StatusOK)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/environments/"+environmentID+"/state", nil), http.StatusOK)
-	stateBody, _ := json.Marshal(UpdateEnvironmentStateInput{Status: EnvironmentStatusRunning, Message: "运行中"})
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/"+environmentID+"/state", stateBody), http.StatusOK)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/environments/"+environmentID+"/events?page=1&page_size=5", nil), http.StatusOK)
 
 	actorBody, _ := json.Marshal(struct {
 		Actor identityaccess.Subject `json:"actor"`
@@ -1396,15 +1107,6 @@ func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
 	}
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+":disable", actorBody), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+":enable", actorBody), http.StatusOK)
-	configPayload, _ := json.Marshal(SaveWorkloadEnvironmentConfigInput{
-		Actor:        appenvActor(),
-		Replicas:     1,
-		ServicePorts: []WorkloadServicePort{{Name: "http", Port: 80, TargetPort: 8080}},
-		ConfigFiles:  []WorkloadConfigFile{{MountPath: "/etc/app/app.yml", Content: "server.port: 8080"}},
-		WritableDirs: []WorkloadWritableDir{{MountPath: "/data"}},
-	})
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/environment-configs/"+environmentID, configPayload), http.StatusOK)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/environment-configs", nil), http.StatusOK)
 	defaultConfigPayload, _ := json.Marshal(SaveWorkloadDefaultConfigInput{
 		Actor:        appenvActor(),
 		Replicas:     2,
@@ -1415,11 +1117,11 @@ func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
 	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/default-config", defaultConfigPayload), http.StatusOK)
 	defaultConfigRec := serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String()+"/default-config", nil)
 	assertStatus(t, defaultConfigRec, http.StatusOK)
-	var defaultConfig WorkloadEnvironmentConfig
+	var defaultConfig WorkloadStageConfig
 	if err := json.NewDecoder(defaultConfigRec.Body).Decode(&defaultConfig); err != nil {
 		t.Fatalf("decode default config: %v", err)
 	}
-	if defaultConfig.EnvironmentID != "" || !defaultConfig.ConfigFiles[0].Base64Encoded || defaultConfig.WritableDirs[0].OwnerGroup != "app:app" || defaultConfig.WritableDirs[0].Mode != "0775" {
+	if !defaultConfig.ConfigFiles[0].Base64Encoded || defaultConfig.WritableDirs[0].OwnerGroup != "app:app" || defaultConfig.WritableDirs[0].Mode != "0775" {
 		t.Fatalf("unexpected default config response: %+v", defaultConfig)
 	}
 	otherBody, _ := json.Marshal(CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "other-api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
@@ -1429,7 +1131,7 @@ func TestHandlerApplicationEnvironmentFlow(t *testing.T) {
 	if err := json.NewDecoder(otherRec.Body).Decode(&otherApp); err != nil {
 		t.Fatalf("decode other app: %v", err)
 	}
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+otherApp.ID.String()+"/workloads/"+workload.ID.String()+"/environment-configs", nil), http.StatusNotFound)
+	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+otherApp.ID.String()+"/workloads/"+workload.ID.String(), nil), http.StatusNotFound)
 	assertStatus(t, serveJSON(mux, http.MethodDelete, "/api/applications/"+app.ID.String()+"/workloads/"+workload.ID.String(), actorBody), http.StatusOK)
 
 	assertStatus(t, serveJSON(mux, http.MethodDelete, "/api/applications/"+app.ID.String(), actorBody), http.StatusNoContent)
@@ -1451,41 +1153,6 @@ func TestHandlerErrorBranches(t *testing.T) {
 	assertStatus(t, serveJSON(mux, http.MethodDelete, "/api/applications/missing", deleteBody), http.StatusNotFound)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/projects/missing/applications", nil), http.StatusNotFound)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/missing/source", nil), http.StatusNotFound)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/missing/environments", nil), http.StatusNotFound)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/environments/missing", nil), http.StatusNotFound)
-	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/environments/missing/cluster-binding", []byte("{")), http.StatusBadRequest)
-	bindBody, _ := json.Marshal(BindEnvironmentClusterInput{Actor: appenvActor(), ClusterID: "cluster", ClusterName: "cluster", Namespace: "api"})
-	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/environments/missing/cluster-binding", bindBody), http.StatusNotFound)
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/missing/configs", []byte("{")), http.StatusBadRequest)
-	configBody, _ := json.Marshal(SetEnvironmentConfigInput{Actor: appenvActor(), Key: "JAVA_OPTS", Value: "-Xmx512m"})
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/missing/configs", configBody), http.StatusNotFound)
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/missing/secrets", []byte("{")), http.StatusBadRequest)
-	secretBody, _ := json.Marshal(SetEnvironmentSecretInput{Actor: appenvActor(), Key: "DB_PASSWORD", SecretRef: "secret/data/api/db"})
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/missing/secrets", secretBody), http.StatusNotFound)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/environments/missing/state", nil), http.StatusNotFound)
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/missing/state", []byte("{")), http.StatusBadRequest)
-	stateBody, _ := json.Marshal(UpdateEnvironmentStateInput{Status: EnvironmentStatusRunning})
-	assertStatus(t, serveJSON(mux, http.MethodPut, "/api/environments/missing/state", stateBody), http.StatusNotFound)
-	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/environments/missing/events", nil), http.StatusNotFound)
-}
-
-func environmentNames(environments []Environment) string {
-	names := make([]string, 0, len(environments))
-	for _, environment := range environments {
-		names = append(names, environment.Name)
-	}
-	return stringsJoin(names, ",")
-}
-
-func stringsJoin(values []string, sep string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	result := values[0]
-	for _, value := range values[1:] {
-		result += sep + value
-	}
-	return result
 }
 
 func serveJSON(mux *http.ServeMux, method string, target string, body []byte) *httptest.ResponseRecorder {

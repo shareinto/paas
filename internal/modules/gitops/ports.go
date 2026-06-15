@@ -87,15 +87,10 @@ type ApplicationRef struct {
 	Name      string
 }
 
-type EnvironmentQuery interface {
-	GetEnvironment(ctx context.Context, id shared.ID) (EnvironmentRef, error)
-	GetActiveBinding(ctx context.Context, environmentID shared.ID) (ClusterBindingRef, error)
-}
-
 type WorkloadQuery interface {
 	GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error)
-	GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfigRef, error)
-	GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfigRef, error)
+	GetWorkloadStageConfig(ctx context.Context, workloadID shared.ID, stageKey string) (WorkloadStageConfigRef, error)
+	GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadStageConfigRef, error)
 }
 
 type AuditLogger interface {

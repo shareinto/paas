@@ -36,6 +36,7 @@ type FakeKubernetesReader struct {
 	SnapshotValue Snapshot
 	Refreshed     []string
 	Synced        []string
+	Restarted     []string
 }
 
 func (r *FakeKubernetesReader) Snapshot(context.Context, []string) (Snapshot, error) {
@@ -53,5 +54,9 @@ func (r *FakeKubernetesReader) RefreshArgoApplication(_ context.Context, name st
 }
 func (r *FakeKubernetesReader) SyncArgoApplication(_ context.Context, name string) error {
 	r.Synced = append(r.Synced, name)
+	return nil
+}
+func (r *FakeKubernetesReader) RestartRuntimeResource(_ context.Context, kind string, namespace string, name string) error {
+	r.Restarted = append(r.Restarted, kind+"/"+namespace+"/"+name)
 	return nil
 }

@@ -108,4 +108,56 @@ DEALLOCATE PREPARE clusters_tenant_index_stmt;
 `,
 		Down: `SELECT 1;`,
 	},
+	{
+		Version: 202606151001,
+		Name:    "cluster_runtime_resources",
+		Up: `
+CREATE TABLE IF NOT EXISTS cluster_runtime_resources (
+  id VARCHAR(96) NOT NULL PRIMARY KEY,
+  cluster_id VARCHAR(64) NOT NULL,
+  tenant_id VARCHAR(64) NOT NULL DEFAULT '',
+  application_id VARCHAR(64) NOT NULL DEFAULT '',
+  stage_key VARCHAR(64) NOT NULL DEFAULT '',
+  group_name VARCHAR(128) NOT NULL DEFAULT '',
+  version VARCHAR(64) NOT NULL DEFAULT '',
+  kind VARCHAR(64) NOT NULL DEFAULT '',
+  namespace VARCHAR(128) NOT NULL DEFAULT '',
+  name VARCHAR(253) NOT NULL DEFAULT '',
+  parent_kind VARCHAR(64) NOT NULL DEFAULT '',
+  parent_namespace VARCHAR(128) NOT NULL DEFAULT '',
+  parent_name VARCHAR(253) NOT NULL DEFAULT '',
+  status VARCHAR(64) NOT NULL DEFAULT '',
+  health_status VARCHAR(64) NOT NULL DEFAULT '',
+  message VARCHAR(1024) NOT NULL DEFAULT '',
+  desired INT NOT NULL DEFAULT 0,
+  ready INT NOT NULL DEFAULT 0,
+  containers_json JSON NULL,
+  reported_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  KEY idx_cluster_runtime_resources_app_stage (application_id, stage_key),
+  KEY idx_cluster_runtime_resources_cluster_reported (cluster_id, reported_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS cluster_runtime_resource_events (
+  id VARCHAR(128) NOT NULL PRIMARY KEY,
+  resource_id VARCHAR(96) NOT NULL,
+  cluster_id VARCHAR(64) NOT NULL,
+  tenant_id VARCHAR(64) NOT NULL DEFAULT '',
+  application_id VARCHAR(64) NOT NULL DEFAULT '',
+  stage_key VARCHAR(64) NOT NULL DEFAULT '',
+  type VARCHAR(64) NOT NULL DEFAULT '',
+  reason VARCHAR(128) NOT NULL DEFAULT '',
+  message VARCHAR(1024) NOT NULL DEFAULT '',
+  count INT NOT NULL DEFAULT 0,
+  occurred_at DATETIME(6) NULL,
+  KEY idx_cluster_runtime_resource_events_resource (resource_id),
+  KEY idx_cluster_runtime_resource_events_app_stage (application_id, stage_key, occurred_at),
+  CONSTRAINT fk_cluster_runtime_resource_events_resource FOREIGN KEY (resource_id) REFERENCES cluster_runtime_resources(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`,
+		Down: `
+DROP TABLE IF EXISTS cluster_runtime_resource_events;
+DROP TABLE IF EXISTS cluster_runtime_resources;
+`,
+	},
 }

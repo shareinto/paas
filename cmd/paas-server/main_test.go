@@ -23,14 +23,13 @@ import (
 )
 
 type serverTestFixture struct {
-	tenant       tenantproject.Tenant
-	project      tenantproject.Project
-	source       shared.ID
-	application  appenv.Application
-	workload     appenv.Workload
-	pipeline     build.BuildPipeline
-	environments []appenv.Environment
-	buildRun     build.BuildRun
+	tenant      tenantproject.Tenant
+	project     tenantproject.Project
+	source      shared.ID
+	application appenv.Application
+	workload    appenv.Workload
+	pipeline    build.BuildPipeline
+	buildRun    build.BuildRun
 }
 
 func TestApplicationStartsAndServesDevelopmentAPI(t *testing.T) {
@@ -299,10 +298,10 @@ func TestModuleRoutesUseWiredPorts(t *testing.T) {
 		t.Fatalf("template response = %d %s", templateRec.Code, templateRec.Body.String())
 	}
 
-	stateRec := httptest.NewRecorder()
-	app.handler.ServeHTTP(stateRec, httptest.NewRequest(http.MethodGet, "/api/environments/"+fixture.environments[0].ID.String()+"/state", nil))
-	if stateRec.Code != http.StatusOK || !bytes.Contains(stateRec.Body.Bytes(), []byte("running")) {
-		t.Fatalf("state response = %d %s", stateRec.Code, stateRec.Body.String())
+	stagesRec := httptest.NewRecorder()
+	app.handler.ServeHTTP(stagesRec, httptest.NewRequest(http.MethodGet, "/api/apps/"+fixture.application.ID.String()+"/stages", nil))
+	if stagesRec.Code != http.StatusOK || !bytes.Contains(stagesRec.Body.Bytes(), []byte("dev")) {
+		t.Fatalf("stages response = %d %s", stagesRec.Code, stagesRec.Body.String())
 	}
 }
 
@@ -452,12 +451,22 @@ func TestServerAdaptersAndHelpers(t *testing.T) {
 		t.Fatalf("app source ref = %#v err=%v", source, err)
 	}
 
-	envDelivery := envForDelivery{service: app.apps, repo: app.state.appRepo}
-	if envs, err := envDelivery.ListEnvironments(ctx, fixture.application.ID); err != nil || len(envs) != 4 {
-		t.Fatalf("delivery envs len=%d err=%v", len(envs), err)
+	envDelivery := stageRuntimeForDelivery{service: app.apps}
+	if _, err := app.apps.UpdateApplicationStageState(ctx, appenv.UpdateApplicationStageStateInput{ApplicationID: fixture.application.ID, StageKey: "dev", Status: appenv.ApplicationStageStatusRunning, Message: "健康"}); err != nil {
+		t.Fatalf("UpdateApplicationStageState(running) error = %v", err)
 	}
-	if env, err := envDelivery.GetEnvironment(ctx, fixture.environments[0].ID); err != nil || !env.BindingActive {
-		t.Fatalf("delivery env = %#v err=%v", env, err)
+	if _, err := app.apps.UpdateApplicationStageState(ctx, appenv.UpdateApplicationStageStateInput{ApplicationID: fixture.application.ID, StageKey: "test", Status: appenv.ApplicationStageStatusDegraded, Message: "Pod ImagePullBackOff"}); err != nil {
+		t.Fatalf("UpdateApplicationStageState(degraded) error = %v", err)
+	}
+	runtimeStates, err := envDelivery.ListStageRuntimeStates(ctx, fixture.application.ID)
+	if err != nil {
+		t.Fatalf("ListStageRuntimeStates() error = %v", err)
+	}
+	if got := runtimeStates["dev"]; got.SyncStatus != "Synced" || got.HealthStatus != "Healthy" || got.OperationState != "succeeded" || got.Message != "健康" {
+		t.Fatalf("running runtime state = %#v", got)
+	}
+	if got := runtimeStates["test"]; got.SyncStatus != "OutOfSync" || got.HealthStatus != "Degraded" || got.OperationState != "failed" || got.Message != "Pod ImagePullBackOff" {
+		t.Fatalf("degraded runtime state = %#v", got)
 	}
 
 	buildDelivery := buildForDelivery{service: app.builds, repo: app.state.buildRepo}
@@ -472,17 +481,10 @@ func TestServerAdaptersAndHelpers(t *testing.T) {
 	if ref, err := appGitOps.GetApplication(ctx, fixture.application.ID); err != nil || ref.ProjectID != fixture.project.ID {
 		t.Fatalf("gitops app = %#v err=%v", ref, err)
 	}
-	envGitOps := envForGitOps{service: app.apps, repo: app.state.appRepo}
-	if env, err := envGitOps.GetEnvironment(ctx, fixture.environments[0].ID); err != nil || env.Name != "dev" {
-		t.Fatalf("gitops env = %#v err=%v", env, err)
-	}
-	if binding, err := envGitOps.GetActiveBinding(ctx, fixture.environments[0].ID); err != nil || binding.Namespace != "test-dev" {
-		t.Fatalf("gitops binding = %#v err=%v", binding, err)
-	}
 
-	updater := envUpdater{service: app.apps}
+	updater := stageUpdater{service: app.apps}
 	reportedAt := time.Now()
-	if err := updater.UpdateFromAgent(ctx, clusteragent.StatusReport{Applications: []clusteragent.ApplicationStatus{{EnvironmentID: fixture.environments[0].ID, SyncStatus: "Synced", HealthStatus: "Healthy", Message: "健康"}, {EnvironmentID: fixture.environments[1].ID, HealthStatus: "Degraded", Message: "异常"}, {}}, ReportedAt: reportedAt}); err != nil {
+	if err := updater.UpdateFromAgent(ctx, clusteragent.StatusReport{Applications: []clusteragent.ApplicationStatus{{ApplicationID: fixture.application.ID, StageKey: "dev", SyncStatus: "Synced", HealthStatus: "Healthy", Message: "健康"}, {ApplicationID: fixture.application.ID, StageKey: "test", HealthStatus: "Degraded", Message: "异常"}, {}}, ReportedAt: reportedAt}); err != nil {
 		t.Fatalf("update from agent: %v", err)
 	}
 
@@ -564,17 +566,8 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	if err != nil {
 		t.Fatalf("create workload: %v", err)
 	}
-	envs, err := app.apps.ListEnvironments(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("list environments: %v", err)
-	}
-	for _, env := range envs {
-		if _, err := app.apps.BindEnvironmentCluster(ctx, appenv.BindEnvironmentClusterInput{Actor: actor, EnvironmentID: env.ID, ClusterID: "cluster_test_" + shared.ID(suffix), ClusterName: "测试集群", Namespace: "test-" + env.Name}); err != nil {
-			t.Fatalf("bind environment %s: %v", env.Name, err)
-		}
-	}
-	if _, err := app.apps.UpdateEnvironmentState(ctx, appenv.UpdateEnvironmentStateInput{EnvironmentID: envs[0].ID, Status: appenv.EnvironmentStatusRunning, Message: "运行中"}); err != nil {
-		t.Fatalf("set environment state: %v", err)
+	if _, err := app.apps.UpdateApplicationStageState(ctx, appenv.UpdateApplicationStageStateInput{ApplicationID: created.ID, StageKey: "dev", Status: appenv.ApplicationStageStatusRunning, Message: "运行中"}); err != nil {
+		t.Fatalf("set stage state: %v", err)
 	}
 	ensureDeploymentTemplate(t, app, created.ID)
 
@@ -615,7 +608,7 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	if _, err := app.delivery.CreateFreight(ctx, delivery.CreateFreightInput{Actor: actor, ApplicationID: created.ID, Name: "测试发布包", Items: []delivery.CreateFreightItemInput{{WorkloadID: workload.ID, SourceType: delivery.FreightItemPipelineArtifact, ReleaseID: release.ID}}}); err != nil {
 		t.Fatalf("create freight: %v", err)
 	}
-	return serverTestFixture{tenant: tenant, project: project, source: repo.ID, application: created, workload: workload, pipeline: pipeline, environments: envs, buildRun: run}
+	return serverTestFixture{tenant: tenant, project: project, source: repo.ID, application: created, workload: workload, pipeline: pipeline, buildRun: run}
 }
 
 func ensureDeploymentTemplate(t *testing.T, app *application, applicationID shared.ID) {

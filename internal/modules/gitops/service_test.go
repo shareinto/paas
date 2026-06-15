@@ -163,32 +163,10 @@ func (q errAppQuery) GetApplication(context.Context, shared.ID) (ApplicationRef,
 	return ApplicationRef{}, q.err
 }
 
-type errEnvQuery struct{ err error }
-
-func (q errEnvQuery) GetEnvironment(context.Context, shared.ID) (EnvironmentRef, error) {
-	return EnvironmentRef{}, q.err
-}
-func (q errEnvQuery) GetActiveBinding(context.Context, shared.ID) (ClusterBindingRef, error) {
-	return ClusterBindingRef{}, q.err
-}
-
 type appQuery map[shared.ID]ApplicationRef
 
 func (q appQuery) GetApplication(_ context.Context, id shared.ID) (ApplicationRef, error) {
 	return q[id], nil
-}
-
-type envQuery struct {
-	envs     map[shared.ID]EnvironmentRef
-	bindings map[shared.ID]ClusterBindingRef
-}
-
-func (q envQuery) GetEnvironment(_ context.Context, id shared.ID) (EnvironmentRef, error) {
-	return q.envs[id], nil
-}
-
-func (q envQuery) GetActiveBinding(_ context.Context, id shared.ID) (ClusterBindingRef, error) {
-	return q.bindings[id], nil
 }
 
 func newTestService(t *testing.T, ids []shared.ID) (*Service, *FakeManifestRepository, *auditRecorder) {
@@ -197,20 +175,17 @@ func newTestService(t *testing.T, ids []shared.ID) (*Service, *FakeManifestRepos
 	svc := NewService(Options{
 		Repository: newTestRepository(t), ManifestRepo: manifest,
 		Application: appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}},
-		Environment: envQuery{envs: map[shared.ID]EnvironmentRef{
-			"env_dev":     {ID: "env_dev", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "dev"},
-			"env_test":    {ID: "env_test", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "test"},
-			"env_staging": {ID: "env_staging", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "staging"},
-			"env_prod":    {ID: "env_prod", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "prod"},
-		}, bindings: map[shared.ID]ClusterBindingRef{
-			"env_dev":     {ID: "binding_dev", EnvironmentID: "env_dev", Namespace: "order-dev", Active: true},
-			"env_test":    {ID: "binding_test", EnvironmentID: "env_test", Namespace: "order-test", Active: true},
-			"env_staging": {ID: "binding_staging", EnvironmentID: "env_staging", Namespace: "order-staging", Active: true},
-			"env_prod":    {ID: "binding_prod", EnvironmentID: "env_prod", Namespace: "order-prod", Active: true},
-		}},
-		Audit: audit, IDGenerator: &staticIDs{ids: ids}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
+		Audit:       audit, IDGenerator: &staticIDs{ids: ids}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
 	})
 	return svc, manifest, audit
+}
+
+func targetClusters(stageKey string) []delivery.GitOpsPromotionTargetCluster {
+	return []delivery.GitOpsPromotionTargetCluster{{
+		ClusterID:   shared.ID("cluster_" + stageKey),
+		ClusterName: stageKey + "-cluster",
+		Namespace:   "order-" + stageKey,
+	}}
 }
 
 func TestApplicationTemplateCopyDoesNotMutatePlatformTemplate(t *testing.T) {
@@ -256,9 +231,9 @@ func TestApplyPromotionInitializesMissingDeploymentTemplate(t *testing.T) {
 		PromotionID:   "promotion_dev",
 		FreightID:     "freight_1",
 		ApplicationID: "app_1",
-		EnvironmentID: "env_dev",
-		ImageURI:      "registry/order-api:v1",
-		ImageDigest:   "sha256:old",
+		StageKey:      "dev", TargetClusters: targetClusters("dev"),
+		ImageURI:    "registry/order-api:v1",
+		ImageDigest: "sha256:old",
 	})
 	if err != nil {
 		t.Fatalf("ApplyPromotion() should initialize missing deployment template: %v", err)
@@ -296,7 +271,7 @@ func TestApplyPromotionWritesVersionedChartAndMultiSourceArgoApplication(t *test
 	}
 
 	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
-		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev",
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"),
 		Artifacts: []delivery.GitOpsArtifactSpec{
 			{WorkloadID: "workload_api", URI: "registry/user-api:v2", Repository: "registry/user-api", Tag: "v2", IsPrimary: true},
 			{WorkloadID: "workload_worker", URI: "registry/order-worker:v5", Repository: "registry/order-worker", Tag: "v5"},
@@ -311,15 +286,15 @@ func TestApplyPromotionWritesVersionedChartAndMultiSourceArgoApplication(t *test
 	if !strings.Contains(chartRepo.Files["charts/paas-app/templates/workloads.yaml"], "app.kubernetes.io/instance: {{ $resourceName | quote }}") {
 		t.Fatalf("platform chart should include workload instance labels:\n%s", chartRepo.Files["charts/paas-app/templates/workloads.yaml"])
 	}
-	if !strings.Contains(chartRepo.Files["charts/paas-app/templates/workloads.yaml"], `$resourceName := printf "%s-%s" $name $.Values.environment`) {
-		t.Fatalf("platform chart should derive environment-scoped resource names:\n%s", chartRepo.Files["charts/paas-app/templates/workloads.yaml"])
+	if !strings.Contains(chartRepo.Files["charts/paas-app/templates/workloads.yaml"], `$resourceName := printf "%s-%s" $name $.Values.stage`) {
+		t.Fatalf("platform chart should derive stage-scoped resource names:\n%s", chartRepo.Files["charts/paas-app/templates/workloads.yaml"])
 	}
 	if len(chartRepo.Tags) != 1 || chartRepo.Tags["paas-app-v0.1.0"] != "main" {
 		t.Fatalf("chart repo should be tagged with fixed version, tags=%+v", chartRepo.Tags)
 	}
 	argo := manifest.Files["argocd/apps/dev/order-api-dev.yaml"]
 	if _, ok := manifest.Files["argocd/apps/order-api-dev.yaml"]; ok {
-		t.Fatalf("argo application should be written under environment directory, files=%+v", manifest.Files)
+		t.Fatalf("argo application should be written under stage directory, files=%+v", manifest.Files)
 	}
 	for _, expected := range []string{
 		"name: order-api-dev",
@@ -355,19 +330,19 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 	svc, manifest, audit := newTestService(t, ids)
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
 	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
-	dev, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev", ImageURI: "registry/order-api:v1", ImageDigest: "sha256:old"})
+	dev, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "registry/order-api:v1", ImageDigest: "sha256:old"})
 	if err != nil {
 		t.Fatalf("apply dev: %v", err)
 	}
-	testEnv, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_test", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_test", ImageURI: "registry/order-api:v1-test", ImageDigest: "sha256:test"})
+	testEnv, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_test", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "test", TargetClusters: targetClusters("test"), ImageURI: "registry/order-api:v1-test", ImageDigest: "sha256:test"})
 	if err != nil {
 		t.Fatalf("apply test: %v", err)
 	}
-	staging, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_staging", FreightID: "freight_2", ApplicationID: "app_1", EnvironmentID: "env_staging", ImageURI: "registry/order-api:v1-staging", ImageDigest: "sha256:staging"})
+	staging, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_staging", FreightID: "freight_2", ApplicationID: "app_1", StageKey: "staging", TargetClusters: targetClusters("staging"), ImageURI: "registry/order-api:v1-staging", ImageDigest: "sha256:staging"})
 	if err != nil {
 		t.Fatalf("apply staging: %v", err)
 	}
-	prod, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_2", ApplicationID: "app_1", EnvironmentID: "env_prod", ImageURI: "registry/order-api:v0", ImageDigest: "sha256:rollback", IsRollback: true})
+	prod, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_2", ApplicationID: "app_1", StageKey: "prod", TargetClusters: targetClusters("prod"), ImageURI: "registry/order-api:v0", ImageDigest: "sha256:rollback", IsRollback: true})
 	if err != nil {
 		t.Fatalf("apply prod: %v", err)
 	}
@@ -384,7 +359,7 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 		"argocd/apps/prod/order-api-prod.yaml",
 	} {
 		if manifest.Files[path] == "" {
-			t.Fatalf("argo application missing environment-scoped path %q: %#v", path, manifest.Files)
+			t.Fatalf("argo application missing stage-scoped path %q: %#v", path, manifest.Files)
 		}
 	}
 	if _, ok := manifest.Files["argocd/apps/dev/order-api-dev-binding_dev.yaml"]; ok {
@@ -418,7 +393,6 @@ func TestApplyPromotionCreatesDeploymentPerSelectedStageCluster(t *testing.T) {
 		PromotionID:   "promotion_dev_multi",
 		FreightID:     "freight_1",
 		ApplicationID: "app_1",
-		EnvironmentID: "env_dev",
 		StageKey:      "dev",
 		ImageURI:      "registry/order-api:v2",
 		ImageDigest:   "sha256:multi",
@@ -433,10 +407,30 @@ func TestApplyPromotionCreatesDeploymentPerSelectedStageCluster(t *testing.T) {
 		t.Fatalf("stage cluster promotion should commit once, result=%+v commits=%d", result, len(manifest.Commits))
 	}
 	if !strings.Contains(manifest.Files["apps/order-api/dev/values.yaml"], "sha256:multi") {
-		t.Fatalf("environment values file missing digest: %#v", manifest.Files)
+		t.Fatalf("stage values file missing digest: %#v", manifest.Files)
+	}
+	values := manifest.Files["apps/order-api/dev/values.yaml"]
+	for _, expected := range []string{
+		"stageKey: dev",
+		"applicationID: app_1",
+		"deploymentID: deployment_shanghai",
+	} {
+		if !strings.Contains(values, expected) {
+			t.Fatalf("stage values should contain %q:\n%s", expected, values)
+		}
 	}
 	if _, ok := manifest.Files["apps/order-api/dev/cluster_shanghai/values.yaml"]; ok {
-		t.Fatalf("environment bound to one cluster should not write cluster-specific values path: %#v", manifest.Files)
+		t.Fatalf("stage bound to one cluster should not write cluster-specific values path: %#v", manifest.Files)
+	}
+	argo := manifest.Files["argocd/apps/dev/order-api-dev.yaml"]
+	for _, expected := range []string{
+		"paas.shareinto.com/application-id: app_1",
+		"paas.shareinto.com/stage-key: dev",
+		"paas.shareinto.com/deployment-id: deployment_shanghai",
+	} {
+		if !strings.Contains(argo, expected) {
+			t.Fatalf("argo application should contain %q:\n%s", expected, argo)
+		}
 	}
 	page, err := svc.ListDeployments(context.Background(), "app_1", shared.PageRequest{Page: 1, PageSize: 10})
 	if err != nil {
@@ -444,6 +438,16 @@ func TestApplyPromotionCreatesDeploymentPerSelectedStageCluster(t *testing.T) {
 	}
 	if page.Total != 1 {
 		t.Fatalf("expected one deployment for selected stage cluster, got %+v", page)
+	}
+	if page.Items[0].StageKey != "dev" {
+		t.Fatalf("deployment should be associated by stage key, got %+v", page.Items[0])
+	}
+	revision, err := svc.repo.GetManifestRevision(context.Background(), "manifest_shanghai")
+	if err != nil {
+		t.Fatalf("GetManifestRevision() error = %v", err)
+	}
+	if revision.StageKey != "dev" {
+		t.Fatalf("manifest revision should be associated by stage key, got %+v", revision)
 	}
 }
 
@@ -459,7 +463,7 @@ func TestApplyPromotionRejectsMultipleTargetClusters(t *testing.T) {
 		PromotionID:   "promotion_dev_multi",
 		FreightID:     "freight_1",
 		ApplicationID: "app_1",
-		EnvironmentID: "env_dev",
+		StageKey:      "dev",
 		ImageURI:      "registry/order-api:v2",
 		TargetClusters: []delivery.GitOpsPromotionTargetCluster{
 			{ClusterID: "cluster_shanghai", ClusterName: "上海集群", Namespace: "order-dev"},
@@ -480,7 +484,7 @@ func TestApplyPromotionSelectsImageBundleVariantByTargetClusterLabels(t *testing
 	svc, manifest, _ := newTestService(t, ids)
 	svc.workloads = workloadQuery{workloads: map[shared.ID]WorkloadRef{
 		"workload_api": {ID: "workload_api", ApplicationID: "app_1", Name: "order-api", WorkloadType: "Deployment"},
-	}, configs: map[string]WorkloadEnvironmentConfigRef{}}
+	}, configs: map[string]WorkloadStageConfigRef{}}
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
 	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
 
@@ -488,7 +492,6 @@ func TestApplyPromotionSelectsImageBundleVariantByTargetClusterLabels(t *testing
 		PromotionID:    "promotion_bundle",
 		FreightID:      "freight_bundle",
 		ApplicationID:  "app_1",
-		EnvironmentID:  "env_dev",
 		StageKey:       "dev",
 		TargetClusters: []delivery.GitOpsPromotionTargetCluster{{ClusterID: "cluster_aliyun", ClusterName: "阿里云集群", Namespace: "order-dev", Labels: map[string]string{"cloud": "aliyun"}}},
 		Artifacts: []delivery.GitOpsArtifactSpec{{
@@ -522,7 +525,7 @@ func TestApplyPromotionRejectsImageBundleWithoutUniqueClusterMatch(t *testing.T)
 		PromotionID:   "promotion_bundle_missing",
 		FreightID:     "freight_bundle",
 		ApplicationID: "app_1",
-		EnvironmentID: "env_dev",
+		StageKey:      "dev",
 		TargetClusters: []delivery.GitOpsPromotionTargetCluster{
 			{ClusterID: "cluster_unknown", ClusterName: "未知集群", Namespace: "order-dev", Labels: map[string]string{"cloud": "tencent"}},
 		},
@@ -541,8 +544,8 @@ func TestApplyPromotionRejectsImageBundleWithoutUniqueClusterMatch(t *testing.T)
 
 type workloadQuery struct {
 	workloads      map[shared.ID]WorkloadRef
-	configs        map[string]WorkloadEnvironmentConfigRef
-	defaultConfigs map[shared.ID]WorkloadEnvironmentConfigRef
+	configs        map[string]WorkloadStageConfigRef
+	defaultConfigs map[shared.ID]WorkloadStageConfigRef
 }
 
 func (q workloadQuery) GetWorkload(_ context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error) {
@@ -553,18 +556,18 @@ func (q workloadQuery) GetWorkload(_ context.Context, applicationID shared.ID, w
 	return workload, nil
 }
 
-func (q workloadQuery) GetWorkloadEnvironmentConfig(_ context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfigRef, error) {
-	config, ok := q.configs[string(workloadID)+"|"+string(environmentID)]
+func (q workloadQuery) GetWorkloadStageConfig(_ context.Context, workloadID shared.ID, stageKey string) (WorkloadStageConfigRef, error) {
+	config, ok := q.configs[string(workloadID)+"|"+stageKey]
 	if !ok {
-		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload environment config not found")
+		return WorkloadStageConfigRef{}, shared.NewError(shared.CodeNotFound, "workload stage config not found")
 	}
 	return config, nil
 }
 
-func (q workloadQuery) GetWorkloadDefaultConfig(_ context.Context, workloadID shared.ID) (WorkloadEnvironmentConfigRef, error) {
+func (q workloadQuery) GetWorkloadDefaultConfig(_ context.Context, workloadID shared.ID) (WorkloadStageConfigRef, error) {
 	config, ok := q.defaultConfigs[workloadID]
 	if !ok {
-		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload default config not found")
+		return WorkloadStageConfigRef{}, shared.NewError(shared.CodeNotFound, "workload default config not found")
 	}
 	return config, nil
 }
@@ -579,8 +582,8 @@ func TestApplyPromotionFallsBackToWorkloadDefaultConfig(t *testing.T) {
 		workloads: map[shared.ID]WorkloadRef{
 			"workload_api": {ID: "workload_api", ApplicationID: "app_1", Name: "user-api", DisplayName: "用户 API", WorkloadType: "Deployment"},
 		},
-		configs: map[string]WorkloadEnvironmentConfigRef{},
-		defaultConfigs: map[shared.ID]WorkloadEnvironmentConfigRef{
+		configs: map[string]WorkloadStageConfigRef{},
+		defaultConfigs: map[shared.ID]WorkloadStageConfigRef{
 			"workload_api": {
 				Replicas:     2,
 				ServicePorts: []WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
@@ -594,7 +597,7 @@ func TestApplyPromotionFallsBackToWorkloadDefaultConfig(t *testing.T) {
 	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
 
 	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
-		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev",
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"),
 		Artifacts: []delivery.GitOpsArtifactSpec{{WorkloadID: "workload_api", URI: "registry/user-api:v2", Repository: "registry/user-api", Tag: "v2", Digest: "sha256:api", IsPrimary: true}},
 	})
 	if err != nil {
@@ -628,8 +631,8 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 			"workload_api":    {ID: "workload_api", ApplicationID: "app_1", Name: "user-api", DisplayName: "用户 API", WorkloadType: "Deployment"},
 			"workload_worker": {ID: "workload_worker", ApplicationID: "app_1", Name: "order-worker", DisplayName: "订单 Worker", WorkloadType: "StatefulSet"},
 		},
-		configs: map[string]WorkloadEnvironmentConfigRef{
-			"workload_api|env_dev": {
+		configs: map[string]WorkloadStageConfigRef{
+			"workload_api|dev": {
 				Replicas:         2,
 				ServicePorts:     []WorkloadServicePortRef{{Name: "http", Port: 8080, TargetPort: 8080, Protocol: "TCP"}},
 				ResourceRequests: WorkloadResourceListRef{CPU: "100m", Memory: "128Mi"},
@@ -649,7 +652,7 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
 
 	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
-		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev",
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"),
 		Artifacts: []delivery.GitOpsArtifactSpec{
 			{WorkloadID: "workload_api", URI: "registry/user-api:v2", Repository: "registry/user-api", Tag: "v2", Digest: "sha256:api", IsPrimary: true},
 			{WorkloadID: "workload_worker", URI: "registry/order-worker:v5", Repository: "registry/order-worker", Tag: "v5", Digest: "sha256:worker"},
@@ -701,7 +704,7 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 	}
 
 	_, err = svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
-		PromotionID: "promotion_rollback", FreightID: "freight_history", ApplicationID: "app_1", EnvironmentID: "env_dev", IsRollback: true,
+		PromotionID: "promotion_rollback", FreightID: "freight_history", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), IsRollback: true,
 		Artifacts: []delivery.GitOpsArtifactSpec{
 			{WorkloadID: "workload_api", URI: "registry/user-api:v1", Repository: "registry/user-api", Tag: "v1", Digest: "sha256:api-old", IsPrimary: true},
 			{WorkloadID: "workload_worker", URI: "registry/order-worker:v4", Repository: "registry/order-worker", Tag: "v4", Digest: "sha256:worker-old"},
@@ -726,13 +729,12 @@ func TestApplyPromotionRecordsFailedDeploymentWhenMergeRequestCreationFails(t *t
 	svc := NewService(Options{
 		Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom},
 		Application: appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}},
-		Environment: envQuery{envs: map[shared.ID]EnvironmentRef{"env_prod": {ID: "env_prod", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "prod"}}, bindings: map[shared.ID]ClusterBindingRef{"env_prod": {ID: "binding_prod", EnvironmentID: "env_prod", Namespace: "order-prod", Active: true}}},
 		IDGenerator: &staticIDs{ids: []shared.ID{"template_1", "revision_1", "template_2", "revision_2", "deployment_failed", "manifest_failed", "event_failed"}},
 		Clock:       fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
 	})
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers: []")
 	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
-	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_prod", ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "prod", TargetClusters: targetClusters("prod"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("expected MR error, got %v", err)
 	}
 	deployment, err := repo.FindDeploymentByPromotion(context.Background(), "promotion_prod")
@@ -757,13 +759,12 @@ func TestApplyPromotionRecordsFailedDeploymentWhenCommitFails(t *testing.T) {
 	svc := NewService(Options{
 		Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom},
 		Application: appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}},
-		Environment: envQuery{envs: map[shared.ID]EnvironmentRef{"env_dev": {ID: "env_dev", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "dev"}}, bindings: map[shared.ID]ClusterBindingRef{"env_dev": {ID: "binding_dev", EnvironmentID: "env_dev", Namespace: "order-dev", Active: true}}},
 		IDGenerator: &staticIDs{ids: []shared.ID{"template_1", "revision_1", "template_2", "revision_2", "deployment_failed", "manifest_failed", "event_failed"}},
 		Clock:       fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
 	})
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers: []")
 	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
-	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev", ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("expected commit error, got %v", err)
 	}
 	deployment, err := repo.FindDeploymentByPromotion(context.Background(), "promotion_dev")
@@ -819,7 +820,7 @@ func TestGitOpsHTTPHandlerCoversTemplateAndDeploymentAPIs(t *testing.T) {
 		t.Fatalf("validate status=%d body=%s", validate.Code, validate.Body.String())
 	}
 
-	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev", ImageURI: "registry/order-api:v1", ImageDigest: "sha256:1"}); err != nil {
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "registry/order-api:v1", ImageDigest: "sha256:1"}); err != nil {
 		t.Fatalf("apply promotion: %v", err)
 	}
 	deployment, err := svc.repo.FindDeploymentByPromotion(context.Background(), "promotion_dev")
@@ -1043,35 +1044,30 @@ func TestGitOpsServicePropagatesPromotionAndAgentUpdateErrors(t *testing.T) {
 	svc := NewService(Options{
 		Repository: repo, ManifestRepo: manifest,
 		Application: appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}},
-		Environment: envQuery{envs: map[shared.ID]EnvironmentRef{"env_dev": {ID: "env_dev", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "dev"}, "env_prod": {ID: "env_prod", TenantID: "tenant_1", ProjectID: "project_1", ApplicationID: "app_1", Name: "prod"}}, bindings: map[shared.ID]ClusterBindingRef{"env_dev": {ID: "binding_dev", EnvironmentID: "env_dev", Namespace: "order-dev", Active: true}, "env_prod": {ID: "binding_prod", EnvironmentID: "env_prod", Namespace: "order-prod", Active: true}}},
 		IDGenerator: &staticIDs{ids: []shared.ID{"template_1", "revision_1", "template_2", "revision_2", "deployment_1", "manifest_1", "event_1", "deployment_2", "manifest_2", "event_2", "deployment_event_update"}},
 		Clock:       fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)},
 	})
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers: []")
 	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
-	appErrSvc := NewService(Options{Repository: repo, ManifestRepo: manifest, Application: errAppQuery{err: errBoom}, Environment: svc.envs})
+	appErrSvc := NewService(Options{Repository: repo, ManifestRepo: manifest, Application: errAppQuery{err: errBoom}})
 	if _, err := appErrSvc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{ApplicationID: "app_1"}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("app query error should propagate, got %v", err)
 	}
-	envErrSvc := NewService(Options{Repository: repo, ManifestRepo: manifest, Application: svc.apps, Environment: errEnvQuery{err: errBoom}})
-	if _, err := envErrSvc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{ApplicationID: "app_1", EnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodeInternal {
-		t.Fatalf("env query error should propagate, got %v", err)
-	}
-	commitErrSvc := NewService(Options{Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom}, Application: svc.apps, Environment: svc.envs, IDGenerator: &staticIDs{ids: []shared.ID{"deployment_bad", "manifest_bad", "event_bad"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
-	if _, err := commitErrSvc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev", ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
+	commitErrSvc := NewService(Options{Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom}, Application: svc.apps, IDGenerator: &staticIDs{ids: []shared.ID{"deployment_bad", "manifest_bad", "event_bad"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
+	if _, err := commitErrSvc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("manifest commit error should propagate, got %v", err)
 	}
-	mrErrSvc := NewService(Options{Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom}, Application: svc.apps, Environment: svc.envs, IDGenerator: &staticIDs{ids: []shared.ID{"deployment_bad2", "manifest_bad2", "event_bad2"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
-	if _, err := mrErrSvc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_prod", ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
+	mrErrSvc := NewService(Options{Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom}, Application: svc.apps, IDGenerator: &staticIDs{ids: []shared.ID{"deployment_bad2", "manifest_bad2", "event_bad2"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
+	if _, err := mrErrSvc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "prod", TargetClusters: targetClusters("prod"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("manifest MR error should propagate, got %v", err)
 	}
 	repo.createDeploymentErr = errBoom
-	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev", ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("create deployment error should propagate, got %v", err)
 	}
 	repo.createDeploymentErr = nil
 	repo.createManifestRevisionErr = errBoom
-	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev2", FreightID: "freight_1", ApplicationID: "app_1", EnvironmentID: "env_dev", ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev2", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("create manifest revision error should propagate, got %v", err)
 	}
 	repo.createManifestRevisionErr = nil

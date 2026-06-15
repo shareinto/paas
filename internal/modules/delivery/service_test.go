@@ -82,23 +82,18 @@ func (q fakeWorkloadQuery) ListEnabledWorkloads(_ context.Context, appID shared.
 	return nil, shared.NewError(shared.CodeNotFound, "workloads not found")
 }
 
-type fakeEnvQuery struct{ envs map[shared.ID]EnvironmentRef }
+type fakeRuntimeStateQuery struct {
+	states map[string]StageRuntimeState
+}
 
-func (q fakeEnvQuery) ListEnvironments(_ context.Context, appID shared.ID) ([]EnvironmentRef, error) {
-	out := []EnvironmentRef{}
-	for _, env := range q.envs {
-		if env.ApplicationID == appID {
-			out = append(out, env)
+func (q fakeRuntimeStateQuery) ListStageRuntimeStates(_ context.Context, applicationID shared.ID) (map[string]StageRuntimeState, error) {
+	out := map[string]StageRuntimeState{}
+	for stageKey, state := range q.states {
+		if state.ApplicationID == applicationID {
+			out[stageKey] = state
 		}
 	}
 	return out, nil
-}
-func (q fakeEnvQuery) GetEnvironment(_ context.Context, id shared.ID) (EnvironmentRef, error) {
-	v, ok := q.envs[id]
-	if !ok {
-		return EnvironmentRef{}, shared.NewError(shared.CodeNotFound, "environment not found")
-	}
-	return v, nil
 }
 
 type fakeClusterQuery struct{ clusters map[shared.ID]ClusterRef }
@@ -111,12 +106,12 @@ func (q fakeClusterQuery) GetCluster(_ context.Context, id shared.ID) (ClusterRe
 	return v, nil
 }
 
-type recordingEnvironmentSync struct {
+type recordingStageSync struct {
 	calls []SyncApplicationStagesInput
 	err   error
 }
 
-func (s *recordingEnvironmentSync) SyncApplicationStages(_ context.Context, input SyncApplicationStagesInput) error {
+func (s *recordingStageSync) SyncApplicationStages(_ context.Context, input SyncApplicationStagesInput) error {
 	s.calls = append(s.calls, input)
 	if s.err != nil {
 		return s.err
@@ -165,13 +160,12 @@ func (p *recordingPublisher) Publish(_ context.Context, e shared.DomainEvent) er
 }
 
 type deliveryEnv struct {
-	svc      *Service
-	repo     Repository
-	gitops   *recordingGitOps
-	audit    *recordingAudit
-	events   *recordingPublisher
-	envQuery fakeEnvQuery
-	sync     *recordingEnvironmentSync
+	svc    *Service
+	repo   Repository
+	gitops *recordingGitOps
+	audit  *recordingAudit
+	events *recordingPublisher
+	sync   *recordingStageSync
 }
 
 func newTestRepository(t *testing.T) Repository {
@@ -189,14 +183,7 @@ func newDeliveryEnv(t *testing.T) deliveryEnv {
 	gitops := &recordingGitOps{}
 	audit := &recordingAudit{}
 	events := &recordingPublisher{}
-	sync := &recordingEnvironmentSync{}
-	envs := fakeEnvQuery{envs: map[shared.ID]EnvironmentRef{
-		"env_dev":     {ID: "env_dev", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "dev", Status: "deployable", BindingActive: true},
-		"env_test":    {ID: "env_test", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "test", Status: "deployable", BindingActive: true},
-		"env_staging": {ID: "env_staging", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "staging", Status: "deployable", BindingActive: true},
-		"env_prod":    {ID: "env_prod", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "prod", Status: "deployable", BindingActive: true},
-		"env_pending": {ID: "env_pending", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "qa", Status: "pending_cluster_binding", BindingActive: false},
-	}}
+	sync := &recordingStageSync{}
 	svc := NewService(Options{
 		Repository: repo,
 		BuildQuery: fakeBuildQuery{
@@ -205,16 +192,29 @@ func newDeliveryEnv(t *testing.T) deliveryEnv {
 		},
 		ApplicationQuery:  fakeAppQuery{apps: map[shared.ID]ApplicationRef{"app_user": {ID: "app_user", TenantID: "tenant_a", ProjectID: "project_payment", ProjectName: "payment", Name: "user-api"}}},
 		WorkloadQuery:     fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"}}}},
-		EnvironmentQuery:  envs,
 		GitOpsDeployment:  gitops,
-		EnvironmentSync:   sync,
+		StageSync:         sync,
 		PermissionChecker: &recordingPermission{},
 		Audit:             audit,
 		EventPublisher:    events,
 		IDGenerator:       testutil.NewFakeIDGenerator(1),
 		Clock:             testutil.NewFakeClock(time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC)),
 	})
-	return deliveryEnv{svc: svc, repo: repo, gitops: gitops, audit: audit, events: events, envQuery: envs, sync: sync}
+	for _, stageKey := range []string{"dev", "test", "staging", "prod", "qa"} {
+		if err := repo.ReplaceStageClusterBindings(context.Background(), "tenant_a", stageKey, []StageClusterBinding{{
+			ID:          shared.ID("binding_" + stageKey),
+			TenantID:    "tenant_a",
+			StageKey:    stageKey,
+			ClusterID:   shared.ID("cluster_" + stageKey),
+			ClusterName: stageKey + "-cluster",
+			Status:      StageClusterBindingActive,
+			CreatedAt:   time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC),
+			UpdatedAt:   time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC),
+		}}); err != nil {
+			t.Fatalf("seed stage cluster binding %s: %v", stageKey, err)
+		}
+	}
+	return deliveryEnv{svc: svc, repo: repo, gitops: gitops, audit: audit, events: events, sync: sync}
 }
 
 func actor(id shared.ID) identityaccess.Subject {
@@ -300,15 +300,15 @@ func seedFreight(t *testing.T, env deliveryEnv) Freight {
 	return freight
 }
 
-func promoteFreightThrough(t *testing.T, env deliveryEnv, freight Freight, environmentIDs ...shared.ID) {
+func promoteFreightThrough(t *testing.T, env deliveryEnv, freight Freight, stageKeys ...string) {
 	t.Helper()
-	for _, environmentID := range environmentIDs {
-		promotion, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: environmentID})
+	for _, stageKey := range stageKeys {
+		promotion, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: stageKey})
 		if err != nil {
-			t.Fatalf("CreatePromotion(%s) error = %v", environmentID, err)
+			t.Fatalf("CreatePromotion(%s) error = %v", stageKey, err)
 		}
 		if promotion.Status != PromotionManifestUpdated {
-			t.Fatalf("CreatePromotion(%s) status = %s, want %s", environmentID, promotion.Status, PromotionManifestUpdated)
+			t.Fatalf("CreatePromotion(%s) status = %s, want %s", stageKey, promotion.Status, PromotionManifestUpdated)
 		}
 	}
 }
@@ -380,7 +380,7 @@ func TestBuildSucceededCreatesImageBundleAndPromotionCarriesVariants(t *testing.
 	if err != nil {
 		t.Fatalf("CreateFreight() error = %v", err)
 	}
-	promotion, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	promotion, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"})
 	if err != nil || promotion.Status != PromotionManifestUpdated {
 		t.Fatalf("CreatePromotion() = %+v, %v", promotion, err)
 	}
@@ -510,7 +510,7 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 	if len(appStages) != 3 {
 		t.Fatalf("expected deleted stage to be absent, got %+v", appStages)
 	}
-	if appStages[0].StageKey != "dev" || appStages[0].ClusterPoolSize != 1 || appStages[0].BoundClusterID != "cluster_shanghai" || appStages[0].BoundClusterName != "上海集群" || appStages[0].DeliveryStageID.IsZero() || appStages[0].EnvironmentID != "env_dev" {
+	if appStages[0].StageKey != "dev" || appStages[0].ClusterPoolSize != 1 || appStages[0].BoundClusterID != "cluster_shanghai" || appStages[0].BoundClusterName != "上海集群" || !appStages[0].DeliveryStageID.IsZero() {
 		t.Fatalf("app stage should project tenant cluster pool: %+v", appStages[0])
 	}
 	if _, err := env.svc.ReplaceStageClusterBindings(ctx, ReplaceStageClusterBindingsInput{
@@ -522,6 +522,36 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 		},
 	}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("deleted stage should reject cluster bindings, got %v", err)
+	}
+}
+
+func TestListAppStagesIncludesRuntimeStatus(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	env.svc.runtimeStates = fakeRuntimeStateQuery{states: map[string]StageRuntimeState{
+		"dev": {
+			ApplicationID:  "app_user",
+			StageKey:       "dev",
+			SyncStatus:     "OutOfSync",
+			HealthStatus:   "Degraded",
+			OperationState: "running",
+			Message:        "Pod order-api-7d9 ImagePullBackOff",
+		},
+	}}
+
+	stages, err := env.svc.ListAppStages(ctx, "app_user")
+	if err != nil {
+		t.Fatalf("ListAppStages() error = %v", err)
+	}
+	var dev AppStage
+	for _, stage := range stages {
+		if stage.StageKey == "dev" {
+			dev = stage
+			break
+		}
+	}
+	if dev.SyncStatus != "OutOfSync" || dev.HealthStatus != "Degraded" || dev.OperationState != "running" || dev.RuntimeMessage != "Pod order-api-7d9 ImagePullBackOff" {
+		t.Fatalf("dev stage should include runtime status, got %+v", dev)
 	}
 }
 
@@ -559,7 +589,7 @@ func TestReplaceDeliveryFlowTemplateGraphValidatesDAGAndSyncsStages(t *testing.T
 		t.Fatalf("graph save should delete explicitly deleted stages, got %v", err)
 	}
 	if len(env.sync.calls) != 1 || env.sync.calls[0].TenantID != "tenant_a" || strings.Join(env.sync.calls[0].StageKeys, ",") != "dev,test,qa,prod" {
-		t.Fatalf("graph save should sync application environments, got %+v", env.sync.calls)
+		t.Fatalf("graph save should sync application stage projections, got %+v", env.sync.calls)
 	}
 
 	_, err = env.svc.ReplaceDeliveryFlowTemplateGraph(ctx, ReplaceDeliveryFlowTemplateGraphInput{
@@ -707,7 +737,6 @@ func TestReadableNotFoundMessagesForPromotionFlow(t *testing.T) {
 	}{
 		{name: "cluster", message: "cluster not found", want: "目标集群不存在或已被删除，请重新绑定 Stage 集群"},
 		{name: "application", message: "application not found", want: "应用不存在或已被删除"},
-		{name: "environment", message: "environment not found", want: "目标环境不存在或已被删除"},
 		{name: "workload", message: "workload not found", want: "工作负载不存在或已被删除"},
 		{name: "deployment template", message: "deployment template not found", want: "部署模板不存在，请先初始化应用部署模板"},
 		{name: "application template", message: "application template not found", want: "部署模板不存在，请先初始化应用部署模板"},
@@ -739,7 +768,7 @@ func TestCreatePromotionUsesTemplateApprovalRuleForAnyStage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveDeliveryFlowTemplateStage() error = %v", err)
 	}
-	promotion, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	promotion, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"})
 	if err != nil {
 		t.Fatalf("CreatePromotion() error = %v", err)
 	}
@@ -784,7 +813,7 @@ func TestFreightApprovalAndStageVerification(t *testing.T) {
 		t.Fatalf("verification without deployment record should fail, got %v", err)
 	}
 
-	promotion, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	promotion, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"})
 	if err != nil || promotion.Status != PromotionManifestUpdated {
 		t.Fatalf("CreatePromotion() error = %v promotion=%+v", err, promotion)
 	}
@@ -952,7 +981,7 @@ func TestEligibleFreightsAndPromotionValidateStageOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDeliveryStages() error = %v", err)
 	}
-	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_test"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "test"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("test stage should require dev first, got %v", err)
 	}
 	eligible, err := env.svc.ListEligibleFreights(context.Background(), "app_user", stages[0].ID)
@@ -963,7 +992,7 @@ func TestEligibleFreightsAndPromotionValidateStageOrder(t *testing.T) {
 	if err != nil || len(eligible) != 0 {
 		t.Fatalf("test should not be eligible before dev, got %+v %v", eligible, err)
 	}
-	promoteFreightThrough(t, env, freight, "env_dev")
+	promoteFreightThrough(t, env, freight, "dev")
 	eligible, err = env.svc.ListEligibleFreights(context.Background(), "app_user", stages[1].ID)
 	if err != nil || len(eligible) != 1 || eligible[0].ID != freight.ID {
 		t.Fatalf("test should be eligible after dev, got %+v %v", eligible, err)
@@ -974,8 +1003,6 @@ func TestEligibleFreightsUseDAGParentsAndRequiredVerification(t *testing.T) {
 	env := newDeliveryEnv(t)
 	ctx := context.Background()
 	freight := seedFreight(t, env)
-	env.envQuery.envs["env_qa"] = EnvironmentRef{ID: "env_qa", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "qa", Status: "deployable", BindingActive: true}
-
 	if _, err := env.svc.ReplaceDeliveryFlowTemplateGraph(ctx, ReplaceDeliveryFlowTemplateGraphInput{
 		Actor:    actor("usr_admin"),
 		TenantID: "tenant_a",
@@ -994,17 +1021,17 @@ func TestEligibleFreightsUseDAGParentsAndRequiredVerification(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ReplaceDeliveryFlowTemplateGraph() error = %v", err)
 	}
-	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("prod should require both DAG parents first, got %v", err)
 	}
-	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_qa")
-	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+	promoteFreightThrough(t, env, freight, "dev", "test", "qa")
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("prod should wait for test verification, got %v", err)
 	}
 	if _, err := env.svc.CompleteStageVerification(ctx, StageVerificationInput{Actor: actor("usr_ops"), ApplicationID: "app_user", StageKey: "test", FreightID: freight.ID, Status: StageVerificationPassed, Comment: "通过", SyncStatus: "Synced", HealthStatus: "Healthy", AgentStatus: "ready"}); err != nil {
 		t.Fatalf("CompleteStageVerification() error = %v", err)
 	}
-	prod, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
+	prod, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"})
 	if err != nil {
 		t.Fatalf("CreatePromotion(prod) should pass after both parents and verification: %v", err)
 	}
@@ -1013,40 +1040,36 @@ func TestEligibleFreightsUseDAGParentsAndRequiredVerification(t *testing.T) {
 	}
 }
 
-func TestFreightCreationContextIncludesRealDeliveryStages(t *testing.T) {
+func TestFreightCreationContextUsesStageProjectionKeys(t *testing.T) {
 	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
-	flow, err := env.repo.FindDeliveryFlowByApplication(context.Background(), "app_user")
+	appStages, err := env.svc.ListAppStages(context.Background(), "app_user")
 	if err != nil {
-		t.Fatalf("FindDeliveryFlowByApplication() error = %v", err)
-	}
-	stages, err := env.repo.ListDeliveryStages(context.Background(), flow.ID)
-	if err != nil {
-		t.Fatalf("ListDeliveryStages() error = %v", err)
+		t.Fatalf("ListAppStages() error = %v", err)
 	}
 
 	contextOut, err := env.svc.GetFreightCreationContext(context.Background(), "app_user")
 	if err != nil {
 		t.Fatalf("GetFreightCreationContext() error = %v", err)
 	}
-	if len(contextOut.Stages) != len(stages) {
-		t.Fatalf("context should include real delivery stages, got %+v want %+v", contextOut.Stages, stages)
+	if len(contextOut.Stages) != len(appStages) {
+		t.Fatalf("context should include stage projections, got %+v want %+v", contextOut.Stages, appStages)
 	}
-	for i, stage := range stages {
+	for i, stage := range appStages {
 		got := contextOut.Stages[i]
-		if got.ID != stage.ID || got.Name != stage.Name || got.EnvironmentID != stage.EnvironmentID || got.ApprovalRequired != stage.RequiresApproval {
+		if got.ID != shared.ID(stage.StageKey) || got.StageKey != stage.StageKey || got.Name != stage.DisplayName || got.ApprovalRequired != stage.RequiresApproval {
 			t.Fatalf("context stage[%d] = %+v, want %+v", i, got, stage)
 		}
 	}
-	if got := contextOut.StageEligibility[stages[0].ID]; len(got) != 1 || got[0] != freight.ID {
-		t.Fatalf("stage eligibility should use real stage id %s, got %+v", stages[0].ID, contextOut.StageEligibility)
+	if got := contextOut.StageEligibility["dev"]; len(got) != 1 || got[0] != freight.ID {
+		t.Fatalf("stage eligibility should use stage key, got %+v", contextOut.StageEligibility)
 	}
 }
 
 func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
 	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
-	dev, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	dev, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"})
 	if err != nil {
 		t.Fatalf("CreatePromotion(dev) error = %v", err)
 	}
@@ -1056,8 +1079,8 @@ func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
 	if got := env.gitops.specs[0].Artifacts; len(got) != 1 || got[0].WorkloadID != "workload_api" || got[0].Repository != "registry.example/paas/user-api" || got[0].Tag != "abcdef" || got[0].Digest != "sha256:abc" {
 		t.Fatalf("gitops artifact should include workload image fields, got %+v", got)
 	}
-	promoteFreightThrough(t, env, freight, "env_test", "env_staging")
-	prod, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
+	promoteFreightThrough(t, env, freight, "test", "staging")
+	prod, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"})
 	if err != nil {
 		t.Fatalf("CreatePromotion(prod) error = %v", err)
 	}
@@ -1088,26 +1111,41 @@ func edgePairs(edges []DeliveryFlowTemplateEdge) []string {
 func TestRejectAbortPendingEnvironmentRollbackAndGitOpsFailure(t *testing.T) {
 	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
-	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_pending"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("pending cluster binding should block promotion, got %v", err)
+	if err := env.repo.ReplaceStageClusterBindings(context.Background(), "tenant_a", "dev", nil); err != nil {
+		t.Fatalf("clear dev stage cluster binding: %v", err)
 	}
-	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_staging")
-	prod, _ := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
+	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("missing stage cluster binding should block promotion, got %v", err)
+	}
+	if err := env.repo.ReplaceStageClusterBindings(context.Background(), "tenant_a", "dev", []StageClusterBinding{{
+		ID:          "binding_dev",
+		TenantID:    "tenant_a",
+		StageKey:    "dev",
+		ClusterID:   "cluster_dev",
+		ClusterName: "dev-cluster",
+		Status:      StageClusterBindingActive,
+		CreatedAt:   time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC),
+		UpdatedAt:   time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC),
+	}}); err != nil {
+		t.Fatalf("restore dev stage cluster binding: %v", err)
+	}
+	promoteFreightThrough(t, env, freight, "dev", "test", "staging")
+	prod, _ := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"})
 	rejected, err := env.svc.RejectPromotion(context.Background(), ApprovalInput{Actor: actor("usr_ops"), PromotionID: prod.ID, Comment: "no"})
 	if err != nil || rejected.Status != PromotionRejected || rejected.CompletedAt == nil {
 		t.Fatalf("reject failed: %+v %v", rejected, err)
 	}
-	dev, _ := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_test"})
+	dev, _ := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "test"})
 	aborted, err := env.svc.AbortPromotion(context.Background(), actor("usr_dev"), dev.ID)
 	if err != nil || aborted.Status != PromotionAborted {
 		t.Fatalf("abort should mark non-terminal promotion aborted, got %+v %v", aborted, err)
 	}
-	rollback, err := env.svc.CreateRollbackPromotion(context.Background(), CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: freight.ID, CurrentFreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	rollback, err := env.svc.CreateRollbackPromotion(context.Background(), CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: freight.ID, CurrentFreightID: freight.ID, TargetStageKey: "dev"})
 	if err != nil || !rollback.IsRollback || rollback.Status != PromotionManifestUpdated {
 		t.Fatalf("rollback failed: %+v %v", rollback, err)
 	}
 	env.gitops.err = errors.New("gitops failed")
-	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"}); err == nil {
+	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"}); err == nil {
 		t.Fatalf("gitops failure should fail")
 	}
 }
@@ -1140,8 +1178,8 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	if len(contextOut.Stages) > 0 {
 		firstStageEligible = contextOut.StageEligibility[contextOut.Stages[0].ID]
 	}
-	if len(contextOut.Stages) != 4 || contextOut.Stages[0].ID.IsZero() || len(firstStageEligible) != 1 || firstStageEligible[0] != freight.ID {
-		t.Fatalf("creation context should include real stages and eligibility, got %+v", contextOut)
+	if len(contextOut.Stages) != 4 || contextOut.Stages[0].ID != "dev" || contextOut.Stages[0].StageKey != "dev" || len(firstStageEligible) != 1 || firstStageEligible[0] != freight.ID {
+		t.Fatalf("creation context should include stage projection keys and eligibility, got %+v", contextOut)
 	}
 	templateRec := serveJSON(mux, http.MethodGet, "/api/tenants/tenant_a/delivery-flow-template", nil)
 	assertStatus(t, templateRec, http.StatusOK)
@@ -1189,19 +1227,6 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	if len(appStagesOut.Items) != 4 || appStagesOut.Items[0].ClusterPoolSize != 1 {
 		t.Fatalf("GET app stages should include stage cluster pool, got %+v", appStagesOut)
 	}
-	deleteStageRec := serveJSON(mux, http.MethodDelete, "/api/tenants/tenant_a/delivery-flow-template/stages/staging", mustJSON(t, StageTemplateActionInput{Actor: actor("usr_admin")}))
-	assertStatus(t, deleteStageRec, http.StatusOK)
-	templateAfterDeleteRec := serveJSON(mux, http.MethodGet, "/api/tenants/tenant_a/delivery-flow-template", nil)
-	assertStatus(t, templateAfterDeleteRec, http.StatusOK)
-	var templateAfterDelete DeliveryFlowTemplate
-	if err := json.NewDecoder(templateAfterDeleteRec.Body).Decode(&templateAfterDelete); err != nil {
-		t.Fatalf("decode template after delete: %v", err)
-	}
-	for _, stage := range templateAfterDelete.Stages {
-		if stage.StageKey == "staging" {
-			t.Fatalf("DELETE stage should physically remove staging, got %+v", templateAfterDelete.Stages)
-		}
-	}
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights?page=1&page_size=5", nil), http.StatusOK)
 	detailRec := serveJSON(mux, http.MethodGet, "/api/freights/"+freight.ID.String(), nil)
 	assertStatus(t, detailRec, http.StatusOK)
@@ -1212,13 +1237,13 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	if detail.Freight.ID != freight.ID || len(detail.Items) != 1 || detail.Items[0].WorkloadID != "workload_api" || detail.Items[0].ImageRef == "" {
 		t.Fatalf("GET freight detail should include items, got %+v", detail)
 	}
-	promoBody, _ := json.Marshal(CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	promoBody, _ := json.Marshal(CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"})
 	promoRec := serveJSON(mux, http.MethodPost, "/api/promotions", promoBody)
 	assertStatus(t, promoRec, http.StatusCreated)
 	var promotion Promotion
 	_ = json.NewDecoder(promoRec.Body).Decode(&promotion)
 	stagePromotionBody := mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetClusterIDs: []shared.ID{"cluster_shanghai"}, NamespaceOverride: "order-dev"})
-	stagePromotionRec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/delivery/stages/"+appStagesOut.Items[0].DeliveryStageID.String()+"/promotions", stagePromotionBody)
+	stagePromotionRec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/delivery/stages/"+appStagesOut.Items[0].StageKey+"/promotions", stagePromotionBody)
 	assertStatus(t, stagePromotionRec, http.StatusCreated)
 	var stagePromotion Promotion
 	_ = json.NewDecoder(stagePromotionRec.Body).Decode(&stagePromotion)
@@ -1242,11 +1267,11 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 		Actor identityaccess.Subject `json:"actor"`
 	}{Actor: actor("usr_dev")})
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions/"+promotion.ID.String()+"/abort", abortBody), http.StatusOK)
-	rollbackBody, _ := json.Marshal(CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	rollbackBody, _ := json.Marshal(CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: freight.ID, TargetStageKey: "dev"})
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions/rollback", rollbackBody), http.StatusCreated)
-	prodBody, _ := json.Marshal(CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
-	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions", mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_test"})), http.StatusCreated)
-	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions", mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_staging"})), http.StatusCreated)
+	prodBody, _ := json.Marshal(CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"})
+	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions", mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "test"})), http.StatusCreated)
+	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions", mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "staging"})), http.StatusCreated)
 	prodRec := serveJSON(mux, http.MethodPost, "/api/promotions", prodBody)
 	assertStatus(t, prodRec, http.StatusCreated)
 	var prod Promotion
@@ -1258,6 +1283,19 @@ func TestHandlerFlowAndRepositoryBranches(t *testing.T) {
 	_ = json.NewDecoder(prodRec.Body).Decode(&prod)
 	rejectBody, _ := json.Marshal(ApprovalInput{Actor: actor("usr_ops"), Comment: "no"})
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions/"+prod.ID.String()+"/reject", rejectBody), http.StatusOK)
+	deleteStageRec := serveJSON(mux, http.MethodDelete, "/api/tenants/tenant_a/delivery-flow-template/stages/staging", mustJSON(t, StageTemplateActionInput{Actor: actor("usr_admin")}))
+	assertStatus(t, deleteStageRec, http.StatusOK)
+	templateAfterDeleteRec := serveJSON(mux, http.MethodGet, "/api/tenants/tenant_a/delivery-flow-template", nil)
+	assertStatus(t, templateAfterDeleteRec, http.StatusOK)
+	var templateAfterDelete DeliveryFlowTemplate
+	if err := json.NewDecoder(templateAfterDeleteRec.Body).Decode(&templateAfterDelete); err != nil {
+		t.Fatalf("decode template after delete: %v", err)
+	}
+	for _, stage := range templateAfterDelete.Stages {
+		if stage.StageKey == "staging" {
+			t.Fatalf("DELETE stage should physically remove staging, got %+v", templateAfterDelete.Stages)
+		}
+	}
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/promotions", []byte("{")), http.StatusBadRequest)
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/delivery/build-succeeded", []byte("{")), http.StatusBadRequest)
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/delivery/build-succeeded", []byte(`{}`)), http.StatusBadRequest)
@@ -1279,6 +1317,9 @@ func TestHandlerWritesReadablePromotionPreconditionError(t *testing.T) {
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
 	freight := seedFreight(t, env)
+	if err := env.repo.ReplaceStageClusterBindings(context.Background(), "tenant_a", "dev", nil); err != nil {
+		t.Fatalf("clear dev stage cluster binding: %v", err)
+	}
 
 	body := mustJSON(t, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID})
 	rec := serveJSON(mux, http.MethodPost, "/api/apps/app_user/delivery/stages/dev/promotions", body)
@@ -1345,11 +1386,6 @@ func TestFailureBranchesAndRepositoryContracts(t *testing.T) {
 		t.Fatalf("missing app query should fail while ensuring default flow, got %v", err)
 	}
 	env = newDeliveryEnv(t)
-	env.svc.envs = nil
-	if _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("missing env query should fail while ensuring default flow, got %v", err)
-	}
-	env = newDeliveryEnv(t)
 	if _, err := env.svc.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "other", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("ownership mismatch should fail, got %v", err)
 	}
@@ -1410,7 +1446,7 @@ func TestFailureBranchesAndRepositoryContracts(t *testing.T) {
 	if err := env.repo.CreateDeliveryStage(ctx, DeliveryStage{ID: "bad", DeliveryFlowID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("bad stage flow: %v", err)
 	}
-	if _, err := env.repo.FindDeliveryStageByEnvironment(ctx, "other", stages[0].EnvironmentID); shared.CodeOf(err) != shared.CodeNotFound {
+	if _, err := env.repo.FindDeliveryStageByName(ctx, "other", stages[0].Name); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("wrong app stage: %v", err)
 	}
 	if _, err := env.repo.ListDeliveryStages(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
@@ -1423,26 +1459,26 @@ func TestPromotionFailureBranches(t *testing.T) {
 	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
 	env.svc.permission = &recordingPermission{err: shared.NewError(shared.CodePermissionDenied, "denied")}
-	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodePermissionDenied {
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodePermissionDenied {
 		t.Fatalf("promotion permission should fail, got %v", err)
 	}
 	env = newDeliveryEnv(t)
 	freight = seedFreight(t, env)
-	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("missing env should fail, got %v", err)
 	}
 	env.gitops.err = errors.New("gitops failed")
-	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"}); err == nil {
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"}); err == nil {
 		t.Fatalf("gitops failure should fail")
 	}
 	env.svc.gitops = nil
-	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing gitops should fail, got %v", err)
 	}
 	env = newDeliveryEnv(t)
 	freight = seedFreight(t, env)
-	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_staging")
-	prod, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
+	promoteFreightThrough(t, env, freight, "dev", "test", "staging")
+	prod, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"})
 	if _, err := env.svc.RejectPromotion(ctx, ApprovalInput{Actor: actor("usr_dev"), PromotionID: prod.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("self reject should fail, got %v", err)
 	}
@@ -1452,7 +1488,7 @@ func TestPromotionFailureBranches(t *testing.T) {
 	if _, err := env.svc.RejectPromotion(ctx, ApprovalInput{Actor: actor("usr_ops"), PromotionID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("missing reject should fail, got %v", err)
 	}
-	dev, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_dev"})
+	dev, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"})
 	if _, err := env.svc.ApprovePromotion(ctx, ApprovalInput{Actor: actor("usr_ops"), PromotionID: dev.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("approve non-pending should fail, got %v", err)
 	}
@@ -1462,7 +1498,7 @@ func TestPromotionFailureBranches(t *testing.T) {
 	if _, err := env.svc.AbortPromotion(ctx, identityaccess.Subject{}, prod.ID); shared.CodeOf(err) != shared.CodeUnauthenticated {
 		t.Fatalf("abort missing actor should fail, got %v", err)
 	}
-	if _, err := env.svc.CreateRollbackPromotion(ctx, CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: "missing", TargetEnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodeNotFound {
+	if _, err := env.svc.CreateRollbackPromotion(ctx, CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: "missing", TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("rollback missing freight should fail, got %v", err)
 	}
 }
@@ -1475,8 +1511,8 @@ func TestMoreRepositoryAndDefaultBranches(t *testing.T) {
 	}
 	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
-	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_staging")
-	promo, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
+	promoteFreightThrough(t, env, freight, "dev", "test", "staging")
+	promo, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"})
 	if err := env.repo.CreatePromotion(ctx, promo); shared.CodeOf(err) != shared.CodeConflict {
 		t.Fatalf("duplicate promotion should conflict, got %v", err)
 	}
@@ -1510,9 +1546,6 @@ func TestMoreRepositoryAndDefaultBranches(t *testing.T) {
 	if _, err := (failingBuildQuery{}).GetBuildArtifact(ctx, "x"); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("failing build artifact query should fail, got %v", err)
 	}
-	if _, err := (failingEnvQuery{}).GetEnvironment(ctx, "x"); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("failing env get should fail, got %v", err)
-	}
 	if releaseVersion("", "run_1") != "build-run_1" {
 		t.Fatalf("releaseVersion fallback mismatch")
 	}
@@ -1533,14 +1566,14 @@ func TestRemainingServiceBranches(t *testing.T) {
 	}
 	env = newDeliveryEnv(t)
 	freight := seedFreight(t, env)
-	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: identityaccess.Subject{}, FreightID: freight.ID, TargetEnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodeUnauthenticated {
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: identityaccess.Subject{}, FreightID: freight.ID, TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodeUnauthenticated {
 		t.Fatalf("promotion missing actor should fail, got %v", err)
 	}
-	if _, err := env.svc.CreateRollbackPromotion(ctx, CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: freight.ID, CurrentFreightID: "missing", TargetEnvironmentID: "env_dev"}); shared.CodeOf(err) != shared.CodeNotFound {
+	if _, err := env.svc.CreateRollbackPromotion(ctx, CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: freight.ID, CurrentFreightID: "missing", TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("rollback missing current freight should fail, got %v", err)
 	}
-	promoteFreightThrough(t, env, freight, "env_dev", "env_test", "env_staging")
-	prod, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetEnvironmentID: "env_prod"})
+	promoteFreightThrough(t, env, freight, "dev", "test", "staging")
+	prod, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"})
 	env.svc.permission = &recordingPermission{err: shared.NewError(shared.CodePermissionDenied, "denied")}
 	if _, err := env.svc.ApprovePromotion(ctx, ApprovalInput{Actor: actor("usr_ops"), PromotionID: prod.ID}); shared.CodeOf(err) != shared.CodePermissionDenied {
 		t.Fatalf("approve permission denied should fail, got %v", err)

@@ -92,16 +92,16 @@ ORDER BY version DESC, created_at DESC, id DESC LIMIT 1`, templateID))
 
 func (r *MySQLRepository) CreateManifestRevision(ctx context.Context, revision ManifestRevision) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO manifest_revisions (id, deployment_id, promotion_id, application_id, environment_id, template_revision_id, path, commit_sha, merge_request_id, change_type, created_at)
+INSERT INTO manifest_revisions (id, deployment_id, promotion_id, application_id, stage_key, template_revision_id, path, commit_sha, merge_request_id, change_type, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		revision.ID, revision.DeploymentID, revision.PromotionID, revision.ApplicationID, revision.EnvironmentID,
+		revision.ID, revision.DeploymentID, revision.PromotionID, revision.ApplicationID, revision.StageKey,
 		revision.TemplateRevisionID, revision.Path, revision.CommitSHA, revision.MergeRequestID, revision.ChangeType, mysqlTime(revision.CreatedAt))
 	return database.ConflictOrUnavailable(err, "manifest revision already exists", "create manifest revision failed")
 }
 
 func (r *MySQLRepository) GetManifestRevision(ctx context.Context, id shared.ID) (ManifestRevision, error) {
 	revision, err := scanManifestRevision(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
-SELECT id, deployment_id, promotion_id, application_id, environment_id, template_revision_id, path, commit_sha, merge_request_id, change_type, created_at
+SELECT id, deployment_id, promotion_id, application_id, stage_key, template_revision_id, path, commit_sha, merge_request_id, change_type, created_at
 FROM manifest_revisions WHERE id = ?`, id))
 	if err != nil {
 		return ManifestRevision{}, database.NotFound(err, "manifest revision not found")
@@ -112,11 +112,11 @@ FROM manifest_revisions WHERE id = ?`, id))
 func (r *MySQLRepository) CreateDeployment(ctx context.Context, deployment Deployment) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO deployments (
-  id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
+  id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
   freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
   created_at, updated_at, completed_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		deployment.ID, deployment.TenantID, deployment.ProjectID, deployment.ApplicationID, deployment.EnvironmentID,
+		deployment.ID, deployment.TenantID, deployment.ProjectID, deployment.ApplicationID, deployment.StageKey,
 		deployment.ClusterBindingID, deployment.PromotionID, deployment.FreightID, deployment.ManifestRevisionID,
 		deployment.ImageRepository, deployment.ImageTag, deployment.ImageDigest, deployment.WorkloadSummary, deployment.Status, deployment.Message,
 		mysqlTime(deployment.CreatedAt), mysqlTime(deployment.UpdatedAt), mysqlTimePtr(deployment.CompletedAt))
@@ -139,7 +139,7 @@ WHERE id = ?`,
 
 func (r *MySQLRepository) GetDeployment(ctx context.Context, id shared.ID) (Deployment, error) {
 	deployment, err := scanDeployment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
-SELECT id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
+SELECT id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
        freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
        created_at, updated_at, completed_at
 FROM deployments WHERE id = ?`, id))
@@ -151,7 +151,7 @@ FROM deployments WHERE id = ?`, id))
 
 func (r *MySQLRepository) FindDeploymentByPromotion(ctx context.Context, promotionID shared.ID) (Deployment, error) {
 	deployment, err := scanDeployment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
-SELECT id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
+SELECT id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
        freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
        created_at, updated_at, completed_at
 FROM deployments WHERE promotion_id = ?`, promotionID))
@@ -168,7 +168,7 @@ func (r *MySQLRepository) ListDeployments(ctx context.Context, applicationID sha
 	}
 	page, limit, offset := database.LimitOffset(page)
 	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
-SELECT id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
+SELECT id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
        freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
        created_at, updated_at, completed_at
 FROM deployments
@@ -218,13 +218,13 @@ func scanTemplateRevision(scanner gitopsScanner) (DeploymentTemplateRevision, er
 
 func scanManifestRevision(scanner gitopsScanner) (ManifestRevision, error) {
 	var revision ManifestRevision
-	err := scanner.Scan(&revision.ID, &revision.DeploymentID, &revision.PromotionID, &revision.ApplicationID, &revision.EnvironmentID, &revision.TemplateRevisionID, &revision.Path, &revision.CommitSHA, &revision.MergeRequestID, &revision.ChangeType, &revision.CreatedAt)
+	err := scanner.Scan(&revision.ID, &revision.DeploymentID, &revision.PromotionID, &revision.ApplicationID, &revision.StageKey, &revision.TemplateRevisionID, &revision.Path, &revision.CommitSHA, &revision.MergeRequestID, &revision.ChangeType, &revision.CreatedAt)
 	return revision, err
 }
 
 func scanDeployment(scanner gitopsScanner) (Deployment, error) {
 	var deployment Deployment
-	err := scanner.Scan(&deployment.ID, &deployment.TenantID, &deployment.ProjectID, &deployment.ApplicationID, &deployment.EnvironmentID, &deployment.ClusterBindingID, &deployment.PromotionID, &deployment.FreightID, &deployment.ManifestRevisionID, &deployment.ImageRepository, &deployment.ImageTag, &deployment.ImageDigest, &deployment.WorkloadSummary, &deployment.Status, &deployment.Message, &deployment.CreatedAt, &deployment.UpdatedAt, &deployment.CompletedAt)
+	err := scanner.Scan(&deployment.ID, &deployment.TenantID, &deployment.ProjectID, &deployment.ApplicationID, &deployment.StageKey, &deployment.ClusterBindingID, &deployment.PromotionID, &deployment.FreightID, &deployment.ManifestRevisionID, &deployment.ImageRepository, &deployment.ImageTag, &deployment.ImageDigest, &deployment.WorkloadSummary, &deployment.Status, &deployment.Message, &deployment.CreatedAt, &deployment.UpdatedAt, &deployment.CompletedAt)
 	return deployment, err
 }
 

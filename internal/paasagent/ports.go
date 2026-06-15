@@ -19,4 +19,5 @@ type KubernetesReader interface {
 	Watch(ctx context.Context, namespaces []string, onChange func()) error
 	RefreshArgoApplication(ctx context.Context, name string) error
 	SyncArgoApplication(ctx context.Context, name string) error
+	RestartRuntimeResource(ctx context.Context, kind string, namespace string, name string) error
 }

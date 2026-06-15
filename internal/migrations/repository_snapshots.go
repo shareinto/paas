@@ -65,7 +65,7 @@ SET payload = JSON_SET(payload,
       FROM JSON_TABLE(JSON_EXTRACT(payload, '$.Sources'), '$[*]' COLUMNS (item JSON PATH '$')) app_sources
     ), JSON_ARRAY())),
     updated_at = UTC_TIMESTAMP(6)
-WHERE module = 'application-environment' AND JSON_CONTAINS_PATH(payload, 'one', '$.Sources');
+WHERE module = 'application-workload' AND JSON_CONTAINS_PATH(payload, 'one', '$.Sources');
 
 UPDATE repository_snapshots
 SET payload = JSON_SET(payload,
@@ -84,7 +84,7 @@ SET payload = JSON_SET(payload,
       )
       FROM JSON_TABLE(JSON_EXTRACT(payload, '$.Applications'), '$[*]' COLUMNS (app_item JSON PATH '$')) apps
     ), JSON_ARRAY()))
-WHERE module = 'application-environment' AND JSON_CONTAINS_PATH(payload, 'one', '$.Applications');
+WHERE module = 'application-workload' AND JSON_CONTAINS_PATH(payload, 'one', '$.Applications');
 `,
 		Down: `SELECT 1;`,
 	},

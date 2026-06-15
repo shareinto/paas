@@ -4,7 +4,7 @@
 
 **Goal:** 将 Application 调整为业务交付上下文，引入动态 Workload，并支持用户手动创建覆盖全部 Workload 的 Freight，再以类 Kargo 方式在 Stage 中发布。
 
-**Architecture:** `application-environment` 拥有 Workload 与环境部署配置，`build` 继续只产出 BuildArtifact，`release-delivery` 生成 Workload Release 候选并负责手动 Freight 与 Promotion，`gitops-deployment` 按 FreightItem 写入各 Workload 的环境 values。Web Console 以 `应用 Workload` 和 `发布晋级` 作为主要入口，创建 Workload、部署配置、创建 Freight 均使用弹窗或抽屉。
+**Architecture:** `application-workload` 拥有 Workload 与环境部署配置，`build` 继续只产出 BuildArtifact，`release-delivery` 生成 Workload Release 候选并负责手动 Freight 与 Promotion，`gitops-deployment` 按 FreightItem 写入各 Workload 的环境 values。Web Console 以 `应用 Workload` 和 `发布晋级` 作为主要入口，创建 Workload、部署配置、创建 Freight 均使用弹窗或抽屉。
 
 **Tech Stack:** Go、MySQL、React、TypeScript、Vite、Ant Design、TanStack Query、GitLab、Jenkins、Argo CD。
 
@@ -20,7 +20,7 @@
 - Workload 可以选择流水线产物，也可以输入自定义镜像。
 - 创建 Freight 时必须包含该 Application 下所有启用 Workload，不能漏选，不能重复。
 - FreightItem 表示一个 Workload 的一个镜像版本。
-- Freight 在所有 Stage 中流转，dev/prod 等环境差异由 WorkloadEnvironmentConfig 或环境 values 表达。
+- Freight 在所有 Stage 中流转，dev/prod 等环境差异由 WorkloadStageConfig 或环境 values 表达。
 - 用户在发布晋级页从 Stage 发起发布，点击发布后可发布 Freight 点亮，用户选择 Freight 后创建 Promotion。
 
 不纳入本计划：
@@ -62,7 +62,7 @@ updated_at
 - `enabled` Workload 必须进入新 Freight。
 - `disabled` 或 `deleted` Workload 不进入新 Freight。
 
-### 2.3 WorkloadEnvironmentConfig
+### 2.3 WorkloadStageConfig
 
 建议字段：
 
@@ -70,7 +70,7 @@ updated_at
 id
 app_id
 workload_id
-env_id
+stage_key
 replicas
 service_ports_json
 resource_requests_json
@@ -91,7 +91,7 @@ updated_at
 规则：
 
 - 环境变量、域名、配置文件、可写目录等 dev/prod 差异保存在这里或生成后的环境 values 中。
-- Freight 不保存这些环境差异。
+- Freight 不保存这些 Stage差异。
 - 配置变更必须审计。
 
 ### 2.4 Release
@@ -181,8 +181,8 @@ DELETE /api/v1/applications/{app_id}/workloads/{workload_id}
 ### 3.2 Workload 环境配置 API
 
 ```text
-GET /api/v1/applications/{app_id}/workloads/{workload_id}/environment-configs
-PUT /api/v1/applications/{app_id}/workloads/{workload_id}/environment-configs/{env_id}
+GET /api/v1/applications/{app_id}/workloads/{workload_id}/stage-configs
+PUT /api/v1/applications/{app_id}/workloads/{workload_id}/stage-configs/{stage_key}
 ```
 
 ### 3.3 Release 候选 API
@@ -227,7 +227,7 @@ POST /api/v1/applications/{app_id}/delivery/stages/{stage_id}/promotions
 - Modify: release、freight、artifact 相关 repository。
 
 - [ ] 新增 `workloads` 表。
-- [ ] 新增 `workload_environment_configs` 表。
+- [ ] 新增 `workload_stage_configs` 表。
 - [ ] 为 `application_sources` 或构建配置补充 `workload_id`。
 - [ ] 为 `build_artifacts` 补充 `workload_id`。
 - [ ] 为 `releases` 补充 `workload_id` 和镜像字段。
@@ -236,13 +236,13 @@ POST /api/v1/applications/{app_id}/delivery/stages/{stage_id}/promotions
 - [ ] 增加查询索引：`app_id + workload_id`、`workload_id + created_at`。
 - [ ] 编写迁移测试或 repository 集成测试。
 
-### Task 2: application-environment 模块
+### Task 2: application-workload 模块
 
 **Files:**
-- Modify: `application-environment` domain、service、repository、api。
+- Modify: `application-workload` domain、service、repository、api。
 
 - [ ] 新增 Workload domain 和状态枚举。
-- [ ] 新增 WorkloadEnvironmentConfig domain。
+- [ ] 新增 WorkloadStageConfig domain。
 - [ ] 实现 Workload 创建、编辑、启用、禁用、删除。
 - [ ] 校验同一 Application 下 Workload 名称唯一。
 - [ ] 校验 Workload 类型只允许 Deployment 或 StatefulSet。
@@ -286,7 +286,7 @@ POST /api/v1/applications/{app_id}/delivery/stages/{stage_id}/promotions
 - Modify: `gitops-deployment` deployment template、values writer、manifest revision。
 
 - [ ] 定义单 Workload 标准 Helm chart values 结构。
-- [ ] 将 WorkloadEnvironmentConfig 渲染为环境 values。
+- [ ] 将 WorkloadStageConfig 渲染为环境 values。
 - [ ] Promotion 部署时遍历 FreightItem，分别更新各 Workload values 的 image 字段。
 - [ ] Deployment 记录关联 Promotion、Freight 和 Workload 变更摘要。
 - [ ] 回滚时从历史 FreightItem 写回各 Workload 镜像版本。
@@ -320,7 +320,7 @@ POST /api/v1/applications/{app_id}/delivery/stages/{stage_id}/promotions
 **Files:**
 - Modify/Create: Workload list、Workload drawer、deployment config drawer。
 
-- [ ] Workload 列表展示名称、类型、镜像来源、最近 Release、各环境状态。
+- [ ] Workload 列表展示名称、类型、镜像来源、最近 Release、各 Stage 状态。
 - [ ] `创建 Workload` 按钮打开抽屉或弹窗。
 - [ ] Workload 表单支持 Deployment/StatefulSet 切换。
 - [ ] Workload 表单支持流水线产物来源和自定义镜像来源。

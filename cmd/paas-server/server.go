@@ -145,7 +145,6 @@ func newApplication(ctx context.Context) (*application, error) {
 		RuntimeEnvironmentQuery:  runtimeEnvironmentForAppEnv{repo: buildRepo},
 		BuildPipelineProvisioner: buildSvc,
 		BuildPipelineQuery:       buildPipelineForAppEnv{service: buildSvc},
-		ClusterQuery:             clusterForAppEnv{repo: repos.cluster},
 		Audit:                    audit.ApplicationEnvironmentLogger{Logger: auditSvc},
 		IDGenerator:              ids,
 		Clock:                    clock,
@@ -167,13 +166,13 @@ func newApplication(ctx context.Context) (*application, error) {
 		ChartName:       firstNonEmpty(os.Getenv("PAAS_PLATFORM_CHART_NAME"), "paas-app"),
 		ChartVersion:    firstNonEmpty(os.Getenv("PAAS_PLATFORM_CHART_VERSION"), "0.1.0"),
 		Application:     appForGitOps{service: appSvc},
-		Environment:     envForGitOps{service: appSvc, repo: appRepo},
 		Workload:        workloadForGitOps{service: appSvc},
 		Audit:           audit.GitOpsLogger{Logger: auditSvc},
 		IDGenerator:     ids,
 		Clock:           clock,
 	})
-	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc, projects: tenantSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, EnvironmentQuery: envForDelivery{service: appSvc, repo: appRepo}, EnvironmentSync: envSyncForDelivery{service: appSvc}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	stageRuntimeDelivery := stageRuntimeForDelivery{service: appSvc}
+	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc, projects: tenantSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, StageRuntimeStateQuery: stageRuntimeDelivery, StageSync: stageSyncForDelivery{service: appSvc}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 	buildEvents.delivery = deliverySvc
 	if err := buildSvc.EnsureDefaultJenkinsJobTemplate(ctx, "usr_admin"); err != nil {
 		return nil, err
@@ -183,7 +182,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	}
 
 	clusterRepo := repos.cluster
-	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, TenantQuery: tenantForClusterAgent{service: tenantSvc}, PermissionChecker: identitySvc, EnvironmentState: envUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, TenantQuery: tenantForClusterAgent{service: tenantSvc}, PermissionChecker: identitySvc, StageState: stageUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	notificationSvc := notification.NewService(notification.Options{Repository: repos.notification, IDGenerator: ids, Clock: clock})
 	if err := notificationSvc.EnsureDefaults(ctx); err != nil {
@@ -399,7 +398,7 @@ func (api developmentAPI) metricsSnapshot(ctx context.Context) map[string]int64 
 		"paas_build_runs_total":   0,
 		"paas_freights_total":     0,
 		"paas_audit_logs_total":   0,
-		"paas_environment_states": 0,
+		"paas_stage_states":       0,
 		"paas_ready":              1,
 	}
 	for _, project := range api.allProjects(ctx) {
@@ -423,11 +422,11 @@ func (api developmentAPI) metricsSnapshot(ctx context.Context) map[string]int64 
 			} else {
 				out["paas_freights_total"] += int64(len(freights.Items))
 			}
-			states, err := api.apps.ListEnvironmentStates(ctx, app.ID)
+			states, err := api.apps.ListApplicationStageStates(ctx, app.ID)
 			if err != nil {
 				out["paas_ready"] = 0
 			} else {
-				out["paas_environment_states"] += int64(len(states))
+				out["paas_stage_states"] += int64(len(states))
 			}
 		}
 	}
@@ -492,16 +491,16 @@ func (api developmentAPI) listProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 type applicationRow struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Display   string `json:"displayName"`
-	Project   string `json:"project"`
-	Type      string `json:"type"`
-	EnvStatus string `json:"envStatus"`
-	Build     string `json:"build"`
-	Release   string `json:"release"`
-	Owner     string `json:"owner"`
-	UpdatedAt string `json:"updatedAt"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Display     string `json:"displayName"`
+	Project     string `json:"project"`
+	Type        string `json:"type"`
+	StageStatus string `json:"stageStatus"`
+	Build       string `json:"build"`
+	Release     string `json:"release"`
+	Owner       string `json:"owner"`
+	UpdatedAt   string `json:"updatedAt"`
 }
 
 func (api developmentAPI) listApplications(w http.ResponseWriter, r *http.Request) {
@@ -515,7 +514,7 @@ func (api developmentAPI) listApplications(w http.ResponseWriter, r *http.Reques
 		}
 		for _, app := range apps.Items {
 			source, _ := api.apps.GetApplicationSource(r.Context(), app.ID)
-			rows = append(rows, applicationRow{ID: app.ID.String(), Name: app.Name, Display: app.DisplayName, Project: project.DisplayName, Type: applicationType(source.BuildSpec), EnvStatus: api.environmentSummary(r.Context(), app.ID), Build: api.latestBuildSummary(r.Context(), app.ID), Release: api.latestFreightSummary(r.Context(), app.ID), Owner: "平台管理员", UpdatedAt: formatLocal(app.UpdatedAt)})
+			rows = append(rows, applicationRow{ID: app.ID.String(), Name: app.Name, Display: app.DisplayName, Project: project.DisplayName, Type: applicationType(source.BuildSpec), StageStatus: api.stageSummary(r.Context(), app.ID), Build: api.latestBuildSummary(r.Context(), app.ID), Release: api.latestFreightSummary(r.Context(), app.ID), Owner: "平台管理员", UpdatedAt: formatLocal(app.UpdatedAt)})
 		}
 	}
 	writeDevelopmentJSON(w, http.StatusOK, shared.NewPageResult(rows, int64(len(rows)), pageFromRequest(r)))
@@ -583,13 +582,13 @@ func (api developmentAPI) allProjects(ctx context.Context) []tenantproject.Proje
 	return out
 }
 
-func (api developmentAPI) environmentSummary(ctx context.Context, applicationID shared.ID) string {
-	states, err := api.apps.ListEnvironmentStates(ctx, applicationID)
+func (api developmentAPI) stageSummary(ctx context.Context, applicationID shared.ID) string {
+	states, err := api.apps.ListApplicationStageStates(ctx, applicationID)
 	if err != nil {
 		return "未知"
 	}
 	for _, state := range states {
-		if state.Status == appenv.EnvironmentStatusRunning {
+		if state.Status == appenv.ApplicationStageStatusRunning {
 			return "运行中"
 		}
 	}
@@ -800,16 +799,6 @@ func toAppenvRuntimeEnvironmentRef(environment build.RuntimeEnvironment) appenv.
 	return appenv.RuntimeEnvironmentRef{ID: environment.ID, Name: environment.Name, Status: string(environment.Status), RuntimeBaseImage: environment.RuntimeBaseImage, ArtifactDeployPath: environment.ArtifactDeployPath, DockerfilePath: environment.DockerfilePath, SelectorLabels: environment.SelectorLabels}
 }
 
-type clusterForAppEnv struct{ repo clusteragent.Repository }
-
-func (q clusterForAppEnv) GetCluster(ctx context.Context, id shared.ID) (appenv.ClusterRef, error) {
-	cluster, err := q.repo.GetCluster(ctx, id)
-	if err != nil {
-		return appenv.ClusterRef{}, err
-	}
-	return appenv.ClusterRef{ID: cluster.ID, TenantID: cluster.TenantID, Name: cluster.Name, Status: string(cluster.Status)}, nil
-}
-
 type clusterForDelivery struct{ repo clusteragent.Repository }
 
 func (q clusterForDelivery) GetCluster(ctx context.Context, id shared.ID) (delivery.ClusterRef, error) {
@@ -861,41 +850,43 @@ func (q appForDelivery) GetApplication(ctx context.Context, id shared.ID) (deliv
 	return ref, nil
 }
 
-type envForDelivery struct {
-	service *appenv.Service
-	repo    appenv.Repository
+type stageRuntimeForDelivery struct{ service *appenv.Service }
+
+type stageSyncForDelivery struct{ service *appenv.Service }
+
+func (s stageSyncForDelivery) SyncApplicationStages(ctx context.Context, input delivery.SyncApplicationStagesInput) error {
+	return nil
 }
 
-type envSyncForDelivery struct{ service *appenv.Service }
-
-func (s envSyncForDelivery) SyncApplicationStages(ctx context.Context, input delivery.SyncApplicationStagesInput) error {
-	return s.service.SyncApplicationStageEnvironments(ctx, input.TenantID, input.StageKeys)
-}
-
-func (q envForDelivery) ListEnvironments(ctx context.Context, applicationID shared.ID) ([]delivery.EnvironmentRef, error) {
-	envs, err := q.service.ListEnvironments(ctx, applicationID)
+func (q stageRuntimeForDelivery) ListStageRuntimeStates(ctx context.Context, applicationID shared.ID) (map[string]delivery.StageRuntimeState, error) {
+	states, err := q.service.ListApplicationStageStates(ctx, applicationID)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]delivery.EnvironmentRef, 0, len(envs))
-	for _, env := range envs {
-		ref, err := q.GetEnvironment(ctx, env.ID)
-		if err != nil {
-			return nil, err
+	out := make(map[string]delivery.StageRuntimeState, len(states))
+	for _, state := range states {
+		runtimeState := delivery.StageRuntimeState{
+			ApplicationID: state.ApplicationID,
+			StageKey:      state.StageKey,
+			Message:       state.Message,
 		}
-		out = append(out, ref)
+		switch state.Status {
+		case appenv.ApplicationStageStatusRunning:
+			runtimeState.SyncStatus = "Synced"
+			runtimeState.HealthStatus = "Healthy"
+			runtimeState.OperationState = "succeeded"
+		case appenv.ApplicationStageStatusDegraded:
+			runtimeState.SyncStatus = "OutOfSync"
+			runtimeState.HealthStatus = "Degraded"
+			runtimeState.OperationState = "failed"
+		case appenv.ApplicationStageStatusDeploying:
+			runtimeState.SyncStatus = "OutOfSync"
+			runtimeState.HealthStatus = "Progressing"
+			runtimeState.OperationState = "running"
+		}
+		out[state.StageKey] = runtimeState
 	}
 	return out, nil
-}
-
-func (q envForDelivery) GetEnvironment(ctx context.Context, id shared.ID) (delivery.EnvironmentRef, error) {
-	env, err := q.service.GetEnvironment(ctx, id)
-	if err != nil {
-		return delivery.EnvironmentRef{}, err
-	}
-	state, _ := q.service.GetEnvironmentState(ctx, id)
-	_, bindingErr := q.repo.GetEnvironmentClusterBinding(ctx, id)
-	return delivery.EnvironmentRef{ID: env.ID, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, Name: env.Name, Status: string(state.Status), BindingActive: bindingErr == nil}, nil
 }
 
 type buildForDelivery struct {
@@ -953,27 +944,6 @@ func (q appForGitOps) GetApplication(ctx context.Context, id shared.ID) (gitops.
 	return gitops.ApplicationRef{ID: app.ID, TenantID: app.TenantID, ProjectID: app.ProjectID, Name: app.Name}, nil
 }
 
-type envForGitOps struct {
-	service *appenv.Service
-	repo    appenv.Repository
-}
-
-func (q envForGitOps) GetEnvironment(ctx context.Context, id shared.ID) (gitops.EnvironmentRef, error) {
-	env, err := q.service.GetEnvironment(ctx, id)
-	if err != nil {
-		return gitops.EnvironmentRef{}, err
-	}
-	return gitops.EnvironmentRef{ID: env.ID, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, Name: env.Name}, nil
-}
-
-func (q envForGitOps) GetActiveBinding(ctx context.Context, environmentID shared.ID) (gitops.ClusterBindingRef, error) {
-	binding, err := q.repo.GetEnvironmentClusterBinding(ctx, environmentID)
-	if err != nil {
-		return gitops.ClusterBindingRef{}, err
-	}
-	return gitops.ClusterBindingRef{ID: binding.ID, ClusterID: binding.ClusterID, ClusterName: binding.ClusterName, Namespace: binding.Namespace}, nil
-}
-
 type workloadForGitOps struct{ service *appenv.Service }
 
 func (q workloadForGitOps) GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (gitops.WorkloadRef, error) {
@@ -984,24 +954,24 @@ func (q workloadForGitOps) GetWorkload(ctx context.Context, applicationID shared
 	return gitops.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, Name: workload.Name, DisplayName: workload.DisplayName, WorkloadType: string(workload.WorkloadType)}, nil
 }
 
-func (q workloadForGitOps) GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (gitops.WorkloadEnvironmentConfigRef, error) {
-	config, err := q.service.GetWorkloadEnvironmentConfig(ctx, workloadID, environmentID)
+func (q workloadForGitOps) GetWorkloadStageConfig(ctx context.Context, workloadID shared.ID, stageKey string) (gitops.WorkloadStageConfigRef, error) {
+	config, err := q.service.GetWorkloadStageConfig(ctx, workloadID, stageKey)
 	if err != nil {
-		return gitops.WorkloadEnvironmentConfigRef{}, err
+		return gitops.WorkloadStageConfigRef{}, err
 	}
-	return toGitOpsWorkloadEnvironmentConfig(config), nil
+	return toGitOpsWorkloadStageConfig(config), nil
 }
 
-func (q workloadForGitOps) GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (gitops.WorkloadEnvironmentConfigRef, error) {
+func (q workloadForGitOps) GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (gitops.WorkloadStageConfigRef, error) {
 	config, err := q.service.GetWorkloadDefaultConfig(ctx, workloadID)
 	if err != nil {
-		return gitops.WorkloadEnvironmentConfigRef{}, err
+		return gitops.WorkloadStageConfigRef{}, err
 	}
-	return toGitOpsWorkloadEnvironmentConfig(config), nil
+	return toGitOpsWorkloadStageConfig(config), nil
 }
 
-func toGitOpsWorkloadEnvironmentConfig(config appenv.WorkloadEnvironmentConfig) gitops.WorkloadEnvironmentConfigRef {
-	out := gitops.WorkloadEnvironmentConfigRef{
+func toGitOpsWorkloadStageConfig(config appenv.WorkloadStageConfig) gitops.WorkloadStageConfigRef {
+	out := gitops.WorkloadStageConfigRef{
 		Replicas:         config.Replicas,
 		ResourceRequests: gitops.WorkloadResourceListRef{CPU: config.ResourceRequests.CPU, Memory: config.ResourceRequests.Memory},
 		ResourceLimits:   gitops.WorkloadResourceListRef{CPU: config.ResourceLimits.CPU, Memory: config.ResourceLimits.Memory},
@@ -1037,24 +1007,24 @@ func toGitOpsWorkloadEnvironmentConfig(config appenv.WorkloadEnvironmentConfig) 
 	return out
 }
 
-type envUpdater struct{ service *appenv.Service }
+type stageUpdater struct{ service *appenv.Service }
 
-func (u envUpdater) UpdateFromAgent(ctx context.Context, report clusteragent.StatusReport) error {
+func (u stageUpdater) UpdateFromAgent(ctx context.Context, report clusteragent.StatusReport) error {
 	for _, appStatus := range report.Applications {
-		if appStatus.EnvironmentID.IsZero() {
+		if appStatus.ApplicationID.IsZero() || strings.TrimSpace(appStatus.StageKey) == "" {
 			continue
 		}
-		status := appenv.EnvironmentStatusDeploying
+		status := appenv.ApplicationStageStatusDeploying
 		if strings.EqualFold(appStatus.HealthStatus, "Healthy") && strings.EqualFold(appStatus.SyncStatus, "Synced") {
-			status = appenv.EnvironmentStatusRunning
+			status = appenv.ApplicationStageStatusRunning
 		} else if strings.EqualFold(appStatus.HealthStatus, "Degraded") {
-			status = appenv.EnvironmentStatusDegraded
+			status = appenv.ApplicationStageStatusDegraded
 		}
 		reportedAt := report.ReportedAt
 		if reportedAt.IsZero() {
 			reportedAt = time.Now()
 		}
-		if _, err := u.service.UpdateEnvironmentState(ctx, appenv.UpdateEnvironmentStateInput{EnvironmentID: appStatus.EnvironmentID, Status: status, Message: appStatus.Message, ReportedAt: &reportedAt}); err != nil {
+		if _, err := u.service.UpdateApplicationStageState(ctx, appenv.UpdateApplicationStageStateInput{ApplicationID: appStatus.ApplicationID, StageKey: appStatus.StageKey, Status: status, Message: appStatus.Message, ReportedAt: &reportedAt}); err != nil {
 			return err
 		}
 	}

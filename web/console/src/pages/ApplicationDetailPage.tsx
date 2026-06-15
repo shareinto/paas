@@ -250,7 +250,7 @@ function WorkloadWizardModal({ applicationId, workload, open, onClose }: { appli
       message.success(isEditing ? '工作负载已保存' : '工作负载已创建');
       updateWorkloadCaches(queryClient, applicationId, (current) => [workload, ...current.filter((item) => item.id !== workload.id)]);
       queryClient.invalidateQueries({ queryKey: ['workload-default-config', applicationId, workload.id], refetchType: 'none' });
-      queryClient.invalidateQueries({ queryKey: ['workload-environment-configs', applicationId, workload.id], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['workload-stage-configs', applicationId, workload.id], refetchType: 'none' });
       onClose();
       form.resetFields();
     },

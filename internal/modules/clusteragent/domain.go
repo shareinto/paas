@@ -85,16 +85,17 @@ type ClusterTaskResult struct {
 }
 
 type StatusReport struct {
-	ClusterID    shared.ID              `json:"cluster_id"`
-	Applications []ApplicationStatus    `json:"applications"`
-	Workloads    []WorkloadStatus       `json:"workloads"`
-	Events       []ClusterReportedEvent `json:"events,omitempty"`
-	ReportedAt   time.Time              `json:"reported_at"`
+	ClusterID        shared.ID               `json:"cluster_id"`
+	Applications     []ApplicationStatus     `json:"applications"`
+	Workloads        []WorkloadStatus        `json:"workloads"`
+	RuntimeResources []RuntimeResourceStatus `json:"runtime_resources,omitempty"`
+	Events           []ClusterReportedEvent  `json:"events,omitempty"`
+	ReportedAt       time.Time               `json:"reported_at"`
 }
 
 type ApplicationStatus struct {
 	ApplicationID       shared.ID `json:"application_id"`
-	EnvironmentID       shared.ID `json:"environment_id"`
+	StageKey            string    `json:"stage_key"`
 	DeploymentID        shared.ID `json:"deployment_id"`
 	ArgoApplicationName string    `json:"argo_application_name"`
 	SyncStatus          string    `json:"sync_status"`
@@ -105,7 +106,6 @@ type ApplicationStatus struct {
 
 type WorkloadStatus struct {
 	ApplicationID shared.ID `json:"application_id"`
-	EnvironmentID shared.ID `json:"environment_id"`
 	Kind          string    `json:"kind"`
 	Name          string    `json:"name"`
 	Desired       int       `json:"desired"`
@@ -119,6 +119,68 @@ type ClusterReportedEvent struct {
 	Resource   string    `json:"resource"`
 	Message    string    `json:"message"`
 	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type RuntimeResourceStatus struct {
+	ApplicationID   shared.ID                `json:"application_id"`
+	StageKey        string                   `json:"stage_key"`
+	Group           string                   `json:"group,omitempty"`
+	Version         string                   `json:"version,omitempty"`
+	Kind            string                   `json:"kind"`
+	Namespace       string                   `json:"namespace"`
+	Name            string                   `json:"name"`
+	ParentKind      string                   `json:"parent_kind,omitempty"`
+	ParentNamespace string                   `json:"parent_namespace,omitempty"`
+	ParentName      string                   `json:"parent_name,omitempty"`
+	Status          string                   `json:"status"`
+	HealthStatus    string                   `json:"health_status,omitempty"`
+	Message         string                   `json:"message,omitempty"`
+	Desired         int                      `json:"desired,omitempty"`
+	Ready           int                      `json:"ready,omitempty"`
+	Containers      []RuntimeContainerStatus `json:"containers,omitempty"`
+	Events          []RuntimeResourceEvent   `json:"events,omitempty"`
+}
+
+type RuntimeContainerStatus struct {
+	Name         string `json:"name"`
+	Image        string `json:"image,omitempty"`
+	Ready        bool   `json:"ready"`
+	RestartCount int    `json:"restart_count"`
+	State        string `json:"state,omitempty"`
+	Message      string `json:"message,omitempty"`
+}
+
+type RuntimeResourceEvent struct {
+	Type       string    `json:"type"`
+	Reason     string    `json:"reason,omitempty"`
+	Message    string    `json:"message"`
+	Count      int       `json:"count,omitempty"`
+	OccurredAt time.Time `json:"occurred_at,omitempty"`
+}
+
+type RuntimeResource struct {
+	ID              shared.ID                `json:"id"`
+	ClusterID       shared.ID                `json:"cluster_id"`
+	TenantID        shared.ID                `json:"tenant_id"`
+	ApplicationID   shared.ID                `json:"application_id"`
+	StageKey        string                   `json:"stage_key"`
+	Group           string                   `json:"group,omitempty"`
+	Version         string                   `json:"version,omitempty"`
+	Kind            string                   `json:"kind"`
+	Namespace       string                   `json:"namespace"`
+	Name            string                   `json:"name"`
+	ParentKind      string                   `json:"parent_kind,omitempty"`
+	ParentNamespace string                   `json:"parent_namespace,omitempty"`
+	ParentName      string                   `json:"parent_name,omitempty"`
+	Status          string                   `json:"status"`
+	HealthStatus    string                   `json:"health_status,omitempty"`
+	Message         string                   `json:"message,omitempty"`
+	Desired         int                      `json:"desired,omitempty"`
+	Ready           int                      `json:"ready,omitempty"`
+	Containers      []RuntimeContainerStatus `json:"containers,omitempty"`
+	Events          []RuntimeResourceEvent   `json:"events,omitempty"`
+	ReportedAt      time.Time                `json:"reported_at"`
+	UpdatedAt       time.Time                `json:"updated_at"`
 }
 
 func normalizeCluster(cluster Cluster) (Cluster, error) {

@@ -8,6 +8,8 @@ IMAGE_PLATFORM="${PAAS_AGENT_IMAGE_PLATFORM:-linux/arm64}"
 DOCKERFILE="${PAAS_AGENT_DOCKERFILE:-$ROOT_DIR/deploy/paas-agent/Dockerfile}"
 CONTEXT_DIR="${PAAS_AGENT_CONTEXT_DIR:-$ROOT_DIR}"
 IMAGE_TAG="${PAAS_AGENT_IMAGE_TAG:-}"
+GO_IMAGE="${PAAS_AGENT_GO_IMAGE:-golang:1.25}"
+RUNTIME_IMAGE="${PAAS_AGENT_RUNTIME_IMAGE:-gcr.io/distroless/static-debian12:nonroot}"
 
 usage() {
   cat <<'EOF'
@@ -26,6 +28,8 @@ Environment:
   PAAS_AGENT_IMAGE_PLATFORM
   PAAS_AGENT_DOCKERFILE
   PAAS_AGENT_CONTEXT_DIR
+  PAAS_AGENT_GO_IMAGE
+  PAAS_AGENT_RUNTIME_IMAGE
 
 Example:
   ./scripts/build-paas-agent-image.sh
@@ -84,9 +88,13 @@ echo "构建并推送 paas-agent 镜像:"
 echo "  image: $image"
 echo "  platform: $IMAGE_PLATFORM"
 echo "  dockerfile: $DOCKERFILE"
+echo "  go image: $GO_IMAGE"
+echo "  runtime image: $RUNTIME_IMAGE"
 
 docker buildx build \
   --platform "$IMAGE_PLATFORM" \
+  --build-arg "GO_IMAGE=$GO_IMAGE" \
+  --build-arg "RUNTIME_IMAGE=$RUNTIME_IMAGE" \
   -f "$DOCKERFILE" \
   -t "$image" \
   --push \

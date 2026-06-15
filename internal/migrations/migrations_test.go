@@ -200,11 +200,11 @@ func TestGitOpsWorkloadSummaryMigrationBackfillsExistingDeployments(t *testing.T
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
 	if _, err := db.ExecContext(ctx, `
 INSERT INTO deployments (
-  id, tenant_id, project_id, application_id, environment_id, cluster_binding_id, promotion_id,
+  id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
   freight_id, manifest_revision_id, image_repository, image_tag, image_digest, status, message,
   created_at, updated_at, completed_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"deployment_legacy", "tenant_1", "project_1", "app_1", "env_1", "binding_1", "promotion_1",
+		"deployment_legacy", "tenant_1", "project_1", "app_1", "prod", "binding_1", "promotion_1",
 		"freight_1", "manifest_1", "repo/app", "v1", "sha256:1", "pending", "", now, now, nil); err != nil {
 		t.Fatalf("insert legacy deployment: %v", err)
 	}

@@ -1,7 +1,7 @@
 import * as mock from './mock';
 import { APIError, hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
 
-export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadEnvironmentConfig, Environment, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, AppStage, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadStageConfig, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, AppStage, RuntimeResource, RuntimeCapabilityResponse, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -353,22 +353,16 @@ export async function deleteWorkload(applicationId: string, workloadId: string) 
   return mapWorkload(item);
 }
 
-export async function listWorkloadEnvironmentConfigs(applicationId: string, workloadId: string) {
-  if (!hasAPIBaseURL()) return mock.listWorkloadEnvironmentConfigs(applicationId, workloadId);
-  const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/environment-configs`);
-  return data.items.map(mapWorkloadEnvironmentConfig);
+export async function listWorkloadStageConfigs(applicationId: string, workloadId: string) {
+  if (!hasAPIBaseURL()) return mock.listWorkloadStageConfigs(applicationId, workloadId);
+  const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/stage-configs`);
+  return data.items.map(mapWorkloadStageConfig);
 }
 
 export async function getWorkloadDefaultConfig(applicationId: string, workloadId: string) {
   if (!hasAPIBaseURL()) return mock.getWorkloadDefaultConfig(applicationId, workloadId);
   const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/default-config`);
-  return mapWorkloadEnvironmentConfig(item);
-}
-
-export async function listApplicationEnvironments(applicationId: string) {
-  if (!hasAPIBaseURL()) return mock.listApplicationEnvironments(applicationId);
-  const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/environments`);
-  return data.items.map(mapEnvironment);
+  return mapWorkloadStageConfig(item);
 }
 
 export async function getDeliveryFlowTemplate(tenantId = 'tenant_1') {
@@ -433,22 +427,44 @@ export async function listAppStages(applicationId: string) {
   return data.items.map(mapAppStage);
 }
 
-export async function saveWorkloadEnvironmentConfig(applicationId: string, workloadId: string, environmentId: string, input: Partial<mock.WorkloadEnvironmentConfig>) {
-  if (!hasAPIBaseURL()) return mock.saveWorkloadEnvironmentConfig(applicationId, workloadId, environmentId, input);
-  const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/environment-configs/${encodeURIComponent(environmentId)}`, {
-    method: 'PUT',
-    body: JSON.stringify(workloadEnvironmentConfigPayload(input))
-  });
-  return mapWorkloadEnvironmentConfig(item);
+export async function listRuntimeResources(applicationId: string, stageKey: string) {
+  if (!hasAPIBaseURL()) return mock.listRuntimeResources(applicationId, stageKey);
+  const data = await request<{ items: any[] }>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources?actor_id=usr_admin`);
+  return data.items.map(mapRuntimeResource);
 }
 
-export async function saveWorkloadDefaultConfig(applicationId: string, workloadId: string, input: Partial<mock.WorkloadEnvironmentConfig>) {
+export async function restartRuntimeResource(applicationId: string, stageKey: string, resourceId: string) {
+  if (!hasAPIBaseURL()) return mock.restartRuntimeResource(applicationId, stageKey, resourceId);
+  return request<any>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources/${encodeURIComponent(resourceId)}/restart?actor_id=usr_admin`, { method: 'POST', body: '{}' });
+}
+
+export async function getRuntimeResourceLogs(applicationId: string, stageKey: string, resourceId: string, container?: string) {
+  if (!hasAPIBaseURL()) return mock.getRuntimeResourceLogs(applicationId, stageKey, resourceId, container);
+  const query = `?actor_id=usr_admin${container ? `&container=${encodeURIComponent(container)}` : ''}`;
+  return request<mock.RuntimeCapabilityResponse>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources/${encodeURIComponent(resourceId)}/logs${query}`);
+}
+
+export async function openRuntimeResourceTerminal(applicationId: string, stageKey: string, resourceId: string, container?: string) {
+  if (!hasAPIBaseURL()) return mock.openRuntimeResourceTerminal(applicationId, stageKey, resourceId, container);
+  return request<mock.RuntimeCapabilityResponse>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources/${encodeURIComponent(resourceId)}/terminal`, { method: 'POST', body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, container: container || '' }) });
+}
+
+export async function saveWorkloadStageConfig(applicationId: string, workloadId: string, stageKey: string, input: Partial<mock.WorkloadStageConfig>) {
+  if (!hasAPIBaseURL()) return mock.saveWorkloadStageConfig(applicationId, workloadId, stageKey, input);
+  const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/stage-configs/${encodeURIComponent(stageKey)}`, {
+    method: 'PUT',
+    body: JSON.stringify(workloadStageConfigPayload(input))
+  });
+  return mapWorkloadStageConfig(item);
+}
+
+export async function saveWorkloadDefaultConfig(applicationId: string, workloadId: string, input: Partial<mock.WorkloadStageConfig>) {
   if (!hasAPIBaseURL()) return mock.saveWorkloadDefaultConfig(applicationId, workloadId, input);
   const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/default-config`, {
     method: 'PUT',
-    body: JSON.stringify(workloadEnvironmentConfigPayload(input))
+    body: JSON.stringify(workloadStageConfigPayload(input))
   });
-  return mapWorkloadEnvironmentConfig(item);
+  return mapWorkloadStageConfig(item);
 }
 
 export async function createPromotion(input: mock.CreatePromotionInput, applicationId?: string, stageId?: string) {
@@ -821,7 +837,6 @@ function promotionPayload(input: mock.CreatePromotionInput) {
   return {
     actor: { type: 'user', id: 'usr_admin' },
     freight_id: input.freightId,
-    target_environment_id: input.targetEnvironmentId || '',
     target_stage_key: input.targetStageKey || '',
     target_cluster_ids: input.targetClusterIds || [],
     namespace_override: input.namespaceOverride || '',
@@ -922,7 +937,6 @@ function mapStageDefinition(item: any): mock.StageDefinition {
   return {
     id: item.id,
     name: item.name,
-    environmentId: item.environmentId || item.environment_id || '',
     approvalRequired: !!(item.approvalRequired || item.approval_required || item.requires_approval),
     approvalCount: item.approvalCount || item.approval_count,
     approverScope: item.approverScope || item.approver_scope,
@@ -981,7 +995,7 @@ function mapApplication(item: any): mock.Application {
     })),
     status: item.status || 'active',
     type: item.type || '-',
-    envStatus: item.envStatus || '-',
+    stageStatus: item.stage_status || item.stageStatus || '-',
     build: item.build || '-',
     release: item.release || '-',
     owner: item.owner || '-',
@@ -989,18 +1003,8 @@ function mapApplication(item: any): mock.Application {
   };
 }
 
-function mapEnvironment(item: any): mock.Environment {
-  return {
-    id: item.id,
-    applicationId: item.application_id || item.applicationId || '',
-    name: item.name || '',
-    displayName: item.display_name || item.displayName || item.name || '',
-    description: item.description || ''
-  };
-}
-
 function mapWorkload(item: any): mock.Workload {
-  const envStatuses = item.env_statuses || item.envStatuses || item.environments || [];
+  const stageStatuses = item.stage_statuses || item.stageStatuses || item.env_statuses || item.environments || [];
   return {
     id: item.id,
     applicationId: item.application_id || item.applicationId || '',
@@ -1013,11 +1017,11 @@ function mapWorkload(item: any): mock.Workload {
     imageSourceName: item.image_source_name || item.imageSourceName || '',
     latestRelease: item.latest_release || item.latestRelease || item.release || '',
     status: item.status || 'enabled',
-    envStatuses: envStatuses.map((env: any) => ({
-      envName: env.env_name || env.envName || env.name || env.environment || '-',
-      releaseVersion: env.release_version || env.releaseVersion || env.release || '-',
-      syncStatus: env.sync_status || env.syncStatus || env.sync || '未知',
-      healthStatus: env.health_status || env.healthStatus || env.health || '未知'
+    stageStatuses: stageStatuses.map((stage: any) => ({
+      stageName: stage.stage_name || stage.stageName || stage.stage_key || stage.stageKey || stage.env_name || stage.name || stage.environment || '-',
+      releaseVersion: stage.release_version || stage.releaseVersion || stage.release || '-',
+      syncStatus: stage.sync_status || stage.syncStatus || stage.sync || '未知',
+      healthStatus: stage.health_status || stage.healthStatus || stage.health || '未知'
     })),
     updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
   };
@@ -1075,13 +1079,52 @@ function mapStageClusterBinding(item: any): mock.StageClusterBinding {
   };
 }
 
+function mapRuntimeResource(item: any): mock.RuntimeResource {
+  return {
+    id: item.id || '',
+    clusterId: item.cluster_id || item.clusterId || '',
+    tenantId: item.tenant_id || item.tenantId || '',
+    applicationId: item.application_id || item.applicationId || '',
+    stageKey: item.stage_key || item.stageKey || '',
+    group: item.group || '',
+    version: item.version || '',
+    kind: item.kind || '',
+    namespace: item.namespace || '',
+    name: item.name || '',
+    parentKind: item.parent_kind || item.parentKind || '',
+    parentNamespace: item.parent_namespace || item.parentNamespace || '',
+    parentName: item.parent_name || item.parentName || '',
+    status: item.status || '',
+    healthStatus: item.health_status || item.healthStatus || '',
+    message: item.message || '',
+    desired: item.desired ?? 0,
+    ready: item.ready ?? 0,
+    containers: (item.containers || []).map((container: any) => ({
+      name: container.name || '',
+      image: container.image || '',
+      ready: !!container.ready,
+      restartCount: container.restart_count ?? container.restartCount ?? 0,
+      state: container.state || '',
+      message: container.message || ''
+    })),
+    events: (item.events || []).map((event: any) => ({
+      type: event.type || '',
+      reason: event.reason || '',
+      message: event.message || '',
+      count: event.count ?? 0,
+      occurredAt: event.occurred_at || event.occurredAt || ''
+    })),
+    reportedAt: item.reported_at || item.reportedAt || '',
+    updatedAt: item.updated_at || item.updatedAt || ''
+  };
+}
+
 function mapAppStage(item: any): mock.AppStage {
   return {
     tenantId: item.tenant_id || item.tenantId || '',
     projectId: item.project_id || item.projectId || '',
     applicationId: item.application_id || item.applicationId || '',
     deliveryStageId: item.delivery_stage_id || item.deliveryStageId || '',
-    environmentId: item.environment_id || item.environmentId || '',
     stageKey: item.stage_key || item.stageKey || '',
     displayName: item.display_name || item.displayName || item.stage_key || item.stageKey || '',
     color: item.color || '#1677ff',
@@ -1096,14 +1139,16 @@ function mapAppStage(item: any): mock.AppStage {
 		clusterPoolSize: item.cluster_pool_size || item.clusterPoolSize || 0,
 		boundClusterId: item.bound_cluster_id || item.boundClusterId || '',
 		boundClusterName: item.bound_cluster_name || item.boundClusterName || '',
-		currentFreightId: item.current_freight_id || item.currentFreightId || '',
-		currentFreightVersion: item.current_freight_version || item.currentFreightVersion || '',
-		syncStatus: item.sync_status || item.syncStatus || '',
-		healthStatus: item.health_status || item.healthStatus || '',
-		upstreamStageKeys: item.upstream_stage_keys || item.upstreamStageKeys || [],
-		downstreamStageKeys: item.downstream_stage_keys || item.downstreamStageKeys || []
-	};
-}
+			currentFreightId: item.current_freight_id || item.currentFreightId || '',
+			currentFreightVersion: item.current_freight_version || item.currentFreightVersion || '',
+			syncStatus: item.sync_status || item.syncStatus || '',
+			healthStatus: item.health_status || item.healthStatus || '',
+			operationState: item.operation_state || item.operationState || '',
+			runtimeMessage: item.runtime_message || item.runtimeMessage || '',
+			upstreamStageKeys: item.upstream_stage_keys || item.upstreamStageKeys || [],
+			downstreamStageKeys: item.downstream_stage_keys || item.downstreamStageKeys || []
+		};
+	}
 
 function stageTemplatePayload(input: Partial<mock.DeliveryFlowTemplateStage> & { stageKey: string }) {
   return {
@@ -1122,12 +1167,12 @@ function stageTemplatePayload(input: Partial<mock.DeliveryFlowTemplateStage> & {
   };
 }
 
-function mapWorkloadEnvironmentConfig(item: any): mock.WorkloadEnvironmentConfig {
+function mapWorkloadStageConfig(item: any): mock.WorkloadStageConfig {
   return {
-    id: item.id || [item.workload_id || item.workloadId, item.environment_id || item.environmentId].filter(Boolean).join(':'),
+    id: item.id || [item.workload_id || item.workloadId, item.stage_key || item.stageKey].filter(Boolean).join(':'),
     workloadId: item.workload_id || item.workloadId || '',
-    environmentId: item.environment_id || item.environmentId || '',
-    envName: item.env_name || item.envName || item.environment_name || item.environmentName || item.environment_id || item.environmentId || '-',
+    stageKey: item.stage_key || item.stageKey || '',
+    stageName: item.stage_name || item.stageName || item.stage_key || item.stageKey || item.env_name || '-',
     replicas: item.replicas || 1,
     servicePorts: (item.service_ports || item.servicePorts || []).map((port: any) => ({
       name: port.name || 'http',
@@ -1160,7 +1205,7 @@ function mapResourceList(value: any): mock.WorkloadResourceList {
   return { cpu: value?.cpu || '', memory: value?.memory || '' };
 }
 
-function workloadEnvironmentConfigPayload(input: Partial<mock.WorkloadEnvironmentConfig>) {
+function workloadStageConfigPayload(input: Partial<mock.WorkloadStageConfig>) {
   return {
     actor: { type: 'user', id: 'usr_admin' },
     replicas: input.replicas ?? 1,

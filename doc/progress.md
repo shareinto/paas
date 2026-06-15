@@ -12,7 +12,7 @@
 - [x] [identity-access](tasks/identity-access/progress.md)
 - [x] [tenant-project](tasks/tenant-project/progress.md)
 - [x] [source-repository](tasks/source-repository/progress.md)
-- [x] [application-environment](tasks/application-environment/progress.md)
+- [x] [application-workload](tasks/application-workload/progress.md)
 - [x] [build](tasks/build/progress.md)
 - [x] [release-delivery](tasks/release-delivery/progress.md)
 - [x] [gitops-deployment](tasks/gitops-deployment/progress.md)

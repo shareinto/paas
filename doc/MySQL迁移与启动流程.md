@@ -186,7 +186,7 @@ ORDER BY version;
 identity_access_core
 tenant_project_core
 source_repository_core
-application_environment_core
+application_workload_core
 build_core
 release_delivery_core
 audit_logs

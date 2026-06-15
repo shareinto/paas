@@ -117,42 +117,42 @@ func BuiltInRoles() map[RoleID]Role {
 		RoleTenantOwner: {
 			ID:          RoleTenantOwner,
 			Name:        "租户所有者",
-			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create", "deployment:approve", "audit:read"},
+			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create", "deployment:approve", "runtime:read", "runtime:restart", "audit:read"},
 		},
 		RoleTenantAdmin: {
 			ID:          RoleTenantAdmin,
 			Name:        "租户管理员",
-			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create"},
+			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create", "runtime:read", "runtime:restart"},
 		},
 		RoleProjectAdmin: {
 			ID:          RoleProjectAdmin,
 			Name:        "项目管理员",
-			Permissions: []Permission{"project:update", "application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create"},
+			Permissions: []Permission{"project:update", "application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create", "runtime:read", "runtime:restart"},
 		},
 		RoleDeveloper: {
 			ID:          RoleDeveloper,
 			Name:        "开发者",
-			Permissions: []Permission{"application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create"},
+			Permissions: []Permission{"application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create", "runtime:read"},
 		},
 		RoleViewer: {
 			ID:          RoleViewer,
 			Name:        "只读成员",
-			Permissions: []Permission{"application:read", "environment:read", "build:read", "deployment:read"},
+			Permissions: []Permission{"application:read", "stage:read", "build:read", "deployment:read", "runtime:read"},
 		},
 		RoleOperator: {
 			ID:          RoleOperator,
 			Name:        "运维人员",
-			Permissions: []Permission{"environment:read", "environment:update", "deployment:create", "deployment:rollback", "build:read"},
+			Permissions: []Permission{"stage:read", "stage:update", "deployment:create", "deployment:rollback", "build:read", "runtime:read", "runtime:restart", "runtime:terminal"},
 		},
 		RoleProdApprover: {
 			ID:          RoleProdApprover,
 			Name:        "生产审批人",
-			Permissions: []Permission{"deployment:approve", "deployment:read"},
+			Permissions: []Permission{"deployment:approve", "deployment:read", "runtime:read"},
 		},
 		RoleSecurityAuditor: {
 			ID:          RoleSecurityAuditor,
 			Name:        "安全审计员",
-			Permissions: []Permission{"audit:read", "application:read", "deployment:read"},
+			Permissions: []Permission{"audit:read", "application:read", "deployment:read", "runtime:read"},
 		},
 	}
 }
@@ -177,7 +177,7 @@ const (
 	ScopeTenant      ScopeKind = "tenant"
 	ScopeProject     ScopeKind = "project"
 	ScopeApplication ScopeKind = "application"
-	ScopeEnvironment ScopeKind = "environment"
+	ScopeStage       ScopeKind = "stage"
 )
 
 type ResourceScope struct {
@@ -185,7 +185,7 @@ type ResourceScope struct {
 	TenantID      shared.ID
 	ProjectID     shared.ID
 	ApplicationID shared.ID
-	EnvironmentID shared.ID
+	StageKey      shared.ID
 }
 
 type RoleBinding struct {
@@ -225,8 +225,8 @@ func ScopeCovers(bindingKind ScopeKind, bindingID shared.ID, resource ResourceSc
 		return !resource.ProjectID.IsZero() && bindingID == resource.ProjectID
 	case ScopeApplication:
 		return !resource.ApplicationID.IsZero() && bindingID == resource.ApplicationID
-	case ScopeEnvironment:
-		return !resource.EnvironmentID.IsZero() && bindingID == resource.EnvironmentID
+	case ScopeStage:
+		return !resource.StageKey.IsZero() && bindingID == resource.StageKey
 	default:
 		return false
 	}

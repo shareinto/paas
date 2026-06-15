@@ -161,13 +161,13 @@ type WorkloadInitContainer struct {
 	Command []string `json:"command,omitempty"`
 }
 
-type WorkloadEnvironmentConfig struct {
+type WorkloadStageConfig struct {
 	ID               shared.ID               `json:"id"`
 	TenantID         shared.ID               `json:"tenant_id"`
 	ProjectID        shared.ID               `json:"project_id"`
 	ApplicationID    shared.ID               `json:"application_id"`
 	WorkloadID       shared.ID               `json:"workload_id"`
-	EnvironmentID    shared.ID               `json:"environment_id"`
+	StageKey         string                  `json:"stage_key"`
 	Replicas         int                     `json:"replicas"`
 	ServicePorts     []WorkloadServicePort   `json:"service_ports"`
 	ResourceRequests WorkloadResourceList    `json:"resource_requests"`
@@ -194,120 +194,51 @@ type BuildSpec struct {
 	DefaultRef          string `json:"default_ref"`
 }
 
-type Environment struct {
-	ID            shared.ID `json:"id"`
-	TenantID      shared.ID `json:"tenant_id"`
-	ProjectID     shared.ID `json:"project_id"`
-	ApplicationID shared.ID `json:"application_id"`
-	Name          string    `json:"name"`
-	DisplayName   string    `json:"display_name"`
-	Description   string    `json:"description"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-}
-
-type EnvironmentConfig struct {
-	ID            shared.ID `json:"id"`
-	TenantID      shared.ID `json:"tenant_id"`
-	ProjectID     shared.ID `json:"project_id"`
-	ApplicationID shared.ID `json:"application_id"`
-	EnvironmentID shared.ID `json:"environment_id"`
-	Key           string    `json:"key"`
-	Value         string    `json:"value"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-}
-
-type EnvironmentSecret struct {
-	ID            shared.ID `json:"id"`
-	TenantID      shared.ID `json:"tenant_id"`
-	ProjectID     shared.ID `json:"project_id"`
-	ApplicationID shared.ID `json:"application_id"`
-	EnvironmentID shared.ID `json:"environment_id"`
-	Key           string    `json:"key"`
-	SecretRef     string    `json:"secret_ref"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-}
-
-type EnvironmentRoute struct {
-	ID            shared.ID `json:"id"`
-	TenantID      shared.ID `json:"tenant_id"`
-	ProjectID     shared.ID `json:"project_id"`
-	ApplicationID shared.ID `json:"application_id"`
-	EnvironmentID shared.ID `json:"environment_id"`
-	Host          string    `json:"host"`
-	Path          string    `json:"path"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
-}
-
-type EnvironmentClusterBindingStatus string
+type ApplicationStageStatus string
 
 const (
-	EnvironmentClusterBindingActive   EnvironmentClusterBindingStatus = "active"
-	EnvironmentClusterBindingDisabled EnvironmentClusterBindingStatus = "disabled"
+	ApplicationStageStatusDraft                 ApplicationStageStatus = "draft"
+	ApplicationStageStatusPendingClusterBinding ApplicationStageStatus = "pending_cluster_binding"
+	ApplicationStageStatusClusterBound          ApplicationStageStatus = "cluster_bound"
+	ApplicationStageStatusDeployable            ApplicationStageStatus = "deployable"
+	ApplicationStageStatusDeploying             ApplicationStageStatus = "deploying"
+	ApplicationStageStatusRunning               ApplicationStageStatus = "running"
+	ApplicationStageStatusDegraded              ApplicationStageStatus = "degraded"
+	ApplicationStageStatusDisabled              ApplicationStageStatus = "disabled"
 )
 
-type EnvironmentClusterBinding struct {
-	ID            shared.ID                       `json:"id"`
-	TenantID      shared.ID                       `json:"tenant_id"`
-	ProjectID     shared.ID                       `json:"project_id"`
-	ApplicationID shared.ID                       `json:"application_id"`
-	EnvironmentID shared.ID                       `json:"environment_id"`
-	ClusterID     shared.ID                       `json:"cluster_id"`
-	ClusterName   string                          `json:"cluster_name"`
-	Namespace     string                          `json:"namespace"`
-	Status        EnvironmentClusterBindingStatus `json:"status"`
-	CreatedAt     time.Time                       `json:"created_at"`
-	UpdatedAt     time.Time                       `json:"updated_at"`
+var AllowedApplicationStageStatuses = []string{
+	string(ApplicationStageStatusDraft),
+	string(ApplicationStageStatusPendingClusterBinding),
+	string(ApplicationStageStatusClusterBound),
+	string(ApplicationStageStatusDeployable),
+	string(ApplicationStageStatusDeploying),
+	string(ApplicationStageStatusRunning),
+	string(ApplicationStageStatusDegraded),
+	string(ApplicationStageStatusDisabled),
 }
 
-type EnvironmentStatus string
-
-const (
-	EnvironmentStatusDraft                 EnvironmentStatus = "draft"
-	EnvironmentStatusPendingClusterBinding EnvironmentStatus = "pending_cluster_binding"
-	EnvironmentStatusClusterBound          EnvironmentStatus = "cluster_bound"
-	EnvironmentStatusDeployable            EnvironmentStatus = "deployable"
-	EnvironmentStatusDeploying             EnvironmentStatus = "deploying"
-	EnvironmentStatusRunning               EnvironmentStatus = "running"
-	EnvironmentStatusDegraded              EnvironmentStatus = "degraded"
-	EnvironmentStatusDisabled              EnvironmentStatus = "disabled"
-)
-
-var AllowedEnvironmentStatuses = []string{
-	string(EnvironmentStatusDraft),
-	string(EnvironmentStatusPendingClusterBinding),
-	string(EnvironmentStatusClusterBound),
-	string(EnvironmentStatusDeployable),
-	string(EnvironmentStatusDeploying),
-	string(EnvironmentStatusRunning),
-	string(EnvironmentStatusDegraded),
-	string(EnvironmentStatusDisabled),
+type ApplicationStageState struct {
+	TenantID       shared.ID              `json:"tenant_id"`
+	ProjectID      shared.ID              `json:"project_id"`
+	ApplicationID  shared.ID              `json:"application_id"`
+	StageKey       string                 `json:"stage_key"`
+	Status         ApplicationStageStatus `json:"status"`
+	Message        string                 `json:"message"`
+	LastReportedAt *time.Time             `json:"last_reported_at,omitempty"`
+	UpdatedAt      time.Time              `json:"updated_at"`
 }
 
-type EnvironmentState struct {
-	TenantID       shared.ID         `json:"tenant_id"`
-	ProjectID      shared.ID         `json:"project_id"`
-	ApplicationID  shared.ID         `json:"application_id"`
-	EnvironmentID  shared.ID         `json:"environment_id"`
-	Status         EnvironmentStatus `json:"status"`
-	Message        string            `json:"message"`
-	LastReportedAt *time.Time        `json:"last_reported_at,omitempty"`
-	UpdatedAt      time.Time         `json:"updated_at"`
-}
-
-type EnvironmentEvent struct {
-	ID            shared.ID         `json:"id"`
-	TenantID      shared.ID         `json:"tenant_id"`
-	ProjectID     shared.ID         `json:"project_id"`
-	ApplicationID shared.ID         `json:"application_id"`
-	EnvironmentID shared.ID         `json:"environment_id"`
-	Type          string            `json:"type"`
-	Status        EnvironmentStatus `json:"status"`
-	Message       string            `json:"message"`
-	OccurredAt    time.Time         `json:"occurred_at"`
+type ApplicationStageEvent struct {
+	ID            shared.ID              `json:"id"`
+	TenantID      shared.ID              `json:"tenant_id"`
+	ProjectID     shared.ID              `json:"project_id"`
+	ApplicationID shared.ID              `json:"application_id"`
+	StageKey      string                 `json:"stage_key"`
+	Type          string                 `json:"type"`
+	Status        ApplicationStageStatus `json:"status"`
+	Message       string                 `json:"message"`
+	OccurredAt    time.Time              `json:"occurred_at"`
 }
 
 type ApplicationCreatedPayload struct {

@@ -17,13 +17,13 @@
 - [x] 支持 initContainer、目录创建、目录权限、volumeMount、安全上下文等模板定制场景。
 - [x] 实现模板语法校验和策略校验，校验通过后才能用于发布。
 - [x] 实现环境清单目录生成规则：`apps/{app}/{env}/values.yaml`。
-- [x] 实现 Argo CD Application 清单生成，按 EnvironmentClusterBinding 创建。
+- [x] 实现 Argo CD Application 清单生成，按 StageClusterBinding 创建。
 - [x] 实现发布时修改 values 中的镜像 repository、tag、digest。
 - [x] dev/test 默认直接 commit 到清单仓库。
 - [x] staging/prod 默认创建 Merge Request，并与 PaaS 审批流关联。
 - [x] 每次模板变更记录 DeploymentTemplateRevision 和审计日志。
 - [x] 每次清单变更记录 ManifestRevision，并关联使用的 DeploymentTemplateRevision。
-- [x] 创建 Deployment 并绑定 Promotion、Environment、ClusterBinding。
+- [x] 创建 Deployment 并绑定 Promotion、Stage、ClusterBinding。
 - [x] 接收 Agent 状态后更新 Deployment 状态。
 - [x] 实现回滚清单修改，目标镜像 digest 来自历史 Freight。
 - [x] 提供 Deployment 查询 API。

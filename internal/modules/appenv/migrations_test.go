@@ -59,11 +59,11 @@ func TestMigrationsCreateWorkloadTables(t *testing.T) {
 			"pipeline_id",
 			"created_by",
 		},
-		"workload_environment_configs": {
+		"workload_stage_configs": {
 			"id",
 			"application_id",
 			"workload_id",
-			"environment_id",
+			"stage_key",
 			"replicas",
 			"service_ports_json",
 			"resource_requests_json",
@@ -89,7 +89,7 @@ func TestMigrationsCreateWorkloadTables(t *testing.T) {
 			"values_override_json",
 		},
 	}
-	for table, columns := range checkColumns {
+		for table, columns := range checkColumns {
 		for _, column := range columns {
 			var count int
 			err := db.QueryRowContext(ctx, `

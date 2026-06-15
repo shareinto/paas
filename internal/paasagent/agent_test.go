@@ -17,7 +17,7 @@ func (c fixedClock) Now() time.Time { return c.now }
 func TestHeartbeatSnapshotMappingAndTaskExecution(t *testing.T) {
 	control := &FakeControlPlaneClient{Tasks: []Task{{ID: "task_1", Type: "argocd_refresh", TargetRef: "order-dev"}, {ID: "task_2", Type: "argocd_sync", TargetRef: "order-dev"}}}
 	reader := &FakeKubernetesReader{SnapshotValue: Snapshot{
-		Applications: []ArgoApplication{{Name: "order-dev", ApplicationID: "app_1", EnvironmentID: "env_1", DeploymentID: "deployment_1", SyncStatus: "Synced", HealthStatus: "Healthy", OperationPhase: "Succeeded"}},
+		Applications: []ArgoApplication{{Name: "order-dev", ApplicationID: "app_1", StageKey: "dev", DeploymentID: "deployment_1", SyncStatus: "Synced", HealthStatus: "Healthy", OperationPhase: "Succeeded"}},
 		Workloads:    []Workload{{Kind: "Deployment", Name: "order-api", Desired: 3, Ready: 2, Updated: 3, Available: 2}},
 		Events:       []KubernetesEvent{{Type: "Warning", Resource: "pod/order", Message: "重启", OccurredAt: time.Date(2026, 5, 30, 14, 0, 0, 0, time.UTC)}},
 	}}
@@ -49,6 +49,18 @@ func TestUnsupportedTaskFailsWithoutApplyingResources(t *testing.T) {
 	}
 	if control.Results[0]["status"] != "failed" || len(reader.Synced) != 0 || len(reader.Refreshed) != 0 {
 		t.Fatalf("unsupported task should fail without resource mutation: %#v", control.Results)
+	}
+}
+
+func TestRuntimeRestartTaskRestartsSupportedWorkload(t *testing.T) {
+	control := &FakeControlPlaneClient{Tasks: []Task{{ID: "task_1", Type: "runtime_restart", Payload: map[string]string{"kind": "Deployment", "namespace": "order-dev", "name": "order-api"}}}}
+	reader := &FakeKubernetesReader{}
+	agent := New(Config{ClusterID: "cluster_1"}, control, reader, nil)
+	if err := agent.RunTaskOnce(context.Background()); err != nil {
+		t.Fatalf("runtime restart task: %v", err)
+	}
+	if len(reader.Restarted) != 1 || reader.Restarted[0] != "Deployment/order-dev/order-api" || control.Results[0]["status"] != "succeeded" {
+		t.Fatalf("restart task should restart supported workload and report success, restarted=%+v results=%+v", reader.Restarted, control.Results)
 	}
 }
 

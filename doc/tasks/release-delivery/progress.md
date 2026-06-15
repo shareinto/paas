@@ -29,7 +29,7 @@
 
 - 新增 `internal/modules/delivery` 模块，包含领域模型、端口、服务、MySQL 正式表仓库、HTTP API 和 MySQL 迁移。
 - 消费 `BuildSucceeded` 载荷生成 `Release`、`Freight` 和 `FreightItem`，并创建默认 `dev -> test -> staging -> prod` DeliveryFlow。
-- Promotion 创建会校验目标环境存在 active `EnvironmentClusterBinding`；`pending_cluster_binding` 环境会阻止发布。
+- Promotion 创建会校验目标 Stage存在 active `StageClusterBinding`；`pending_cluster_binding` 环境会阻止发布。
 - 非 prod Promotion 直接调用 `GitOpsDeploymentCommand` 写入发布意图；release-delivery 不直接写 GitLab 清单仓库。
 - prod Promotion 进入审批流程，支持审批通过、拒绝和禁止自审批。
 - 支持回滚 Promotion，目标为历史 Freight。

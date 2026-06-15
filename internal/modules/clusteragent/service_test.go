@@ -172,7 +172,7 @@ func TestAgentTokenBindingHeartbeatTimeoutAndStatusForward(t *testing.T) {
 	env := &reportRecorder{}
 	deployments := &reportRecorder{}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "heartbeat_1", "snapshot_1"}}
-	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), EnvironmentState: env, DeploymentStatus: deployments, IDGenerator: ids, Clock: clock, HeartbeatTimeout: time.Minute})
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), StageState: env, DeploymentStatus: deployments, IDGenerator: ids, Clock: clock, HeartbeatTimeout: time.Minute})
 	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "生产集群"})
 	if err != nil {
 		t.Fatalf("register: %v", err)
@@ -199,6 +199,160 @@ func TestAgentTokenBindingHeartbeatTimeoutAndStatusForward(t *testing.T) {
 	}
 	if len(changed) != 1 || changed[0].Status != ClusterUnreachable {
 		t.Fatalf("expected unreachable cluster: %#v", changed)
+	}
+}
+
+func TestRuntimeResourceReportStoresLatestAndQueriesByStage(t *testing.T) {
+	repo := newTestRepository(t)
+	clock := &mutableClock{now: time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC)}
+	ids := &staticIDs{ids: []shared.ID{"cluster_1", "snapshot_1", "snapshot_2"}}
+	permission := &recordingClusterPermission{}
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), PermissionChecker: permission, IDGenerator: ids, Clock: clock})
+	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	reportedAt := clock.now.Add(time.Minute)
+	report := StatusReport{
+		RuntimeResources: []RuntimeResourceStatus{
+			{
+				ApplicationID: "app_1",
+				StageKey:      "dev",
+				Group:         "apps",
+				Version:       "v1",
+				Kind:          "Deployment",
+				Namespace:     "order-dev",
+				Name:          "order-api",
+				Status:        "Progressing",
+				HealthStatus:  "Progressing",
+				Message:       "正在滚动更新",
+				Desired:       3,
+				Ready:         1,
+				Containers:    []RuntimeContainerStatus{{Name: "app", Image: "registry.local/order-api:v1", Ready: true, RestartCount: 1}},
+				Events:        []RuntimeResourceEvent{{Type: "Warning", Reason: "FailedPull", Message: "拉取镜像失败", Count: 2, OccurredAt: reportedAt}},
+			},
+			{
+				ApplicationID: "app_1",
+				StageKey:      "test",
+				Kind:          "Pod",
+				Namespace:     "order-test",
+				Name:          "order-api-abc",
+				Status:        "Running",
+			},
+		},
+		ReportedAt: reportedAt,
+	}
+	if err := svc.ReportStatus(context.Background(), registered.Cluster.ID, registered.AgentToken, report); err != nil {
+		t.Fatalf("report status: %v", err)
+	}
+
+	resources, err := svc.ListRuntimeResources(context.Background(), RuntimeResourceQuery{
+		Actor:         identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_runtime"},
+		ApplicationID: "app_1",
+		StageKey:      "dev",
+	})
+	if err != nil {
+		t.Fatalf("ListRuntimeResources() error = %v", err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("expected one dev resource, got %#v", resources)
+	}
+	resource := resources[0]
+	if resource.ClusterID != registered.Cluster.ID || resource.TenantID != "tenant_1" || resource.ID == "" {
+		t.Fatalf("resource identity not populated: %#v", resource)
+	}
+	if resource.Kind != "Deployment" || resource.Name != "order-api" || resource.Status != "Progressing" || resource.Ready != 1 || resource.Desired != 3 {
+		t.Fatalf("resource fields not stored: %#v", resource)
+	}
+	if len(resource.Containers) != 1 || resource.Containers[0].RestartCount != 1 {
+		t.Fatalf("container summary not stored: %#v", resource.Containers)
+	}
+	if len(resource.Events) != 1 || resource.Events[0].Reason != "FailedPull" {
+		t.Fatalf("events not stored: %#v", resource.Events)
+	}
+	if len(permission.calls) == 0 || permission.calls[len(permission.calls)-1].action != "runtime:read" || permission.calls[len(permission.calls)-1].resource.TenantID != "tenant_1" {
+		t.Fatalf("runtime query should check runtime:read on tenant, calls=%+v", permission.calls)
+	}
+
+	detail, err := svc.GetRuntimeResource(context.Background(), RuntimeResourceQuery{
+		Actor:         identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_runtime"},
+		ApplicationID: "app_1",
+		StageKey:      "dev",
+		ResourceID:    resource.ID,
+	})
+	if err != nil {
+		t.Fatalf("GetRuntimeResource() error = %v", err)
+	}
+	if detail.ID != resource.ID || len(detail.Events) != 1 {
+		t.Fatalf("unexpected resource detail: %#v", detail)
+	}
+
+	if err := svc.ReportStatus(context.Background(), registered.Cluster.ID, registered.AgentToken, StatusReport{RuntimeResources: []RuntimeResourceStatus{{ApplicationID: "app_1", StageKey: "dev", Group: "apps", Kind: "Deployment", Namespace: "order-dev", Name: "order-api", Status: "Healthy", Ready: 3, Desired: 3}}, ReportedAt: reportedAt.Add(time.Minute)}); err != nil {
+		t.Fatalf("second report status: %v", err)
+	}
+	updated, err := svc.ListRuntimeResources(context.Background(), RuntimeResourceQuery{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_runtime"}, ApplicationID: "app_1", StageKey: "dev"})
+	if err != nil {
+		t.Fatalf("ListRuntimeResources(second) error = %v", err)
+	}
+	if len(updated) != 1 || updated[0].ID != resource.ID || updated[0].Status != "Healthy" || updated[0].Ready != 3 || len(updated[0].Events) != 0 {
+		t.Fatalf("latest report should replace prior resource snapshot, got %#v", updated)
+	}
+}
+
+func TestRuntimeActionsLogsAndTerminalGates(t *testing.T) {
+	repo := newTestRepository(t)
+	clock := &mutableClock{now: time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC)}
+	ids := &staticIDs{ids: []shared.ID{"cluster_1", "snapshot_1", "cluster_task_1"}}
+	permission := &recordingClusterPermission{}
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), PermissionChecker: permission, IDGenerator: ids, Clock: clock})
+	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	report := StatusReport{RuntimeResources: []RuntimeResourceStatus{
+		{ApplicationID: "app_1", StageKey: "dev", Group: "apps", Kind: "Deployment", Namespace: "order-dev", Name: "order-api", Status: "Healthy"},
+		{ApplicationID: "app_1", StageKey: "dev", Kind: "Pod", Namespace: "order-dev", Name: "order-api-abc", Status: "Running", Containers: []RuntimeContainerStatus{{Name: "app", Ready: true}}},
+	}}
+	if err := svc.ReportStatus(context.Background(), registered.Cluster.ID, registered.AgentToken, report); err != nil {
+		t.Fatalf("report status: %v", err)
+	}
+	resources, err := svc.ListRuntimeResources(context.Background(), RuntimeResourceQuery{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_runtime"}, ApplicationID: "app_1", StageKey: "dev"})
+	if err != nil {
+		t.Fatalf("list resources: %v", err)
+	}
+	var deployment, pod RuntimeResource
+	for _, resource := range resources {
+		if resource.Kind == "Deployment" {
+			deployment = resource
+		}
+		if resource.Kind == "Pod" {
+			pod = resource
+		}
+	}
+	task, err := svc.RestartRuntimeResource(context.Background(), RuntimeResourceActionInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_operator"}, ApplicationID: "app_1", StageKey: "dev", ResourceID: deployment.ID})
+	if err != nil {
+		t.Fatalf("RestartRuntimeResource() error = %v", err)
+	}
+	if task.Type != "runtime_restart" || task.ClusterID != registered.Cluster.ID || task.Payload["kind"] != "Deployment" || task.Payload["namespace"] != "order-dev" || task.Payload["name"] != "order-api" {
+		t.Fatalf("unexpected restart task: %#v", task)
+	}
+	if got, err := repo.GetTask(context.Background(), task.ID); err != nil || got.Payload["stage_key"] != "dev" {
+		t.Fatalf("restart task should be stored with audit-safe payload, got %#v err=%v", got, err)
+	}
+	if permission.calls[len(permission.calls)-1].action != "runtime:restart" {
+		t.Fatalf("restart should check runtime:restart, calls=%+v", permission.calls)
+	}
+	logs, err := svc.GetPodLogs(context.Background(), RuntimeResourceActionInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_runtime"}, ApplicationID: "app_1", StageKey: "dev", ResourceID: pod.ID, Container: "app"})
+	if err != nil {
+		t.Fatalf("GetPodLogs() error = %v", err)
+	}
+	if logs.Capability != "pod_logs" || logs.Supported || logs.ResourceID != pod.ID {
+		t.Fatalf("logs should return authorized unsupported capability response, got %#v", logs)
+	}
+	permission.err = shared.NewError(shared.CodePermissionDenied, "permission denied")
+	if _, err := svc.OpenTerminal(context.Background(), RuntimeResourceActionInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_dev"}, ApplicationID: "app_1", StageKey: "dev", ResourceID: pod.ID, Container: "app"}); shared.CodeOf(err) != shared.CodePermissionDenied {
+		t.Fatalf("terminal should be permission-gated, got %v", err)
 	}
 }
 
@@ -234,7 +388,7 @@ func TestTaskPullAndResultAreScopedToCluster(t *testing.T) {
 func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
-	ids := &staticIDs{ids: []shared.ID{"cluster_1", "cluster_task_1", "heartbeat_1", "snapshot_1", "snapshot_2", "cluster_task_result_1"}}
+	ids := &staticIDs{ids: []shared.ID{"cluster_1", "cluster_task_1", "heartbeat_1", "snapshot_1", "snapshot_2", "snapshot_3", "cluster_task_result_1"}}
 	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock})
 	mux := http.NewServeMux()
 	NewHandler(svc).Register(mux)
@@ -287,6 +441,30 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 	mux.ServeHTTP(status, headers(httptest.NewRequest(http.MethodPost, "/api/agent/v1/status/report", bytes.NewBufferString(`{"applications":[{"application_id":"app_1"}]}`))))
 	if status.Code != http.StatusOK {
 		t.Fatalf("status report = %d body=%s", status.Code, status.Body.String())
+	}
+	runtimeStatus := httptest.NewRecorder()
+	mux.ServeHTTP(runtimeStatus, headers(httptest.NewRequest(http.MethodPost, "/api/agent/v1/status/report", bytes.NewBufferString(`{"runtime_resources":[{"application_id":"app_1","stage_key":"dev","kind":"Deployment","namespace":"order-dev","name":"order-api","status":"Healthy","ready":2,"desired":2,"containers":[{"name":"app","image":"registry.local/order-api:v1","ready":true}]}]}`))))
+	if runtimeStatus.Code != http.StatusOK {
+		t.Fatalf("runtime status report = %d body=%s", runtimeStatus.Code, runtimeStatus.Body.String())
+	}
+	runtimeList := httptest.NewRecorder()
+	mux.ServeHTTP(runtimeList, httptest.NewRequest(http.MethodGet, "/api/apps/app_1/stages/dev/runtime/resources?actor_id=usr_runtime", nil))
+	if runtimeList.Code != http.StatusOK || !bytes.Contains(runtimeList.Body.Bytes(), []byte(`"kind":"Deployment"`)) || bytes.Contains(runtimeList.Body.Bytes(), []byte(registered.AgentToken)) {
+		t.Fatalf("runtime list status=%d body=%s", runtimeList.Code, runtimeList.Body.String())
+	}
+	var runtimePayload struct {
+		Items []RuntimeResource `json:"items"`
+	}
+	if err := json.Unmarshal(runtimeList.Body.Bytes(), &runtimePayload); err != nil {
+		t.Fatalf("decode runtime list: %v", err)
+	}
+	if len(runtimePayload.Items) != 1 || runtimePayload.Items[0].ID == "" {
+		t.Fatalf("unexpected runtime list: %#v", runtimePayload)
+	}
+	runtimeDetail := httptest.NewRecorder()
+	mux.ServeHTTP(runtimeDetail, httptest.NewRequest(http.MethodGet, "/api/apps/app_1/stages/dev/runtime/resources/"+runtimePayload.Items[0].ID.String()+"?actor_id=usr_runtime", nil))
+	if runtimeDetail.Code != http.StatusOK || !bytes.Contains(runtimeDetail.Body.Bytes(), []byte(`"name":"order-api"`)) {
+		t.Fatalf("runtime detail status=%d body=%s", runtimeDetail.Code, runtimeDetail.Body.String())
 	}
 	events := httptest.NewRecorder()
 	mux.ServeHTTP(events, headers(httptest.NewRequest(http.MethodPost, "/api/agent/v1/events/report", bytes.NewBufferString(`{"events":[{"type":"Warning","message":"重启"}]}`))))
@@ -420,7 +598,7 @@ func TestClusterServiceStatusForwardingHeartbeatAndUnreachableBranches(t *testin
 	repo := newTestRepository(t)
 	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
 	ids := &staticIDs{ids: []shared.ID{"cluster_1", "heartbeat_1", "snapshot_1", "snapshot_2", "snapshot_3"}}
-	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock, EnvironmentState: failingReportUpdater{err: shared.NewError(shared.CodeInternal, "env failed")}, HeartbeatTimeout: time.Minute})
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock, StageState: failingReportUpdater{err: shared.NewError(shared.CodeInternal, "stage failed")}, HeartbeatTimeout: time.Minute})
 	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群"})
 	if err != nil {
 		t.Fatalf("register: %v", err)
@@ -437,9 +615,9 @@ func TestClusterServiceStatusForwardingHeartbeatAndUnreachableBranches(t *testin
 		t.Fatalf("heartbeat should recover unreachable cluster and set last heartbeat: %#v", cluster)
 	}
 	if err := svc.ReportStatus(context.Background(), registered.Cluster.ID, registered.AgentToken, StatusReport{}); shared.CodeOf(err) != shared.CodeInternal {
-		t.Fatalf("environment updater error should propagate, got %v", err)
+		t.Fatalf("stage updater error should propagate, got %v", err)
 	}
-	svc.envUpdater = nil
+	svc.stageUpdater = nil
 	svc.deployments = failingReportUpdater{err: shared.NewError(shared.CodeInternal, "deployment failed")}
 	if err := svc.ReportStatus(context.Background(), registered.Cluster.ID, registered.AgentToken, StatusReport{}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("deployment updater error should propagate, got %v", err)

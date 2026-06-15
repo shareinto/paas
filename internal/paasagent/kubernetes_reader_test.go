@@ -29,8 +29,8 @@ func TestKubernetesClientReaderSnapshotCollectsArgoWorkloadsAndEvents(t *testing
 			"namespace": "argocd",
 			"labels": map[string]any{
 				labelApplicationID: "app_1",
-				labelEnvironmentID: "env_1",
 				labelDeploymentID:  "deployment_1",
+				labelStageKey:      "dev",
 			},
 		},
 		"status": map[string]any{
@@ -74,7 +74,111 @@ func TestKubernetesClientReaderSnapshotCollectsArgoWorkloadsAndEvents(t *testing
 }
 
 func workloadLabels() map[string]string {
-	return map[string]string{labelApplicationID: "app_1", labelEnvironmentID: "env_1"}
+	return map[string]string{labelApplicationID: "app_1", labelStageKey: "dev"}
+}
+
+func TestKubernetesReaderSnapshotCollectsRuntimeResources(t *testing.T) {
+	replicas := int32(2)
+	ownerController := true
+	client := k8sfake.NewSimpleClientset(
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "order-api", Namespace: "apps", Labels: workloadLabels()}, Spec: appsv1.DeploymentSpec{Replicas: &replicas}, Status: appsv1.DeploymentStatus{ReadyReplicas: 1, UpdatedReplicas: 2, AvailableReplicas: 1}},
+		&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "order-db", Namespace: "apps", Labels: workloadLabels()}, Spec: appsv1.StatefulSetSpec{Replicas: &replicas}, Status: appsv1.StatefulSetStatus{ReadyReplicas: 2, UpdatedReplicas: 2, AvailableReplicas: 2}},
+		&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "log-agent", Namespace: "apps", Labels: workloadLabels()}, Status: appsv1.DaemonSetStatus{DesiredNumberScheduled: 2, NumberReady: 2, UpdatedNumberScheduled: 2, NumberAvailable: 2}},
+		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "order-rs", Namespace: "apps", Labels: workloadLabels(), OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "order-api", Controller: &ownerController}}}, Spec: appsv1.ReplicaSetSpec{Replicas: &replicas}, Status: appsv1.ReplicaSetStatus{ReadyReplicas: 1, FullyLabeledReplicas: 2, AvailableReplicas: 1}},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "order-pod", Namespace: "apps", Labels: workloadLabels(), OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "order-rs", Controller: &ownerController}}},
+			Status: corev1.PodStatus{
+				Phase:      corev1.PodPending,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name: "app", Image: "registry.local/order-api:v1", Ready: false, RestartCount: 3,
+					State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "拉取镜像失败"}},
+				}},
+			},
+		},
+		&corev1.Event{ObjectMeta: metav1.ObjectMeta{Name: "order-event", Namespace: "apps"}, Type: "Warning", Reason: "FailedPull", InvolvedObject: corev1.ObjectReference{Kind: "Pod", Namespace: "apps", Name: "order-pod"}, Message: "拉取镜像失败", Count: 2, LastTimestamp: metav1.NewTime(time.Date(2026, 6, 15, 10, 0, 0, 0, time.UTC))},
+	)
+	dynamicClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{argoApplicationGVR: "ApplicationList"})
+	reader := NewKubernetesClientReaderFromClients(client, dynamicClient, "argocd")
+	snapshot, err := reader.Snapshot(context.Background(), []string{"apps"})
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	byKind := map[string]RuntimeResource{}
+	for _, resource := range snapshot.RuntimeResources {
+		byKind[resource.Kind] = resource
+	}
+	for _, kind := range []string{"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Pod", "Event"} {
+		if byKind[kind].Kind == "" {
+			t.Fatalf("runtime resource kind %s missing, got %+v", kind, snapshot.RuntimeResources)
+		}
+	}
+	if got := byKind["Deployment"]; got.ApplicationID != "app_1" || got.StageKey != "dev" || got.Group != "apps" || got.Ready != 1 || got.Desired != 2 {
+		t.Fatalf("deployment runtime resource mismatch: %+v", got)
+	}
+	if got := byKind["Pod"]; len(got.Containers) != 1 || got.Containers[0].State != "waiting" || got.Containers[0].Message != "ImagePullBackOff: 拉取镜像失败" || got.ParentKind != "ReplicaSet" {
+		t.Fatalf("pod runtime resource should include container and parent state: %+v", got)
+	}
+	if got := byKind["Event"]; got.Status != "Warning" || got.ParentKind != "Pod" || got.ParentName != "order-pod" {
+		t.Fatalf("event runtime resource mismatch: %+v", got)
+	}
+	report := ToStatusReport("cluster_1", snapshot, time.Date(2026, 6, 15, 10, 1, 0, 0, time.UTC))
+	if len(report.RuntimeResources) != len(snapshot.RuntimeResources) {
+		t.Fatalf("status report should include runtime resources, got %+v", report.RuntimeResources)
+	}
+}
+
+func TestKubernetesReaderRuntimeResourcesInheritArgoApplicationOwnership(t *testing.T) {
+	replicas := int32(1)
+	ownerController := true
+	argo := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1",
+		"kind":       "Application",
+		"metadata": map[string]any{
+			"name":      "order-dev",
+			"namespace": "argocd",
+			"labels": map[string]any{
+				labelApplicationID: "app_1",
+				labelDeploymentID:  "deployment_1",
+				labelStageKey:      "dev",
+			},
+		},
+		"status": map[string]any{
+			"sync":   map[string]any{"status": "Synced"},
+			"health": map[string]any{"status": "Healthy"},
+			"resources": []any{
+				map[string]any{"group": "apps", "kind": "Deployment", "namespace": "apps", "name": "order-api", "status": "Synced", "health": map[string]any{"status": "Healthy"}},
+			},
+		},
+	}}
+	client := k8sfake.NewSimpleClientset(
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "order-api", Namespace: "apps"}, Spec: appsv1.DeploymentSpec{Replicas: &replicas}, Status: appsv1.DeploymentStatus{ReadyReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1}},
+		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "order-rs", Namespace: "apps", OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "order-api", Controller: &ownerController}}}, Spec: appsv1.ReplicaSetSpec{Replicas: &replicas}, Status: appsv1.ReplicaSetStatus{ReadyReplicas: 1, FullyLabeledReplicas: 1, AvailableReplicas: 1}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "order-pod", Namespace: "apps", OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "order-rs", Controller: &ownerController}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}},
+		&corev1.Event{ObjectMeta: metav1.ObjectMeta{Name: "order-event", Namespace: "apps"}, Type: "Normal", Reason: "Started", InvolvedObject: corev1.ObjectReference{Kind: "Pod", Namespace: "apps", Name: "order-pod"}, Message: "started", LastTimestamp: metav1.NewTime(time.Date(2026, 6, 15, 11, 0, 0, 0, time.UTC))},
+	)
+	dynamicClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{argoApplicationGVR: "ApplicationList"}, argo)
+	reader := NewKubernetesClientReaderFromClients(client, dynamicClient, "argocd")
+	snapshot, err := reader.Snapshot(context.Background(), []string{"apps"})
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if len(snapshot.Applications) != 1 || len(snapshot.Applications[0].Resources) != 1 {
+		t.Fatalf("argo managed resources not parsed: %+v", snapshot.Applications)
+	}
+	byKind := map[string]RuntimeResource{}
+	for _, resource := range snapshot.RuntimeResources {
+		byKind[resource.Kind] = resource
+	}
+	for _, kind := range []string{"Deployment", "ReplicaSet", "Pod", "Event"} {
+		got := byKind[kind]
+		if got.ApplicationID != "app_1" || got.StageKey != "dev" {
+			t.Fatalf("%s should inherit argo application ownership, got %+v", kind, got)
+		}
+	}
+	if got := byKind["Deployment"]; got.HealthStatus != "Healthy" {
+		t.Fatalf("deployment should inherit argo resource health, got %+v", got)
+	}
 }
 
 func TestKubernetesReaderConstructors(t *testing.T) {

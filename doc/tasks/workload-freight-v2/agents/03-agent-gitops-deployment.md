@@ -14,7 +14,7 @@
 
 ## 前置假设
 
-- Agent 01 提供 Workload 和 WorkloadEnvironmentConfig 查询能力。
+- Agent 01 提供 Workload 和 WorkloadStageConfig 查询能力。
 - Agent 02 提供 Freight、FreightItem、Promotion 相关数据。
 - 如果当前分支暂时没有这些实现，优先定义或使用 port 接口，不复制其他模块逻辑。
 
@@ -23,7 +23,7 @@
 只实现以下能力：
 
 - 单 Workload 标准 Helm chart values 结构。
-- 将 WorkloadEnvironmentConfig 渲染为环境 values。
+- 将 WorkloadStageConfig 渲染为环境 values。
 - Promotion 部署时遍历 FreightItem。
 - 分别更新每个 Workload 的环境 values 中的 image 字段。
 - Deployment 记录关联 Promotion、Freight 和 Workload 变更摘要。
@@ -41,7 +41,7 @@
 ## 关键领域规则
 
 - Freight 只携带镜像版本组合。
-- 环境变量、域名、配置文件、可写目录等差异来自 WorkloadEnvironmentConfig 或环境 values。
+- 环境变量、域名、配置文件、可写目录等差异来自 WorkloadStageConfig 或环境 values。
 - 发布 Freight 到环境时，只更新该环境下各 Workload 的镜像版本和必要部署 values。
 - dev/test 可以直接 commit，staging/prod 按现有策略创建 MR。
 - 回滚通过修改 Git 期望状态完成，不直接操作 Kubernetes。
@@ -51,7 +51,7 @@
 1. 搜索 `internal/modules/gitops` 中 values 写入、Deployment、ManifestRevision 和回滚实现。
 2. 先写多 Workload values 更新测试。
 3. 定义 values 结构，兼容现有单应用 values。
-4. 实现 WorkloadEnvironmentConfig 到 values 的渲染。
+4. 实现 WorkloadStageConfig 到 values 的渲染。
 5. 实现 FreightItem 循环写入。
 6. 实现回滚使用历史 FreightItem。
 7. 补 ManifestRevision 和 Deployment 变更摘要。

@@ -29,8 +29,8 @@ func TestAuditBridgesCoverCriticalEventsAndBuildSpecDetails(t *testing.T) {
 	_ = (TenantProjectLogger{Logger: svc}).Log(ctx, tenantproject.AuditEvent{ActorID: "admin", Action: "project.create", ResourceType: "project", ResourceID: "project_1", Result: "succeeded", Summary: "创建项目", OccurredAt: now})
 	_ = (TenantProjectLogger{Logger: svc}).Log(ctx, tenantproject.AuditEvent{ActorID: "admin", Action: "tenant_member.upsert", ResourceType: "tenant", ResourceID: "tenant_1", Result: "succeeded", Summary: "修改成员权限", OccurredAt: now})
 	_ = (ApplicationEnvironmentLogger{Logger: svc}).Log(ctx, appenv.AuditEvent{ActorID: "user_1", Action: "application.create", ResourceType: "application", ResourceID: "app_1", Result: "succeeded", Summary: "创建应用", OccurredAt: now})
-	_ = (ApplicationEnvironmentLogger{Logger: svc}).Log(ctx, appenv.AuditEvent{ActorID: "user_1", Action: "environment_config.update", ResourceType: "environment_config", ResourceID: "cfg_1", Result: "succeeded", Summary: "修改环境配置", OccurredAt: now})
-	_ = (ApplicationEnvironmentLogger{Logger: svc}).Log(ctx, appenv.AuditEvent{ActorID: "user_1", Action: "environment_secret.update", ResourceType: "environment_secret", ResourceID: "secret_1", Result: "succeeded", Summary: "修改密钥", OccurredAt: now})
+	_ = (ApplicationEnvironmentLogger{Logger: svc}).Log(ctx, appenv.AuditEvent{ActorID: "user_1", Action: "stage_config.update", ResourceType: "stage_config", ResourceID: "cfg_1", Result: "succeeded", Summary: "修改 Stage 配置", OccurredAt: now})
+	_ = (ApplicationEnvironmentLogger{Logger: svc}).Log(ctx, appenv.AuditEvent{ActorID: "user_1", Action: "stage_secret.update", ResourceType: "stage_secret", ResourceID: "secret_1", Result: "succeeded", Summary: "修改密钥", OccurredAt: now})
 	_ = (SourceRepositoryLogger{Logger: svc}).Log(ctx, sourcerepository.AuditEvent{ActorID: "user_1", Action: "repository_migration.create", ResourceType: "repository_migration", ResourceID: "migration_1", Result: "succeeded", Summary: "迁移仓库", OccurredAt: now})
 	_ = (BuildLogger{Logger: svc}).Log(ctx, build.AuditEvent{ActorID: "user_1", Action: "build.trigger", ResourceType: "build_run", ResourceID: "build_1", Result: "succeeded", Summary: "触发构建", Details: map[string]string{"build_command": "mvn clean package", "artifact_copy_command": "cp -ar target/app.jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"", "runtime_base_image": "registry/runtime:17", "token": "plain"}, OccurredAt: now})
 	_ = (BuildLogger{Logger: svc}).Log(ctx, build.AuditEvent{ActorID: "user_1", Action: "build.cancel", ResourceType: "build_run", ResourceID: "build_1", Result: "succeeded", Summary: "取消构建", OccurredAt: now})
@@ -48,7 +48,7 @@ func TestAuditBridgesCoverCriticalEventsAndBuildSpecDetails(t *testing.T) {
 	for _, item := range result.Items {
 		seen[item.Action] = item
 	}
-	for _, action := range []string{"auth.login_local", "auth.login_oidc", "tenant.create", "project.create", "tenant_member.upsert", "application.create", "environment_config.update", "environment_secret.update", "repository_migration.create", "build.trigger", "build.cancel", "freight.create", "promotion.create", "promotion.approve", "manifest_revision.create", "cluster.unreachable"} {
+	for _, action := range []string{"auth.login_local", "auth.login_oidc", "tenant.create", "project.create", "tenant_member.upsert", "application.create", "stage_config.update", "stage_secret.update", "repository_migration.create", "build.trigger", "build.cancel", "freight.create", "promotion.create", "promotion.approve", "manifest_revision.create", "cluster.unreachable"} {
 		if _, ok := seen[action]; !ok {
 			t.Fatalf("missing critical audit action %s in %#v", action, seen)
 		}

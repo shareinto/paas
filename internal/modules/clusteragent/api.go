@@ -20,6 +20,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/clusters/{clusterId}/disable", h.handleDisableCluster)
 	mux.HandleFunc("POST /api/clusters/{clusterId}/drain", h.handleDrainCluster)
 	mux.HandleFunc("POST /api/clusters/{clusterId}/rotate-token", h.handleRotateAgentToken)
+	mux.HandleFunc("GET /api/apps/{appId}/stages/{stageKey}/runtime/resources", h.handleListRuntimeResources)
+	mux.HandleFunc("GET /api/apps/{appId}/stages/{stageKey}/runtime/resources/{resourceId}", h.handleGetRuntimeResource)
+	mux.HandleFunc("POST /api/apps/{appId}/stages/{stageKey}/runtime/resources/{resourceId}/restart", h.handleRestartRuntimeResource)
+	mux.HandleFunc("GET /api/apps/{appId}/stages/{stageKey}/runtime/resources/{resourceId}/logs", h.handleGetPodLogs)
+	mux.HandleFunc("POST /api/apps/{appId}/stages/{stageKey}/runtime/resources/{resourceId}/terminal", h.handleOpenTerminal)
 	mux.HandleFunc("POST /api/agent/v1/heartbeat", h.handleHeartbeat)
 	mux.HandleFunc("POST /api/agent/v1/status/report", h.handleStatusReport)
 	mux.HandleFunc("POST /api/agent/v1/events/report", h.handleEventsReport)
@@ -89,6 +94,85 @@ func (h *Handler) handleRotateAgentToken(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"agent_token": token})
+}
+
+func (h *Handler) handleListRuntimeResources(w http.ResponseWriter, r *http.Request) {
+	query := RuntimeResourceQuery{
+		Actor:         actorFromQuery(r),
+		ApplicationID: shared.ID(r.PathValue("appId")),
+		StageKey:      r.PathValue("stageKey"),
+	}
+	resources, err := h.service.ListRuntimeResources(r.Context(), query)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": resources})
+}
+
+func (h *Handler) handleGetRuntimeResource(w http.ResponseWriter, r *http.Request) {
+	query := RuntimeResourceQuery{
+		Actor:         actorFromQuery(r),
+		ApplicationID: shared.ID(r.PathValue("appId")),
+		StageKey:      r.PathValue("stageKey"),
+		ResourceID:    shared.ID(r.PathValue("resourceId")),
+	}
+	resource, err := h.service.GetRuntimeResource(r.Context(), query)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resource)
+}
+
+func (h *Handler) handleRestartRuntimeResource(w http.ResponseWriter, r *http.Request) {
+	input := runtimeActionInputFromRequest(r)
+	task, err := h.service.RestartRuntimeResource(r.Context(), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, task)
+}
+
+func (h *Handler) handleGetPodLogs(w http.ResponseWriter, r *http.Request) {
+	input := runtimeActionInputFromRequest(r)
+	input.Container = r.URL.Query().Get("container")
+	result, err := h.service.GetPodLogs(r.Context(), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if !result.Supported {
+		status = http.StatusNotImplemented
+	}
+	writeJSON(w, status, result)
+}
+
+func (h *Handler) handleOpenTerminal(w http.ResponseWriter, r *http.Request) {
+	input := runtimeActionInputFromRequest(r)
+	var req struct {
+		Actor     identityaccess.Subject `json:"actor"`
+		Container string                 `json:"container"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Actor.ID != "" {
+		input.Actor = req.Actor
+	}
+	input.Container = req.Container
+	result, err := h.service.OpenTerminal(r.Context(), input)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if !result.Supported {
+		status = http.StatusNotImplemented
+	}
+	writeJSON(w, status, result)
 }
 
 func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -169,6 +253,19 @@ func decodeActor(w http.ResponseWriter, r *http.Request) (identityaccess.Subject
 		return identityaccess.Subject{}, false
 	}
 	return req.Actor, true
+}
+
+func actorFromQuery(r *http.Request) identityaccess.Subject {
+	return identityaccess.Subject{Type: identityaccess.SubjectUser, ID: shared.ID(r.URL.Query().Get("actor_id"))}
+}
+
+func runtimeActionInputFromRequest(r *http.Request) RuntimeResourceActionInput {
+	return RuntimeResourceActionInput{
+		Actor:         actorFromQuery(r),
+		ApplicationID: shared.ID(r.PathValue("appId")),
+		StageKey:      r.PathValue("stageKey"),
+		ResourceID:    shared.ID(r.PathValue("resourceId")),
+	}
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
