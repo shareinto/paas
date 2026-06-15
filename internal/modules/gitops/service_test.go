@@ -301,6 +301,8 @@ func TestApplyPromotionWritesVersionedChartAndMultiSourceArgoApplication(t *test
 	}
 	for _, expected := range []string{
 		"name: order-api-dev",
+		"finalizers:",
+		"resources-finalizer.argocd.argoproj.io",
 		"project: default",
 		"server: https://kubernetes.default.svc",
 		"repoURL: ssh://git@gitlab.example/paas/charts.git",
