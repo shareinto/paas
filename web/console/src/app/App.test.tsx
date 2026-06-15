@@ -30,7 +30,7 @@ afterEach(() => {
 
 test('显示中文控制台导航', async () => {
   renderApp('/apps');
-  expect(await screen.findByText('平台控制台')).toBeInTheDocument();
+  expect(await screen.findByText('CloudDeliver')).toBeInTheDocument();
   const sider = document.querySelector('.ant-layout-sider') as HTMLElement;
   expect(within(sider).getByText('项目')).toBeInTheDocument();
   expect(within(sider).getByText('应用')).toBeInTheDocument();
@@ -50,7 +50,7 @@ test('显示中文控制台导航', async () => {
 
 test('应用导航不再展示二级菜单且导航文字更醒目', async () => {
   renderApp('/apps/app_1');
-  expect(await screen.findByText('平台控制台')).toBeInTheDocument();
+  expect(await screen.findByText('CloudDeliver')).toBeInTheDocument();
   const sider = document.querySelector('.ant-layout-sider') as HTMLElement;
   const appItem = within(sider).getByText('应用').closest('.ant-menu-item') as HTMLElement;
   expect(within(appItem).getByLabelText('deployment-unit')).toBeInTheDocument();

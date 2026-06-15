@@ -22,7 +22,7 @@ export function LoginPage() {
   return (
     <div className="login-page">
       <div className="login-panel">
-        <Typography.Title level={2}>平台控制台</Typography.Title>
+        <Typography.Title level={2}>CloudDeliver</Typography.Title>
         <Typography.Text type="secondary">统一应用交付入口</Typography.Text>
         <Form layout="vertical" className="login-form" onFinish={(values) => localLogin.mutate(values)}>
           <Form.Item label="账号" name="account" rules={[{ required: true, message: '请输入账号' }]}>

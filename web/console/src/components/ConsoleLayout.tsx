@@ -74,7 +74,7 @@ export function ConsoleLayout() {
     <ApplicationTabsContext.Provider value={tabsContext}>
       <Layout className="console-shell">
         <Sider width={256} className="console-sider">
-          <div className="brand"><MenuOutlined className="brand-menu" />平台控制台</div>
+          <div className="brand"><MenuOutlined className="brand-menu" />CloudDeliver</div>
           <div className="nav-section">平台</div>
           <Menu theme="dark" mode="inline" selectedKeys={[selectedKey(location.pathname)]} items={platformItems} onClick={handlePlatformMenuClick} />
           <div className="nav-section">平台管理</div>
