@@ -721,13 +721,24 @@ func (s *Service) DeleteApplicationManifests(ctx context.Context, applicationID 
 	if err != nil {
 		return err
 	}
-	if len(existing) == 0 {
+	if len(existing) > 0 {
+		if _, err := s.manifest.DeleteFiles(ctx, DeleteFilesSpec{
+			Branch:  "main",
+			Message: fmt.Sprintf("paas: delete %s manifests", app.Name),
+			Paths:   existing,
+		}); err != nil {
+			return err
+		}
+	}
+
+	keepFiles := argoApplicationStageKeepFiles(stageKeys)
+	if len(keepFiles) == 0 {
 		return nil
 	}
-	_, err = s.manifest.DeleteFiles(ctx, DeleteFilesSpec{
+	_, err = s.manifest.CommitFiles(ctx, CommitSpec{
 		Branch:  "main",
-		Message: fmt.Sprintf("paas: delete %s manifests", app.Name),
-		Paths:   existing,
+		Message: fmt.Sprintf("paas: keep %s manifest stage directories", app.Name),
+		Files:   keepFiles,
 	})
 	return err
 }
@@ -774,6 +785,21 @@ func (s *Service) existingManifestPaths(ctx context.Context, paths []string) ([]
 		existing = append(existing, path)
 	}
 	return existing, nil
+}
+
+func argoApplicationStageKeepFiles(stageKeys []string) []CommitFile {
+	files := make([]CommitFile, 0, len(stageKeys))
+	for _, stageKey := range stageKeys {
+		stageKey = normalizeStageKey(stageKey)
+		if stageKey == "" {
+			continue
+		}
+		files = append(files, CommitFile{
+			Path:    argoApplicationStageKeepPath(stageKey),
+			Content: "# keep stage directory for Argo CD app-of-apps\n",
+		})
+	}
+	return files
 }
 
 func (s *Service) ListDeployments(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Deployment], error) {

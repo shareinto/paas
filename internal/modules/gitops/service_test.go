@@ -417,6 +417,14 @@ func TestDeleteApplicationManifestsRemovesValuesAndArgoApplicationsForDeployedSt
 	if manifest.Files["apps/order-api/staging/values.yaml"] == "" {
 		t.Fatalf("cleanup should not delete stages without deployment records, files=%+v", manifest.Files)
 	}
+	for _, path := range []string{
+		"argocd/apps/dev/.gitkeep",
+		"argocd/apps/prod/.gitkeep",
+	} {
+		if _, ok := manifest.Files[path]; !ok {
+			t.Fatalf("cleanup should keep stage directory placeholder %s, files=%+v", path, manifest.Files)
+		}
+	}
 	if len(manifest.Deletes) != 1 {
 		t.Fatalf("cleanup should submit one delete commit, deletes=%+v", manifest.Deletes)
 	}
@@ -438,6 +446,9 @@ func TestDeleteApplicationManifestsIgnoresMissingFilesAndFailsOnRepositoryError(
 	delete(manifest.Files, "argocd/apps/dev/order-api-dev.yaml")
 	if err := svc.DeleteApplicationManifests(context.Background(), "app_1"); err != nil {
 		t.Fatalf("missing manifest files should be ignored, got %v", err)
+	}
+	if _, ok := manifest.Files["argocd/apps/dev/.gitkeep"]; !ok {
+		t.Fatalf("cleanup retry should restore stage directory placeholder, files=%+v", manifest.Files)
 	}
 
 	errBoom := shared.NewError(shared.CodeInternal, "gitlab delete failed")
