@@ -44,17 +44,29 @@ test('Freight 按创建时间从左到右显示并展示流程引导', async () 
   expect(within(cards[0]).getByRole('button', { name: '审批' })).toHaveTextContent('');
 });
 
-test('部署 DAG 画布锁定且不显示缩放控制器', () => {
+test('部署 DAG 画布可拖动平移并支持缩放控制器', async () => {
   const pageSource = readFileSync('src/pages/PromotionPage.tsx', 'utf8');
 
   expect(pageSource).toContain('nodesDraggable={false}');
-  expect(pageSource).toContain('panOnDrag={false}');
-  expect(pageSource).toContain('zoomOnScroll={false}');
-  expect(pageSource).toContain('zoomOnDoubleClick={false}');
-  expect(pageSource).toContain('zoomOnPinch={false}');
+  expect(pageSource).toContain('panOnDrag');
+  expect(pageSource).toContain('zoomOnScroll');
+  expect(pageSource).toContain('zoomOnDoubleClick');
+  expect(pageSource).toContain('zoomOnPinch');
   expect(pageSource).toContain('panOnScroll={false}');
   expect(pageSource).toContain('selectNodesOnDrag={false}');
-  expect(pageSource).not.toContain('<Controls />');
+  expect(pageSource).toContain('showInteractive={false}');
+  expect(pageSource).toContain("'controls.ariaLabel': '画布控制'");
+  expect(pageSource).toContain("'controls.zoomIn.ariaLabel': '放大'");
+  expect(pageSource).toContain("'controls.zoomOut.ariaLabel': '缩小'");
+  expect(pageSource).toContain("'controls.fitView.ariaLabel': '适配视图'");
+
+  renderPromotionPage();
+  expect(await screen.findByLabelText('应用部署 DAG')).toBeInTheDocument();
+  expect(await screen.findByLabelText('画布控制')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '放大' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '缩小' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '适配视图' })).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '切换交互' })).not.toBeInTheDocument();
 });
 
 test('Stage 卡片显示 DAG 投影和部署状态', async () => {

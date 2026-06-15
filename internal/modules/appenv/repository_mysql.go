@@ -48,6 +48,7 @@ func (r *MySQLRepository) DeleteApplicationData(ctx context.Context, application
 	exec := database.ExecutorFromContext(ctx, r.db)
 	for _, stmt := range []string{
 		"DELETE FROM workload_environment_configs WHERE application_id = ?",
+		"DELETE FROM workload_default_configs WHERE application_id = ?",
 		"DELETE FROM workloads WHERE application_id = ?",
 		"DELETE FROM environment_events WHERE application_id = ?",
 		"DELETE FROM environment_states WHERE application_id = ?",

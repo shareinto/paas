@@ -1006,7 +1006,29 @@ func (s *Service) DeleteNamedBuildPipeline(ctx context.Context, actor identityac
 	if err := s.check(ctx, actor, app, "build_pipeline:delete"); err != nil {
 		return err
 	}
+	if err := s.ensurePipelineNotBoundToWorkload(ctx, pipeline); err != nil {
+		return err
+	}
 	return s.deletePipeline(ctx, pipeline, actor.ID)
+}
+
+func (s *Service) ensurePipelineNotBoundToWorkload(ctx context.Context, pipeline BuildPipeline) error {
+	if s.workloads == nil || pipeline.ID.IsZero() {
+		return nil
+	}
+	workloads, err := s.workloads.ListEnabledWorkloadsByPipeline(ctx, pipeline.ApplicationID, pipeline.ID)
+	if err != nil {
+		if shared.CodeOf(err) == shared.CodeNotFound {
+			return nil
+		}
+		return err
+	}
+	for _, workload := range workloads {
+		if workload.PipelineID == pipeline.ID {
+			return shared.NewError(shared.CodeFailedPrecondition, "已有工作负载关联，不能删除")
+		}
+	}
+	return nil
 }
 
 func (s *Service) deletePipeline(ctx context.Context, pipeline BuildPipeline, actorID shared.ID) error {

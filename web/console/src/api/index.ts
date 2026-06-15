@@ -266,7 +266,7 @@ export async function listFreights(applicationId?: string) {
 }
 
 export async function getFreightCreationContext(applicationId = DEFAULT_APP_ID) {
-  if (!hasAPIBaseURL()) return mock.getFreightCreationContext();
+  if (!hasAPIBaseURL()) return mock.getFreightCreationContext(applicationId);
   const item = await request<any>(`/api/apps/${encodeURIComponent(applicationId)}/freights/creation-context`);
   return mapFreightCreationContext(item);
 }

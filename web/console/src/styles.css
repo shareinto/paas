@@ -163,7 +163,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 .workload-config-file-row { display: grid; gap: 10px; padding: 10px; border: 1px solid var(--border-soft); border-radius: var(--radius); background: #fbfdff; }
 .workload-row-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .workload-kv-row .ant-form-item, .workload-dir-row .ant-form-item, .workload-config-file-row .ant-form-item { margin-bottom: 0; }
-.application-delivery-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.application-delivery-workspace { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(0, 2fr); gap: 16px; align-items: start; }
 .application-delivery-left, .application-delivery-right { min-width: 0; display: grid; gap: 16px; }
 .application-delivery-right .deployment-dag-canvas { height: 640px; }
 .build-tab-layout { display: grid; gap: 22px; }
@@ -291,6 +291,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 .freight-card-item { display: grid; gap: 2px; color: var(--text-muted); font-size: 12px; min-width: 0; }
 .freight-card-actions { margin-top: auto; }
 .deployment-dag-canvas { min-width: 0; height: 720px; border: 1px solid var(--border); border-radius: var(--radius); background: #f8fbff; overflow: hidden; }
+.deployment-dag-canvas .react-flow__pane { cursor: grab; }
+.deployment-dag-canvas .react-flow__pane.dragging { cursor: grabbing; }
 .deployment-stage-node { --stage-color: var(--primary); position: relative; width: 232px; min-height: 176px; border: 2px solid var(--stage-color); border-radius: 8px; background: #fff; overflow: hidden; box-shadow: 0 8px 18px rgba(15, 23, 42, .08); transition: opacity .15s ease, filter .15s ease, box-shadow .15s ease; }
 .deployment-stage-node.active { border-color: #8eb8ff; box-shadow: 0 0 0 3px rgba(21, 91, 212, 0.08), 0 8px 18px rgba(15, 23, 42, .08); }
 .deployment-stage-node.drop-ready { box-shadow: 0 0 0 4px rgba(21, 91, 212, .10), 0 8px 18px rgba(15, 23, 42, .08); }

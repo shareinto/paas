@@ -1,7 +1,8 @@
 import { ConfigProvider } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { readFileSync } from 'node:fs';
 import { afterEach, expect, test } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ApplicationWorkspacePage } from './ApplicationDetailPage';
@@ -101,6 +102,13 @@ test('应用详情展示统一交付工作台并移除二级页签', async () =>
   expect(within(workloadCard).getByRole('button', { name: '删除' })).toHaveTextContent('');
 });
 
+test('应用详情交付工作台桌面布局为左三分一右三分二', () => {
+  const styles = readFileSync('src/styles.css', 'utf8');
+
+  expect(styles).toMatch(/\.application-delivery-workspace \{[^}]*grid-template-columns: minmax\(320px, 1fr\) minmax\(0, 2fr\);/);
+  expect(styles).toMatch(/@media \(max-width: 1180px\) \{[\s\S]*\.promotion-workspace, \.delivery-dag-editor, \.application-delivery-workspace \{ grid-template-columns: 1fr; \}/);
+});
+
 test('旧部署路由也展示统一交付工作台', async () => {
   renderPage('/apps/app_1/deploy');
 
@@ -179,6 +187,52 @@ test('工作负载创建弹层使用滚动大页并最终创建', async () => {
   expect(await screen.findByText('订单搜索')).toBeInTheDocument();
 });
 
+test('工作负载变化同步到 Freight 抽屉和 Stage 配置弹窗', async () => {
+  renderPage('/apps/app_1');
+  await userEvent.click(await screen.findByRole('button', { name: /创建工作负载/ }));
+
+  const createDialog = await screen.findByRole('dialog', { name: '创建工作负载' });
+  await userEvent.type(within(createDialog).getByLabelText('工作负载标识'), 'order-cache');
+  await userEvent.type(within(createDialog).getByLabelText('显示名称'), '订单联动');
+  await userEvent.click(within(createDialog).getByText('自定义镜像'));
+  await userEvent.click(within(createDialog).getByRole('button', { name: '创建' }));
+
+  const workloadPanel = await screen.findByTestId('workload-panel');
+  const createdCard = (await within(workloadPanel).findByText('订单联动')).closest('.resource-card') as HTMLElement;
+  const freightPanel = screen.getByText('1 发布包').closest('.workspace-section-card') as HTMLElement;
+
+  const refreshedCreateFreightButton = within(freightPanel).getByRole('button', { name: '创建 Freight' });
+  await waitFor(() => expect(refreshedCreateFreightButton).not.toBeDisabled());
+  await userEvent.click(refreshedCreateFreightButton);
+  const freightDrawer = await screen.findByRole('dialog', { name: '创建 Freight' });
+  expect(within(freightDrawer).getByText('订单联动')).toBeInTheDocument();
+  await userEvent.click(within(freightDrawer).getByRole('button', { name: '取消' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+  await userEvent.click((await screen.findAllByRole('button', { name: '编辑配置' }))[0]);
+  const configDialog = await screen.findByRole('dialog', { name: '编辑 Stage 配置' });
+  expect(within(configDialog).getByRole('option', { name: '订单联动' })).toBeInTheDocument();
+  await userEvent.click(within(configDialog).getByRole('button', { name: '取消' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+  await userEvent.click(within(createdCard).getByRole('button', { name: '删除' }));
+  await userEvent.click(await screen.findByRole('button', { name: '确认删除' }));
+  await waitFor(() => expect(within(workloadPanel).queryByText('订单联动')).not.toBeInTheDocument());
+
+  const freightPanelAfterDelete = screen.getByText('1 发布包').closest('.workspace-section-card') as HTMLElement;
+  const createFreightAfterDeleteButton = within(freightPanelAfterDelete).getByRole('button', { name: '创建 Freight' });
+  await waitFor(() => expect(createFreightAfterDeleteButton).not.toBeDisabled());
+  await userEvent.click(createFreightAfterDeleteButton);
+  const refreshedFreightDrawer = await screen.findByRole('dialog');
+  expect(within(refreshedFreightDrawer).queryByText('订单联动')).not.toBeInTheDocument();
+  await userEvent.click(within(refreshedFreightDrawer).getByRole('button', { name: '取消' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+  await userEvent.click((await screen.findAllByRole('button', { name: '编辑配置' }))[0]);
+  const refreshedConfigDialog = await screen.findByRole('dialog');
+  expect(within(refreshedConfigDialog).queryByRole('option', { name: '订单联动' })).not.toBeInTheDocument();
+});
+
 test('工作负载编辑使用中文弹窗保存后更新卡片', async () => {
   renderPage('/apps/app_1');
   const workloadPanel = await screen.findByTestId('workload-panel');
@@ -225,4 +279,16 @@ test('工作负载页面标题和按钮不使用英文用户文案', async () =>
   expect(within(workloadPanel).queryByText('Workload')).not.toBeInTheDocument();
   expect(within(workloadPanel).queryByText('Create Workload')).not.toBeInTheDocument();
   expect(within(workloadPanel).queryByText('Deploy Config')).not.toBeInTheDocument();
+});
+
+test('已被工作负载关联的流水线不允许删除', async () => {
+  renderPage('/apps/app_1');
+
+  const pipelinePanel = await screen.findByTestId('pipeline-panel');
+  const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
+  const deleteButton = within(pipelineCard).getByRole('button', { name: /删除/ });
+
+  expect(deleteButton).toBeDisabled();
+  await userEvent.hover(deleteButton);
+  expect(await screen.findByText('已有工作负载关联，不能删除')).toBeInTheDocument();
 });

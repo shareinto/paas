@@ -1,6 +1,6 @@
 import { BuildOutlined, DeleteOutlined, DeploymentUnitOutlined, EditOutlined, PlusOutlined, PlayCircleOutlined, StopOutlined } from '@ant-design/icons';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, Checkbox, Empty, Form, Input, Modal, Popconfirm, Select, Segmented, Space, Spin, Tag, Typography, message } from 'antd';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { Button, Card, Checkbox, Empty, Form, Input, Modal, Popconfirm, Select, Segmented, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -26,6 +26,7 @@ import {
   type Application,
   type BuildPipeline,
   type BuildRun,
+  type FreightCreationContext,
   type Project,
   type RuntimeEnvironment,
   type Workload
@@ -45,6 +46,26 @@ const IMAGE_SOURCE_OPTIONS = [
   { label: '自定义镜像', value: 'custom_image' }
 ];
 type ApplicationSection = 'build' | 'deploy' | 'config';
+
+function updateWorkloadCaches(queryClient: QueryClient, applicationId: string, updater: (current: Workload[]) => Workload[]) {
+  const queryKeys = [
+    ['workloads', applicationId],
+    ['workloads', applicationId, 'stage-config'],
+    ['workloads', applicationId, 'pipeline-cards']
+  ];
+  for (const queryKey of queryKeys) {
+    queryClient.setQueryData<Workload[]>(queryKey, (current = []) => updater(current));
+    queryClient.invalidateQueries({ queryKey, refetchType: 'none' });
+  }
+  queryClient.setQueryData<FreightCreationContext>(['freight-creation-context', applicationId], (current) => {
+    if (!current) return current;
+    return {
+      ...current,
+      enabledWorkloads: updater(current.enabledWorkloads).filter((workload) => workload.status !== 'deleted' && workload.status !== 'disabled')
+    };
+  });
+  queryClient.invalidateQueries({ queryKey: ['freight-creation-context', applicationId] });
+}
 
 export function ApplicationDetailPage() {
   return <ApplicationWorkspacePage />;
@@ -154,8 +175,7 @@ function WorkloadPanel({ applicationId }: { applicationId: string }) {
     mutationFn: (workloadId: string) => deleteWorkload(applicationId, workloadId),
     onSuccess: (workload) => {
       message.success('工作负载已删除');
-      queryClient.setQueryData<Workload[]>(['workloads', applicationId], (current = []) => current.filter((item) => item.id !== workload.id));
-      queryClient.invalidateQueries({ queryKey: ['workloads', applicationId], refetchType: 'none' });
+      updateWorkloadCaches(queryClient, applicationId, (current) => current.filter((item) => item.id !== workload.id));
       if (editingWorkload?.id === workload.id) setEditingWorkload(null);
     },
     onError: (error) => message.error(error instanceof Error ? error.message : '删除工作负载失败')
@@ -228,9 +248,7 @@ function WorkloadWizardModal({ applicationId, workload, open, onClose }: { appli
     },
     onSuccess: (workload) => {
       message.success(isEditing ? '工作负载已保存' : '工作负载已创建');
-      queryClient.setQueryData<Workload[]>(['workloads', applicationId], (current = []) => [workload, ...current.filter((item) => item.id !== workload.id)]);
-      queryClient.invalidateQueries({ queryKey: ['workloads', applicationId], refetchType: 'none' });
-      queryClient.invalidateQueries({ queryKey: ['workloads', applicationId, 'pipeline-cards'], refetchType: 'none' });
+      updateWorkloadCaches(queryClient, applicationId, (current) => [workload, ...current.filter((item) => item.id !== workload.id)]);
       queryClient.invalidateQueries({ queryKey: ['workload-default-config', applicationId, workload.id], refetchType: 'none' });
       queryClient.invalidateQueries({ queryKey: ['workload-environment-configs', applicationId, workload.id], refetchType: 'none' });
       onClose();
@@ -302,7 +320,9 @@ function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onP
   const [editingPipeline, setEditingPipeline] = useState<BuildPipeline | null>(null);
   const [historyPipeline, setHistoryPipeline] = useState<BuildPipeline | null>(null);
   const { data: pipelines = EMPTY_LIST, isLoading } = useQuery({ queryKey: ['build-pipelines', applicationId], queryFn: () => listBuildPipelines(applicationId), enabled: !!applicationId, staleTime: 1000 });
+  const { data: workloads = EMPTY_LIST } = useQuery({ queryKey: ['workloads', applicationId], queryFn: () => listWorkloads(applicationId), enabled: !!applicationId });
   const visiblePipelines = sortByUpdatedAtDesc(mergePipelines(localPipelines, pipelines as BuildPipeline[]));
+  const referencedPipelineIds = useMemo(() => new Set((workloads as Workload[]).filter((workload) => workload.status !== 'deleted' && workload.pipelineId).map((workload) => workload.pipelineId)), [workloads]);
   const deleteMutation = useMutation({
     mutationFn: deleteBuildPipeline,
     onSuccess: (_, pipelineId) => {
@@ -323,18 +343,33 @@ function BuildPipelinePanel({ applicationId, projectId, localPipelines = [], onP
       <div className="workspace-section-body">
         {isLoading ? <Spin /> : visiblePipelines.length === 0 ? <Empty description="暂无流水线" /> : (
           <div className="resource-card-strip">
-            {visiblePipelines.map((item) => (
-              <article key={item.id} className="resource-card workspace-item-card workspace-item-card--pipeline">
-                <div className="resource-card-head">
-                  <Typography.Text strong>{item.displayName || item.name}</Typography.Text>
-                </div>
-                <div className="resource-card-actions">
-                  <Button aria-label="触发构建" icon={<PlayCircleOutlined />} onClick={() => setHistoryPipeline(item)} />
-                  <Button aria-label="编辑" icon={<EditOutlined />} onClick={() => setEditingPipeline(item)} />
-                  <Button danger aria-label="删除" icon={<DeleteOutlined />} loading={deleteMutation.isPending} onClick={() => deleteMutation.mutate(item.id)} />
-                </div>
-              </article>
-            ))}
+            {visiblePipelines.map((item) => {
+              const deleteDisabled = referencedPipelineIds.has(item.id);
+              return (
+                <article key={item.id} className="resource-card workspace-item-card workspace-item-card--pipeline">
+                  <div className="resource-card-head">
+                    <Typography.Text strong>{item.displayName || item.name}</Typography.Text>
+                  </div>
+                  <div className="resource-card-actions">
+                    <Button aria-label="触发构建" icon={<PlayCircleOutlined />} onClick={() => setHistoryPipeline(item)} />
+                    <Button aria-label="编辑" icon={<EditOutlined />} onClick={() => setEditingPipeline(item)} />
+                    <Tooltip title={deleteDisabled ? '已有工作负载关联，不能删除' : ''}>
+                      <Button
+                        danger
+                        aria-label="删除"
+                        title={deleteDisabled ? '已有工作负载关联，不能删除' : undefined}
+                        icon={<DeleteOutlined />}
+                        loading={deleteMutation.isPending}
+                        disabled={deleteDisabled}
+                        onClick={() => {
+                          if (!deleteDisabled) deleteMutation.mutate(item.id);
+                        }}
+                      />
+                    </Tooltip>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
       </div>

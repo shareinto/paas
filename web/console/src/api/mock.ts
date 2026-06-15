@@ -505,10 +505,11 @@ export async function listFreights(applicationId?: string): Promise<Freight[]> {
   return freights.map(cloneFreight);
 }
 
-export async function getFreightCreationContext(): Promise<FreightCreationContext> {
+export async function getFreightCreationContext(applicationId = 'app_1'): Promise<FreightCreationContext> {
   await wait();
+  const currentEnabledWorkloads = enabledWorkloadsForApplication(applicationId);
   return {
-    enabledWorkloads: enabledWorkloads.map((item) => ({ ...item })),
+    enabledWorkloads: currentEnabledWorkloads,
     latestReleasesByWorkload: cloneRecord(latestReleasesByWorkload),
     latestArtifactsByWorkload: cloneRecord(latestArtifactsByWorkload),
     stageEligibility: Object.fromEntries(Object.entries(stageEligibility).map(([key, value]) => [key, [...value]])),
@@ -529,14 +530,16 @@ export async function getFreight(freightId: string): Promise<Freight> {
   return cloneFreight(freight);
 }
 
-export async function createFreight(_applicationId: string, input: CreateFreightInput): Promise<Freight> {
+export async function createFreight(applicationId: string, input: CreateFreightInput): Promise<Freight> {
   await wait();
-  if (input.items.length !== enabledWorkloads.length) throw new Error('Freight 必须覆盖所有启用 Workload');
+  const currentEnabledWorkloads = enabledWorkloadsForApplication(applicationId);
+  if (input.items.length !== currentEnabledWorkloads.length) throw new Error('Freight 必须覆盖所有启用 Workload');
   const version = input.name || `manual-${Date.now()}`;
   const items = input.items.map((item) => {
-    const workload = enabledWorkloads.find((candidate) => candidate.id === item.workloadId);
+    const workload = currentEnabledWorkloads.find((candidate) => candidate.id === item.workloadId);
     if (!workload) throw new Error('Workload 不存在');
     const release = latestReleasesByWorkload[item.workloadId];
+    if (item.sourceType !== 'custom_image' && !release) throw new Error('请选择镜像版本');
     return {
       id: `item_${Date.now()}_${item.workloadId}`,
       workloadId: item.workloadId,
@@ -545,9 +548,9 @@ export async function createFreight(_applicationId: string, input: CreateFreight
       sourceType: item.sourceType,
       releaseId: item.releaseId,
       buildArtifactId: item.buildArtifactId,
-      image: item.sourceType === 'custom_image' ? item.imageRef || '' : release.image,
-      digest: item.sourceType === 'custom_image' ? undefined : release.digest,
-      commit: item.sourceType === 'custom_image' ? undefined : release.commit
+      image: item.sourceType === 'custom_image' ? item.imageRef || '' : release!.image,
+      digest: item.sourceType === 'custom_image' ? undefined : release!.digest,
+      commit: item.sourceType === 'custom_image' ? undefined : release!.commit
     };
   });
   const freight = { id: `freight_${Date.now()}`, version, image: `${items.length} 个 Workload`, digest: '-', commit: '-', createdAt: '刚刚', items };
@@ -1082,6 +1085,8 @@ export async function deleteBuildPipeline(pipelineId: string) {
   for (const [applicationId, pipelines] of Object.entries(buildPipelines)) {
     const index = pipelines.findIndex((pipeline) => pipeline.id === pipelineId);
     if (index >= 0) {
+      const hasBoundWorkload = (workloads[applicationId] || []).some((workload) => workload.status !== 'deleted' && workload.pipelineId === pipelineId);
+      if (hasBoundWorkload) throw new Error('已有工作负载关联，不能删除');
       buildPipelines[applicationId].splice(index, 1);
       return;
     }
@@ -1107,6 +1112,20 @@ export async function triggerBuild(applicationId: string, input: { gitRef?: stri
 
 function cloneWorkload(workload: Workload): Workload {
   return { ...workload, envStatuses: workload.envStatuses.map((item) => ({ ...item })) };
+}
+
+function enabledWorkloadsForApplication(applicationId: string): Workload[] {
+  const byId = new Map(enabledWorkloads
+    .filter((item) => item.applicationId === applicationId && item.status === 'enabled')
+    .map((item) => [item.id, item]));
+  for (const workload of workloads[applicationId] || []) {
+    if (workload.status === 'deleted' || workload.status === 'disabled') {
+      byId.delete(workload.id);
+      continue;
+    }
+    if (!byId.has(workload.id)) byId.set(workload.id, workload);
+  }
+  return [...byId.values()].map(cloneWorkload);
 }
 
 function pipelineDisplayName(applicationId: string, pipelineId?: string) {

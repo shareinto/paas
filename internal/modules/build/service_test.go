@@ -960,6 +960,32 @@ func TestDeleteBuildPipelineDeletesManagedJenkinsJob(t *testing.T) {
 	}
 }
 
+func TestDeleteNamedBuildPipelineRejectsBoundWorkload(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	pipeline := createDefaultPipeline(t, env)
+	env.svc.SetWorkloadQuery(fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{
+		"app_user": {
+			{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: pipeline.ID, Name: "api", DisplayName: "用户接口", Status: "enabled"},
+		},
+	}})
+
+	err := env.svc.DeleteNamedBuildPipeline(ctx, buildActor(), pipeline.ID)
+	if shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("DeleteNamedBuildPipeline() code = %s, err = %v", shared.CodeOf(err), err)
+	}
+	if len(env.runner.deletedJobs) != 0 {
+		t.Fatalf("bound pipeline should not delete Jenkins job, got %+v", env.runner.deletedJobs)
+	}
+	got, err := env.repo.GetPipeline(ctx, pipeline.ID)
+	if err != nil {
+		t.Fatalf("GetPipeline() error = %v", err)
+	}
+	if got.Status != BuildPipelineStatusActive {
+		t.Fatalf("bound pipeline should stay active, got %+v", got)
+	}
+}
+
 func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing.T) {
 	env := newBuildTestEnv(t)
 	seedRuntimeEnvironments(t, env)

@@ -219,6 +219,36 @@ test('mock 删除 Workload 后列表不再返回该项', async () => {
   ]));
 });
 
+test('mock Freight 创建上下文跟随 Workload 创建和删除变化', async () => {
+  const api = await import('./index');
+
+  await expect(api.getFreightCreationContext('app_1')).resolves.not.toMatchObject({
+    enabledWorkloads: expect.arrayContaining([expect.objectContaining({ name: 'cache-check' })])
+  });
+
+  const workload = await api.createWorkload('app_1', {
+    name: 'cache-check',
+    displayName: '缓存联动',
+    workloadType: 'deployment',
+    imageSourceMode: 'custom_image'
+  });
+
+  await expect(api.getFreightCreationContext('app_1')).resolves.toMatchObject({
+    enabledWorkloads: expect.arrayContaining([expect.objectContaining({ id: workload.id, displayName: '缓存联动' })])
+  });
+
+  await api.deleteWorkload('app_1', workload.id);
+  await expect(api.getFreightCreationContext('app_1')).resolves.not.toMatchObject({
+    enabledWorkloads: expect.arrayContaining([expect.objectContaining({ id: workload.id })])
+  });
+});
+
+test('mock 删除被工作负载关联的流水线会失败', async () => {
+  const api = await import('./index');
+
+  await expect(api.deleteBuildPipeline('pipeline_1')).rejects.toThrow('已有工作负载关联，不能删除');
+});
+
 test('真实 API 查询 Workload 环境配置映射配置文件和可写目录真实字段', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {

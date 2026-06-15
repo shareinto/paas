@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties, type DragEvent, type 
 import { CheckCircleOutlined, EditOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Select, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd';
-import { Background, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
+import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useParams } from 'react-router-dom';
 import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, getApplication, getFreight, getFreightCreationContext, listAppStages, listEligibleFreights, listFreights, listWorkloadEnvironmentConfigs, listWorkloads, saveWorkloadEnvironmentConfig, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type Workload, type WorkloadEnvironmentConfig } from '../api';
@@ -158,7 +158,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
 
   const sortedFreights = useMemo(() => [...(freightsQuery.data || [])].sort((a, b) => timeValue(a.createdAt) - timeValue(b.createdAt)), [freightsQuery.data]);
   const enabledWorkloads = contextQuery.data?.enabledWorkloads || [];
-  const configWorkloads = workloadsQuery.data || enabledWorkloads;
+  const configWorkloads = (workloadsQuery.data || enabledWorkloads).filter((workload) => workload.status !== 'deleted');
   const workloadNameById = useMemo(() => Object.fromEntries(enabledWorkloads.map((workload) => [workload.id, workload.displayName || workload.name])), [enabledWorkloads]);
   const stages = useMemo(() => (appStagesQuery.data || []).map((stage) => withStageDefaults(stage, sortedFreights, stageFreights)), [appStagesQuery.data, sortedFreights, stageFreights]);
   const defaultNamespace = applicationQuery.data?.project || applicationQuery.data?.projectId || 'default';
@@ -252,6 +252,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   };
 
   function handleOpenStageConfig(stage: StageView) {
+    queryClient.invalidateQueries({ queryKey: ['workloads', applicationId, 'stage-config'] });
     setConfigStage(stage);
     setSelectedConfigWorkloadId(configWorkloads[0]?.id || '');
     configForm.setFieldsValue(workloadConfigFormValues());
@@ -259,8 +260,8 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
 
   useEffect(() => {
     if (!configStage) return;
-    if (!selectedConfigWorkloadId && configWorkloads[0]?.id) {
-      setSelectedConfigWorkloadId(configWorkloads[0].id);
+    if (!configWorkloads.some((workload) => workload.id === selectedConfigWorkloadId)) {
+      setSelectedConfigWorkloadId(configWorkloads[0]?.id || '');
     }
   }, [configStage, configWorkloads, selectedConfigWorkloadId]);
 
@@ -289,7 +290,10 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
           aria-label="创建 Freight"
           icon={<PlusOutlined />}
           disabled={contextQuery.isLoading}
-          onClick={() => setDrawerOpen(true)}
+          onClick={() => {
+            queryClient.invalidateQueries({ queryKey: ['freight-creation-context', applicationId] });
+            setDrawerOpen(true);
+          }}
         />
       </div>
       <div className="workspace-section-body">
@@ -339,14 +343,22 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
           nodeTypes={nodeTypes}
           nodesDraggable={false}
           nodesConnectable={false}
-          panOnDrag={false}
+          panOnDrag
           panOnScroll={false}
-          zoomOnScroll={false}
-          zoomOnDoubleClick={false}
-          zoomOnPinch={false}
+          zoomOnScroll
+          zoomOnDoubleClick
+          zoomOnPinch
           selectNodesOnDrag={false}
+          ariaLabelConfig={{
+            'controls.ariaLabel': '画布控制',
+            'controls.zoomIn.ariaLabel': '放大',
+            'controls.zoomOut.ariaLabel': '缩小',
+            'controls.fitView.ariaLabel': '适配视图',
+            'controls.interactive.ariaLabel': '切换交互'
+          }}
           fitView
         >
+          <Controls showInteractive={false} position="bottom-right" />
           <Background />
         </ReactFlow>
       )}
@@ -417,27 +429,48 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
       </Modal>
 
       <Modal title="编辑 Stage 配置" open={!!configStage} onCancel={() => setConfigStage(null)} width={920} destroyOnHidden footer={[
-        <Button key="cancel" onClick={() => setConfigStage(null)}>取消</Button>,
-        <Button key="save" aria-label="保存" type="primary" loading={stageConfigMutation.isPending} onClick={() => stageConfigMutation.mutate()}>保存</Button>
+        <Button key="cancel" aria-label="取消" onClick={() => setConfigStage(null)}>取消</Button>,
+        <Button key="save" aria-label="保存" type="primary" disabled={configWorkloads.length === 0 || !selectedConfigWorkloadId} loading={stageConfigMutation.isPending} onClick={() => stageConfigMutation.mutate()}>保存</Button>
       ]}>
-        <Form form={configForm} layout="vertical" className="workload-large-form">
-          <Form.Item label="选择工作负载" required>
-            <select
-              aria-label="选择工作负载"
-              className="native-select"
-              value={selectedConfigWorkloadId}
-              disabled={workloadsQuery.isLoading}
-              onChange={(event) => setSelectedConfigWorkloadId(event.target.value)}
-            >
-              {configWorkloads.map((workload) => <option key={workload.id} value={workload.id}>{workload.displayName || workload.name}</option>)}
-            </select>
-          </Form.Item>
-          <WorkloadRuntimeFields />
-          <ConfigValueLists />
-        </Form>
+        {configWorkloads.length === 0 ? <Empty description="暂无工作负载" /> : (
+          <Form form={configForm} layout="vertical" className="workload-large-form">
+            <Form.Item label="选择工作负载" required>
+              <select
+                aria-label="选择工作负载"
+                className="native-select"
+                value={selectedConfigWorkloadId}
+                disabled={workloadsQuery.isLoading}
+                onChange={(event) => setSelectedConfigWorkloadId(event.target.value)}
+              >
+                {configWorkloads.map((workload) => <option key={workload.id} value={workload.id}>{workload.displayName || workload.name}</option>)}
+              </select>
+            </Form.Item>
+            <WorkloadRuntimeFields />
+            <ConfigValueLists />
+          </Form>
+        )}
       </Modal>
 
-      <Drawer title="创建 Freight" open={drawerOpen} width={980} onClose={() => setDrawerOpen(false)} extra={<Button type="primary" aria-label="创建 Freight" disabled={submitDisabled} loading={createFreightMutation.isPending} onClick={handleCreateFreight}>创建 Freight</Button>}>
+      <Drawer
+        title="创建 Freight"
+        open={drawerOpen}
+        width={980}
+        destroyOnHidden
+        onClose={() => setDrawerOpen(false)}
+        extra={(
+          <Space>
+            <Button
+              aria-label="取消"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setDrawerOpen(false);
+              }}
+            >取消</Button>
+            <Button type="primary" aria-label="创建 Freight" disabled={submitDisabled} loading={createFreightMutation.isPending} onClick={handleCreateFreight}>创建 Freight</Button>
+          </Space>
+        )}
+      >
         <Space direction="vertical" size={16} className="full-width">
           <Form layout="vertical"><Form.Item label="Freight 名称"><Input value={draftName} onChange={(event) => setDraftName(event.target.value)} placeholder="请输入 Freight 名称" /></Form.Item></Form>
           <Alert type="info" showIcon message="系统会自动列出全部启用 Workload。每个 Workload 必须选择镜像版本，不能少选。" />
@@ -559,7 +592,7 @@ function freightDraftColumns(workloads: Workload[], draftItems: Record<string, F
       return <Space direction="vertical" size={6} className="full-width"><Input aria-label={`${workload.displayName}自定义镜像`} disabled={draft.sourceType !== 'custom_image'} value={draft.imageRef} placeholder="registry.example.com/app/service:v1" onChange={(event) => updateDraftItem(workload.id, { imageRef: event.target.value })} />{tagRisk && <Alert type="warning" showIcon message="镜像 tag 可能被覆盖，建议使用 digest。" />}</Space>;
     } },
     { title: '校验', key: 'status', render: (_: unknown, workload: Workload) => draftItemComplete(draftItems[workload.id]) ? <Tag color="green">已选择</Tag> : <Tag color="red">待选择</Tag> },
-    { title: '说明', key: 'desc', render: (_: unknown, workload: Workload) => <Typography.Text type="secondary">{workload.description || workload.displayName || workloads.find((item) => item.id === workload.id)?.name}</Typography.Text> }
+    { title: '说明', key: 'desc', render: (_: unknown, workload: Workload) => <Typography.Text type="secondary">{workload.description || workload.name}</Typography.Text> }
   ];
 }
 
