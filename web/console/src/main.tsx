@@ -14,11 +14,30 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <ConfigProvider
       locale={zhCN}
       theme={{
-        token: { colorPrimary: '#1677ff', borderRadius: 6, fontSize: 13 },
+        token: {
+          colorPrimary: '#1f5fbf',
+          colorSuccess: '#16834a',
+          colorWarning: '#b76e00',
+          colorError: '#c9352b',
+          colorText: '#101828',
+          colorTextSecondary: '#667085',
+          colorBorder: '#d7dee8',
+          colorBgLayout: '#f5f7fa',
+          colorBgContainer: '#ffffff',
+          borderRadius: 6,
+          fontSize: 13,
+          controlHeight: 36,
+          wireframe: false
+        },
         components: {
-          Layout: { siderBg: '#071426', triggerBg: '#071426', headerBg: '#ffffff' },
-          Table: { cellPaddingBlock: 9, cellPaddingInline: 12 },
-          Form: { itemMarginBottom: 16 }
+          Button: { borderRadius: 6, controlHeight: 36 },
+          Card: { headerHeight: 46, borderRadiusLG: 6 },
+          Layout: { siderBg: '#111827', triggerBg: '#111827', headerBg: '#ffffff' },
+          Menu: { darkItemBg: '#111827', darkSubMenuItemBg: '#111827', darkItemSelectedBg: '#1f5fbf' },
+          Select: { controlHeight: 36 },
+          Table: { cellPaddingBlock: 9, cellPaddingInline: 12, headerBg: '#f8fafc', headerColor: '#344054' },
+          Form: { itemMarginBottom: 16 },
+          Tabs: { cardBg: '#eef2f7' }
         }
       }}
     >

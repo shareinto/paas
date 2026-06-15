@@ -17,7 +17,7 @@ const statusText: Record<string, string> = {
 export function SourceRepositoriesPage() {
   return (
     <>
-      <PageHeader title="源码仓库" />
+      <PageHeader title="源码仓库" subtitle="集中管理项目代码源，供应用流水线受控引用。" />
       <SourceRepositoryList />
     </>
   );

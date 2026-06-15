@@ -59,7 +59,8 @@ test('应用导航不再展示二级菜单且导航文字更醒目', async () =>
   expect(within(sider).queryByText('配置')).not.toBeInTheDocument();
 
   const styles = readFileSync('src/styles.css', 'utf8');
-  expect(styles).toMatch(/\.console-sider \.ant-menu-title-content \{[^}]*font-size: 15px;[^}]*font-weight: 650;/);
+  expect(styles).toMatch(/\.console-sider \{[^}]*background: var\(--sidebar-bg\);/);
+  expect(styles).toMatch(/\.console-sider \.ant-menu-title-content \{[^}]*font-size: 14px;[^}]*font-weight: 600;/);
 });
 
 test('默认入口进入项目工作台列表', async () => {

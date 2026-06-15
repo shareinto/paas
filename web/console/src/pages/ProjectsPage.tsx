@@ -45,6 +45,7 @@ export function ProjectsPage() {
     <>
       <PageHeader
         title="项目"
+        subtitle="按租户组织应用和源码仓库，作为交付工作的入口。"
         extra={<Button type="primary" icon={<PlusOutlined />} onClick={() => {
           if (!form.getFieldValue('tenantId') && tenantOptions[0]) {
             form.setFieldValue('tenantId', tenantOptions[0].value);

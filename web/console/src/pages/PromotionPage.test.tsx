@@ -118,7 +118,7 @@ test('点击 Stage 卡片打开运行资源详情并展示操作入口', async (
   expect(within(drawer).getByRole('button', { name: '终端' })).toBeDisabled();
 });
 
-test('部署画布和 Stage 节点使用更大的尺寸和间距', () => {
+test('部署画布和 Stage 节点使用稳定尺寸和操作面板字号', () => {
   const pageSource = readFileSync('src/pages/PromotionPage.tsx', 'utf8');
   const styles = readFileSync('src/styles.css', 'utf8');
 
@@ -126,7 +126,7 @@ test('部署画布和 Stage 节点使用更大的尺寸和间距', () => {
   expect(pageSource).toContain('const ROW_HEIGHT = 280;');
   expect(styles).toMatch(/\.deployment-dag-canvas \{[^}]*height: 720px;/);
   expect(styles).toMatch(/\.deployment-stage-node \{[^}]*width: 232px;[^}]*border-radius: 8px;/);
-  expect(styles).toMatch(/\.deployment-stage-title \{[^}]*font-size: 18px;[^}]*font-weight: 700;/);
+  expect(styles).toMatch(/\.deployment-stage-title \{[^}]*font-size: 16px;[^}]*font-weight: 700;/);
 });
 
 test('验证入口使用紧凑图标按钮并提供中文提示', async () => {

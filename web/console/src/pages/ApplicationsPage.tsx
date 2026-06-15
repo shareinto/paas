@@ -76,7 +76,7 @@ export function ApplicationsPage({ projectId: fixedProjectId, embedded = false }
 
   return (
     <>
-      <PageHeader title="应用" extra={<Button icon={<PlusOutlined />} type="primary" onClick={() => navigate(createPath)}>创建应用</Button>} />
+      <PageHeader title="应用" subtitle="按最小可独立交付单元管理应用，并进入统一交付工作台。" extra={<Button icon={<PlusOutlined />} type="primary" onClick={() => navigate(createPath)}>创建应用</Button>} />
       {content}
     </>
   );

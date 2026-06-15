@@ -102,10 +102,10 @@ test('应用详情展示统一交付工作台并移除二级页签', async () =>
   expect(within(workloadCard).getByRole('button', { name: '删除' })).toHaveTextContent('');
 });
 
-test('应用详情交付工作台桌面布局为左三分一右三分二', () => {
+test('应用详情交付工作台桌面布局使用固定操作列和弹性画布', () => {
   const styles = readFileSync('src/styles.css', 'utf8');
 
-  expect(styles).toMatch(/\.application-delivery-workspace \{[^}]*grid-template-columns: minmax\(320px, 1fr\) minmax\(0, 2fr\);/);
+  expect(styles).toMatch(/\.application-delivery-workspace \{[^}]*grid-template-columns: minmax\(320px, 440px\) minmax\(0, 1fr\);/);
   expect(styles).toMatch(/@media \(max-width: 1180px\) \{[\s\S]*\.promotion-workspace, \.delivery-dag-editor, \.application-delivery-workspace \{ grid-template-columns: 1fr; \}/);
 });
 
