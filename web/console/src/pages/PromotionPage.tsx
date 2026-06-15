@@ -181,7 +181,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     }
   });
 
-  const sortedFreights = useMemo(() => [...(freightsQuery.data || [])].sort((a, b) => timeValue(a.createdAt) - timeValue(b.createdAt)), [freightsQuery.data]);
+  const sortedFreights = useMemo(() => [...(freightsQuery.data || [])].sort((a, b) => timeValue(b.createdAt) - timeValue(a.createdAt)), [freightsQuery.data]);
   const enabledWorkloads = contextQuery.data?.enabledWorkloads || [];
   const configWorkloads = (workloadsQuery.data || enabledWorkloads).filter((workload) => workload.status !== 'deleted');
   const workloadNameById = useMemo(() => Object.fromEntries(enabledWorkloads.map((workload) => [workload.id, workload.displayName || workload.name])), [enabledWorkloads]);
@@ -267,7 +267,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   };
 
   const copyHistory = () => {
-    const source = [...sortedFreights].reverse().find((freight) => freight.items?.length);
+    const source = sortedFreights.find((freight) => freight.items?.length);
     if (!source) return fillLatest();
     setDraftItems(Object.fromEntries(enabledWorkloads.map((workload) => {
       const item = source.items?.find((candidate) => candidate.workloadId === workload.id);
@@ -681,13 +681,14 @@ function draftItemComplete(item?: FreightDraftItem) {
 }
 
 function timeValue(value: string) {
+  if (value === '刚刚') return Number.MAX_SAFE_INTEGER;
   const parsed = new Date(value).getTime();
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function currentVerificationFreight(stage: StageView | null, freights: Freight[]) {
 	if (!stage) return null;
-	return freights.find((freight) => freight.version === stage.currentFreightVersion) || freights[freights.length - 1] || null;
+	return freights.find((freight) => freight.version === stage.currentFreightVersion) || freights[0] || null;
 }
 
 function runtimeTagColor(status?: string) {
@@ -711,7 +712,7 @@ function isRestartableRuntimeKind(kind: string) {
 }
 
 function withStageDefaults(stage: AppStage, freights: Freight[], current: Record<string, string>): StageView {
-  const fallback = freights[freights.length - 1]?.version || '-';
+  const fallback = freights[0]?.version || '-';
   const defaults: Record<string, Partial<StageView>> = {
     dev: { replicasSummary: '1 / 1 / 1', domainSummary: 'dev.example.com', configSummary: 'dev values' },
     test: { replicasSummary: '1 / 1 / 1', domainSummary: 'test.example.com', configSummary: 'test values' },
