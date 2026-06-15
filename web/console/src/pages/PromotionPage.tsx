@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
-import { CheckCircleOutlined, EditOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, DeleteOutlined, EditOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Select, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useParams } from 'react-router-dom';
-import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, getApplication, getFreight, getFreightCreationContext, getRuntimeResourceLogs, listAppStages, listEligibleFreights, listFreights, listRuntimeResources, listWorkloadStageConfigs, listWorkloads, openRuntimeResourceTerminal, restartRuntimeResource, saveWorkloadStageConfig, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type RuntimeResource, type Workload, type WorkloadStageConfig } from '../api';
+import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, deleteFreight, getApplication, getFreight, getFreightCreationContext, getRuntimeResourceLogs, listAppStages, listEligibleFreights, listFreights, listRuntimeResources, listWorkloadStageConfigs, listWorkloads, openRuntimeResourceTerminal, restartRuntimeResource, saveWorkloadStageConfig, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type RuntimeResource, type Workload, type WorkloadStageConfig } from '../api';
 import { ConfigValueLists, WorkloadRuntimeFields, workloadConfigFormValues, workloadConfigPayload } from './workloadConfigForm';
 
 const DEFAULT_APPLICATION_ID = 'app_1';
@@ -180,6 +180,16 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
       queryClient.invalidateQueries({ queryKey: ['freight-creation-context', applicationId] });
     }
   });
+  const archiveFreightMutation = useMutation({
+    mutationFn: (freightId: string) => deleteFreight(freightId),
+    onSuccess: () => {
+      message.success('Freight 已归档');
+      queryClient.invalidateQueries({ queryKey: ['freights', applicationId] });
+      queryClient.invalidateQueries({ queryKey: ['freight-creation-context', applicationId] });
+      queryClient.invalidateQueries({ queryKey: ['app-stages', applicationId] });
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '归档 Freight 失败')
+  });
 
   const sortedFreights = useMemo(() => [...(freightsQuery.data || [])].sort((a, b) => timeValue(b.createdAt) - timeValue(a.createdAt)), [freightsQuery.data]);
   const enabledWorkloads = contextQuery.data?.enabledWorkloads || [];
@@ -351,6 +361,27 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
                     onMouseDown={(event) => event.stopPropagation()}
                     onClick={(event) => { event.stopPropagation(); handleOpenApproval(freight); }}
                   />
+                  <Popconfirm
+                    title="归档 Freight"
+                    description="归档后将从发布包时间轴隐藏，历史发布记录仍保留。"
+                    okText="归档"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true, loading: archiveFreightMutation.isPending }}
+                    onConfirm={(event) => {
+                      event?.stopPropagation();
+                      archiveFreightMutation.mutate(freight.id);
+                    }}
+                    onCancel={(event) => event?.stopPropagation()}
+                  >
+                    <Button
+                      aria-label="归档"
+                      danger
+                      icon={<DeleteOutlined />}
+                      className="nodrag nopan"
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => event.stopPropagation()}
+                    />
+                  </Popconfirm>
                 </Space>
               </article>
             ))}

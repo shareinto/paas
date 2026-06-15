@@ -115,6 +115,23 @@ func TestBuiltInRolesIncludeRuntimePermissionsWithTerminalRestricted(t *testing.
 	}
 }
 
+func TestBuiltInRolesGrantFreightDeleteToFreightCreators(t *testing.T) {
+	roles := BuiltInRoles()
+	for _, roleID := range []RoleID{RolePlatformAdmin, RoleTenantOwner, RoleTenantAdmin, RoleProjectAdmin, RoleDeveloper} {
+		if !roleHasPermission(roles[roleID], "freight:create") {
+			t.Fatalf("%s should create freights", roleID)
+		}
+		if !roleHasPermission(roles[roleID], "freight:delete") {
+			t.Fatalf("%s should archive freights", roleID)
+		}
+	}
+	for _, roleID := range []RoleID{RoleViewer, RoleOperator, RoleProdApprover, RoleSecurityAuditor} {
+		if roleHasPermission(roles[roleID], "freight:delete") {
+			t.Fatalf("%s should not archive freights", roleID)
+		}
+	}
+}
+
 func TestCreateLocalUserStoresPasswordHashAndLoginIssuesHashedTokens(t *testing.T) {
 	svc, repo, audit := newTestService(t, nil)
 	ctx := context.Background()

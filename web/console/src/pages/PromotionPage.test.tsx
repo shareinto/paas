@@ -239,7 +239,7 @@ test('prod Stage 显示审批标签且不提供发布按钮', async () => {
 });
 
 test('Freight 卡片审批按钮打开 Freight 审批弹窗', async () => {
-  renderPromotionPage();
+	renderPromotionPage();
 
   const timeline = await screen.findByLabelText('Freight 时间轴');
   const freightCard = within(timeline).getAllByTestId('freight-card')[0];
@@ -251,11 +251,23 @@ test('Freight 卡片审批按钮打开 Freight 审批弹窗', async () => {
   expect(within(dialog).getByRole('combobox', { name: '目标 Stage' })).toBeInTheDocument();
   expect(within(dialog).getByLabelText('审批意见')).toBeInTheDocument();
   expect(within(dialog).getByRole('button', { name: '审批拒绝' })).toBeInTheDocument();
-  expect(within(dialog).getByRole('button', { name: '审批通过' })).toBeInTheDocument();
+	expect(within(dialog).getByRole('button', { name: '审批通过' })).toBeInTheDocument();
+});
+
+test('当前 Stage 使用的 Freight 归档失败并保留卡片', async () => {
+  renderPromotionPage();
+
+  const freightCard = await freightCardByName('20260611.1');
+  await userEvent.click(within(freightCard).getByRole('button', { name: '归档' }));
+  const popover = (await screen.findByText('归档 Freight')).closest('.ant-popover') as HTMLElement;
+  await userEvent.click(within(popover).getByRole('button', { name: /归\s*档/ }));
+
+  expect(await screen.findByText('该 Freight 正在被 Stage 使用，不能归档')).toBeInTheDocument();
+  expect(await freightCardByName('20260611.1')).toBeInTheDocument();
 });
 
 test('Stage 验证按钮打开人工验证弹窗并展示部署证据', async () => {
-  renderPromotionPage();
+	renderPromotionPage();
 
   const devCard = await screen.findByLabelText('dev Stage');
   await userEvent.click(within(devCard).getByRole('button', { name: '验证' }));

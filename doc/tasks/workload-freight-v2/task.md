@@ -199,6 +199,7 @@ GET  /api/v1/applications/{app_id}/freights
 POST /api/v1/applications/{app_id}/freights
 GET  /api/v1/applications/{app_id}/freights/{freight_id}
 GET  /api/v1/applications/{app_id}/freights/creation-context
+DELETE /api/v1/freights/{freight_id}      # 归档 Freight，不物理删除历史记录
 ```
 
 `creation-context` 返回：

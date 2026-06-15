@@ -22,6 +22,7 @@ type Repository interface {
 	CreateFreight(ctx context.Context, freight Freight) error
 	GetFreight(ctx context.Context, id shared.ID) (Freight, error)
 	ListFreightsByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Freight], error)
+	UpdateFreightStatus(ctx context.Context, id shared.ID, status FreightStatus) error
 	CreateFreightItem(ctx context.Context, item FreightItem) error
 	ListFreightItems(ctx context.Context, freightID shared.ID) ([]FreightItem, error)
 

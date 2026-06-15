@@ -10,7 +10,7 @@ export type BuildRun = { id: string; application: string; pipeline?: string; pip
 export type AuditLog = { id: string; actor: string; action: string; resource: string; result: string; summary: string; time: string };
 export type ImageBundleImage = { id: string; imageBundleId: string; buildArtifactId?: string; runtimeEnvironmentId?: string; runtimeEnvironmentName?: string; image: string; digest?: string; selectorLabels?: StringMap; isPrimary?: boolean };
 export type FreightItem = { id: string; workloadId: string; workloadName: string; workloadDisplayName: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageBundleId?: string; bundleImages?: ImageBundleImage[]; image: string; digest?: string; commit?: string };
-export type Freight = { id: string; version: string; image: string; digest: string; commit: string; createdAt: string; items?: FreightItem[] };
+export type Freight = { id: string; version: string; image: string; digest: string; commit: string; createdAt: string; status?: 'available' | 'archived'; items?: FreightItem[] };
 export type WorkloadType = 'deployment' | 'statefulset';
 export type WorkloadImageSourceMode = 'pipeline_artifact' | 'custom_image' | 'mixed' | 'none';
 export type WorkloadStageStatus = { stageName: string; releaseVersion: string; syncStatus: string; healthStatus: string };
@@ -501,9 +501,9 @@ export async function listAuditLogs(): Promise<AuditLog[]> {
 export async function listFreights(applicationId?: string): Promise<Freight[]> {
   await wait();
   if (!applicationId) {
-    return freights.map(cloneFreight);
+    return freights.filter((item) => item.status !== 'archived').map(cloneFreight);
   }
-  return freights.map(cloneFreight);
+  return freights.filter((item) => item.status !== 'archived').map(cloneFreight);
 }
 
 export async function getFreightCreationContext(applicationId = 'app_1'): Promise<FreightCreationContext> {
@@ -521,7 +521,7 @@ export async function getFreightCreationContext(applicationId = 'app_1'): Promis
 export async function listEligibleFreights(_applicationId: string, stageId: string): Promise<Freight[]> {
   await wait();
   const ids = new Set(stageEligibility[stageId] || []);
-  return freights.filter((item) => ids.has(item.id)).map(cloneFreight);
+  return freights.filter((item) => item.status !== 'archived' && ids.has(item.id)).map(cloneFreight);
 }
 
 export async function getFreight(freightId: string): Promise<Freight> {
@@ -554,8 +554,22 @@ export async function createFreight(applicationId: string, input: CreateFreightI
       commit: item.sourceType === 'custom_image' ? undefined : release!.commit
     };
   });
-  const freight = { id: `freight_${Date.now()}`, version, image: `${items.length} 个 Workload`, digest: '-', commit: '-', createdAt: '刚刚', items };
+  const freight = { id: `freight_${Date.now()}`, version, image: `${items.length} 个 Workload`, digest: '-', commit: '-', createdAt: '刚刚', status: 'available' as const, items };
   freights.unshift(freight);
+  return cloneFreight(freight);
+}
+
+export async function deleteFreight(freightId: string): Promise<Freight> {
+  await wait();
+  const freight = freights.find((item) => item.id === freightId);
+  if (!freight) throw new Error('Freight 不存在');
+  if (promotionStages.some((stage) => stage.currentFreightVersion === freight.version)) {
+    throw new Error('该 Freight 正在被 Stage 使用，不能归档');
+  }
+  freight.status = 'archived';
+  for (const [stageId, ids] of Object.entries(stageEligibility)) {
+    stageEligibility[stageId] = ids.filter((id) => id !== freightId);
+  }
   return cloneFreight(freight);
 }
 

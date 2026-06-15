@@ -21,6 +21,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/apps/{appId}/freights/creation-context", h.handleFreightCreationContext)
 	mux.HandleFunc("GET /api/apps/{appId}/stages", h.handleListAppStages)
 	mux.HandleFunc("GET /api/freights/{freightId}", h.handleGetFreight)
+	mux.HandleFunc("DELETE /api/freights/{freightId}", h.handleArchiveFreight)
 	mux.HandleFunc("POST /api/freights/{freightId}/approvals", h.handleCompleteFreightApproval)
 	mux.HandleFunc("GET /api/tenants/{tenantId}/delivery-flow-template", h.handleGetDeliveryFlowTemplate)
 	mux.HandleFunc("PUT /api/tenants/{tenantId}/delivery-flow-template/graph", h.handleReplaceDeliveryFlowTemplateGraph)
@@ -177,6 +178,19 @@ func (h *Handler) handleEligibleFreights(w http.ResponseWriter, r *http.Request)
 }
 func (h *Handler) handleGetFreight(w http.ResponseWriter, r *http.Request) {
 	freight, err := h.service.GetFreightDetail(r.Context(), shared.ID(r.PathValue("freightId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, freight)
+}
+func (h *Handler) handleArchiveFreight(w http.ResponseWriter, r *http.Request) {
+	var req ArchiveFreightInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.FreightID = shared.ID(r.PathValue("freightId"))
+	freight, err := h.service.ArchiveFreight(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -407,6 +421,12 @@ func failedPreconditionMessage(message string) string {
 		return "该 Freight 尚未通过全部上游 Stage，不能发布到目标 Stage"
 	case "freight has no items":
 		return "该 Freight 没有可部署镜像，不能发布"
+	case "freight is archived":
+		return "该 Freight 已归档，不能继续发布或审批"
+	case "freight is currently used by stage":
+		return "该 Freight 正在被 Stage 使用，不能归档"
+	case "freight has unfinished promotion":
+		return "该 Freight 存在未完成的发布晋级，不能归档"
 	case "stage has no deployment record for freight":
 		return "该 Stage 尚无此 Freight 的部署记录，不能验证"
 	case "gitops deployment command is required":

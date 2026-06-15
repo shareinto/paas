@@ -301,6 +301,14 @@ export async function createFreight(applicationId: string, input: mock.CreateFre
   }));
 }
 
+export async function deleteFreight(freightId: string) {
+  if (!hasAPIBaseURL()) return mock.deleteFreight(freightId);
+  return mapFreight(await request<any>(`/api/freights/${encodeURIComponent(freightId)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' } })
+  }));
+}
+
 export async function listWorkloads(applicationId: string) {
   if (!hasAPIBaseURL()) return mock.listWorkloads(applicationId);
   const data = await request<{ items: any[] }>(`/api/applications/${encodeURIComponent(applicationId)}/workloads`);
@@ -865,6 +873,7 @@ function mapFreight(item: any): mock.Freight {
     digest: item.digest || item.image_digest || item.imageDigest || '-',
     commit: item.commit || item.commit_sha || item.commitSHA || '-',
     createdAt: item.createdAt || formatTime(item.created_at || item.createdAt),
+    status: item.status || 'available',
     items: items.map(mapFreightItem)
   };
 }

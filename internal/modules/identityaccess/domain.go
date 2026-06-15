@@ -117,22 +117,22 @@ func BuiltInRoles() map[RoleID]Role {
 		RoleTenantOwner: {
 			ID:          RoleTenantOwner,
 			Name:        "租户所有者",
-			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create", "deployment:approve", "runtime:read", "runtime:restart", "audit:read"},
+			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "deployment:approve", "runtime:read", "runtime:restart", "audit:read"},
 		},
 		RoleTenantAdmin: {
 			ID:          RoleTenantAdmin,
 			Name:        "租户管理员",
-			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create", "runtime:read", "runtime:restart"},
+			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "runtime:read", "runtime:restart"},
 		},
 		RoleProjectAdmin: {
 			ID:          RoleProjectAdmin,
 			Name:        "项目管理员",
-			Permissions: []Permission{"project:update", "application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create", "runtime:read", "runtime:restart"},
+			Permissions: []Permission{"project:update", "application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "runtime:read", "runtime:restart"},
 		},
 		RoleDeveloper: {
 			ID:          RoleDeveloper,
 			Name:        "开发者",
-			Permissions: []Permission{"application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "deployment:create", "runtime:read"},
+			Permissions: []Permission{"application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "runtime:read"},
 		},
 		RoleViewer: {
 			ID:          RoleViewer,

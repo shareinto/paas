@@ -161,6 +161,11 @@ type CreateFreightInput struct {
 	Items         []CreateFreightItemInput `json:"items"`
 }
 
+type ArchiveFreightInput struct {
+	Actor     identityaccess.Subject `json:"actor"`
+	FreightID shared.ID              `json:"freight_id"`
+}
+
 var defaultTemplateStages = []struct {
 	key                  string
 	displayName          string
@@ -328,6 +333,9 @@ func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInpu
 	freight, err := s.repo.GetFreight(ctx, input.FreightID)
 	if err != nil {
 		return Promotion{}, err
+	}
+	if freight.Status == FreightArchived {
+		return Promotion{}, shared.NewError(shared.CodeFailedPrecondition, "freight is archived")
 	}
 	stageKey := normalizeStageKey(input.TargetStageKey)
 	app, stage, targetClusters, err := s.validateStagePromotionTarget(ctx, freight.ApplicationID, stageKey, input.TargetClusterIDs, input.NamespaceOverride)
@@ -848,6 +856,9 @@ func (s *Service) CompleteFreightApproval(ctx context.Context, input FreightAppr
 	if err != nil {
 		return FreightApproval{}, err
 	}
+	if freight.Status == FreightArchived {
+		return FreightApproval{}, shared.NewError(shared.CodeFailedPrecondition, "freight is archived")
+	}
 	app, err := s.appsOrError().GetApplication(ctx, freight.ApplicationID)
 	if err != nil {
 		return FreightApproval{}, err
@@ -1088,6 +1099,9 @@ func (s *Service) CreateRollbackPromotion(ctx context.Context, input CreateRollb
 	if err != nil {
 		return Promotion{}, err
 	}
+	if target.Status == FreightArchived {
+		return Promotion{}, shared.NewError(shared.CodeFailedPrecondition, "freight is archived")
+	}
 	if !input.CurrentFreightID.IsZero() {
 		if _, err := s.repo.GetFreight(ctx, input.CurrentFreightID); err != nil {
 			return Promotion{}, err
@@ -1242,6 +1256,64 @@ func (s *Service) GetFreightDetail(ctx context.Context, id shared.ID) (FreightDe
 func (s *Service) ListFreights(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Freight], error) {
 	return s.repo.ListFreightsByApplication(ctx, applicationID, page)
 }
+
+func (s *Service) ArchiveFreight(ctx context.Context, input ArchiveFreightInput) (Freight, error) {
+	freight, err := s.repo.GetFreight(ctx, input.FreightID)
+	if err != nil {
+		return Freight{}, err
+	}
+	app, err := s.appsOrError().GetApplication(ctx, freight.ApplicationID)
+	if err != nil {
+		return Freight{}, err
+	}
+	if err := s.check(ctx, input.Actor, app, "freight:delete"); err != nil {
+		return Freight{}, err
+	}
+	if freight.Status == FreightArchived {
+		return freight, nil
+	}
+	current, err := s.currentFreightsByStage(ctx, freight.ApplicationID)
+	if err != nil {
+		return Freight{}, err
+	}
+	for _, currentFreight := range current {
+		if currentFreight.ID == freight.ID {
+			return Freight{}, shared.NewError(shared.CodeFailedPrecondition, "freight is currently used by stage")
+		}
+	}
+	if err := s.ensureNoUnfinishedPromotion(ctx, freight); err != nil {
+		return Freight{}, err
+	}
+	if err := s.repo.UpdateFreightStatus(ctx, freight.ID, FreightArchived); err != nil {
+		return Freight{}, err
+	}
+	freight.Status = FreightArchived
+	now := s.clock.Now()
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "freight.archive", ResourceType: "freight", ResourceID: freight.ID, Result: "succeeded", Summary: "归档可交付变更包", OccurredAt: now})
+	_ = s.publish(ctx, "FreightArchived", now, map[string]any{"freight_id": freight.ID, "application_id": freight.ApplicationID})
+	return freight, nil
+}
+
+func (s *Service) ensureNoUnfinishedPromotion(ctx context.Context, freight Freight) error {
+	for page := 1; ; page++ {
+		result, err := s.repo.ListPromotionsByApplication(ctx, freight.ApplicationID, shared.PageRequest{Page: page, PageSize: 100})
+		if err != nil {
+			return err
+		}
+		for _, promotion := range result.Items {
+			if promotion.FreightID != freight.ID {
+				continue
+			}
+			if !terminalPromotion(promotion.Status) && !promotionStagePassed(promotion.Status) {
+				return shared.NewError(shared.CodeFailedPrecondition, "freight has unfinished promotion")
+			}
+		}
+		if int64(page*result.PageSize) >= result.Total {
+			return nil
+		}
+	}
+}
+
 func (s *Service) GetPromotion(ctx context.Context, id shared.ID) (Promotion, error) {
 	return s.repo.GetPromotion(ctx, id)
 }

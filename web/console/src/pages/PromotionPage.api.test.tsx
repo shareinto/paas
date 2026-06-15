@@ -1,6 +1,6 @@
 import { ConfigProvider } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -205,6 +205,76 @@ test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID',
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/delivery/stages/delivery_stage_real_dev/eligible-freights', expect.any(Object));
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/delivery/stages/delivery_stage_real_dev/promotions', expect.objectContaining({ method: 'POST' }));
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/apps/app_other/freights', expect.objectContaining({ method: 'POST' }));
+});
+
+test('真实 API 归档 Freight 后刷新时间轴并隐藏卡片', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  let archived = false;
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.endsWith('/api/apps/app_1/freights?page=1&page_size=50')) {
+      return new Response(JSON.stringify({
+        items: archived ? [] : [{ id: 'freight_archive', name: '20260615.1', created_at: '2026-06-15T09:00:00Z' }],
+        total: archived ? 0 : 1,
+        page: 1,
+        page_size: 50
+      }), { status: 200 });
+    }
+    if (url.endsWith('/api/applications/app_1')) {
+      return new Response(JSON.stringify({ id: 'app_1', name: 'order-service', display_name: '订单服务', project_id: 'project_1', project: '订单平台' }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_1/stages')) {
+      return new Response(JSON.stringify({ items: [{
+        delivery_stage_id: 'stage_dev',
+        stage_key: 'dev',
+        display_name: '开发',
+        color: '#ED204E',
+        order: 1,
+        layout_column: 0,
+        layout_row: 0,
+        status: 'enabled',
+        cluster_pool_size: 1,
+        bound_cluster_id: 'cluster_shanghai',
+        bound_cluster_name: '上海集群',
+        upstream_stage_keys: [],
+        downstream_stage_keys: []
+      }] }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_1/freights/creation-context')) {
+      return new Response(JSON.stringify({
+        enabled_workloads: [{ id: 'workload_api', name: 'api', display_name: '订单接口', status: 'enabled' }],
+        latest_releases_by_workload: {},
+        latest_artifacts_by_workload: {},
+        stage_eligibility: archived ? { stage_dev: [] } : { stage_dev: ['freight_archive'] },
+      }), { status: 200 });
+    }
+    if (url.endsWith('/api/freights/freight_archive') && options?.method === 'DELETE') {
+      const body = JSON.parse(String(options.body || '{}'));
+      expect(body).toMatchObject({ actor: { type: 'user', id: 'usr_admin' } });
+      archived = true;
+      return new Response(JSON.stringify({ id: 'freight_archive', name: '20260615.1', status: 'archived', created_at: '2026-06-15T09:00:00Z' }), { status: 200 });
+    }
+    return new Response('', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const { PromotionPage } = await import('./PromotionPage');
+  render(
+    <ConfigProvider>
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/promotions']}>
+          <PromotionPage />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </ConfigProvider>
+  );
+
+  const card = await freightCardByName('20260615.1');
+  await userEvent.click(within(card).getByRole('button', { name: '归档' }));
+  const popover = (await screen.findByText('归档 Freight')).closest('.ant-popover') as HTMLElement;
+  await userEvent.click(within(popover).getByRole('button', { name: /归\s*档/ }));
+
+  await waitFor(() => expect(screen.queryByTestId('freight-card')).not.toBeInTheDocument());
+  expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/freights/freight_archive', expect.objectContaining({ method: 'DELETE' }));
 });
 
 test('真实 API 返回无 digest 和 commit 的 Release 时仍可选择流水线产物', async () => {

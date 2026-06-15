@@ -125,7 +125,36 @@ func (r *MySQLRepository) GetFreight(ctx context.Context, id shared.ID) (Freight
 }
 
 func (r *MySQLRepository) ListFreightsByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Freight], error) {
-	return listByApplication(ctx, r.db, applicationID, page, "freights", freightSelect(), scanFreight)
+	var total int64
+	if err := database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, "SELECT COUNT(*) FROM freights WHERE application_id = ? AND status = ?", applicationID, FreightAvailable).Scan(&total); err != nil {
+		return shared.PageResult[Freight]{}, database.WrapUnavailable(err, "count freights failed")
+	}
+	page, limit, offset := database.LimitOffset(page)
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, freightSelect()+" WHERE application_id = ? AND status = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", applicationID, FreightAvailable, limit, offset)
+	if err != nil {
+		return shared.PageResult[Freight]{}, database.WrapUnavailable(err, "list freights failed")
+	}
+	defer rows.Close()
+	items := []Freight{}
+	for rows.Next() {
+		item, err := scanFreight(rows)
+		if err != nil {
+			return shared.PageResult[Freight]{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return shared.PageResult[Freight]{}, database.WrapUnavailable(err, "list freights failed")
+	}
+	return shared.NewPageResult(items, total, page), nil
+}
+
+func (r *MySQLRepository) UpdateFreightStatus(ctx context.Context, id shared.ID, status FreightStatus) error {
+	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, "UPDATE freights SET status = ? WHERE id = ?", status, id)
+	if err != nil {
+		return database.WrapUnavailable(err, "update freight failed")
+	}
+	return database.RequireAffected(result, "freight not found")
 }
 
 func (r *MySQLRepository) CreateFreightItem(ctx context.Context, item FreightItem) error {

@@ -914,6 +914,112 @@ func TestGetFreightDetailIncludesItems(t *testing.T) {
 	}
 }
 
+func TestArchiveFreightHidesFromPublishChoicesAndKeepsDetail(t *testing.T) {
+	env := newDeliveryEnv(t)
+	freight := seedFreight(t, env)
+
+	archived, err := env.svc.ArchiveFreight(context.Background(), ArchiveFreightInput{Actor: actor("usr_dev"), FreightID: freight.ID})
+	if err != nil {
+		t.Fatalf("ArchiveFreight() error = %v", err)
+	}
+	if archived.Status != FreightArchived {
+		t.Fatalf("archived freight status = %s, want %s", archived.Status, FreightArchived)
+	}
+	listed, err := env.svc.ListFreights(context.Background(), "app_user", shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil || len(listed.Items) != 0 {
+		t.Fatalf("archived freight should be hidden from list, got %+v, %v", listed.Items, err)
+	}
+	eligible, err := env.svc.ListEligibleFreights(context.Background(), "app_user", "dev")
+	if err != nil || len(eligible) != 0 {
+		t.Fatalf("archived freight should be hidden from eligible freights, got %+v, %v", eligible, err)
+	}
+	detail, err := env.svc.GetFreightDetail(context.Background(), freight.ID)
+	if err != nil || detail.Freight.Status != FreightArchived || len(detail.Items) != 1 {
+		t.Fatalf("archived freight detail should remain readable, got %+v, %v", detail, err)
+	}
+	if _, err := env.svc.CreatePromotion(context.Background(), CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("archived freight should not be promoted, got %v", err)
+	}
+	if _, err := env.svc.CreateRollbackPromotion(context.Background(), CreateRollbackPromotionInput{Actor: actor("usr_dev"), TargetFreightID: freight.ID, TargetStageKey: "dev"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("archived freight should not be rollback target, got %v", err)
+	}
+	if len(env.audit.events) == 0 || env.audit.events[len(env.audit.events)-1].Action != "freight.archive" {
+		t.Fatalf("archive should be audited, got %+v", env.audit.events)
+	}
+}
+
+func TestArchiveFreightRejectsCurrentStageFreightAndUnfinishedPromotion(t *testing.T) {
+	env := newDeliveryEnv(t)
+	current := seedFreight(t, env)
+	promoteFreightThrough(t, env, current, "dev")
+
+	if _, err := env.svc.ArchiveFreight(context.Background(), ArchiveFreightInput{Actor: actor("usr_dev"), FreightID: current.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("current stage freight should not be archived, got %v", err)
+	}
+
+	env = newDeliveryEnv(t)
+	pending := seedFreight(t, env)
+	flow, err := env.repo.FindDeliveryFlowByApplication(context.Background(), "app_user")
+	if err != nil {
+		t.Fatalf("FindDeliveryFlowByApplication() error = %v", err)
+	}
+	stages, err := env.repo.ListDeliveryStages(context.Background(), flow.ID)
+	if err != nil {
+		t.Fatalf("ListDeliveryStages() error = %v", err)
+	}
+	var prod DeliveryStage
+	for _, stage := range stages {
+		if stage.Name == "prod" {
+			prod = stage
+		}
+	}
+	if prod.ID.IsZero() {
+		t.Fatalf("prod stage not found in %+v", stages)
+	}
+	now := time.Date(2026, 5, 30, 8, 0, 0, 0, time.UTC)
+	if err := env.repo.CreatePromotion(context.Background(), Promotion{ID: "promotion_pending", TenantID: pending.TenantID, ProjectID: pending.ProjectID, ApplicationID: pending.ApplicationID, FreightID: pending.ID, TargetStageID: prod.ID, TargetStageKey: "prod", Status: PromotionPendingApproval, CreatedBy: "usr_dev", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreatePromotion() error = %v", err)
+	}
+	if _, err := env.svc.ArchiveFreight(context.Background(), ArchiveFreightInput{Actor: actor("usr_dev"), FreightID: pending.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("freight with unfinished promotion should not be archived, got %v", err)
+	}
+}
+
+func TestArchiveFreightHandler(t *testing.T) {
+	env := newDeliveryEnv(t)
+	freight := seedFreight(t, env)
+	mux := http.NewServeMux()
+	NewHandler(env.svc).Register(mux)
+
+	rec := serveJSON(mux, http.MethodDelete, "/api/freights/"+freight.ID.String(), mustJSON(t, ArchiveFreightInput{Actor: actor("usr_dev")}))
+	assertStatus(t, rec, http.StatusOK)
+	var archived Freight
+	if err := json.NewDecoder(rec.Body).Decode(&archived); err != nil {
+		t.Fatalf("decode archived freight: %v", err)
+	}
+	if archived.ID != freight.ID || archived.Status != FreightArchived {
+		t.Fatalf("DELETE freight should archive it, got %+v", archived)
+	}
+	listRec := serveJSON(mux, http.MethodGet, "/api/apps/app_user/freights?page=1&page_size=5", nil)
+	assertStatus(t, listRec, http.StatusOK)
+	var listed shared.PageResult[Freight]
+	if err := json.NewDecoder(listRec.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode listed freights: %v", err)
+	}
+	if len(listed.Items) != 0 {
+		t.Fatalf("archived freight should be hidden from API list, got %+v", listed.Items)
+	}
+	detailRec := serveJSON(mux, http.MethodGet, "/api/freights/"+freight.ID.String(), nil)
+	assertStatus(t, detailRec, http.StatusOK)
+	var detail FreightDetail
+	if err := json.NewDecoder(detailRec.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail.Freight.Status != FreightArchived || len(detail.Items) != 1 {
+		t.Fatalf("archived freight detail should remain readable, got %+v", detail)
+	}
+}
+
 func TestManualFreightAcceptsDirectPipelineArtifactWithoutDigest(t *testing.T) {
 	env := newDeliveryEnv(t)
 	env.svc.builds = fakeBuildQuery{
