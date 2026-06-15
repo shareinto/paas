@@ -2277,14 +2277,14 @@ func (s *Service) requireEnabledRuntimeEnvironments(ctx context.Context, ids []s
 		if id.IsZero() {
 			return nil, shared.NewError(shared.CodeInvalidArgument, "runtime_environment_id is required")
 		}
-		if _, ok := seen[id]; ok {
-			return nil, shared.NewError(shared.CodeConflict, "runtime environment already selected")
-		}
-		seen[id] = struct{}{}
-		environment, err := s.repo.GetRuntimeEnvironment(ctx, id)
+		environment, err := s.resolveRuntimeEnvironment(ctx, id)
 		if err != nil {
 			return nil, err
 		}
+		if _, ok := seen[environment.ID]; ok {
+			return nil, shared.NewError(shared.CodeConflict, "runtime environment already selected")
+		}
+		seen[environment.ID] = struct{}{}
 		if environment.Status != RuntimeEnvironmentEnabled {
 			return nil, shared.NewError(shared.CodeFailedPrecondition, "runtime environment is disabled")
 		}
@@ -2298,6 +2298,27 @@ func (s *Service) requireEnabledRuntimeEnvironments(ctx context.Context, ids []s
 		})
 	}
 	return out, nil
+}
+
+func (s *Service) resolveRuntimeEnvironment(ctx context.Context, id shared.ID) (RuntimeEnvironment, error) {
+	environment, err := s.repo.GetRuntimeEnvironment(ctx, id)
+	if err == nil {
+		return environment, nil
+	}
+	if shared.CodeOf(err) != shared.CodeNotFound {
+		return RuntimeEnvironment{}, err
+	}
+	page, listErr := s.repo.ListRuntimeEnvironments(ctx, false, shared.PageRequest{Page: 1, PageSize: shared.MaxPageSize})
+	if listErr != nil {
+		return RuntimeEnvironment{}, listErr
+	}
+	name := strings.TrimSpace(id.String())
+	for _, environment := range page.Items {
+		if environment.Name == name {
+			return environment, nil
+		}
+	}
+	return RuntimeEnvironment{}, err
 }
 
 func applyPipelineRuntime(runtime RuntimeEnvironmentRef, spec *BuildSpec) {

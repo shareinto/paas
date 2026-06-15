@@ -416,6 +416,32 @@ func TestCreateBuildPipelinePersistsRuntimeSnapshots(t *testing.T) {
 	}
 }
 
+func TestCreateBuildPipelineAcceptsRuntimeEnvironmentNames(t *testing.T) {
+	env := newBuildTestEnv(t)
+	seedRuntimeEnvironments(t, env)
+	ctx := context.Background()
+
+	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "main",
+		DisplayName:           "主流水线",
+		RuntimeEnvironmentIDs: []shared.ID{"java17"},
+		Sources: []BuildPipelineSourceInput{{
+			Key:                "main",
+			SourceRepositoryID: "repo_user",
+			BuildSpec:          validBuildSpec(),
+			IsPrimary:          true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateBuildPipeline() error = %v", err)
+	}
+	if len(pipeline.RuntimeEnvironments) != 1 || pipeline.RuntimeEnvironments[0].ID != "runtime_env_java17" {
+		t.Fatalf("runtime environment name should resolve to persisted id snapshot, got %+v", pipeline.RuntimeEnvironments)
+	}
+}
+
 func TestBuildPipelineRuntimeEnvironmentJSONUsesConsoleFieldNames(t *testing.T) {
 	pipeline := BuildPipeline{
 		ID:            "pipeline_1",
