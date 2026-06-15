@@ -147,6 +147,9 @@ func (m gitopsErrManifest) ReadFile(context.Context, string, string) (string, er
 func (m gitopsErrManifest) CommitFiles(context.Context, CommitSpec) (CommitResult, error) {
 	return CommitResult{}, m.err
 }
+func (m gitopsErrManifest) DeleteFiles(context.Context, DeleteFilesSpec) (CommitResult, error) {
+	return CommitResult{}, m.err
+}
 func (m gitopsErrManifest) CreateMergeRequest(context.Context, MergeRequestSpec) (MergeRequestResult, error) {
 	return MergeRequestResult{}, m.err
 }
@@ -377,6 +380,74 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 	}
 	if audit.events[len(audit.events)-2].Action != "manifest_revision.create" || audit.events[len(audit.events)-1].Action != "deployment.create" {
 		t.Fatalf("unexpected final audit events: %#v", audit.events)
+	}
+}
+
+func TestDeleteApplicationManifestsRemovesValuesAndArgoApplicationsForDeployedStages(t *testing.T) {
+	ids := []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
+		"deployment_dev", "manifest_dev", "event_dev",
+		"deployment_prod", "manifest_prod", "event_prod",
+	}
+	svc, manifest, _ := newTestService(t, ids)
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "registry/order-api:v1"}); err != nil {
+		t.Fatalf("apply dev: %v", err)
+	}
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "prod", TargetClusters: targetClusters("prod"), ImageURI: "registry/order-api:v1"}); err != nil {
+		t.Fatalf("apply prod: %v", err)
+	}
+	manifest.Files["apps/order-api/staging/values.yaml"] = "should remain because no deployment record"
+
+	if err := svc.DeleteApplicationManifests(context.Background(), "app_1"); err != nil {
+		t.Fatalf("DeleteApplicationManifests() error = %v", err)
+	}
+
+	for _, path := range []string{
+		"apps/order-api/dev/values.yaml",
+		"argocd/apps/dev/order-api-dev.yaml",
+		"apps/order-api/prod/values.yaml",
+		"argocd/apps/prod/order-api-prod.yaml",
+	} {
+		if _, ok := manifest.Files[path]; ok {
+			t.Fatalf("manifest cleanup should delete %s, files=%+v", path, manifest.Files)
+		}
+	}
+	if manifest.Files["apps/order-api/staging/values.yaml"] == "" {
+		t.Fatalf("cleanup should not delete stages without deployment records, files=%+v", manifest.Files)
+	}
+	if len(manifest.Deletes) != 1 {
+		t.Fatalf("cleanup should submit one delete commit, deletes=%+v", manifest.Deletes)
+	}
+	if manifest.Deletes[0].Branch != "main" || !strings.Contains(manifest.Deletes[0].Message, "paas: delete order-api manifests") {
+		t.Fatalf("unexpected delete commit spec: %+v", manifest.Deletes[0])
+	}
+}
+
+func TestDeleteApplicationManifestsIgnoresMissingFilesAndFailsOnRepositoryError(t *testing.T) {
+	svc, manifest, _ := newTestService(t, []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",
+		"deployment_dev", "manifest_dev", "event_dev",
+	})
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
+	_, _ = svc.CreateApplicationTemplate(context.Background(), "app_1", "java", "user_1")
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "registry/order-api:v1"}); err != nil {
+		t.Fatalf("apply dev: %v", err)
+	}
+	delete(manifest.Files, "argocd/apps/dev/order-api-dev.yaml")
+	if err := svc.DeleteApplicationManifests(context.Background(), "app_1"); err != nil {
+		t.Fatalf("missing manifest files should be ignored, got %v", err)
+	}
+
+	errBoom := shared.NewError(shared.CodeInternal, "gitlab delete failed")
+	failing := NewService(Options{
+		Repository:   svc.repo,
+		ManifestRepo: gitopsErrManifest{err: errBoom},
+		Application:  appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", Name: "order-api"}},
+	})
+	if err := failing.DeleteApplicationManifests(context.Background(), "app_1"); shared.CodeOf(err) != shared.CodeInternal {
+		t.Fatalf("repository delete failure should be returned, got %v", err)
 	}
 }
 

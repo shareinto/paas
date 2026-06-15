@@ -19,6 +19,7 @@ type Service struct {
 	runtimeEnvironments RuntimeEnvironmentQuery
 	buildPipelines      BuildPipelineProvisioner
 	buildPipelineQuery  BuildPipelineQuery
+	manifestCleaner     ApplicationManifestCleaner
 	permission          PermissionChecker
 	audit               AuditLogger
 	events              EventPublisher
@@ -35,6 +36,7 @@ type Options struct {
 	RuntimeEnvironmentQuery  RuntimeEnvironmentQuery
 	BuildPipelineProvisioner BuildPipelineProvisioner
 	BuildPipelineQuery       BuildPipelineQuery
+	ManifestCleaner          ApplicationManifestCleaner
 	PermissionChecker        PermissionChecker
 	Audit                    AuditLogger
 	EventPublisher           EventPublisher
@@ -68,12 +70,17 @@ func NewService(opts Options) *Service {
 		runtimeEnvironments: opts.RuntimeEnvironmentQuery,
 		buildPipelines:      opts.BuildPipelineProvisioner,
 		buildPipelineQuery:  opts.BuildPipelineQuery,
+		manifestCleaner:     opts.ManifestCleaner,
 		permission:          opts.PermissionChecker,
 		audit:               audit,
 		events:              events,
 		ids:                 ids,
 		clock:               clock,
 	}
+}
+
+func (s *Service) SetManifestCleaner(cleaner ApplicationManifestCleaner) {
+	s.manifestCleaner = cleaner
 }
 
 type CreateApplicationInput struct {
@@ -426,6 +433,11 @@ func (s *Service) DeleteApplication(ctx context.Context, actor identityaccess.Su
 		return err
 	}
 	now := s.clock.Now()
+	if s.manifestCleaner != nil {
+		if err := s.manifestCleaner.DeleteApplicationManifests(ctx, app.ID); err != nil {
+			return shared.WrapError(shared.CodeOf(err), "删除应用部署清单失败", err)
+		}
+	}
 	if s.buildPipelines != nil {
 		if err := s.buildPipelines.DeleteBuildPipeline(ctx, app.ID); err != nil {
 			return err

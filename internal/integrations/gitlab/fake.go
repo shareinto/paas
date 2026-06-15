@@ -57,6 +57,7 @@ func (f *FakeSourceRepositoryAdapter) ListBranches(context.Context, string) ([]s
 type FakeManifestRepositoryAdapter struct {
 	Files   map[string]string
 	Commits []gitops.CommitSpec
+	Deletes []gitops.DeleteFilesSpec
 	MRs     []gitops.MergeRequestSpec
 	Tags    map[string]string
 }
@@ -78,6 +79,13 @@ func (f *FakeManifestRepositoryAdapter) CommitFiles(_ context.Context, spec gito
 	}
 	f.Commits = append(f.Commits, spec)
 	return gitops.CommitResult{CommitSHA: "commit_fake"}, nil
+}
+func (f *FakeManifestRepositoryAdapter) DeleteFiles(_ context.Context, spec gitops.DeleteFilesSpec) (gitops.CommitResult, error) {
+	for _, path := range spec.Paths {
+		delete(f.Files, path)
+	}
+	f.Deletes = append(f.Deletes, spec)
+	return gitops.CommitResult{CommitSHA: "commit_delete_fake"}, nil
 }
 func (f *FakeManifestRepositoryAdapter) CreateMergeRequest(_ context.Context, spec gitops.MergeRequestSpec) (gitops.MergeRequestResult, error) {
 	for _, file := range spec.Files {

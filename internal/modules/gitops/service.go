@@ -701,6 +701,81 @@ func (s *Service) GetDeployment(ctx context.Context, id shared.ID) (Deployment, 
 	return s.repo.GetDeployment(ctx, id)
 }
 
+func (s *Service) DeleteApplicationManifests(ctx context.Context, applicationID shared.ID) error {
+	app, err := s.apps.GetApplication(ctx, applicationID)
+	if err != nil {
+		return err
+	}
+	stageKeys, err := s.deployedStageKeys(ctx, applicationID)
+	if err != nil {
+		return err
+	}
+	if len(stageKeys) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(stageKeys)*2)
+	for _, stageKey := range stageKeys {
+		paths = append(paths, manifestPath(app.Name, stageKey), argoApplicationPath(app.Name, stageKey))
+	}
+	existing, err := s.existingManifestPaths(ctx, paths)
+	if err != nil {
+		return err
+	}
+	if len(existing) == 0 {
+		return nil
+	}
+	_, err = s.manifest.DeleteFiles(ctx, DeleteFilesSpec{
+		Branch:  "main",
+		Message: fmt.Sprintf("paas: delete %s manifests", app.Name),
+		Paths:   existing,
+	})
+	return err
+}
+
+func (s *Service) deployedStageKeys(ctx context.Context, applicationID shared.ID) ([]string, error) {
+	seen := map[string]struct{}{}
+	var out []string
+	page := shared.PageRequest{Page: 1, PageSize: 100}
+	for {
+		result, err := s.repo.ListDeployments(ctx, applicationID, page)
+		if err != nil {
+			return nil, err
+		}
+		for _, deployment := range result.Items {
+			stageKey := normalizeStageKey(deployment.StageKey)
+			if stageKey == "" {
+				continue
+			}
+			if _, ok := seen[stageKey]; ok {
+				continue
+			}
+			seen[stageKey] = struct{}{}
+			out = append(out, stageKey)
+		}
+		if len(result.Items) == 0 || int64(page.Page*page.PageSize) >= result.Total {
+			return out, nil
+		}
+		page.Page++
+	}
+}
+
+func (s *Service) existingManifestPaths(ctx context.Context, paths []string) ([]string, error) {
+	existing := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if _, err := s.manifest.ReadFile(ctx, path, "main"); err != nil {
+			if shared.CodeOf(err) == shared.CodeNotFound {
+				continue
+			}
+			return nil, err
+		}
+		existing = append(existing, path)
+	}
+	return existing, nil
+}
+
 func (s *Service) ListDeployments(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Deployment], error) {
 	return s.repo.ListDeployments(ctx, applicationID, page)
 }
