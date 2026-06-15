@@ -207,6 +207,10 @@ func argoApplicationPath(appName, stageKey string) string {
 	return fmt.Sprintf("argocd/apps/%s/%s-%s.yaml", stageKey, appName, stageKey)
 }
 
+func argoApplicationStageKeepPath(stageKey string) string {
+	return fmt.Sprintf("argocd/apps/%s/.gitkeep", stageKey)
+}
+
 func argoApplicationPathForBinding(appName, stageKey string, binding ClusterBindingRef) string {
 	return argoApplicationPath(appName, stageKey)
 }

@@ -721,13 +721,24 @@ func (s *Service) DeleteApplicationManifests(ctx context.Context, applicationID 
 	if err != nil {
 		return err
 	}
-	if len(existing) == 0 {
+	if len(existing) > 0 {
+		if _, err := s.manifest.DeleteFiles(ctx, DeleteFilesSpec{
+			Branch:  "main",
+			Message: fmt.Sprintf("paas: delete %s manifests", app.Name),
+			Paths:   existing,
+		}); err != nil {
+			return err
+		}
+	}
+
+	keepFiles := argoApplicationStageKeepFiles(stageKeys)
+	if len(keepFiles) == 0 {
 		return nil
 	}
-	_, err = s.manifest.DeleteFiles(ctx, DeleteFilesSpec{
+	_, err = s.manifest.CommitFiles(ctx, CommitSpec{
 		Branch:  "main",
-		Message: fmt.Sprintf("paas: delete %s manifests", app.Name),
-		Paths:   existing,
+		Message: fmt.Sprintf("paas: keep %s manifest stage directories", app.Name),
+		Files:   keepFiles,
 	})
 	return err
 }
@@ -774,6 +785,21 @@ func (s *Service) existingManifestPaths(ctx context.Context, paths []string) ([]
 		existing = append(existing, path)
 	}
 	return existing, nil
+}
+
+func argoApplicationStageKeepFiles(stageKeys []string) []CommitFile {
+	files := make([]CommitFile, 0, len(stageKeys))
+	for _, stageKey := range stageKeys {
+		stageKey = normalizeStageKey(stageKey)
+		if stageKey == "" {
+			continue
+		}
+		files = append(files, CommitFile{
+			Path:    argoApplicationStageKeepPath(stageKey),
+			Content: "# keep stage directory for Argo CD app-of-apps\n",
+		})
+	}
+	return files
 }
 
 func (s *Service) ListDeployments(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Deployment], error) {
@@ -980,7 +1006,7 @@ func renderArgoApplication(app ApplicationRef, stageKey string, binding ClusterB
 	valuesPath := strings.TrimPrefix(opts.ValuesPath, "/")
 	chartName := firstNonEmpty(opts.ChartName, defaultPlatformChartName)
 	chartVersion := firstNonEmpty(opts.ChartVersion, defaultPlatformChartVersion)
-	return fmt.Sprintf("apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  labels:\n    paas.shareinto.com/application-id: %s\n    paas.shareinto.com/stage-key: %s\n    paas.shareinto.com/deployment-id: %s\nspec:\n  project: default\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: %s\n  sources:\n    - repoURL: %s\n      targetRevision: %s\n      path: charts/%s\n      helm:\n        valueFiles:\n          - $values/%s\n    - repoURL: %s\n      targetRevision: main\n      ref: values\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n      - ServerSideApply=true\n", name, app.ID, stageKey, deploymentID, binding.Namespace, opts.ChartRepoURL, platformChartTag(chartName, chartVersion), chartName, valuesPath, opts.ManifestRepoURL)
+	return fmt.Sprintf("apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  finalizers:\n    - resources-finalizer.argocd.argoproj.io\n  labels:\n    paas.shareinto.com/application-id: %s\n    paas.shareinto.com/stage-key: %s\n    paas.shareinto.com/deployment-id: %s\nspec:\n  project: default\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: %s\n  sources:\n    - repoURL: %s\n      targetRevision: %s\n      path: charts/%s\n      helm:\n        valueFiles:\n          - $values/%s\n    - repoURL: %s\n      targetRevision: main\n      ref: values\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n      - ServerSideApply=true\n", name, app.ID, stageKey, deploymentID, binding.Namespace, opts.ChartRepoURL, platformChartTag(chartName, chartVersion), chartName, valuesPath, opts.ManifestRepoURL)
 }
 
 func indent(value string, prefix string) string {
