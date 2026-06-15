@@ -362,8 +362,8 @@ func notFoundMessage(message string) string {
 	switch strings.TrimSpace(message) {
 	case "stage template not found":
 		return "目标 Stage 模板不存在"
-	case "stage environment not found":
-		return "目标 Stage 对应环境不存在"
+	case "stage binding not found":
+		return "目标 Stage 集群绑定不存在"
 	case "delivery stage not found":
 		return "目标 Stage 不存在"
 	case "freight not found":
@@ -372,8 +372,6 @@ func notFoundMessage(message string) string {
 		return "目标集群不存在或已被删除，请重新绑定 Stage 集群"
 	case "application not found":
 		return "应用不存在或已被删除"
-	case "environment not found":
-		return "目标环境不存在或已被删除"
 	case "workload not found":
 		return "工作负载不存在或已被删除"
 	case "deployment template not found", "application template not found", "platform template not found":

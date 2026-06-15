@@ -10,8 +10,6 @@ import (
 	"github.com/shareinto/paas/internal/shared"
 )
 
-var defaultEnvironmentNames = []string{"dev", "test", "staging", "prod"}
-
 type Service struct {
 	repo                Repository
 	projects            ProjectQuery
@@ -21,9 +19,6 @@ type Service struct {
 	runtimeEnvironments RuntimeEnvironmentQuery
 	buildPipelines      BuildPipelineProvisioner
 	buildPipelineQuery  BuildPipelineQuery
-	clusters            ClusterPlacementQuery
-	clusterQuery        ClusterQuery
-	gitops              GitOpsEnvironmentProvisioner
 	permission          PermissionChecker
 	audit               AuditLogger
 	events              EventPublisher
@@ -32,22 +27,19 @@ type Service struct {
 }
 
 type Options struct {
-	Repository                   Repository
-	ProjectQuery                 ProjectQuery
-	SourceRepositoryQuery        SourceRepositoryQuery
-	JenkinsTemplateQuery         JenkinsTemplateQuery
-	BuildEnvironmentQuery        BuildEnvironmentQuery
-	RuntimeEnvironmentQuery      RuntimeEnvironmentQuery
-	BuildPipelineProvisioner     BuildPipelineProvisioner
-	BuildPipelineQuery           BuildPipelineQuery
-	ClusterPlacementQuery        ClusterPlacementQuery
-	ClusterQuery                 ClusterQuery
-	GitOpsEnvironmentProvisioner GitOpsEnvironmentProvisioner
-	PermissionChecker            PermissionChecker
-	Audit                        AuditLogger
-	EventPublisher               EventPublisher
-	IDGenerator                  shared.IDGenerator
-	Clock                        shared.Clock
+	Repository               Repository
+	ProjectQuery             ProjectQuery
+	SourceRepositoryQuery    SourceRepositoryQuery
+	JenkinsTemplateQuery     JenkinsTemplateQuery
+	BuildEnvironmentQuery    BuildEnvironmentQuery
+	RuntimeEnvironmentQuery  RuntimeEnvironmentQuery
+	BuildPipelineProvisioner BuildPipelineProvisioner
+	BuildPipelineQuery       BuildPipelineQuery
+	PermissionChecker        PermissionChecker
+	Audit                    AuditLogger
+	EventPublisher           EventPublisher
+	IDGenerator              shared.IDGenerator
+	Clock                    shared.Clock
 }
 
 func NewService(opts Options) *Service {
@@ -76,9 +68,6 @@ func NewService(opts Options) *Service {
 		runtimeEnvironments: opts.RuntimeEnvironmentQuery,
 		buildPipelines:      opts.BuildPipelineProvisioner,
 		buildPipelineQuery:  opts.BuildPipelineQuery,
-		clusters:            opts.ClusterPlacementQuery,
-		clusterQuery:        opts.ClusterQuery,
-		gitops:              opts.GitOpsEnvironmentProvisioner,
 		permission:          opts.PermissionChecker,
 		audit:               audit,
 		events:              events,
@@ -126,33 +115,12 @@ type UpdateApplicationInput struct {
 	RuntimeOverrides      BuildSpec                      `json:"runtime_overrides,omitempty"`
 }
 
-type UpdateEnvironmentStateInput struct {
-	EnvironmentID shared.ID         `json:"environment_id"`
-	Status        EnvironmentStatus `json:"status"`
-	Message       string            `json:"message"`
-	ReportedAt    *time.Time        `json:"reported_at,omitempty"`
-}
-
-type BindEnvironmentClusterInput struct {
-	Actor         identityaccess.Subject `json:"actor"`
-	EnvironmentID shared.ID              `json:"environment_id"`
-	ClusterID     shared.ID              `json:"cluster_id"`
-	ClusterName   string                 `json:"cluster_name"`
-	Namespace     string                 `json:"namespace"`
-}
-
-type SetEnvironmentConfigInput struct {
-	Actor         identityaccess.Subject `json:"actor"`
-	EnvironmentID shared.ID              `json:"environment_id"`
-	Key           string                 `json:"key"`
-	Value         string                 `json:"value"`
-}
-
-type SetEnvironmentSecretInput struct {
-	Actor         identityaccess.Subject `json:"actor"`
-	EnvironmentID shared.ID              `json:"environment_id"`
-	Key           string                 `json:"key"`
-	SecretRef     string                 `json:"secret_ref"`
+type UpdateApplicationStageStateInput struct {
+	ApplicationID shared.ID              `json:"application_id"`
+	StageKey      string                 `json:"stage_key"`
+	Status        ApplicationStageStatus `json:"status"`
+	Message       string                 `json:"message"`
+	ReportedAt    *time.Time             `json:"reported_at,omitempty"`
 }
 
 type CreateWorkloadInput struct {
@@ -184,11 +152,11 @@ type WorkloadStatusInput struct {
 	WorkloadID    shared.ID              `json:"workload_id"`
 }
 
-type SaveWorkloadEnvironmentConfigInput struct {
+type SaveWorkloadStageConfigInput struct {
 	Actor            identityaccess.Subject  `json:"actor"`
 	ApplicationID    shared.ID               `json:"application_id"`
 	WorkloadID       shared.ID               `json:"workload_id"`
-	EnvironmentID    shared.ID               `json:"environment_id"`
+	StageKey         string                  `json:"stage_key"`
 	Replicas         int                     `json:"replicas"`
 	ServicePorts     []WorkloadServicePort   `json:"service_ports"`
 	ResourceRequests WorkloadResourceList    `json:"resource_requests"`
@@ -280,10 +248,6 @@ func (s *Service) CreateApplication(ctx context.Context, input CreateApplication
 			_ = s.repo.DeleteApplicationData(ctx, app.ID)
 			return Application{}, err
 		}
-	}
-	if err := s.createDefaultEnvironments(ctx, app, ApplicationSource{}); err != nil {
-		_ = s.repo.DeleteApplicationData(ctx, app.ID)
-		return Application{}, err
 	}
 	sourceRepositoryID := shared.ID("")
 	if len(sources) > 0 {
@@ -727,44 +691,41 @@ func (s *Service) ListEnabledWorkloads(ctx context.Context, applicationID shared
 	return s.repo.ListEnabledWorkloadsByApplication(ctx, applicationID)
 }
 
-func (s *Service) SaveWorkloadEnvironmentConfig(ctx context.Context, input SaveWorkloadEnvironmentConfigInput) (WorkloadEnvironmentConfig, error) {
+func (s *Service) SaveWorkloadStageConfig(ctx context.Context, input SaveWorkloadStageConfigInput) (WorkloadStageConfig, error) {
 	workload, err := s.requireWorkloadInApplication(ctx, input.ApplicationID, input.WorkloadID)
 	if err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if workload.Status == WorkloadStatusDeleted {
-		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeFailedPrecondition, "deleted workload cannot be configured")
+		return WorkloadStageConfig{}, shared.NewError(shared.CodeFailedPrecondition, "deleted workload cannot be configured")
 	}
-	env, err := s.repo.GetEnvironment(ctx, input.EnvironmentID)
+	stageKey, err := normalizeStageKey(input.StageKey)
 	if err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
-	if env.ApplicationID != workload.ApplicationID {
-		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeInvalidArgument, "environment does not belong to workload application")
-	}
-	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeEnvironment, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID}, "environment:update"); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeApplication, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID}, "application:update"); err != nil {
+		return WorkloadStageConfig{}, err
 	}
 	if input.Replicas < 0 {
-		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeInvalidArgument, "replicas cannot be negative")
+		return WorkloadStageConfig{}, shared.NewError(shared.CodeInvalidArgument, "replicas cannot be negative")
 	}
 	now := s.clock.Now()
-	id, err := s.ids.NewID("workload_env_config")
+	id, err := s.ids.NewID("workload_stage_config")
 	if err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
-	if existing, err := s.repo.GetWorkloadEnvironmentConfig(ctx, workload.ID, env.ID); err == nil {
+	if existing, err := s.repo.GetWorkloadStageConfig(ctx, workload.ID, stageKey); err == nil {
 		id = existing.ID
 	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
-	config := WorkloadEnvironmentConfig{
+	config := WorkloadStageConfig{
 		ID:               id,
 		TenantID:         workload.TenantID,
 		ProjectID:        workload.ProjectID,
 		ApplicationID:    workload.ApplicationID,
 		WorkloadID:       workload.ID,
-		EnvironmentID:    env.ID,
+		StageKey:         stageKey,
 		Replicas:         input.Replicas,
 		ServicePorts:     input.ServicePorts,
 		ResourceRequests: input.ResourceRequests,
@@ -781,38 +742,38 @@ func (s *Service) SaveWorkloadEnvironmentConfig(ctx context.Context, input SaveW
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
-	if err := s.repo.SaveWorkloadEnvironmentConfig(ctx, config); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+	if err := s.repo.SaveWorkloadStageConfig(ctx, config); err != nil {
+		return WorkloadStageConfig{}, err
 	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload_environment_config.update", ResourceType: "workload_environment_config", ResourceID: config.ID, Result: "succeeded", Summary: "修改 Workload 部署配置", OccurredAt: now})
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload_stage_config.update", ResourceType: "workload_stage_config", ResourceID: config.ID, Result: "succeeded", Summary: "修改 Workload Stage 部署配置", OccurredAt: now})
 	return config, nil
 }
 
-func (s *Service) SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkloadDefaultConfigInput) (WorkloadEnvironmentConfig, error) {
+func (s *Service) SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkloadDefaultConfigInput) (WorkloadStageConfig, error) {
 	workload, err := s.requireWorkloadInApplication(ctx, input.ApplicationID, input.WorkloadID)
 	if err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if workload.Status == WorkloadStatusDeleted {
-		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeFailedPrecondition, "deleted workload cannot be configured")
+		return WorkloadStageConfig{}, shared.NewError(shared.CodeFailedPrecondition, "deleted workload cannot be configured")
 	}
 	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeApplication, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID}, "application:update"); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if input.Replicas < 0 {
-		return WorkloadEnvironmentConfig{}, shared.NewError(shared.CodeInvalidArgument, "replicas cannot be negative")
+		return WorkloadStageConfig{}, shared.NewError(shared.CodeInvalidArgument, "replicas cannot be negative")
 	}
 	now := s.clock.Now()
 	id, err := s.ids.NewID("workload_default_config")
 	if err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if existing, err := s.repo.GetWorkloadDefaultConfig(ctx, workload.ID); err == nil {
 		id = existing.ID
 	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
-	config := WorkloadEnvironmentConfig{
+	config := WorkloadStageConfig{
 		ID:               id,
 		TenantID:         workload.TenantID,
 		ProjectID:        workload.ProjectID,
@@ -835,89 +796,29 @@ func (s *Service) SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkl
 		UpdatedAt:        now,
 	}
 	if err := s.repo.SaveWorkloadDefaultConfig(ctx, config); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload_default_config.update", ResourceType: "workload_default_config", ResourceID: config.ID, Result: "succeeded", Summary: "修改 Workload 默认部署配置", OccurredAt: now})
 	return config, nil
 }
 
-func (s *Service) GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error) {
-	return s.repo.GetWorkloadEnvironmentConfig(ctx, workloadID, environmentID)
+func (s *Service) GetWorkloadStageConfig(ctx context.Context, workloadID shared.ID, stageKey string) (WorkloadStageConfig, error) {
+	normalized, err := normalizeStageKey(stageKey)
+	if err != nil {
+		return WorkloadStageConfig{}, err
+	}
+	return s.repo.GetWorkloadStageConfig(ctx, workloadID, normalized)
 }
 
-func (s *Service) GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfig, error) {
+func (s *Service) GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadStageConfig, error) {
 	return s.repo.GetWorkloadDefaultConfig(ctx, workloadID)
 }
 
-func (s *Service) ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error) {
+func (s *Service) ListWorkloadStageConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadStageConfig, error) {
 	if _, err := s.repo.GetWorkload(ctx, workloadID); err != nil {
 		return nil, err
 	}
-	return s.repo.ListWorkloadEnvironmentConfigs(ctx, workloadID)
-}
-
-func (s *Service) ListWorkloadEnvironmentConfigsForApplication(ctx context.Context, applicationID shared.ID, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error) {
-	if _, err := s.requireWorkloadInApplication(ctx, applicationID, workloadID); err != nil {
-		return nil, err
-	}
-	return s.repo.ListWorkloadEnvironmentConfigs(ctx, workloadID)
-}
-
-func (s *Service) ListEnvironments(ctx context.Context, applicationID shared.ID) ([]Environment, error) {
-	if _, err := s.repo.GetApplication(ctx, applicationID); err != nil {
-		return nil, err
-	}
-	return s.repo.ListEnvironmentsByApplication(ctx, applicationID)
-}
-
-func (s *Service) SyncApplicationStageEnvironments(ctx context.Context, tenantID shared.ID, stageKeys []string) error {
-	if tenantID.IsZero() {
-		return shared.NewError(shared.CodeInvalidArgument, "tenant_id is required")
-	}
-	normalized := make([]string, 0, len(stageKeys))
-	seenKeys := map[string]struct{}{}
-	for _, key := range stageKeys {
-		name := strings.TrimSpace(key)
-		if name == "" {
-			continue
-		}
-		if _, ok := seenKeys[name]; ok {
-			continue
-		}
-		seenKeys[name] = struct{}{}
-		normalized = append(normalized, name)
-	}
-	for page := 1; ; page++ {
-		apps, err := s.repo.ListApplicationsByTenant(ctx, tenantID, shared.PageRequest{Page: page, PageSize: 100})
-		if err != nil {
-			return err
-		}
-		for _, app := range apps.Items {
-			if app.Status != ApplicationStatusActive {
-				continue
-			}
-			envs, err := s.repo.ListEnvironmentsByApplication(ctx, app.ID)
-			if err != nil {
-				return err
-			}
-			existing := map[string]struct{}{}
-			for _, env := range envs {
-				existing[env.Name] = struct{}{}
-			}
-			for _, name := range normalized {
-				if _, ok := existing[name]; ok {
-					continue
-				}
-				if err := s.createEnvironment(ctx, app, name); err != nil {
-					return err
-				}
-			}
-		}
-		if int64(page*apps.PageSize) >= apps.Total {
-			break
-		}
-	}
-	return nil
+	return s.repo.ListWorkloadStageConfigs(ctx, workloadID)
 }
 
 func (s *Service) changeWorkloadStatus(ctx context.Context, input WorkloadStatusInput, status WorkloadStatus) (Workload, error) {
@@ -951,235 +852,60 @@ func (s *Service) requireWorkloadInApplication(ctx context.Context, applicationI
 	return workload, nil
 }
 
-func (s *Service) GetEnvironment(ctx context.Context, id shared.ID) (Environment, error) {
-	return s.repo.GetEnvironment(ctx, id)
+func (s *Service) GetApplicationStageState(ctx context.Context, applicationID shared.ID, stageKey string) (ApplicationStageState, error) {
+	normalized, err := normalizeStageKey(stageKey)
+	if err != nil {
+		return ApplicationStageState{}, err
+	}
+	return s.repo.GetApplicationStageState(ctx, applicationID, normalized)
 }
 
-func (s *Service) BindEnvironmentCluster(ctx context.Context, input BindEnvironmentClusterInput) (EnvironmentClusterBinding, error) {
-	env, err := s.repo.GetEnvironment(ctx, input.EnvironmentID)
-	if err != nil {
-		return EnvironmentClusterBinding{}, err
-	}
-	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeEnvironment, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID}, "environment:update"); err != nil {
-		return EnvironmentClusterBinding{}, err
-	}
-	candidate := ClusterCandidate{ClusterID: input.ClusterID, ClusterName: strings.TrimSpace(input.ClusterName), Namespace: strings.TrimSpace(input.Namespace)}
-	if candidate.ClusterID.IsZero() || candidate.ClusterName == "" || candidate.Namespace == "" {
-		return EnvironmentClusterBinding{}, shared.NewError(shared.CodeInvalidArgument, "cluster_id, cluster_name and namespace are required")
-	}
-	if s.clusterQuery != nil {
-		cluster, err := s.clusterQuery.GetCluster(ctx, candidate.ClusterID)
-		if err != nil {
-			return EnvironmentClusterBinding{}, err
-		}
-		if cluster.TenantID != env.TenantID {
-			return EnvironmentClusterBinding{}, shared.NewError(shared.CodePermissionDenied, "cluster belongs to another tenant")
-		}
-		candidate.ClusterName = strings.TrimSpace(cluster.Name)
-	}
-	return s.createBindingAndProvision(ctx, env, candidate)
-}
-
-func (s *Service) SetEnvironmentConfig(ctx context.Context, input SetEnvironmentConfigInput) (EnvironmentConfig, error) {
-	env, err := s.repo.GetEnvironment(ctx, input.EnvironmentID)
-	if err != nil {
-		return EnvironmentConfig{}, err
-	}
-	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeEnvironment, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID}, "environment:update"); err != nil {
-		return EnvironmentConfig{}, err
-	}
-	key := strings.TrimSpace(input.Key)
-	if key == "" {
-		return EnvironmentConfig{}, shared.NewError(shared.CodeInvalidArgument, "config key is required")
-	}
-	id, err := s.ids.NewID("env_config")
-	if err != nil {
-		return EnvironmentConfig{}, err
-	}
-	now := s.clock.Now()
-	config := EnvironmentConfig{ID: id, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID, Key: key, Value: strings.TrimSpace(input.Value), CreatedAt: now, UpdatedAt: now}
-	if err := s.repo.CreateEnvironmentConfig(ctx, config); err != nil {
-		return EnvironmentConfig{}, err
-	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "environment_config.update", ResourceType: "environment_config", ResourceID: config.ID, Result: "succeeded", Summary: "修改环境配置", OccurredAt: now})
-	return config, nil
-}
-
-func (s *Service) SetEnvironmentSecret(ctx context.Context, input SetEnvironmentSecretInput) (EnvironmentSecret, error) {
-	env, err := s.repo.GetEnvironment(ctx, input.EnvironmentID)
-	if err != nil {
-		return EnvironmentSecret{}, err
-	}
-	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeEnvironment, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID}, "secret:update"); err != nil {
-		return EnvironmentSecret{}, err
-	}
-	key := strings.TrimSpace(input.Key)
-	secretRef := strings.TrimSpace(input.SecretRef)
-	if key == "" || secretRef == "" {
-		return EnvironmentSecret{}, shared.NewError(shared.CodeInvalidArgument, "secret key and secret_ref are required")
-	}
-	id, err := s.ids.NewID("env_secret")
-	if err != nil {
-		return EnvironmentSecret{}, err
-	}
-	now := s.clock.Now()
-	secret := EnvironmentSecret{ID: id, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID, Key: key, SecretRef: secretRef, CreatedAt: now, UpdatedAt: now}
-	if err := s.repo.CreateEnvironmentSecret(ctx, secret); err != nil {
-		return EnvironmentSecret{}, err
-	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "environment_secret.update", ResourceType: "environment_secret", ResourceID: secret.ID, Result: "succeeded", Summary: "修改环境密钥元数据", OccurredAt: now})
-	return secret, nil
-}
-
-func (s *Service) GetEnvironmentState(ctx context.Context, environmentID shared.ID) (EnvironmentState, error) {
-	return s.repo.GetEnvironmentState(ctx, environmentID)
-}
-
-func (s *Service) ListEnvironmentStates(ctx context.Context, applicationID shared.ID) ([]EnvironmentState, error) {
+func (s *Service) ListApplicationStageStates(ctx context.Context, applicationID shared.ID) ([]ApplicationStageState, error) {
 	if _, err := s.repo.GetApplication(ctx, applicationID); err != nil {
 		return nil, err
 	}
-	return s.repo.ListEnvironmentStatesByApplication(ctx, applicationID)
+	return s.repo.ListApplicationStageStatesByApplication(ctx, applicationID)
 }
 
-func (s *Service) UpdateEnvironmentState(ctx context.Context, input UpdateEnvironmentStateInput) (EnvironmentState, error) {
-	env, err := s.repo.GetEnvironment(ctx, input.EnvironmentID)
+func (s *Service) UpdateApplicationStageState(ctx context.Context, input UpdateApplicationStageStateInput) (ApplicationStageState, error) {
+	app, err := s.repo.GetApplication(ctx, input.ApplicationID)
 	if err != nil {
-		return EnvironmentState{}, err
+		return ApplicationStageState{}, err
 	}
-	if err := shared.ValidateStatus(string(input.Status), AllowedEnvironmentStatuses); err != nil {
-		return EnvironmentState{}, err
+	stageKey, err := normalizeStageKey(input.StageKey)
+	if err != nil {
+		return ApplicationStageState{}, err
+	}
+	if err := shared.ValidateStatus(string(input.Status), AllowedApplicationStageStatuses); err != nil {
+		return ApplicationStageState{}, err
 	}
 	now := s.clock.Now()
-	state := EnvironmentState{
-		TenantID:       env.TenantID,
-		ProjectID:      env.ProjectID,
-		ApplicationID:  env.ApplicationID,
-		EnvironmentID:  env.ID,
+	state := ApplicationStageState{
+		TenantID:       app.TenantID,
+		ProjectID:      app.ProjectID,
+		ApplicationID:  app.ID,
+		StageKey:       stageKey,
 		Status:         input.Status,
 		Message:        strings.TrimSpace(input.Message),
 		LastReportedAt: input.ReportedAt,
 		UpdatedAt:      now,
 	}
-	if err := s.repo.SaveEnvironmentState(ctx, state); err != nil {
-		return EnvironmentState{}, err
+	if err := s.repo.SaveApplicationStageState(ctx, state); err != nil {
+		return ApplicationStageState{}, err
 	}
-	_ = s.appendEnvironmentEvent(ctx, env, "environment_state.updated", state.Status, state.Message, now)
+	_ = s.appendApplicationStageEvent(ctx, state, "application_stage_state.updated", now)
 	return state, nil
 }
 
-func (s *Service) ListEnvironmentEvents(ctx context.Context, environmentID shared.ID, page shared.PageRequest) (shared.PageResult[EnvironmentEvent], error) {
-	if _, err := s.repo.GetEnvironment(ctx, environmentID); err != nil {
-		return shared.PageResult[EnvironmentEvent]{}, err
-	}
-	return s.repo.ListEnvironmentEvents(ctx, environmentID, page)
-}
-
-func (s *Service) createDefaultEnvironments(ctx context.Context, app Application, source ApplicationSource) error {
-	for _, name := range defaultEnvironmentNames {
-		if err := s.createEnvironment(ctx, app, name); err != nil {
-			return err
-		}
-		_ = source
-	}
-	return nil
-}
-
-func (s *Service) createEnvironment(ctx context.Context, app Application, name string) error {
-	envID, err := s.ids.NewID("env")
+func (s *Service) ListApplicationStageEvents(ctx context.Context, applicationID shared.ID, stageKey string, page shared.PageRequest) (shared.PageResult[ApplicationStageEvent], error) {
+	normalized, err := normalizeStageKey(stageKey)
 	if err != nil {
-		return err
+		return shared.PageResult[ApplicationStageEvent]{}, err
 	}
-	now := s.clock.Now()
-	env := Environment{
-		ID:            envID,
-		TenantID:      app.TenantID,
-		ProjectID:     app.ProjectID,
-		ApplicationID: app.ID,
-		Name:          name,
-		DisplayName:   defaultEnvironmentDisplayName(name),
-		CreatedAt:     now,
-		UpdatedAt:     now,
+	if _, err := s.repo.GetApplication(ctx, applicationID); err != nil {
+		return shared.PageResult[ApplicationStageEvent]{}, err
 	}
-	if err := s.repo.CreateEnvironment(ctx, env); err != nil {
-		return err
-	}
-	status := EnvironmentStatusPendingClusterBinding
-	message := "等待绑定可用集群"
-	if s.clusters != nil {
-		candidate, ok, err := s.clusters.SelectCluster(ctx, env)
-		if err != nil {
-			return err
-		}
-		if ok {
-			_, err := s.createBindingAndProvision(ctx, env, candidate)
-			return err
-		}
-	}
-	state := EnvironmentState{TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID, Status: status, Message: message, UpdatedAt: now}
-	if err := s.repo.SaveEnvironmentState(ctx, state); err != nil {
-		return err
-	}
-	return s.appendEnvironmentEvent(ctx, env, "environment.created", status, message, now)
-}
-
-func (s *Service) createBindingAndProvision(ctx context.Context, env Environment, candidate ClusterCandidate) (EnvironmentClusterBinding, error) {
-	if candidate.ClusterID.IsZero() || strings.TrimSpace(candidate.ClusterName) == "" || strings.TrimSpace(candidate.Namespace) == "" {
-		return EnvironmentClusterBinding{}, shared.NewError(shared.CodeInvalidArgument, "cluster candidate is incomplete")
-	}
-	app, err := s.repo.GetApplication(ctx, env.ApplicationID)
-	if err != nil {
-		return EnvironmentClusterBinding{}, err
-	}
-	source, sourceErr := s.repo.GetApplicationSource(ctx, env.ApplicationID)
-	if sourceErr != nil && shared.CodeOf(sourceErr) != shared.CodeNotFound {
-		return EnvironmentClusterBinding{}, sourceErr
-	}
-	id, err := s.ids.NewID("env_binding")
-	if err != nil {
-		return EnvironmentClusterBinding{}, err
-	}
-	now := s.clock.Now()
-	binding := EnvironmentClusterBinding{
-		ID:            id,
-		TenantID:      env.TenantID,
-		ProjectID:     env.ProjectID,
-		ApplicationID: env.ApplicationID,
-		EnvironmentID: env.ID,
-		ClusterID:     candidate.ClusterID,
-		ClusterName:   strings.TrimSpace(candidate.ClusterName),
-		Namespace:     strings.TrimSpace(candidate.Namespace),
-		Status:        EnvironmentClusterBindingActive,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}
-	if s.gitops != nil && shared.CodeOf(sourceErr) != shared.CodeNotFound {
-		if err := s.gitops.ProvisionEnvironment(ctx, GitOpsEnvironmentSpec{
-			TenantID:           env.TenantID,
-			ProjectID:          env.ProjectID,
-			ApplicationID:      env.ApplicationID,
-			EnvironmentID:      env.ID,
-			ApplicationName:    app.Name,
-			EnvironmentName:    env.Name,
-			SourceRepositoryID: source.SourceRepositoryID,
-			SourcePath:         source.SourcePath,
-			ClusterID:          candidate.ClusterID,
-			Namespace:          strings.TrimSpace(candidate.Namespace),
-		}); err != nil {
-			return EnvironmentClusterBinding{}, err
-		}
-	}
-	if err := s.repo.CreateEnvironmentClusterBinding(ctx, binding); err != nil {
-		return EnvironmentClusterBinding{}, err
-	}
-	state := EnvironmentState{TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID, Status: EnvironmentStatusClusterBound, Message: "已绑定集群，等待部署", UpdatedAt: now}
-	if err := s.repo.SaveEnvironmentState(ctx, state); err != nil {
-		return EnvironmentClusterBinding{}, err
-	}
-	if err := s.appendEnvironmentEvent(ctx, env, "environment.cluster_bound", state.Status, state.Message, now); err != nil {
-		return EnvironmentClusterBinding{}, err
-	}
-	return binding, nil
+	return s.repo.ListApplicationStageEvents(ctx, applicationID, normalized, page)
 }
 
 func (s *Service) validateBuildSpec(input BuildSpec, defaultRef string) (BuildSpec, error) {
@@ -1403,12 +1129,20 @@ func (s *Service) check(ctx context.Context, actor identityaccess.Subject, resou
 	return s.permission.Check(ctx, actor, resource, action)
 }
 
-func (s *Service) appendEnvironmentEvent(ctx context.Context, env Environment, eventType string, status EnvironmentStatus, message string, occurredAt time.Time) error {
-	id, err := s.ids.NewID("env_evt")
+func normalizeStageKey(stageKey string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(stageKey))
+	if !sourceKeyPattern.MatchString(normalized) {
+		return "", shared.NewError(shared.CodeInvalidArgument, "stage_key must start with a lowercase letter and contain lowercase letters, numbers or hyphens")
+	}
+	return normalized, nil
+}
+
+func (s *Service) appendApplicationStageEvent(ctx context.Context, state ApplicationStageState, eventType string, occurredAt time.Time) error {
+	id, err := s.ids.NewID("stage_evt")
 	if err != nil {
 		return err
 	}
-	return s.repo.AppendEnvironmentEvent(ctx, EnvironmentEvent{ID: id, TenantID: env.TenantID, ProjectID: env.ProjectID, ApplicationID: env.ApplicationID, EnvironmentID: env.ID, Type: eventType, Status: status, Message: strings.TrimSpace(message), OccurredAt: occurredAt})
+	return s.repo.AppendApplicationStageEvent(ctx, ApplicationStageEvent{ID: id, TenantID: state.TenantID, ProjectID: state.ProjectID, ApplicationID: state.ApplicationID, StageKey: state.StageKey, Type: eventType, Status: state.Status, Message: strings.TrimSpace(state.Message), OccurredAt: occurredAt})
 }
 
 func (s *Service) publish(ctx context.Context, eventType string, occurredAt time.Time, payload any) error {
@@ -1421,19 +1155,4 @@ func (s *Service) publish(ctx context.Context, eventType string, occurredAt time
 		return err
 	}
 	return s.events.Publish(ctx, event)
-}
-
-func defaultEnvironmentDisplayName(name string) string {
-	switch name {
-	case "dev":
-		return "开发环境"
-	case "test":
-		return "测试环境"
-	case "staging":
-		return "预发环境"
-	case "prod":
-		return "生产环境"
-	default:
-		return name
-	}
 }

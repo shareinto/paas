@@ -23,7 +23,7 @@
 只实现以下能力：
 
 - 应用详情主要入口包含 `应用 Workload` 和 `发布晋级`。
-- `应用 Workload` 列表展示 Workload 名称、类型、镜像来源、最近 Release、各环境状态。
+- `应用 Workload` 列表展示 Workload 名称、类型、镜像来源、最近 Release、各 Stage 状态。
 - `创建 Workload` 使用抽屉或弹窗。
 - Workload 表单支持 Deployment/StatefulSet 切换。
 - Workload 表单支持流水线产物来源和自定义镜像来源。

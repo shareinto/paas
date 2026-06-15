@@ -30,7 +30,7 @@ type Repository interface {
 	FindDeliveryFlowByApplication(ctx context.Context, applicationID shared.ID) (DeliveryFlow, error)
 	CreateDeliveryStage(ctx context.Context, stage DeliveryStage) error
 	GetDeliveryStage(ctx context.Context, id shared.ID) (DeliveryStage, error)
-	FindDeliveryStageByEnvironment(ctx context.Context, applicationID shared.ID, environmentID shared.ID) (DeliveryStage, error)
+	FindDeliveryStageByName(ctx context.Context, applicationID shared.ID, name string) (DeliveryStage, error)
 	ListDeliveryStages(ctx context.Context, flowID shared.ID) ([]DeliveryStage, error)
 
 	CreateDeliveryFlowTemplate(ctx context.Context, template DeliveryFlowTemplate) error
@@ -64,16 +64,6 @@ type ApplicationRef struct {
 	ProjectID   shared.ID
 	ProjectName string
 	Name        string
-}
-
-type EnvironmentRef struct {
-	ID            shared.ID
-	TenantID      shared.ID
-	ProjectID     shared.ID
-	ApplicationID shared.ID
-	Name          string
-	Status        string
-	BindingActive bool
 }
 
 type BuildRunRef struct {
@@ -126,9 +116,17 @@ type ApplicationQuery interface {
 	GetApplication(ctx context.Context, id shared.ID) (ApplicationRef, error)
 }
 
-type EnvironmentQuery interface {
-	ListEnvironments(ctx context.Context, applicationID shared.ID) ([]EnvironmentRef, error)
-	GetEnvironment(ctx context.Context, id shared.ID) (EnvironmentRef, error)
+type StageRuntimeState struct {
+	ApplicationID  shared.ID
+	StageKey       string
+	SyncStatus     string
+	HealthStatus   string
+	OperationState string
+	Message        string
+}
+
+type StageRuntimeStateQuery interface {
+	ListStageRuntimeStates(ctx context.Context, applicationID shared.ID) (map[string]StageRuntimeState, error)
 }
 
 type SyncApplicationStagesInput struct {
@@ -136,7 +134,7 @@ type SyncApplicationStagesInput struct {
 	StageKeys []string
 }
 
-type EnvironmentSync interface {
+type StageSync interface {
 	SyncApplicationStages(ctx context.Context, input SyncApplicationStagesInput) error
 }
 
@@ -159,7 +157,6 @@ type GitOpsPromotionSpec struct {
 	PromotionID    shared.ID
 	FreightID      shared.ID
 	ApplicationID  shared.ID
-	EnvironmentID  shared.ID
 	StageKey       string
 	TargetClusters []GitOpsPromotionTargetCluster
 	Artifacts      []GitOpsArtifactSpec

@@ -47,15 +47,11 @@ func (r *MySQLRepository) DeleteApplicationData(ctx context.Context, application
 	}
 	exec := database.ExecutorFromContext(ctx, r.db)
 	for _, stmt := range []string{
-		"DELETE FROM workload_environment_configs WHERE application_id = ?",
+		"DELETE FROM workload_stage_configs WHERE application_id = ?",
+		"DELETE FROM workload_default_configs WHERE application_id = ?",
 		"DELETE FROM workloads WHERE application_id = ?",
-		"DELETE FROM environment_events WHERE application_id = ?",
-		"DELETE FROM environment_states WHERE application_id = ?",
-		"DELETE FROM environment_cluster_bindings WHERE application_id = ?",
-		"DELETE FROM environment_routes WHERE application_id = ?",
-		"DELETE FROM environment_secrets WHERE application_id = ?",
-		"DELETE FROM environment_configs WHERE application_id = ?",
-		"DELETE FROM environments WHERE application_id = ?",
+		"DELETE FROM application_stage_events WHERE application_id = ?",
+		"DELETE FROM application_stage_states WHERE application_id = ?",
 		"DELETE FROM application_sources WHERE application_id = ?",
 		"DELETE FROM application_runtime_environments WHERE application_id = ?",
 		"DELETE FROM applications WHERE id = ?",
@@ -244,45 +240,6 @@ func (r *MySQLRepository) ListEnabledWorkloadsByApplication(ctx context.Context,
 	return r.listWorkloads(ctx, "application_id = ? AND status = ?", applicationID, WorkloadStatusEnabled)
 }
 
-func (r *MySQLRepository) SaveWorkloadEnvironmentConfig(ctx context.Context, config WorkloadEnvironmentConfig) error {
-	if _, err := r.GetWorkload(ctx, config.WorkloadID); err != nil {
-		return err
-	}
-	if _, err := r.GetEnvironment(ctx, config.EnvironmentID); err != nil {
-		return err
-	}
-	encoded, err := encodeWorkloadConfigJSON(config)
-	if err != nil {
-		return err
-	}
-	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO workload_environment_configs (
-  id, tenant_id, project_id, application_id, workload_id, environment_id, replicas,
-  service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
-  env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
-  init_containers_json, values_override_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), ?, ?)
-ON DUPLICATE KEY UPDATE
-  replicas = VALUES(replicas),
-  service_ports_json = VALUES(service_ports_json),
-  resource_requests_json = VALUES(resource_requests_json),
-  resource_limits_json = VALUES(resource_limits_json),
-  probes_json = VALUES(probes_json),
-  ingress_hosts_json = VALUES(ingress_hosts_json),
-  env_vars_json = VALUES(env_vars_json),
-  secret_refs_json = VALUES(secret_refs_json),
-  config_files_json = VALUES(config_files_json),
-  writable_dirs_json = VALUES(writable_dirs_json),
-  volume_mounts_json = VALUES(volume_mounts_json),
-  init_containers_json = VALUES(init_containers_json),
-  values_override_json = VALUES(values_override_json),
-  updated_at = VALUES(updated_at)`,
-		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.WorkloadID, config.EnvironmentID, config.Replicas,
-		encoded.servicePorts, encoded.resourceRequests, encoded.resourceLimits, encoded.probes, encoded.ingressHosts, encoded.envVars, encoded.secretRefs, encoded.configFiles, encoded.writableDirs, encoded.volumeMounts, encoded.initContainers, encoded.valuesOverride,
-		mysqlTime(config.CreatedAt), mysqlTime(config.UpdatedAt))
-	return database.ConflictOrUnavailable(err, "workload environment config already exists", "save workload environment config failed")
-}
-
 type encodedWorkloadConfig struct {
 	servicePorts     string
 	resourceRequests string
@@ -298,7 +255,7 @@ type encodedWorkloadConfig struct {
 	valuesOverride   string
 }
 
-func encodeWorkloadConfigJSON(config WorkloadEnvironmentConfig) (encodedWorkloadConfig, error) {
+func encodeWorkloadConfigJSON(config WorkloadStageConfig) (encodedWorkloadConfig, error) {
 	servicePorts, err := jsonText(config.ServicePorts)
 	if err != nil {
 		return encodedWorkloadConfig{}, err
@@ -350,27 +307,66 @@ func encodeWorkloadConfigJSON(config WorkloadEnvironmentConfig) (encodedWorkload
 	return encodedWorkloadConfig{servicePorts: servicePorts, resourceRequests: resourceRequests, resourceLimits: resourceLimits, probes: probes, ingressHosts: ingressHosts, envVars: envVars, secretRefs: secretRefs, configFiles: configFiles, writableDirs: writableDirs, volumeMounts: volumeMounts, initContainers: initContainers, valuesOverride: valuesOverride}, nil
 }
 
-func (r *MySQLRepository) GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error) {
-	config, err := scanWorkloadEnvironmentConfig(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, workloadEnvironmentConfigSelect()+" WHERE workload_id = ? AND environment_id = ?", workloadID, environmentID))
+func (r *MySQLRepository) SaveWorkloadStageConfig(ctx context.Context, config WorkloadStageConfig) error {
+	if _, err := r.GetWorkload(ctx, config.WorkloadID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(config.StageKey) == "" {
+		return shared.NewError(shared.CodeInvalidArgument, "stage_key is required")
+	}
+	encoded, err := encodeWorkloadConfigJSON(config)
 	if err != nil {
-		return WorkloadEnvironmentConfig{}, database.NotFound(err, "workload environment config not found")
+		return err
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO workload_stage_configs (
+  id, tenant_id, project_id, application_id, workload_id, stage_key, replicas,
+  service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
+  env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
+  init_containers_json, values_override_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), ?, ?)
+ON DUPLICATE KEY UPDATE
+  replicas = VALUES(replicas),
+  service_ports_json = VALUES(service_ports_json),
+  resource_requests_json = VALUES(resource_requests_json),
+  resource_limits_json = VALUES(resource_limits_json),
+  probes_json = VALUES(probes_json),
+  ingress_hosts_json = VALUES(ingress_hosts_json),
+  env_vars_json = VALUES(env_vars_json),
+  secret_refs_json = VALUES(secret_refs_json),
+  config_files_json = VALUES(config_files_json),
+  writable_dirs_json = VALUES(writable_dirs_json),
+  volume_mounts_json = VALUES(volume_mounts_json),
+  init_containers_json = VALUES(init_containers_json),
+  values_override_json = VALUES(values_override_json),
+  updated_at = VALUES(updated_at)`,
+		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.WorkloadID, strings.TrimSpace(config.StageKey), config.Replicas,
+		encoded.servicePorts, encoded.resourceRequests, encoded.resourceLimits, encoded.probes, encoded.ingressHosts, encoded.envVars, encoded.secretRefs, encoded.configFiles, encoded.writableDirs, encoded.volumeMounts, encoded.initContainers, encoded.valuesOverride,
+		mysqlTime(config.CreatedAt), mysqlTime(config.UpdatedAt))
+	return database.ConflictOrUnavailable(err, "workload stage config already exists", "save workload stage config failed")
+}
+
+func (r *MySQLRepository) GetWorkloadStageConfig(ctx context.Context, workloadID shared.ID, stageKey string) (WorkloadStageConfig, error) {
+	config, err := scanWorkloadStageConfig(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, workloadStageConfigSelect()+" WHERE workload_id = ? AND stage_key = ?", workloadID, strings.TrimSpace(stageKey)))
+	if err != nil {
+		return WorkloadStageConfig{}, database.NotFound(err, "workload stage config not found")
 	}
 	return config, nil
 }
 
-func (r *MySQLRepository) ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error) {
+func (r *MySQLRepository) ListWorkloadStageConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadStageConfig, error) {
 	if _, err := r.GetWorkload(ctx, workloadID); err != nil {
 		return nil, err
 	}
-	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, workloadEnvironmentConfigSelect()+`
- WHERE workload_id = ? ORDER BY environment_id ASC`, workloadID)
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, workloadStageConfigSelect()+`
+ WHERE workload_id = ? ORDER BY stage_key ASC`, workloadID)
 	if err != nil {
-		return nil, database.WrapUnavailable(err, "list workload environment configs failed")
+		return nil, database.WrapUnavailable(err, "list workload stage configs failed")
 	}
 	defer rows.Close()
-	items := []WorkloadEnvironmentConfig{}
+	items := []WorkloadStageConfig{}
 	for rows.Next() {
-		config, err := scanWorkloadEnvironmentConfig(rows)
+		config, err := scanWorkloadStageConfig(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -379,7 +375,7 @@ func (r *MySQLRepository) ListWorkloadEnvironmentConfigs(ctx context.Context, wo
 	return items, rows.Err()
 }
 
-func (r *MySQLRepository) SaveWorkloadDefaultConfig(ctx context.Context, config WorkloadEnvironmentConfig) error {
+func (r *MySQLRepository) SaveWorkloadDefaultConfig(ctx context.Context, config WorkloadStageConfig) error {
 	if _, err := r.GetWorkload(ctx, config.WorkloadID); err != nil {
 		return err
 	}
@@ -415,162 +411,50 @@ ON DUPLICATE KEY UPDATE
 	return database.ConflictOrUnavailable(err, "workload default config already exists", "save workload default config failed")
 }
 
-func (r *MySQLRepository) GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfig, error) {
-	config, err := scanWorkloadEnvironmentConfig(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, workloadDefaultConfigSelect()+" WHERE workload_id = ?", workloadID))
+func (r *MySQLRepository) GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadStageConfig, error) {
+	config, err := scanWorkloadStageConfig(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, workloadDefaultConfigSelect()+" WHERE workload_id = ?", workloadID))
 	if err != nil {
-		return WorkloadEnvironmentConfig{}, database.NotFound(err, "workload default config not found")
+		return WorkloadStageConfig{}, database.NotFound(err, "workload default config not found")
 	}
 	return config, nil
 }
 
-func (r *MySQLRepository) CreateEnvironment(ctx context.Context, env Environment) error {
-	if _, err := r.GetApplication(ctx, env.ApplicationID); err != nil {
+func (r *MySQLRepository) SaveApplicationStageState(ctx context.Context, state ApplicationStageState) error {
+	if _, err := r.GetApplication(ctx, state.ApplicationID); err != nil {
 		return err
 	}
-	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO environments (id, tenant_id, project_id, application_id, name, display_name, description, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		env.ID, env.TenantID, env.ProjectID, env.ApplicationID, env.Name, env.DisplayName, env.Description, mysqlTime(env.CreatedAt), mysqlTime(env.UpdatedAt))
-	return database.ConflictOrUnavailable(err, "environment already exists", "create environment failed")
-}
-
-func (r *MySQLRepository) UpdateEnvironment(ctx context.Context, env Environment) error {
-	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-UPDATE environments SET name = ?, display_name = ?, description = ?, updated_at = ? WHERE id = ?`,
-		env.Name, env.DisplayName, env.Description, mysqlTime(env.UpdatedAt), env.ID)
-	if err != nil {
-		return database.ConflictOrUnavailable(err, "environment name already exists in application", "update environment failed")
-	}
-	return database.RequireAffected(result, "environment not found")
-}
-
-func (r *MySQLRepository) GetEnvironment(ctx context.Context, id shared.ID) (Environment, error) {
-	env, err := scanEnvironment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, environmentSelect()+" WHERE id = ?", id))
-	if err != nil {
-		return Environment{}, database.NotFound(err, "environment not found")
-	}
-	return env, nil
-}
-
-func (r *MySQLRepository) ListEnvironmentsByApplication(ctx context.Context, applicationID shared.ID) ([]Environment, error) {
-	if _, err := r.GetApplication(ctx, applicationID); err != nil {
-		return nil, err
-	}
-	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, environmentSelect()+`
- WHERE application_id = ? ORDER BY FIELD(name, 'dev', 'test', 'staging', 'prod'), name ASC`, applicationID)
-	if err != nil {
-		return nil, database.WrapUnavailable(err, "list environments failed")
-	}
-	defer rows.Close()
-	return scanEnvironmentRows(rows)
-}
-
-func (r *MySQLRepository) CreateEnvironmentConfig(ctx context.Context, config EnvironmentConfig) error {
-	if _, err := r.GetEnvironment(ctx, config.EnvironmentID); err != nil {
-		return err
+	if strings.TrimSpace(state.StageKey) == "" {
+		return shared.NewError(shared.CodeInvalidArgument, "stage_key is required")
 	}
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO environment_configs (id, tenant_id, project_id, application_id, environment_id, config_key, config_value, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.EnvironmentID, config.Key, config.Value, mysqlTime(config.CreatedAt), mysqlTime(config.UpdatedAt))
-	return database.ConflictOrUnavailable(err, "environment config already exists", "create environment config failed")
-}
-
-func (r *MySQLRepository) CreateEnvironmentSecret(ctx context.Context, secret EnvironmentSecret) error {
-	if _, err := r.GetEnvironment(ctx, secret.EnvironmentID); err != nil {
-		return err
-	}
-	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO environment_secrets (id, tenant_id, project_id, application_id, environment_id, secret_key, secret_ref, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		secret.ID, secret.TenantID, secret.ProjectID, secret.ApplicationID, secret.EnvironmentID, secret.Key, secret.SecretRef, mysqlTime(secret.CreatedAt), mysqlTime(secret.UpdatedAt))
-	return database.ConflictOrUnavailable(err, "environment secret already exists", "create environment secret failed")
-}
-
-func (r *MySQLRepository) CreateEnvironmentRoute(ctx context.Context, route EnvironmentRoute) error {
-	if _, err := r.GetEnvironment(ctx, route.EnvironmentID); err != nil {
-		return err
-	}
-	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO environment_routes (id, tenant_id, project_id, application_id, environment_id, host, path, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		route.ID, route.TenantID, route.ProjectID, route.ApplicationID, route.EnvironmentID, route.Host, route.Path, mysqlTime(route.CreatedAt), mysqlTime(route.UpdatedAt))
-	return database.ConflictOrUnavailable(err, "environment route already exists", "create environment route failed")
-}
-
-func (r *MySQLRepository) CreateEnvironmentClusterBinding(ctx context.Context, binding EnvironmentClusterBinding) error {
-	if _, err := r.GetEnvironment(ctx, binding.EnvironmentID); err != nil {
-		return err
-	}
-	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO environment_cluster_bindings (id, tenant_id, project_id, application_id, environment_id, cluster_id, cluster_name, namespace, status, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		binding.ID, binding.TenantID, binding.ProjectID, binding.ApplicationID, binding.EnvironmentID, binding.ClusterID, binding.ClusterName, binding.Namespace, binding.Status, mysqlTime(binding.CreatedAt), mysqlTime(binding.UpdatedAt))
-	return database.ConflictOrUnavailable(err, "environment cluster binding already exists", "create environment cluster binding failed")
-}
-
-func (r *MySQLRepository) GetEnvironmentClusterBinding(ctx context.Context, environmentID shared.ID) (EnvironmentClusterBinding, error) {
-	binding, err := scanBinding(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, bindingSelect()+" WHERE environment_id = ?", environmentID))
-	if err != nil {
-		return EnvironmentClusterBinding{}, database.NotFound(err, "environment cluster binding not found")
-	}
-	return binding, nil
-}
-
-func (r *MySQLRepository) ListEnvironmentClusterBindingsByApplication(ctx context.Context, applicationID shared.ID) ([]EnvironmentClusterBinding, error) {
-	if _, err := r.GetApplication(ctx, applicationID); err != nil {
-		return nil, err
-	}
-	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, bindingSelect()+`
- WHERE application_id = ? ORDER BY FIELD((SELECT name FROM environments WHERE environments.id = environment_cluster_bindings.environment_id), 'dev', 'test', 'staging', 'prod')`, applicationID)
-	if err != nil {
-		return nil, database.WrapUnavailable(err, "list environment cluster bindings failed")
-	}
-	defer rows.Close()
-	items := []EnvironmentClusterBinding{}
-	for rows.Next() {
-		binding, err := scanBinding(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, binding)
-	}
-	return items, rows.Err()
-}
-
-func (r *MySQLRepository) SaveEnvironmentState(ctx context.Context, state EnvironmentState) error {
-	if _, err := r.GetEnvironment(ctx, state.EnvironmentID); err != nil {
-		return err
-	}
-	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO environment_states (environment_id, tenant_id, project_id, application_id, status, message, last_reported_at, updated_at)
+INSERT INTO application_stage_states (application_id, stage_key, tenant_id, project_id, status, message, last_reported_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE status = VALUES(status), message = VALUES(message), last_reported_at = VALUES(last_reported_at), updated_at = VALUES(updated_at)`,
-		state.EnvironmentID, state.TenantID, state.ProjectID, state.ApplicationID, state.Status, state.Message, mysqlTimePtr(state.LastReportedAt), mysqlTime(state.UpdatedAt))
-	return database.WrapUnavailable(err, "save environment state failed")
+		state.ApplicationID, strings.TrimSpace(state.StageKey), state.TenantID, state.ProjectID, state.Status, state.Message, mysqlTimePtr(state.LastReportedAt), mysqlTime(state.UpdatedAt))
+	return database.WrapUnavailable(err, "save application stage state failed")
 }
 
-func (r *MySQLRepository) GetEnvironmentState(ctx context.Context, environmentID shared.ID) (EnvironmentState, error) {
-	state, err := scanState(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, stateSelect()+" WHERE environment_id = ?", environmentID))
+func (r *MySQLRepository) GetApplicationStageState(ctx context.Context, applicationID shared.ID, stageKey string) (ApplicationStageState, error) {
+	state, err := scanApplicationStageState(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, applicationStageStateSelect()+" WHERE application_id = ? AND stage_key = ?", applicationID, strings.TrimSpace(stageKey)))
 	if err != nil {
-		return EnvironmentState{}, database.NotFound(err, "environment state not found")
+		return ApplicationStageState{}, database.NotFound(err, "application stage state not found")
 	}
 	return state, nil
 }
 
-func (r *MySQLRepository) ListEnvironmentStatesByApplication(ctx context.Context, applicationID shared.ID) ([]EnvironmentState, error) {
+func (r *MySQLRepository) ListApplicationStageStatesByApplication(ctx context.Context, applicationID shared.ID) ([]ApplicationStageState, error) {
 	if _, err := r.GetApplication(ctx, applicationID); err != nil {
 		return nil, err
 	}
-	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, stateSelect()+`
- WHERE application_id = ? ORDER BY FIELD((SELECT name FROM environments WHERE environments.id = environment_states.environment_id), 'dev', 'test', 'staging', 'prod')`, applicationID)
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, applicationStageStateSelect()+`
+ WHERE application_id = ? ORDER BY stage_key ASC`, applicationID)
 	if err != nil {
-		return nil, database.WrapUnavailable(err, "list environment states failed")
+		return nil, database.WrapUnavailable(err, "list application stage states failed")
 	}
 	defer rows.Close()
-	items := []EnvironmentState{}
+	items := []ApplicationStageState{}
 	for rows.Next() {
-		state, err := scanState(rows)
+		state, err := scanApplicationStageState(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -579,38 +463,42 @@ func (r *MySQLRepository) ListEnvironmentStatesByApplication(ctx context.Context
 	return items, rows.Err()
 }
 
-func (r *MySQLRepository) AppendEnvironmentEvent(ctx context.Context, event EnvironmentEvent) error {
-	if _, err := r.GetEnvironment(ctx, event.EnvironmentID); err != nil {
+func (r *MySQLRepository) AppendApplicationStageEvent(ctx context.Context, event ApplicationStageEvent) error {
+	if _, err := r.GetApplication(ctx, event.ApplicationID); err != nil {
 		return err
 	}
+	if strings.TrimSpace(event.StageKey) == "" {
+		return shared.NewError(shared.CodeInvalidArgument, "stage_key is required")
+	}
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO environment_events (id, tenant_id, project_id, application_id, environment_id, type, status, message, occurred_at)
+INSERT INTO application_stage_events (id, tenant_id, project_id, application_id, stage_key, type, status, message, occurred_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		event.ID, event.TenantID, event.ProjectID, event.ApplicationID, event.EnvironmentID, event.Type, event.Status, event.Message, mysqlTime(event.OccurredAt))
-	return database.ConflictOrUnavailable(err, "environment event already exists", "append environment event failed")
+		event.ID, event.TenantID, event.ProjectID, event.ApplicationID, strings.TrimSpace(event.StageKey), event.Type, event.Status, event.Message, mysqlTime(event.OccurredAt))
+	return database.ConflictOrUnavailable(err, "application stage event already exists", "append application stage event failed")
 }
 
-func (r *MySQLRepository) ListEnvironmentEvents(ctx context.Context, environmentID shared.ID, page shared.PageRequest) (shared.PageResult[EnvironmentEvent], error) {
-	if _, err := r.GetEnvironment(ctx, environmentID); err != nil {
-		return shared.PageResult[EnvironmentEvent]{}, err
+func (r *MySQLRepository) ListApplicationStageEvents(ctx context.Context, applicationID shared.ID, stageKey string, page shared.PageRequest) (shared.PageResult[ApplicationStageEvent], error) {
+	if _, err := r.GetApplication(ctx, applicationID); err != nil {
+		return shared.PageResult[ApplicationStageEvent]{}, err
 	}
+	stageKey = strings.TrimSpace(stageKey)
 	var total int64
-	if err := database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, "SELECT COUNT(*) FROM environment_events WHERE environment_id = ?", environmentID).Scan(&total); err != nil {
-		return shared.PageResult[EnvironmentEvent]{}, database.WrapUnavailable(err, "count environment events failed")
+	if err := database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, "SELECT COUNT(*) FROM application_stage_events WHERE application_id = ? AND stage_key = ?", applicationID, stageKey).Scan(&total); err != nil {
+		return shared.PageResult[ApplicationStageEvent]{}, database.WrapUnavailable(err, "count application stage events failed")
 	}
 	page, limit, offset := database.LimitOffset(page)
 	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
-SELECT id, tenant_id, project_id, application_id, environment_id, type, status, message, occurred_at
-FROM environment_events WHERE environment_id = ? ORDER BY occurred_at ASC, id ASC LIMIT ? OFFSET ?`, environmentID, limit, offset)
+SELECT id, tenant_id, project_id, application_id, stage_key, type, status, message, occurred_at
+FROM application_stage_events WHERE application_id = ? AND stage_key = ? ORDER BY occurred_at ASC, id ASC LIMIT ? OFFSET ?`, applicationID, stageKey, limit, offset)
 	if err != nil {
-		return shared.PageResult[EnvironmentEvent]{}, database.WrapUnavailable(err, "list environment events failed")
+		return shared.PageResult[ApplicationStageEvent]{}, database.WrapUnavailable(err, "list application stage events failed")
 	}
 	defer rows.Close()
-	items := []EnvironmentEvent{}
+	items := []ApplicationStageEvent{}
 	for rows.Next() {
-		event, err := scanEvent(rows)
+		event, err := scanApplicationStageEvent(rows)
 		if err != nil {
-			return shared.PageResult[EnvironmentEvent]{}, err
+			return shared.PageResult[ApplicationStageEvent]{}, err
 		}
 		items = append(items, event)
 	}
@@ -728,26 +616,20 @@ func applicationSourceSelect() string {
 func workloadSelect() string {
 	return "SELECT id, tenant_id, project_id, application_id, name, display_name, workload_type, description, status, image_source_mode, pipeline_id, created_by, created_at, updated_at FROM workloads"
 }
-func workloadEnvironmentConfigSelect() string {
-	return `SELECT id, tenant_id, project_id, application_id, workload_id, environment_id, replicas,
+func workloadStageConfigSelect() string {
+	return `SELECT id, tenant_id, project_id, application_id, workload_id, stage_key, replicas,
 service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
 env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
-init_containers_json, values_override_json, created_at, updated_at FROM workload_environment_configs`
+init_containers_json, values_override_json, created_at, updated_at FROM workload_stage_configs`
 }
 func workloadDefaultConfigSelect() string {
-	return `SELECT id, tenant_id, project_id, application_id, workload_id, '' AS environment_id, replicas,
+	return `SELECT id, tenant_id, project_id, application_id, workload_id, '' AS stage_key, replicas,
 service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
 env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
 init_containers_json, values_override_json, created_at, updated_at FROM workload_default_configs`
 }
-func environmentSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, name, display_name, description, created_at, updated_at FROM environments"
-}
-func bindingSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, environment_id, cluster_id, cluster_name, namespace, status, created_at, updated_at FROM environment_cluster_bindings"
-}
-func stateSelect() string {
-	return "SELECT tenant_id, project_id, application_id, environment_id, status, message, last_reported_at, updated_at FROM environment_states"
+func applicationStageStateSelect() string {
+	return "SELECT tenant_id, project_id, application_id, stage_key, status, message, last_reported_at, updated_at FROM application_stage_states"
 }
 
 func scanApplication(scanner appenvScanner) (Application, error) {
@@ -766,84 +648,63 @@ func scanWorkload(scanner appenvScanner) (Workload, error) {
 	err := scanner.Scan(&workload.ID, &workload.TenantID, &workload.ProjectID, &workload.ApplicationID, &workload.Name, &workload.DisplayName, &workload.WorkloadType, &workload.Description, &workload.Status, &workload.ImageSourceMode, &workload.PipelineID, &workload.CreatedBy, &workload.CreatedAt, &workload.UpdatedAt)
 	return workload, err
 }
-func scanWorkloadEnvironmentConfig(scanner appenvScanner) (WorkloadEnvironmentConfig, error) {
-	var config WorkloadEnvironmentConfig
+func scanWorkloadStageConfig(scanner appenvScanner) (WorkloadStageConfig, error) {
+	var config WorkloadStageConfig
 	var servicePorts, resourceRequests, resourceLimits, probes, ingressHosts, envVars, secretRefs, configFiles, writableDirs, volumeMounts, initContainers, valuesOverride []byte
 	err := scanner.Scan(
-		&config.ID, &config.TenantID, &config.ProjectID, &config.ApplicationID, &config.WorkloadID, &config.EnvironmentID, &config.Replicas,
+		&config.ID, &config.TenantID, &config.ProjectID, &config.ApplicationID, &config.WorkloadID, &config.StageKey, &config.Replicas,
 		&servicePorts, &resourceRequests, &resourceLimits, &probes, &ingressHosts, &envVars, &secretRefs, &configFiles, &writableDirs, &volumeMounts, &initContainers, &valuesOverride,
 		&config.CreatedAt, &config.UpdatedAt,
 	)
 	if err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(servicePorts, &config.ServicePorts); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(resourceRequests, &config.ResourceRequests); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(resourceLimits, &config.ResourceLimits); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(probes, &config.Probes); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(ingressHosts, &config.IngressHosts); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(envVars, &config.EnvVars); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(secretRefs, &config.SecretRefs); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(configFiles, &config.ConfigFiles); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(writableDirs, &config.WritableDirs); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(volumeMounts, &config.VolumeMounts); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(initContainers, &config.InitContainers); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	if err := json.Unmarshal(valuesOverride, &config.ValuesOverride); err != nil {
-		return WorkloadEnvironmentConfig{}, err
+		return WorkloadStageConfig{}, err
 	}
 	return config, nil
 }
-func scanEnvironment(scanner appenvScanner) (Environment, error) {
-	var env Environment
-	err := scanner.Scan(&env.ID, &env.TenantID, &env.ProjectID, &env.ApplicationID, &env.Name, &env.DisplayName, &env.Description, &env.CreatedAt, &env.UpdatedAt)
-	return env, err
-}
-func scanEnvironmentRows(rows *sql.Rows) ([]Environment, error) {
-	items := []Environment{}
-	for rows.Next() {
-		env, err := scanEnvironment(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, env)
-	}
-	return items, rows.Err()
-}
-func scanBinding(scanner appenvScanner) (EnvironmentClusterBinding, error) {
-	var binding EnvironmentClusterBinding
-	err := scanner.Scan(&binding.ID, &binding.TenantID, &binding.ProjectID, &binding.ApplicationID, &binding.EnvironmentID, &binding.ClusterID, &binding.ClusterName, &binding.Namespace, &binding.Status, &binding.CreatedAt, &binding.UpdatedAt)
-	return binding, err
-}
-func scanState(scanner appenvScanner) (EnvironmentState, error) {
-	var state EnvironmentState
-	err := scanner.Scan(&state.TenantID, &state.ProjectID, &state.ApplicationID, &state.EnvironmentID, &state.Status, &state.Message, &state.LastReportedAt, &state.UpdatedAt)
+func scanApplicationStageState(scanner appenvScanner) (ApplicationStageState, error) {
+	var state ApplicationStageState
+	err := scanner.Scan(&state.TenantID, &state.ProjectID, &state.ApplicationID, &state.StageKey, &state.Status, &state.Message, &state.LastReportedAt, &state.UpdatedAt)
 	return state, err
 }
-func scanEvent(scanner appenvScanner) (EnvironmentEvent, error) {
-	var event EnvironmentEvent
-	err := scanner.Scan(&event.ID, &event.TenantID, &event.ProjectID, &event.ApplicationID, &event.EnvironmentID, &event.Type, &event.Status, &event.Message, &event.OccurredAt)
+func scanApplicationStageEvent(scanner appenvScanner) (ApplicationStageEvent, error) {
+	var event ApplicationStageEvent
+	err := scanner.Scan(&event.ID, &event.TenantID, &event.ProjectID, &event.ApplicationID, &event.StageKey, &event.Type, &event.Status, &event.Message, &event.OccurredAt)
 	return event, err
 }
 

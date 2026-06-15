@@ -14,15 +14,15 @@
 - [x] 消费 `BuildSucceeded` 事件，生成 Release。
 - [x] V1 历史完成：基于 Release 自动生成单项 Freight。
 - [x] 创建默认 DeliveryFlow：`dev -> test -> staging -> prod`，并支持租户交付流模板 DAG 依赖边。
-- [x] 实现 Promotion 创建，校验目标 Environment 有 active EnvironmentClusterBinding。
-- [x] 环境为 `pending_cluster_binding` 时阻止 Promotion。
+- [x] 实现 Promotion 创建，校验目标 Stage 有 active StageClusterBinding。
+- [x] Stage 为 `pending_cluster_binding` 时阻止 Promotion。
 - [x] prod Promotion 进入审批流程。
 - [x] 实现审批通过、审批拒绝、禁止自审批。
 - [x] 审批通过后调用 `GitOpsDeploymentCommand` 修改部署清单。
 - [x] 实现回滚 Promotion，目标为历史 Freight。
 - [x] 提供 API：Freight 列表、Freight 详情、Promotion 创建、详情、审批、拒绝、中止。
 - [x] 记录创建 Freight、创建 Promotion、审批、拒绝、回滚审计日志。
-- [x] 编写测试：V1 BuildSucceeded 自动生成版本、晋级状态机、prod 审批、禁止自审批、pending 环境阻止部署、回滚。
+- [x] 编写测试：V1 BuildSucceeded 自动生成版本、晋级状态机、prod 审批、禁止自审批、pending Stage 阻止部署、回滚。
 
 ## 完成标准
 

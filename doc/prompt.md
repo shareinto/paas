@@ -81,7 +81,7 @@ shared-kernel
 identity-access
 tenant-project
 source-repository
-application-environment
+application-workload
 build
 release-delivery
 gitops-deployment
@@ -101,7 +101,7 @@ integrations
 3. tenant-project
 4. integrations
 5. source-repository
-6. application-environment
+6. application-workload
 7. build
 8. release-delivery
 9. gitops-deployment

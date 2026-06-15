@@ -17,6 +17,9 @@ type Repository interface {
 
 	CreateHeartbeat(ctx context.Context, heartbeat ClusterHeartbeat) error
 	CreateSnapshot(ctx context.Context, snapshot ClusterResourceSnapshot) error
+	ReplaceRuntimeResources(ctx context.Context, clusterID shared.ID, tenantID shared.ID, reportedAt time.Time, resources []RuntimeResourceStatus) error
+	ListRuntimeResources(ctx context.Context, filter RuntimeResourceFilter) ([]RuntimeResource, error)
+	GetRuntimeResource(ctx context.Context, id shared.ID) (RuntimeResource, error)
 
 	CreateTask(ctx context.Context, task ClusterTask) error
 	UpdateTask(ctx context.Context, task ClusterTask) error
@@ -25,7 +28,7 @@ type Repository interface {
 	CreateTaskResult(ctx context.Context, result ClusterTaskResult) error
 }
 
-type EnvironmentStateUpdater interface {
+type StageStateUpdater interface {
 	UpdateFromAgent(ctx context.Context, report StatusReport) error
 }
 
@@ -47,6 +50,11 @@ type TenantRef struct {
 
 type TenantQuery interface {
 	GetTenant(ctx context.Context, id shared.ID) (TenantRef, error)
+}
+
+type RuntimeResourceFilter struct {
+	ApplicationID shared.ID
+	StageKey      string
 }
 
 type AuditEvent struct {

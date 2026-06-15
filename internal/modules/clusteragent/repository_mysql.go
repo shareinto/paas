@@ -2,7 +2,11 @@ package clusteragent
 
 import (
 	"context"
+	"crypto/sha1"
 	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shareinto/paas/internal/platform/database"
@@ -132,6 +136,144 @@ VALUES (?, ?, ?, ?, ?)`,
 	return database.ConflictOrUnavailable(err, "cluster resource snapshot already exists", "create cluster resource snapshot failed")
 }
 
+func (r *MySQLRepository) ReplaceRuntimeResources(ctx context.Context, clusterID shared.ID, tenantID shared.ID, reportedAt time.Time, resources []RuntimeResourceStatus) error {
+	if len(resources) == 0 {
+		return nil
+	}
+	tx := database.NewTransactor(r.db)
+	return tx.WithinTx(ctx, func(txCtx context.Context) error {
+		groups := map[string]RuntimeResourceFilter{}
+		for _, status := range resources {
+			status = normalizeRuntimeResourceStatus(status)
+			if status.ApplicationID.IsZero() || status.StageKey == "" {
+				continue
+			}
+			key := runtimeResourceGroupKey(status.ApplicationID, status.StageKey)
+			groups[key] = RuntimeResourceFilter{ApplicationID: status.ApplicationID, StageKey: status.StageKey}
+		}
+		for _, group := range groups {
+			if _, err := database.ExecutorFromContext(txCtx, r.db).ExecContext(txCtx, `
+DELETE e FROM cluster_runtime_resource_events e
+JOIN cluster_runtime_resources r ON r.id = e.resource_id
+WHERE r.cluster_id = ? AND r.application_id = ? AND r.stage_key = ?`,
+				clusterID, group.ApplicationID, group.StageKey); err != nil {
+				return database.WrapUnavailable(err, "delete runtime resource events failed")
+			}
+			if _, err := database.ExecutorFromContext(txCtx, r.db).ExecContext(txCtx, `
+DELETE FROM cluster_runtime_resources
+WHERE cluster_id = ? AND application_id = ? AND stage_key = ?`,
+				clusterID, group.ApplicationID, group.StageKey); err != nil {
+				return database.WrapUnavailable(err, "delete runtime resources failed")
+			}
+		}
+		for _, status := range resources {
+			status = normalizeRuntimeResourceStatus(status)
+			if status.ApplicationID.IsZero() || status.StageKey == "" || status.Kind == "" || status.Name == "" {
+				continue
+			}
+			resource := RuntimeResource{
+				ID:              stableRuntimeResourceID(clusterID, status),
+				ClusterID:       clusterID,
+				TenantID:        tenantID,
+				ApplicationID:   status.ApplicationID,
+				StageKey:        status.StageKey,
+				Group:           status.Group,
+				Version:         status.Version,
+				Kind:            status.Kind,
+				Namespace:       status.Namespace,
+				Name:            status.Name,
+				ParentKind:      status.ParentKind,
+				ParentNamespace: status.ParentNamespace,
+				ParentName:      status.ParentName,
+				Status:          status.Status,
+				HealthStatus:    status.HealthStatus,
+				Message:         status.Message,
+				Desired:         status.Desired,
+				Ready:           status.Ready,
+				Containers:      status.Containers,
+				Events:          status.Events,
+				ReportedAt:      reportedAt,
+				UpdatedAt:       reportedAt,
+			}
+			if err := r.insertRuntimeResource(txCtx, resource); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (r *MySQLRepository) insertRuntimeResource(ctx context.Context, resource RuntimeResource) error {
+	containers, err := database.MarshalJSON(resource.Containers)
+	if err != nil {
+		return err
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO cluster_runtime_resources (
+  id, cluster_id, tenant_id, application_id, stage_key, group_name, version, kind, namespace, name,
+  parent_kind, parent_namespace, parent_name, status, health_status, message, desired, ready, containers_json, reported_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		resource.ID, resource.ClusterID, resource.TenantID, resource.ApplicationID, resource.StageKey, resource.Group, resource.Version, resource.Kind, resource.Namespace, resource.Name,
+		resource.ParentKind, resource.ParentNamespace, resource.ParentName, resource.Status, resource.HealthStatus, resource.Message, resource.Desired, resource.Ready, string(containers), mysqlTime(resource.ReportedAt), mysqlTime(resource.UpdatedAt))
+	if err != nil {
+		return database.ConflictOrUnavailable(err, "runtime resource already exists", "create runtime resource failed")
+	}
+	for i, event := range resource.Events {
+		eventID := shared.ID(fmt.Sprintf("%s_event_%d", resource.ID, i))
+		_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO cluster_runtime_resource_events (
+  id, resource_id, cluster_id, tenant_id, application_id, stage_key, type, reason, message, count, occurred_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			eventID, resource.ID, resource.ClusterID, resource.TenantID, resource.ApplicationID, resource.StageKey,
+			strings.TrimSpace(event.Type), strings.TrimSpace(event.Reason), strings.TrimSpace(event.Message), event.Count, mysqlTimePtr(nilIfZero(event.OccurredAt)))
+		if err != nil {
+			return database.ConflictOrUnavailable(err, "runtime resource event already exists", "create runtime resource event failed")
+		}
+	}
+	return nil
+}
+
+func (r *MySQLRepository) ListRuntimeResources(ctx context.Context, filter RuntimeResourceFilter) ([]RuntimeResource, error) {
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
+SELECT id, cluster_id, tenant_id, application_id, stage_key, group_name, version, kind, namespace, name,
+       parent_kind, parent_namespace, parent_name, status, health_status, message, desired, ready, containers_json, reported_at, updated_at
+FROM cluster_runtime_resources
+WHERE application_id = ? AND stage_key = ?
+ORDER BY FIELD(kind, 'Application', 'Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet', 'Pod', 'Event'), kind ASC, namespace ASC, name ASC`,
+		filter.ApplicationID, strings.TrimSpace(filter.StageKey))
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list runtime resources failed")
+	}
+	defer rows.Close()
+	items := []RuntimeResource{}
+	for rows.Next() {
+		resource, err := scanRuntimeResource(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, resource)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, database.WrapUnavailable(err, "list runtime resources failed")
+	}
+	return r.loadRuntimeResourceEvents(ctx, items)
+}
+
+func (r *MySQLRepository) GetRuntimeResource(ctx context.Context, id shared.ID) (RuntimeResource, error) {
+	resource, err := scanRuntimeResource(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
+SELECT id, cluster_id, tenant_id, application_id, stage_key, group_name, version, kind, namespace, name,
+       parent_kind, parent_namespace, parent_name, status, health_status, message, desired, ready, containers_json, reported_at, updated_at
+FROM cluster_runtime_resources WHERE id = ?`, id))
+	if err != nil {
+		return RuntimeResource{}, database.NotFound(err, "runtime resource not found")
+	}
+	resources, err := r.loadRuntimeResourceEvents(ctx, []RuntimeResource{resource})
+	if err != nil {
+		return RuntimeResource{}, err
+	}
+	return resources[0], nil
+}
+
 func (r *MySQLRepository) CreateTask(ctx context.Context, task ClusterTask) error {
 	payload, err := database.MarshalJSON(task.Payload)
 	if err != nil {
@@ -236,6 +378,85 @@ func scanTask(scanner clusterScanner) (ClusterTask, error) {
 	return task, nil
 }
 
+func scanRuntimeResource(scanner clusterScanner) (RuntimeResource, error) {
+	var resource RuntimeResource
+	var containers []byte
+	if err := scanner.Scan(
+		&resource.ID, &resource.ClusterID, &resource.TenantID, &resource.ApplicationID, &resource.StageKey,
+		&resource.Group, &resource.Version, &resource.Kind, &resource.Namespace, &resource.Name,
+		&resource.ParentKind, &resource.ParentNamespace, &resource.ParentName, &resource.Status, &resource.HealthStatus, &resource.Message,
+		&resource.Desired, &resource.Ready, &containers, &resource.ReportedAt, &resource.UpdatedAt,
+	); err != nil {
+		return RuntimeResource{}, err
+	}
+	if err := database.UnmarshalJSON(containers, &resource.Containers); err != nil {
+		return RuntimeResource{}, err
+	}
+	return resource, nil
+}
+
+func (r *MySQLRepository) loadRuntimeResourceEvents(ctx context.Context, resources []RuntimeResource) ([]RuntimeResource, error) {
+	for i := range resources {
+		rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
+SELECT type, reason, message, count, occurred_at
+FROM cluster_runtime_resource_events
+WHERE resource_id = ?
+ORDER BY occurred_at DESC, id ASC`, resources[i].ID)
+		if err != nil {
+			return nil, database.WrapUnavailable(err, "list runtime resource events failed")
+		}
+		for rows.Next() {
+			var event RuntimeResourceEvent
+			var occurredAt sql.NullTime
+			if err := rows.Scan(&event.Type, &event.Reason, &event.Message, &event.Count, &occurredAt); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			if occurredAt.Valid {
+				event.OccurredAt = occurredAt.Time
+			}
+			resources[i].Events = append(resources[i].Events, event)
+		}
+		if err := rows.Close(); err != nil {
+			return nil, database.WrapUnavailable(err, "list runtime resource events failed")
+		}
+	}
+	return resources, nil
+}
+
+func normalizeRuntimeResourceStatus(status RuntimeResourceStatus) RuntimeResourceStatus {
+	status.StageKey = strings.TrimSpace(status.StageKey)
+	status.Group = strings.TrimSpace(status.Group)
+	status.Version = strings.TrimSpace(status.Version)
+	status.Kind = strings.TrimSpace(status.Kind)
+	status.Namespace = strings.TrimSpace(status.Namespace)
+	status.Name = strings.TrimSpace(status.Name)
+	status.ParentKind = strings.TrimSpace(status.ParentKind)
+	status.ParentNamespace = strings.TrimSpace(status.ParentNamespace)
+	status.ParentName = strings.TrimSpace(status.ParentName)
+	status.Status = strings.TrimSpace(status.Status)
+	status.HealthStatus = strings.TrimSpace(status.HealthStatus)
+	status.Message = strings.TrimSpace(status.Message)
+	return status
+}
+
+func runtimeResourceGroupKey(applicationID shared.ID, stageKey string) string {
+	return string(applicationID) + "\x00" + stageKey
+}
+
+func stableRuntimeResourceID(clusterID shared.ID, status RuntimeResourceStatus) shared.ID {
+	sum := sha1.Sum([]byte(strings.Join([]string{
+		string(clusterID),
+		string(status.ApplicationID),
+		status.StageKey,
+		status.Group,
+		status.Kind,
+		status.Namespace,
+		status.Name,
+	}, "\x00")))
+	return shared.ID("runtime_" + hex.EncodeToString(sum[:]))
+}
+
 func mysqlTime(value time.Time) time.Time {
 	if value.IsZero() {
 		return time.Now().UTC()
@@ -248,4 +469,11 @@ func mysqlTimePtr(value *time.Time) any {
 		return nil
 	}
 	return *value
+}
+
+func nilIfZero(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
 }

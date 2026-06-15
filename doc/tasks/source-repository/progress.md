@@ -15,7 +15,7 @@
 - 完成内容：`SourceRepository`、`RepositoryMigration`、`RepositoryPermissionSyncJob` 领域模型；MySQL 正式表仓储；MySQL 迁移；`GitSourceRepositoryPort`；服务层用例；HTTP API；Java 仓库扫描与 BuildSpec 建议生成。
 - GitLab 权限映射：`tenant_owner -> Owner`、`project_admin -> Maintainer`、`developer -> Developer`、`viewer -> Reporter`。未列入映射的角色不会同步到 GitLab 成员权限。
 - 迁移流程实现为 Worker 执行点 `ProcessRepositoryMigration`，覆盖 `pending -> creating_target_repo -> cloning_source -> pushing_target -> verifying -> analyzing -> ready_for_application_binding -> succeeded`，失败进入 `failed` 并支持重试，未完成任务支持取消。
-- BuildSpec 建议只通过扫描结果返回，不写入 `ApplicationSource`；最终固化留给 `application-environment` 模块。
+- BuildSpec 建议只通过扫描结果返回，不写入 `ApplicationSource`；最终固化留给 `application-workload` 模块。
 - 权限假设：创建仓库、迁移仓库、权限同步均要求项目作用域 `project:update`。
 - 验证命令：`go test ./internal/modules/sourcerepository -cover`，覆盖率 `91.0%`。
 - 全量验证：`go test ./...` 通过。

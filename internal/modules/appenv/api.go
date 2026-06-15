@@ -33,16 +33,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/applications/{applicationId}/workloads/{workloadAction}", h.handleWorkloadAction)
 	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}/default-config", h.handleGetWorkloadDefaultConfig)
 	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}/default-config", h.handleSaveWorkloadDefaultConfig)
-	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}/environment-configs", h.handleListWorkloadEnvironmentConfigs)
-	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}/environment-configs/{environmentId}", h.handleSaveWorkloadEnvironmentConfig)
-	mux.HandleFunc("GET /api/applications/{applicationId}/environments", h.handleListEnvironments)
-	mux.HandleFunc("GET /api/environments/{environmentId}", h.handleGetEnvironment)
-	mux.HandleFunc("POST /api/environments/{environmentId}/cluster-binding", h.handleBindEnvironmentCluster)
-	mux.HandleFunc("PUT /api/environments/{environmentId}/configs", h.handleSetEnvironmentConfig)
-	mux.HandleFunc("PUT /api/environments/{environmentId}/secrets", h.handleSetEnvironmentSecret)
-	mux.HandleFunc("GET /api/environments/{environmentId}/state", h.handleGetEnvironmentState)
-	mux.HandleFunc("PUT /api/environments/{environmentId}/state", h.handleUpdateEnvironmentState)
-	mux.HandleFunc("GET /api/environments/{environmentId}/events", h.handleListEnvironmentEvents)
+	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}/stage-configs", h.handleListWorkloadStageConfigs)
+	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}/stage-configs/{stageKey}", h.handleSaveWorkloadStageConfig)
 }
 
 func (h *Handler) handleCreateApplication(w http.ResponseWriter, r *http.Request) {
@@ -216,15 +208,15 @@ func (h *Handler) handleListWorkloads(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": workloads})
 }
 
-func (h *Handler) handleSaveWorkloadEnvironmentConfig(w http.ResponseWriter, r *http.Request) {
-	var req SaveWorkloadEnvironmentConfigInput
+func (h *Handler) handleSaveWorkloadStageConfig(w http.ResponseWriter, r *http.Request) {
+	var req SaveWorkloadStageConfigInput
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	req.ApplicationID = shared.ID(r.PathValue("applicationId"))
 	req.WorkloadID = shared.ID(r.PathValue("workloadId"))
-	req.EnvironmentID = shared.ID(r.PathValue("environmentId"))
-	config, err := h.service.SaveWorkloadEnvironmentConfig(r.Context(), req)
+	req.StageKey = r.PathValue("stageKey")
+	config, err := h.service.SaveWorkloadStageConfig(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -261,105 +253,17 @@ func (h *Handler) handleGetWorkloadDefaultConfig(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, config)
 }
 
-func (h *Handler) handleListWorkloadEnvironmentConfigs(w http.ResponseWriter, r *http.Request) {
-	configs, err := h.service.ListWorkloadEnvironmentConfigsForApplication(r.Context(), shared.ID(r.PathValue("applicationId")), shared.ID(r.PathValue("workloadId")))
+func (h *Handler) handleListWorkloadStageConfigs(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.service.GetWorkload(r.Context(), shared.ID(r.PathValue("applicationId")), shared.ID(r.PathValue("workloadId"))); err != nil {
+		writeError(w, err)
+		return
+	}
+	configs, err := h.service.ListWorkloadStageConfigs(r.Context(), shared.ID(r.PathValue("workloadId")))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": configs})
-}
-
-func (h *Handler) handleListEnvironments(w http.ResponseWriter, r *http.Request) {
-	environments, err := h.service.ListEnvironments(r.Context(), shared.ID(r.PathValue("applicationId")))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": environments})
-}
-
-func (h *Handler) handleGetEnvironment(w http.ResponseWriter, r *http.Request) {
-	environment, err := h.service.GetEnvironment(r.Context(), shared.ID(r.PathValue("environmentId")))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, environment)
-}
-
-func (h *Handler) handleBindEnvironmentCluster(w http.ResponseWriter, r *http.Request) {
-	var req BindEnvironmentClusterInput
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	req.EnvironmentID = shared.ID(r.PathValue("environmentId"))
-	binding, err := h.service.BindEnvironmentCluster(r.Context(), req)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, binding)
-}
-
-func (h *Handler) handleSetEnvironmentConfig(w http.ResponseWriter, r *http.Request) {
-	var req SetEnvironmentConfigInput
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	req.EnvironmentID = shared.ID(r.PathValue("environmentId"))
-	config, err := h.service.SetEnvironmentConfig(r.Context(), req)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, config)
-}
-
-func (h *Handler) handleSetEnvironmentSecret(w http.ResponseWriter, r *http.Request) {
-	var req SetEnvironmentSecretInput
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	req.EnvironmentID = shared.ID(r.PathValue("environmentId"))
-	secret, err := h.service.SetEnvironmentSecret(r.Context(), req)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, secret)
-}
-
-func (h *Handler) handleGetEnvironmentState(w http.ResponseWriter, r *http.Request) {
-	state, err := h.service.GetEnvironmentState(r.Context(), shared.ID(r.PathValue("environmentId")))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, state)
-}
-
-func (h *Handler) handleUpdateEnvironmentState(w http.ResponseWriter, r *http.Request) {
-	var req UpdateEnvironmentStateInput
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	req.EnvironmentID = shared.ID(r.PathValue("environmentId"))
-	state, err := h.service.UpdateEnvironmentState(r.Context(), req)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, state)
-}
-
-func (h *Handler) handleListEnvironmentEvents(w http.ResponseWriter, r *http.Request) {
-	result, err := h.service.ListEnvironmentEvents(r.Context(), shared.ID(r.PathValue("environmentId")), pageFromQuery(r))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {

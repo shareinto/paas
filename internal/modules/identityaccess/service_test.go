@@ -93,6 +93,28 @@ func TestValidatePermission(t *testing.T) {
 	}
 }
 
+func TestBuiltInRolesIncludeRuntimePermissionsWithTerminalRestricted(t *testing.T) {
+	roles := BuiltInRoles()
+	for _, roleID := range []RoleID{RoleTenantOwner, RoleTenantAdmin, RoleProjectAdmin, RoleDeveloper, RoleViewer, RoleOperator, RoleProdApprover, RoleSecurityAuditor} {
+		if !roleHasPermission(roles[roleID], "runtime:read") {
+			t.Fatalf("%s should read runtime resources", roleID)
+		}
+	}
+	for _, roleID := range []RoleID{RoleTenantOwner, RoleTenantAdmin, RoleProjectAdmin, RoleOperator} {
+		if !roleHasPermission(roles[roleID], "runtime:restart") {
+			t.Fatalf("%s should restart supported runtime workloads", roleID)
+		}
+	}
+	for _, roleID := range []RoleID{RoleTenantOwner, RoleTenantAdmin, RoleProjectAdmin, RoleDeveloper, RoleViewer, RoleProdApprover, RoleSecurityAuditor} {
+		if roleHasPermission(roles[roleID], "runtime:terminal") {
+			t.Fatalf("%s should not open runtime terminals by default", roleID)
+		}
+	}
+	if !roleHasPermission(roles[RolePlatformAdmin], "runtime:terminal") || !roleHasPermission(roles[RoleOperator], "runtime:terminal") {
+		t.Fatalf("platform admin wildcard and operator should open runtime terminals by default")
+	}
+}
+
 func TestCreateLocalUserStoresPasswordHashAndLoginIssuesHashedTokens(t *testing.T) {
 	svc, repo, audit := newTestService(t, nil)
 	ctx := context.Background()
@@ -303,13 +325,13 @@ func TestPermissionCheckerDirectGroupAndServiceAccount(t *testing.T) {
 	if err := repo.CreateServiceAccount(ctx, ServiceAccount{ID: "sa_1", Name: "deploy-bot"}); err != nil {
 		t.Fatalf("CreateServiceAccount() error = %v", err)
 	}
-	if _, err := svc.CreateRoleBinding(ctx, RoleBinding{SubjectType: SubjectServiceAccount, SubjectID: "sa_1", RoleID: RoleOperator, ScopeKind: ScopeEnvironment, ScopeID: "env_prod"}); err != nil {
+	if _, err := svc.CreateRoleBinding(ctx, RoleBinding{SubjectType: SubjectServiceAccount, SubjectID: "sa_1", RoleID: RoleOperator, ScopeKind: ScopeStage, ScopeID: "prod"}); err != nil {
 		t.Fatalf("CreateRoleBinding() service account error = %v", err)
 	}
-	if err := svc.Check(ctx, Subject{Type: SubjectServiceAccount, ID: "sa_1"}, ResourceScope{Kind: ScopeEnvironment, TenantID: "tenant_1", ProjectID: "project_1", EnvironmentID: "env_prod"}, "deployment:rollback"); err != nil {
+	if err := svc.Check(ctx, Subject{Type: SubjectServiceAccount, ID: "sa_1"}, ResourceScope{Kind: ScopeStage, TenantID: "tenant_1", ProjectID: "project_1", StageKey: "prod"}, "deployment:rollback"); err != nil {
 		t.Fatalf("service account operator should rollback deployment: %v", err)
 	}
-	if err := svc.Check(ctx, Subject{Type: SubjectServiceAccount, ID: "sa_1"}, ResourceScope{Kind: ScopeEnvironment, TenantID: "tenant_1", ProjectID: "project_1", EnvironmentID: "env_prod"}, "freight:create"); shared.CodeOf(err) != shared.CodePermissionDenied {
+	if err := svc.Check(ctx, Subject{Type: SubjectServiceAccount, ID: "sa_1"}, ResourceScope{Kind: ScopeStage, TenantID: "tenant_1", ProjectID: "project_1", StageKey: "prod"}, "freight:create"); shared.CodeOf(err) != shared.CodePermissionDenied {
 		t.Fatalf("operator should not create freight by default, got %v", err)
 	}
 	account, err := repo.GetServiceAccount(ctx, "sa_1")
@@ -565,7 +587,7 @@ func TestDTOsDoNotExposeSecrets(t *testing.T) {
 }
 
 func TestScopeCoversAndPermissionAllows(t *testing.T) {
-	resource := ResourceScope{Kind: ScopeEnvironment, TenantID: "tenant", ProjectID: "project", ApplicationID: "app", EnvironmentID: "env"}
+	resource := ResourceScope{Kind: ScopeStage, TenantID: "tenant", ProjectID: "project", ApplicationID: "app", StageKey: "stage"}
 	tests := []struct {
 		kind ScopeKind
 		id   shared.ID
@@ -575,9 +597,9 @@ func TestScopeCoversAndPermissionAllows(t *testing.T) {
 		{ScopeTenant, "tenant", true},
 		{ScopeProject, "project", true},
 		{ScopeApplication, "app", true},
-		{ScopeEnvironment, "env", true},
+		{ScopeStage, "stage", true},
 		{ScopeTenant, "other", false},
-		{"unknown", "env", false},
+		{"unknown", "stage", false},
 	}
 	for _, tt := range tests {
 		if got := ScopeCovers(tt.kind, tt.id, resource); got != tt.want {

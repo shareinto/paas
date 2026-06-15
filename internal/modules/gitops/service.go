@@ -28,7 +28,6 @@ type Service struct {
 	chartName       string
 	chartVersion    string
 	apps            ApplicationQuery
-	envs            EnvironmentQuery
 	workloads       WorkloadQuery
 	audit           AuditLogger
 	ids             shared.IDGenerator
@@ -44,7 +43,6 @@ type Options struct {
 	ChartName       string
 	ChartVersion    string
 	Application     ApplicationQuery
-	Environment     EnvironmentQuery
 	Workload        WorkloadQuery
 	Audit           AuditLogger
 	IDGenerator     shared.IDGenerator
@@ -73,7 +71,6 @@ func NewService(opts Options) *Service {
 		chartName:       firstNonEmpty(opts.ChartName, defaultPlatformChartName),
 		chartVersion:    firstNonEmpty(opts.ChartVersion, defaultPlatformChartVersion),
 		apps:            opts.Application,
-		envs:            opts.Environment,
 		workloads:       opts.Workload,
 		audit:           audit,
 		ids:             ids,
@@ -191,11 +188,11 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	if err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
-	env, err := s.envs.GetEnvironment(ctx, spec.EnvironmentID)
-	if err != nil {
-		return delivery.GitOpsPromotionResult{}, err
+	stageKey := normalizeStageKey(spec.StageKey)
+	if stageKey == "" {
+		return delivery.GitOpsPromotionResult{}, shared.NewError(shared.CodeInvalidArgument, "target_stage_key is required")
 	}
-	bindings, err := s.promotionTargetBindings(ctx, env, spec.TargetClusters)
+	bindings, err := s.promotionTargetBindings(stageKey, spec.TargetClusters)
 	if err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
@@ -234,7 +231,7 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	}
 	records := make([]targetRecord, 0, len(bindings))
 	files := make([]CommitFile, 0, len(bindings)*2)
-	message := fmt.Sprintf("paas: deploy %s to %s", app.Name, env.Name)
+	message := fmt.Sprintf("paas: deploy %s to %s", app.Name, stageKey)
 	now := s.clock.Now()
 	changeType := "deploy"
 	if spec.IsRollback {
@@ -259,13 +256,13 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 		}
 		resolvedPrimary := primaryPromotionArtifact(resolvedArtifacts)
 		repository, tag := imageRepositoryTag(resolvedPrimary)
-		valuesPath := manifestPathForBinding(app.Name, env.Name, binding)
-		values, workloadSummary, err := s.renderPromotionValues(ctx, app, env, binding, resolvedArtifacts, template.Content)
+		valuesPath := manifestPathForBinding(app.Name, stageKey, binding)
+		values, workloadSummary, err := s.renderPromotionValues(ctx, app, stageKey, binding, deploymentID, resolvedArtifacts, template.Content)
 		if err != nil {
 			return delivery.GitOpsPromotionResult{}, err
 		}
-		argoPath := argoApplicationPathForBinding(app.Name, env.Name, binding)
-		argo := renderArgoApplication(app, env, binding, argoApplicationRenderOptions{
+		argoPath := argoApplicationPathForBinding(app.Name, stageKey, binding)
+		argo := renderArgoApplication(app, stageKey, binding, deploymentID, argoApplicationRenderOptions{
 			ValuesPath:      valuesPath,
 			ManifestRepoURL: s.manifestRepoURL,
 			ChartRepoURL:    s.chartRepoURL,
@@ -273,12 +270,12 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 			ChartVersion:    s.chartVersion,
 		})
 		files = append(files, CommitFile{Path: valuesPath, Content: values}, CommitFile{Path: argoPath, Content: argo})
-		manifestRevision := ManifestRevision{ID: manifestRevisionID, DeploymentID: deploymentID, PromotionID: spec.PromotionID, ApplicationID: app.ID, EnvironmentID: env.ID, TemplateRevisionID: revision.ID, Path: valuesPath, ChangeType: changeType, CreatedAt: now}
-		deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, EnvironmentID: env.ID, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: resolvedPrimary.Digest, WorkloadSummary: workloadSummary, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
+		manifestRevision := ManifestRevision{ID: manifestRevisionID, DeploymentID: deploymentID, PromotionID: spec.PromotionID, ApplicationID: app.ID, StageKey: stageKey, TemplateRevisionID: revision.ID, Path: valuesPath, ChangeType: changeType, CreatedAt: now}
+		deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, StageKey: stageKey, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: resolvedPrimary.Digest, WorkloadSummary: workloadSummary, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
 		records = append(records, targetRecord{binding: binding, deployment: deployment, manifestRevision: manifestRevision, eventID: eventID, valuesPath: valuesPath})
 	}
 	var manifestRef string
-	if commitDirectly(env.Name) {
+	if commitDirectly(stageKey) {
 		result, err := s.manifest.CommitFiles(ctx, CommitSpec{Branch: "main", Message: message, Files: files})
 		if err != nil {
 			for _, record := range records {
@@ -368,13 +365,9 @@ func (s *Service) UpdateFromAgent(ctx context.Context, report clusteragent.Statu
 	return nil
 }
 
-func (s *Service) promotionTargetBindings(ctx context.Context, env EnvironmentRef, targets []delivery.GitOpsPromotionTargetCluster) ([]ClusterBindingRef, error) {
+func (s *Service) promotionTargetBindings(stageKey string, targets []delivery.GitOpsPromotionTargetCluster) ([]ClusterBindingRef, error) {
 	if len(targets) == 0 {
-		binding, err := s.envs.GetActiveBinding(ctx, env.ID)
-		if err != nil {
-			return nil, err
-		}
-		return []ClusterBindingRef{binding}, nil
+		return nil, shared.NewError(shared.CodeInvalidArgument, "promotion target cluster is required")
 	}
 	if len(targets) > 1 {
 		return nil, shared.NewError(shared.CodeInvalidArgument, "一个环境只能绑定一个集群")
@@ -385,13 +378,13 @@ func (s *Service) promotionTargetBindings(ctx context.Context, env EnvironmentRe
 			return nil, shared.NewError(shared.CodeInvalidArgument, "promotion target cluster is invalid")
 		}
 		out = append(out, ClusterBindingRef{
-			ID:            target.ClusterID,
-			EnvironmentID: env.ID,
-			ClusterID:     target.ClusterID,
-			ClusterName:   strings.TrimSpace(target.ClusterName),
-			Namespace:     strings.TrimSpace(target.Namespace),
-			Labels:        cleanStringMap(target.Labels),
-			Active:        true,
+			ID:          target.ClusterID,
+			StageKey:    stageKey,
+			ClusterID:   target.ClusterID,
+			ClusterName: strings.TrimSpace(target.ClusterName),
+			Namespace:   strings.TrimSpace(target.Namespace),
+			Labels:      cleanStringMap(target.Labels),
+			Active:      true,
 		})
 	}
 	return out, nil
@@ -542,15 +535,18 @@ func imageRepositoryTag(artifact delivery.GitOpsArtifactSpec) (string, string) {
 	return repository, tag
 }
 
-func (s *Service) renderPromotionValues(ctx context.Context, app ApplicationRef, env EnvironmentRef, binding ClusterBindingRef, artifacts []delivery.GitOpsArtifactSpec, template string) (string, string, error) {
+func (s *Service) renderPromotionValues(ctx context.Context, app ApplicationRef, stageKey string, binding ClusterBindingRef, deploymentID shared.ID, artifacts []delivery.GitOpsArtifactSpec, template string) (string, string, error) {
 	primary := primaryPromotionArtifact(artifacts)
 	repository, tag := imageRepositoryTag(primary)
 	values := map[string]any{
-		"application": app.Name,
-		"environment": env.Name,
-		"namespace":   binding.Namespace,
-		"image":       imageValues(repository, tag, primary.Digest),
-		"template":    template,
+		"application":   app.Name,
+		"applicationID": app.ID,
+		"stageKey":      stageKey,
+		"stage":         stageKey,
+		"deploymentID":  deploymentID,
+		"namespace":     binding.Namespace,
+		"image":         imageValues(repository, tag, primary.Digest),
+		"template":      template,
 	}
 	workloadValues := map[string]any{}
 	summary := make([]string, 0, len(artifacts))
@@ -562,7 +558,7 @@ func (s *Service) renderPromotionValues(ctx context.Context, app ApplicationRef,
 		if err != nil {
 			return "", "", err
 		}
-		config, err := s.getWorkloadEnvironmentConfig(ctx, artifact.WorkloadID, env.ID)
+		config, err := s.getWorkloadStageConfig(ctx, artifact.WorkloadID, stageKey)
 		if err != nil {
 			if shared.CodeOf(err) != shared.CodeNotFound {
 				return "", "", err
@@ -597,16 +593,16 @@ func (s *Service) getWorkload(ctx context.Context, applicationID shared.ID, work
 	return s.workloads.GetWorkload(ctx, applicationID, workloadID)
 }
 
-func (s *Service) getWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfigRef, error) {
+func (s *Service) getWorkloadStageConfig(ctx context.Context, workloadID shared.ID, stageKey string) (WorkloadStageConfigRef, error) {
 	if s.workloads == nil {
-		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload environment config not found")
+		return WorkloadStageConfigRef{}, shared.NewError(shared.CodeNotFound, "workload stage config not found")
 	}
-	return s.workloads.GetWorkloadEnvironmentConfig(ctx, workloadID, environmentID)
+	return s.workloads.GetWorkloadStageConfig(ctx, workloadID, stageKey)
 }
 
-func (s *Service) getWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfigRef, error) {
+func (s *Service) getWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadStageConfigRef, error) {
 	if s.workloads == nil {
-		return WorkloadEnvironmentConfigRef{}, shared.NewError(shared.CodeNotFound, "workload default config not found")
+		return WorkloadStageConfigRef{}, shared.NewError(shared.CodeNotFound, "workload default config not found")
 	}
 	return s.workloads.GetWorkloadDefaultConfig(ctx, workloadID)
 }
@@ -615,7 +611,7 @@ func imageValues(repository string, tag string, digest string) map[string]any {
 	return map[string]any{"repository": repository, "tag": tag, "digest": strings.TrimSpace(digest)}
 }
 
-func renderWorkloadValues(workload WorkloadRef, config WorkloadEnvironmentConfigRef, repository string, tag string, digest string) map[string]any {
+func renderWorkloadValues(workload WorkloadRef, config WorkloadStageConfigRef, repository string, tag string, digest string) map[string]any {
 	values := map[string]any{
 		"kind":  normalizeWorkloadKind(workload.WorkloadType),
 		"image": imageValues(repository, tag, digest),
@@ -709,10 +705,6 @@ func (s *Service) ListDeployments(ctx context.Context, applicationID shared.ID, 
 	return s.repo.ListDeployments(ctx, applicationID, page)
 }
 
-func renderValues(app ApplicationRef, env EnvironmentRef, binding ClusterBindingRef, repo string, tag string, digest string, template string) string {
-	return fmt.Sprintf("application: %s\nenvironment: %s\nnamespace: %s\nimage:\n  repository: %s\n  tag: %s\n  digest: %s\ntemplate: |\n%s\n", app.Name, env.Name, binding.Namespace, repo, tag, digest, indent(template, "  "))
-}
-
 type argoApplicationRenderOptions struct {
 	ValuesPath      string
 	ManifestRepoURL string
@@ -749,7 +741,7 @@ func platformChartFiles(name string, version string) []CommitFile {
 	base := "charts/" + name
 	return []CommitFile{
 		{Path: base + "/Chart.yaml", Content: fmt.Sprintf("apiVersion: v2\nname: %s\ndescription: PaaS standard application workload chart\ntype: application\nversion: %s\nappVersion: %s\n", name, version, version)},
-		{Path: base + "/values.yaml", Content: "application: \"\"\nenvironment: \"\"\nnamespace: \"\"\nimage:\n  repository: \"\"\n  tag: \"\"\n  digest: \"\"\nworkloads: {}\n"},
+		{Path: base + "/values.yaml", Content: "application: \"\"\napplicationID: \"\"\nstageKey: \"\"\ndeploymentID: \"\"\nnamespace: \"\"\nimage:\n  repository: \"\"\n  tag: \"\"\n  digest: \"\"\nworkloads: {}\n"},
 		{Path: base + "/templates/_helpers.tpl", Content: platformChartHelpersTemplate(name)},
 		{Path: base + "/templates/workloads.yaml", Content: platformChartWorkloadsTemplate(name)},
 	}
@@ -759,13 +751,16 @@ func platformChartHelpersTemplate(name string) string {
 	return fmt.Sprintf(`{{- define "%s.labels" -}}
 app.kubernetes.io/managed-by: paas
 app.kubernetes.io/part-of: {{ default .Chart.Name .Values.application | quote }}
+paas.shareinto.com/application-id: {{ .Values.applicationID | quote }}
+paas.shareinto.com/stage-key: {{ .Values.stageKey | quote }}
+paas.shareinto.com/deployment-id: {{ .Values.deploymentID | quote }}
 {{- end -}}
 `, name)
 }
 
 func platformChartWorkloadsTemplate(chartName string) string {
 	return fmt.Sprintf(`{{- range $name, $workload := .Values.workloads }}
-{{- $resourceName := printf "%%s-%%s" $name $.Values.environment | trunc 63 | trimSuffix "-" }}
+{{- $resourceName := printf "%%s-%%s" $name $.Values.stage | trunc 63 | trimSuffix "-" }}
 ---
 apiVersion: apps/v1
 kind: {{ default "Deployment" $workload.kind }}
@@ -905,12 +900,12 @@ spec:
 `, chartName, chartName, chartName)
 }
 
-func renderArgoApplication(app ApplicationRef, env EnvironmentRef, binding ClusterBindingRef, opts argoApplicationRenderOptions) string {
-	name := fmt.Sprintf("%s-%s", app.Name, env.Name)
+func renderArgoApplication(app ApplicationRef, stageKey string, binding ClusterBindingRef, deploymentID shared.ID, opts argoApplicationRenderOptions) string {
+	name := fmt.Sprintf("%s-%s", app.Name, stageKey)
 	valuesPath := strings.TrimPrefix(opts.ValuesPath, "/")
 	chartName := firstNonEmpty(opts.ChartName, defaultPlatformChartName)
 	chartVersion := firstNonEmpty(opts.ChartVersion, defaultPlatformChartVersion)
-	return fmt.Sprintf("apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\nspec:\n  project: default\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: %s\n  sources:\n    - repoURL: %s\n      targetRevision: %s\n      path: charts/%s\n      helm:\n        valueFiles:\n          - $values/%s\n    - repoURL: %s\n      targetRevision: main\n      ref: values\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n      - ServerSideApply=true\n", name, binding.Namespace, opts.ChartRepoURL, platformChartTag(chartName, chartVersion), chartName, valuesPath, opts.ManifestRepoURL)
+	return fmt.Sprintf("apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  labels:\n    paas.shareinto.com/application-id: %s\n    paas.shareinto.com/stage-key: %s\n    paas.shareinto.com/deployment-id: %s\nspec:\n  project: default\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: %s\n  sources:\n    - repoURL: %s\n      targetRevision: %s\n      path: charts/%s\n      helm:\n        valueFiles:\n          - $values/%s\n    - repoURL: %s\n      targetRevision: main\n      ref: values\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n      - ServerSideApply=true\n", name, app.ID, stageKey, deploymentID, binding.Namespace, opts.ChartRepoURL, platformChartTag(chartName, chartVersion), chartName, valuesPath, opts.ManifestRepoURL)
 }
 
 func indent(value string, prefix string) string {
@@ -948,4 +943,8 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeStageKey(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }

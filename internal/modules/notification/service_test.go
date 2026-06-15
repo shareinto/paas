@@ -68,7 +68,7 @@ func TestSendFailureCanRetry(t *testing.T) {
 	if err := svc.EnsureDefaults(context.Background()); err != nil {
 		t.Fatalf("defaults: %v", err)
 	}
-	event := Event{Type: "DeploymentFailed", Payload: map[string]any{"environment_name": "生产", "deployment_id": "deployment_1"}}
+	event := Event{Type: "DeploymentFailed", Payload: map[string]any{"stage_name": "生产", "deployment_id": "deployment_1"}}
 	notification, err := svc.HandleEvent(context.Background(), event)
 	if err == nil {
 		t.Fatalf("expected send error")

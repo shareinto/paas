@@ -248,7 +248,6 @@ type AppStage struct {
 	ProjectID             shared.ID                       `json:"project_id"`
 	ApplicationID         shared.ID                       `json:"application_id"`
 	DeliveryStageID       shared.ID                       `json:"delivery_stage_id"`
-	EnvironmentID         shared.ID                       `json:"environment_id"`
 	StageKey              string                          `json:"stage_key"`
 	DisplayName           string                          `json:"display_name"`
 	Color                 string                          `json:"color"`
@@ -267,6 +266,8 @@ type AppStage struct {
 	CurrentFreightVersion string                          `json:"current_freight_version,omitempty"`
 	SyncStatus            string                          `json:"sync_status,omitempty"`
 	HealthStatus          string                          `json:"health_status,omitempty"`
+	OperationState        string                          `json:"operation_state,omitempty"`
+	RuntimeMessage        string                          `json:"runtime_message,omitempty"`
 	UpstreamStageKeys     []string                        `json:"upstream_stage_keys,omitempty"`
 	DownstreamStageKeys   []string                        `json:"downstream_stage_keys,omitempty"`
 }
@@ -277,7 +278,6 @@ type DeliveryStage struct {
 	ProjectID        shared.ID `json:"project_id"`
 	ApplicationID    shared.ID `json:"application_id"`
 	DeliveryFlowID   shared.ID `json:"delivery_flow_id"`
-	EnvironmentID    shared.ID `json:"environment_id"`
 	Name             string    `json:"name"`
 	Order            int       `json:"order"`
 	RequiresApproval bool      `json:"requires_approval"`
@@ -320,7 +320,6 @@ type Promotion struct {
 	ApplicationID         shared.ID       `json:"application_id"`
 	FreightID             shared.ID       `json:"freight_id"`
 	TargetStageID         shared.ID       `json:"target_stage_id"`
-	TargetEnvironmentID   shared.ID       `json:"target_environment_id"`
 	TargetStageKey        string          `json:"target_stage_key"`
 	NamespaceOverride     string          `json:"namespace_override"`
 	Status                PromotionStatus `json:"status"`

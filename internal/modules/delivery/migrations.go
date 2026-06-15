@@ -88,13 +88,12 @@ CREATE TABLE delivery_stages (
   project_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
   delivery_flow_id VARCHAR(64) NOT NULL,
-  environment_id VARCHAR(64) NOT NULL,
   name VARCHAR(64) NOT NULL,
   stage_order INT NOT NULL,
   requires_approval TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME(6) NOT NULL,
   updated_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_delivery_stages_environment (environment_id),
+  UNIQUE KEY uk_delivery_stages_application_name (application_id, name),
   KEY idx_delivery_stages_flow (delivery_flow_id),
   CONSTRAINT fk_delivery_stages_flow FOREIGN KEY (delivery_flow_id) REFERENCES delivery_flows(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -106,7 +105,6 @@ CREATE TABLE promotions (
   application_id VARCHAR(64) NOT NULL,
   freight_id VARCHAR(64) NOT NULL,
   target_stage_id VARCHAR(64) NOT NULL,
-  target_environment_id VARCHAR(64) NOT NULL,
   target_stage_key VARCHAR(64) NOT NULL DEFAULT '',
   namespace_override VARCHAR(255) NOT NULL DEFAULT '',
   status VARCHAR(64) NOT NULL,
@@ -294,7 +292,7 @@ SET @promotions_stage_key_missing := (
   SELECT COUNT(*) = 0 FROM information_schema.columns
   WHERE table_schema = DATABASE() AND table_name = 'promotions' AND column_name = 'target_stage_key'
 );
-SET @promotions_stage_key_ddl := IF(@promotions_stage_key_missing, 'ALTER TABLE promotions ADD COLUMN target_stage_key VARCHAR(64) NOT NULL DEFAULT '''' AFTER target_environment_id', 'SELECT 1');
+SET @promotions_stage_key_ddl := IF(@promotions_stage_key_missing, 'ALTER TABLE promotions ADD COLUMN target_stage_key VARCHAR(64) NOT NULL DEFAULT '''' AFTER target_stage_id', 'SELECT 1');
 PREPARE promotions_stage_key_stmt FROM @promotions_stage_key_ddl;
 EXECUTE promotions_stage_key_stmt;
 DEALLOCATE PREPARE promotions_stage_key_stmt;

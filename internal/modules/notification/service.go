@@ -170,9 +170,9 @@ func renderString(tmpl string, payload map[string]any) (string, error) {
 
 var defaultTemplates = []NotificationTemplate{
 	{EventType: "BuildFailed", TitleTemplate: "构建失败：{{.application_name}}", ContentTemplate: "构建 {{.build_run_id}} 执行失败，请在平台控制台查看日志。"},
-	{EventType: "PromotionCreated", TitleTemplate: "发布待处理：{{.environment_name}}", ContentTemplate: "变更包 {{.freight_id}} 已创建发布晋级。"},
+	{EventType: "PromotionCreated", TitleTemplate: "发布待处理：{{.stage_name}}", ContentTemplate: "变更包 {{.freight_id}} 已创建发布晋级。"},
 	{EventType: "PromotionApproved", TitleTemplate: "发布已审批通过", ContentTemplate: "发布 {{.promotion_id}} 已通过审批。"},
 	{EventType: "PromotionRejected", TitleTemplate: "发布已被拒绝", ContentTemplate: "发布 {{.promotion_id}} 已被拒绝。"},
-	{EventType: "DeploymentFailed", TitleTemplate: "部署失败：{{.environment_name}}", ContentTemplate: "部署 {{.deployment_id}} 失败，请检查环境事件。"},
+	{EventType: "DeploymentFailed", TitleTemplate: "部署失败：{{.stage_name}}", ContentTemplate: "部署 {{.deployment_id}} 失败，请检查 Stage 事件。"},
 	{EventType: "ClusterUnreachable", TitleTemplate: "集群离线：{{.cluster_name}}", ContentTemplate: "集群 {{.cluster_id}} 心跳超时，已标记为离线。"},
 }

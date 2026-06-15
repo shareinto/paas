@@ -232,7 +232,7 @@ function WorkloadWizardModal({ applicationId, workload, open, onClose }: { appli
       queryClient.invalidateQueries({ queryKey: ['workloads', applicationId], refetchType: 'none' });
       queryClient.invalidateQueries({ queryKey: ['workloads', applicationId, 'pipeline-cards'], refetchType: 'none' });
       queryClient.invalidateQueries({ queryKey: ['workload-default-config', applicationId, workload.id], refetchType: 'none' });
-      queryClient.invalidateQueries({ queryKey: ['workload-environment-configs', applicationId, workload.id], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['workload-stage-configs', applicationId, workload.id], refetchType: 'none' });
       onClose();
       form.resetFields();
     },

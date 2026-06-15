@@ -192,10 +192,10 @@ func (r *MySQLRepository) CreateDeliveryStage(ctx context.Context, stage Deliver
 		return err
 	}
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO delivery_stages (id, tenant_id, project_id, application_id, delivery_flow_id, environment_id, name, stage_order, requires_approval, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO delivery_stages (id, tenant_id, project_id, application_id, delivery_flow_id, name, stage_order, requires_approval, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		stage.ID, stage.TenantID, stage.ProjectID, stage.ApplicationID, stage.DeliveryFlowID,
-		stage.EnvironmentID, stage.Name, stage.Order, stage.RequiresApproval, stage.CreatedAt, stage.UpdatedAt)
+		stage.Name, stage.Order, stage.RequiresApproval, stage.CreatedAt, stage.UpdatedAt)
 	return database.ConflictOrUnavailable(err, "delivery stage already exists", "create delivery stage failed")
 }
 
@@ -207,8 +207,8 @@ func (r *MySQLRepository) GetDeliveryStage(ctx context.Context, id shared.ID) (D
 	return stage, nil
 }
 
-func (r *MySQLRepository) FindDeliveryStageByEnvironment(ctx context.Context, applicationID shared.ID, environmentID shared.ID) (DeliveryStage, error) {
-	stage, err := scanDeliveryStage(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, deliveryStageSelect()+" WHERE application_id = ? AND environment_id = ?", applicationID, environmentID))
+func (r *MySQLRepository) FindDeliveryStageByName(ctx context.Context, applicationID shared.ID, name string) (DeliveryStage, error) {
+	stage, err := scanDeliveryStage(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, deliveryStageSelect()+" WHERE application_id = ? AND name = ?", applicationID, name))
 	if err != nil {
 		return DeliveryStage{}, database.NotFound(err, "delivery stage not found")
 	}
@@ -454,10 +454,10 @@ func (r *MySQLRepository) FindStageVerification(ctx context.Context, application
 
 func (r *MySQLRepository) CreatePromotion(ctx context.Context, promotion Promotion) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO promotions (id, tenant_id, project_id, application_id, freight_id, target_stage_id, target_environment_id, target_stage_key, namespace_override, status, is_rollback, rollback_from_freight_id, created_by, approved_by, message, manifest_revision, created_at, updated_at, completed_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO promotions (id, tenant_id, project_id, application_id, freight_id, target_stage_id, target_stage_key, namespace_override, status, is_rollback, rollback_from_freight_id, created_by, approved_by, message, manifest_revision, created_at, updated_at, completed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		promotion.ID, promotion.TenantID, promotion.ProjectID, promotion.ApplicationID, promotion.FreightID,
-		promotion.TargetStageID, promotion.TargetEnvironmentID, promotion.TargetStageKey, promotion.NamespaceOverride, promotion.Status, promotion.IsRollback,
+		promotion.TargetStageID, promotion.TargetStageKey, promotion.NamespaceOverride, promotion.Status, promotion.IsRollback,
 		promotion.RollbackFromFreightID, promotion.CreatedBy, promotion.ApprovedBy, promotion.Message,
 		promotion.ManifestRevision, promotion.CreatedAt, promotion.UpdatedAt, promotion.CompletedAt)
 	return database.ConflictOrUnavailable(err, "promotion already exists", "create promotion failed")
@@ -473,11 +473,11 @@ func (r *MySQLRepository) UpdatePromotion(ctx context.Context, promotion Promoti
 	}
 	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE promotions
-SET target_stage_id = ?, target_environment_id = ?, status = ?, is_rollback = ?,
+SET target_stage_id = ?, status = ?, is_rollback = ?,
     target_stage_key = ?, namespace_override = ?, rollback_from_freight_id = ?, created_by = ?, approved_by = ?, message = ?,
     manifest_revision = ?, updated_at = ?, completed_at = ?
 WHERE id = ?`,
-		promotion.TargetStageID, promotion.TargetEnvironmentID, promotion.Status, promotion.IsRollback,
+		promotion.TargetStageID, promotion.Status, promotion.IsRollback,
 		promotion.TargetStageKey, promotion.NamespaceOverride,
 		promotion.RollbackFromFreightID, promotion.CreatedBy, promotion.ApprovedBy, promotion.Message,
 		promotion.ManifestRevision, promotion.UpdatedAt, promotion.CompletedAt, promotion.ID)
@@ -562,7 +562,7 @@ func deliveryFlowSelect() string {
 }
 
 func deliveryStageSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, delivery_flow_id, environment_id, name, stage_order, requires_approval, created_at, updated_at FROM delivery_stages"
+	return "SELECT id, tenant_id, project_id, application_id, delivery_flow_id, name, stage_order, requires_approval, created_at, updated_at FROM delivery_stages"
 }
 
 func deliveryFlowTemplateSelect() string {
@@ -590,7 +590,7 @@ func stageVerificationSelect() string {
 }
 
 func promotionSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, freight_id, target_stage_id, target_environment_id, target_stage_key, namespace_override, status, is_rollback, rollback_from_freight_id, created_by, approved_by, message, manifest_revision, created_at, updated_at, completed_at FROM promotions"
+	return "SELECT id, tenant_id, project_id, application_id, freight_id, target_stage_id, target_stage_key, namespace_override, status, is_rollback, rollback_from_freight_id, created_by, approved_by, message, manifest_revision, created_at, updated_at, completed_at FROM promotions"
 }
 
 func scanRelease(scanner deliveryScanner) (Release, error) {
@@ -637,7 +637,7 @@ func scanDeliveryFlow(scanner deliveryScanner) (DeliveryFlow, error) {
 
 func scanDeliveryStage(scanner deliveryScanner) (DeliveryStage, error) {
 	var v DeliveryStage
-	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.DeliveryFlowID, &v.EnvironmentID, &v.Name, &v.Order, &v.RequiresApproval, &v.CreatedAt, &v.UpdatedAt)
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.DeliveryFlowID, &v.Name, &v.Order, &v.RequiresApproval, &v.CreatedAt, &v.UpdatedAt)
 	return v, err
 }
 
@@ -693,7 +693,7 @@ func scanStageVerification(scanner deliveryScanner) (StageVerification, error) {
 
 func scanPromotion(scanner deliveryScanner) (Promotion, error) {
 	var v Promotion
-	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.FreightID, &v.TargetStageID, &v.TargetEnvironmentID, &v.TargetStageKey, &v.NamespaceOverride, &v.Status, &v.IsRollback, &v.RollbackFromFreightID, &v.CreatedBy, &v.ApprovedBy, &v.Message, &v.ManifestRevision, &v.CreatedAt, &v.UpdatedAt, &v.CompletedAt)
+	err := scanner.Scan(&v.ID, &v.TenantID, &v.ProjectID, &v.ApplicationID, &v.FreightID, &v.TargetStageID, &v.TargetStageKey, &v.NamespaceOverride, &v.Status, &v.IsRollback, &v.RollbackFromFreightID, &v.CreatedBy, &v.ApprovedBy, &v.Message, &v.ManifestRevision, &v.CreatedAt, &v.UpdatedAt, &v.CompletedAt)
 	return v, err
 }
 

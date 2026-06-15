@@ -18,7 +18,7 @@
 - [x] 实现 Agent API：`GET /api/agent/v1/tasks`。
 - [x] 实现 Agent API：`POST /api/agent/v1/tasks/result`。
 - [x] 心跳超时后将 Cluster 标记为 `unreachable`。
-- [x] 将 Agent 状态上报转发给 `EnvironmentStateUpdater` 和 `DeploymentStatusUpdater`。
+- [x] 将 Agent 状态上报转发给 `StageStateUpdater` 和 `DeploymentStatusUpdater`。
 - [x] 实现 ClusterTask 创建、拉取、结果回写。
 - [x] 提供控制面 Cluster API。
 - [x] 编写测试：Agent token 绑定、心跳上报、超时 unreachable、状态转换、任务拉取和结果回传。

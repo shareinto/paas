@@ -5,7 +5,7 @@ import "github.com/shareinto/paas/internal/platform/database"
 var Migrations = []database.Migration{
 	{
 		Version: 202605300501,
-		Name:    "application_environment_core",
+		Name:    "application_workload_core",
 		Up: `
 CREATE TABLE applications (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
@@ -43,115 +43,37 @@ CREATE TABLE application_sources (
   CONSTRAINT fk_application_sources_application FOREIGN KEY (application_id) REFERENCES applications(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE environments (
-  id VARCHAR(64) NOT NULL PRIMARY KEY,
+CREATE TABLE application_stage_states (
+  application_id VARCHAR(64) NOT NULL,
+  stage_key VARCHAR(64) NOT NULL,
   tenant_id VARCHAR(64) NOT NULL,
   project_id VARCHAR(64) NOT NULL,
-  application_id VARCHAR(64) NOT NULL,
-  name VARCHAR(64) NOT NULL,
-  display_name VARCHAR(128) NOT NULL DEFAULT '',
-  description VARCHAR(512) NOT NULL DEFAULT '',
-  created_at DATETIME(6) NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_environments_application_name (application_id, name),
-  KEY idx_environments_project_application (project_id, application_id),
-  CONSTRAINT fk_environments_application FOREIGN KEY (application_id) REFERENCES applications(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE environment_configs (
-  id VARCHAR(64) NOT NULL PRIMARY KEY,
-  tenant_id VARCHAR(64) NOT NULL,
-  project_id VARCHAR(64) NOT NULL,
-  application_id VARCHAR(64) NOT NULL,
-  environment_id VARCHAR(64) NOT NULL,
-  config_key VARCHAR(128) NOT NULL,
-  config_value TEXT NOT NULL,
-  created_at DATETIME(6) NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_environment_configs_key (environment_id, config_key),
-  CONSTRAINT fk_environment_configs_environment FOREIGN KEY (environment_id) REFERENCES environments(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE environment_secrets (
-  id VARCHAR(64) NOT NULL PRIMARY KEY,
-  tenant_id VARCHAR(64) NOT NULL,
-  project_id VARCHAR(64) NOT NULL,
-  application_id VARCHAR(64) NOT NULL,
-  environment_id VARCHAR(64) NOT NULL,
-  secret_key VARCHAR(128) NOT NULL,
-  secret_ref VARCHAR(512) NOT NULL,
-  created_at DATETIME(6) NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_environment_secrets_key (environment_id, secret_key),
-  CONSTRAINT fk_environment_secrets_environment FOREIGN KEY (environment_id) REFERENCES environments(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE environment_routes (
-  id VARCHAR(64) NOT NULL PRIMARY KEY,
-  tenant_id VARCHAR(64) NOT NULL,
-  project_id VARCHAR(64) NOT NULL,
-  application_id VARCHAR(64) NOT NULL,
-  environment_id VARCHAR(64) NOT NULL,
-  host VARCHAR(255) NOT NULL,
-  path VARCHAR(255) NOT NULL DEFAULT '/',
-  created_at DATETIME(6) NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
-  KEY idx_environment_routes_environment (environment_id),
-  CONSTRAINT fk_environment_routes_environment FOREIGN KEY (environment_id) REFERENCES environments(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE environment_cluster_bindings (
-  id VARCHAR(64) NOT NULL PRIMARY KEY,
-  tenant_id VARCHAR(64) NOT NULL,
-  project_id VARCHAR(64) NOT NULL,
-  application_id VARCHAR(64) NOT NULL,
-  environment_id VARCHAR(64) NOT NULL,
-  cluster_id VARCHAR(64) NOT NULL,
-  cluster_name VARCHAR(128) NOT NULL,
-  namespace VARCHAR(128) NOT NULL,
-  status VARCHAR(64) NOT NULL,
-  created_at DATETIME(6) NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_environment_cluster_bindings_environment (environment_id),
-  KEY idx_environment_cluster_bindings_cluster (cluster_id),
-  CONSTRAINT fk_environment_cluster_bindings_environment FOREIGN KEY (environment_id) REFERENCES environments(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE environment_states (
-  environment_id VARCHAR(64) NOT NULL PRIMARY KEY,
-  tenant_id VARCHAR(64) NOT NULL,
-  project_id VARCHAR(64) NOT NULL,
-  application_id VARCHAR(64) NOT NULL,
   status VARCHAR(64) NOT NULL,
   message VARCHAR(1024) NOT NULL DEFAULT '',
   last_reported_at DATETIME(6) NULL,
   updated_at DATETIME(6) NOT NULL,
-  KEY idx_environment_states_application (application_id),
-  CONSTRAINT fk_environment_states_environment FOREIGN KEY (environment_id) REFERENCES environments(id)
+  PRIMARY KEY (application_id, stage_key),
+  KEY idx_application_stage_states_application (application_id),
+  CONSTRAINT fk_application_stage_states_application FOREIGN KEY (application_id) REFERENCES applications(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE environment_events (
+CREATE TABLE application_stage_events (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
   tenant_id VARCHAR(64) NOT NULL,
   project_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
-  environment_id VARCHAR(64) NOT NULL,
+  stage_key VARCHAR(64) NOT NULL,
   type VARCHAR(128) NOT NULL,
   status VARCHAR(64) NOT NULL,
   message VARCHAR(1024) NOT NULL DEFAULT '',
   occurred_at DATETIME(6) NOT NULL,
-  KEY idx_environment_events_environment_time (environment_id, occurred_at),
-  CONSTRAINT fk_environment_events_environment FOREIGN KEY (environment_id) REFERENCES environments(id)
+  KEY idx_application_stage_events_stage_time (application_id, stage_key, occurred_at),
+  CONSTRAINT fk_application_stage_events_application FOREIGN KEY (application_id) REFERENCES applications(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `,
 		Down: `
-DROP TABLE IF EXISTS environment_events;
-DROP TABLE IF EXISTS environment_states;
-DROP TABLE IF EXISTS environment_cluster_bindings;
-DROP TABLE IF EXISTS environment_routes;
-DROP TABLE IF EXISTS environment_secrets;
-DROP TABLE IF EXISTS environment_configs;
-DROP TABLE IF EXISTS environments;
+DROP TABLE IF EXISTS application_stage_events;
+DROP TABLE IF EXISTS application_stage_states;
 DROP TABLE IF EXISTS application_sources;
 DROP TABLE IF EXISTS applications;
 `,
@@ -301,7 +223,7 @@ SELECT 1;
 	},
 	{
 		Version: 202606100201,
-		Name:    "workloads_and_environment_configs",
+		Name:    "workloads_and_stage_configs",
 		Up: `
 CREATE TABLE workloads (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
@@ -325,13 +247,13 @@ CREATE TABLE workloads (
   CONSTRAINT fk_workloads_application FOREIGN KEY (application_id) REFERENCES applications(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE workload_environment_configs (
+CREATE TABLE workload_stage_configs (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
   tenant_id VARCHAR(64) NOT NULL,
   project_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
   workload_id VARCHAR(64) NOT NULL,
-  environment_id VARCHAR(64) NOT NULL,
+  stage_key VARCHAR(64) NOT NULL,
   replicas INT NOT NULL DEFAULT 1,
   service_ports_json JSON NOT NULL,
   resource_requests_json JSON NOT NULL,
@@ -347,11 +269,11 @@ CREATE TABLE workload_environment_configs (
   values_override_json JSON NOT NULL,
   created_at DATETIME(6) NOT NULL,
   updated_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_workload_environment_configs_target (workload_id, environment_id),
-  KEY idx_workload_environment_configs_app_workload (application_id, workload_id),
-  KEY idx_workload_environment_configs_environment (environment_id),
-  CONSTRAINT fk_workload_environment_configs_workload FOREIGN KEY (workload_id) REFERENCES workloads(id),
-  CONSTRAINT fk_workload_environment_configs_environment FOREIGN KEY (environment_id) REFERENCES environments(id)
+  UNIQUE KEY uk_workload_stage_configs_target (workload_id, stage_key),
+  KEY idx_workload_stage_configs_app_workload (application_id, workload_id),
+  KEY idx_workload_stage_configs_stage (application_id, stage_key),
+  CONSTRAINT fk_workload_stage_configs_workload FOREIGN KEY (workload_id) REFERENCES workloads(id),
+  CONSTRAINT fk_workload_stage_configs_application FOREIGN KEY (application_id) REFERENCES applications(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE workload_default_configs (
@@ -380,9 +302,9 @@ CREATE TABLE workload_default_configs (
   CONSTRAINT fk_workload_default_configs_workload FOREIGN KEY (workload_id) REFERENCES workloads(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `,
-			Down: `
+		Down: `
 DROP TABLE IF EXISTS workload_default_configs;
-DROP TABLE IF EXISTS workload_environment_configs;
+DROP TABLE IF EXISTS workload_stage_configs;
 DROP TABLE IF EXISTS workloads;
 `,
 	},

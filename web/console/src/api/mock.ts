@@ -1,7 +1,7 @@
 export type Tenant = { id: string; name: string; displayName: string; description?: string; updatedAt: string };
 export type Project = { id: string; tenantId: string; name: string; displayName: string; description?: string; tenant: string; owner: string; updatedAt: string };
 export type StringMap = Record<string, string>;
-export type Application = { id: string; name: string; displayName: string; project: string; projectId?: string; description?: string; runtimeEnvironmentId?: string; runtimeEnvironments?: ApplicationRuntimeEnvironment[]; status?: string; type: string; envStatus: string; build: string; release: string; owner: string; updatedAt: string };
+export type Application = { id: string; name: string; displayName: string; project: string; projectId?: string; description?: string; runtimeEnvironmentId?: string; runtimeEnvironments?: ApplicationRuntimeEnvironment[]; status?: string; type: string; stageStatus: string; build: string; release: string; owner: string; updatedAt: string };
 export type ApplicationRuntimeEnvironment = { id: string; name: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string; selectorLabels?: StringMap };
 export type ApplicationSource = { id?: string; key: string; displayName: string; sourceRepositoryId: string; jenkinsTemplateId?: string; buildEnvironmentId?: string; sourcePath: string; defaultRef: string; isPrimary: boolean; buildSpec: { sourcePath: string; buildCommand: string; artifactCopyCommand: string; runtimeBaseImage?: string; artifactDeployPath?: string; defaultRef: string } };
 export type BuildPipelineSource = ApplicationSource & { pipelineId?: string };
@@ -13,8 +13,7 @@ export type FreightItem = { id: string; workloadId: string; workloadName: string
 export type Freight = { id: string; version: string; image: string; digest: string; commit: string; createdAt: string; items?: FreightItem[] };
 export type WorkloadType = 'deployment' | 'statefulset';
 export type WorkloadImageSourceMode = 'pipeline_artifact' | 'custom_image' | 'mixed' | 'none';
-export type WorkloadEnvironmentStatus = { envName: string; releaseVersion: string; syncStatus: string; healthStatus: string };
-export type Environment = { id: string; applicationId: string; name: string; displayName: string; description?: string };
+export type WorkloadStageStatus = { stageName: string; releaseVersion: string; syncStatus: string; healthStatus: string };
 export type Workload = {
   id: string;
   applicationId: string;
@@ -27,7 +26,7 @@ export type Workload = {
   imageSourceName?: string;
   latestRelease?: string;
   status: 'enabled' | 'disabled' | 'deleted';
-  envStatuses: WorkloadEnvironmentStatus[];
+  stageStatuses: WorkloadStageStatus[];
   updatedAt: string;
 };
 export type WorkloadServicePort = { name: string; port: number; targetPort: number; protocol?: string };
@@ -37,11 +36,11 @@ export type WorkloadIngressHost = { host: string; path: string; servicePort: str
 export type WorkloadEnvVar = { name: string; value: string };
 export type WorkloadConfigFile = { mountPath: string; content: string; base64Encoded?: boolean };
 export type WorkloadWritableDir = { mountPath: string; sizeLimit?: string; ownerGroup?: string; mode?: string };
-export type WorkloadEnvironmentConfig = {
+export type WorkloadStageConfig = {
   id: string;
   workloadId: string;
-  environmentId: string;
-  envName: string;
+  stageKey: string;
+  stageName: string;
   replicas: number;
   servicePorts: WorkloadServicePort[];
   resourceRequests: WorkloadResourceList;
@@ -54,17 +53,21 @@ export type WorkloadEnvironmentConfig = {
 };
 export type ReleaseCandidate = { id: string; workloadId: string; version: string; image: string; digest: string; commit: string; buildArtifactId?: string; imageBundleId?: string; bundleImages?: ImageBundleImage[]; createdAt: string };
 export type BuildArtifactCandidate = { id: string; workloadId: string; image: string; digest: string; createdAt: string };
-export type StageDefinition = { id: string; name: string; environmentId: string; approvalRequired?: boolean; approvalCount?: number; approverScope?: string; selfApprovalForbidden?: boolean; currentFreightVersion?: string; replicasSummary?: string; domainSummary?: string; configSummary?: string };
+export type StageDefinition = { id: string; name: string; approvalRequired?: boolean; approvalCount?: number; approverScope?: string; selfApprovalForbidden?: boolean; currentFreightVersion?: string; replicasSummary?: string; domainSummary?: string; configSummary?: string };
 export type DeliveryFlowTemplateStageStatus = 'enabled' | 'disabled';
 export type DeliveryFlowTemplateStage = { id: string; tenantId: string; templateId: string; stageKey: string; displayName: string; color: string; order: number; layoutColumn: number; layoutRow: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[] };
 export type DeliveryFlowTemplateEdge = { id: string; tenantId: string; templateId: string; fromStageKey: string; toStageKey: string };
 export type DeliveryFlowTemplate = { id: string; tenantId: string; name: string; stages: DeliveryFlowTemplateStage[]; edges: DeliveryFlowTemplateEdge[]; createdAt?: string; updatedAt?: string };
 export type StageClusterBinding = { id: string; tenantId: string; stageKey: string; clusterId: string; clusterName: string; status: 'active' | 'disabled' };
 export type ClusterOption = { id: string; name: string; region: string; status: string; labels?: StringMap };
-export type AppStage = { tenantId: string; projectId: string; applicationId: string; deliveryStageId?: string; environmentId?: string; stageKey: string; displayName: string; color: string; order: number; layoutColumn: number; layoutRow: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[]; clusterPoolSize: number; boundClusterId?: string; boundClusterName?: string; currentFreightId?: string; currentFreightVersion?: string; syncStatus?: string; healthStatus?: string; upstreamStageKeys?: string[]; downstreamStageKeys?: string[] };
+export type AppStage = { tenantId: string; projectId: string; applicationId: string; deliveryStageId?: string; stageKey: string; displayName: string; color: string; order: number; layoutColumn: number; layoutRow: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[]; clusterPoolSize: number; boundClusterId?: string; boundClusterName?: string; currentFreightId?: string; currentFreightVersion?: string; syncStatus?: string; healthStatus?: string; operationState?: string; runtimeMessage?: string; upstreamStageKeys?: string[]; downstreamStageKeys?: string[] };
+export type RuntimeContainerStatus = { name: string; image?: string; ready: boolean; restartCount: number; state?: string; message?: string };
+export type RuntimeResourceEvent = { type: string; reason?: string; message: string; count?: number; occurredAt?: string };
+export type RuntimeResource = { id: string; clusterId: string; tenantId: string; applicationId: string; stageKey: string; group?: string; version?: string; kind: string; namespace: string; name: string; parentKind?: string; parentNamespace?: string; parentName?: string; status: string; healthStatus?: string; message?: string; desired?: number; ready?: number; containers?: RuntimeContainerStatus[]; events?: RuntimeResourceEvent[]; reportedAt?: string; updatedAt?: string };
+export type RuntimeCapabilityResponse = { capability: string; supported: boolean; resourceId: string; message: string };
 export type FreightCreationContext = { enabledWorkloads: Workload[]; latestReleasesByWorkload: Record<string, ReleaseCandidate>; latestArtifactsByWorkload: Record<string, BuildArtifactCandidate>; stageEligibility: Record<string, string[]>; stages: StageDefinition[] };
 export type CreateFreightInput = { name: string; items: { workloadId: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageRef?: string }[] };
-export type CreatePromotionInput = { freightId: string; targetEnvironmentId?: string; targetStageKey?: string; targetClusterIds?: string[]; namespaceOverride?: string; message?: string };
+export type CreatePromotionInput = { freightId: string; targetStageKey?: string; targetClusterIds?: string[]; namespaceOverride?: string; message?: string };
 export type FreightApprovalInput = { targetStageKey: string; decision: 'approved' | 'rejected'; comment?: string };
 export type StageVerificationInput = { freightId: string; status: 'passed' | 'failed'; comment?: string; syncStatus?: string; healthStatus?: string; agentStatus?: string };
 export type SourceRepository = { id: string; projectId: string; projectName: string; name: string; displayName: string; description: string; gitProvider: string; httpUrl: string; sshUrl: string; defaultBranch: string; status: string; associatedApplications: number; updatedAt: string };
@@ -114,8 +117,8 @@ const sourceRepositories: SourceRepository[] = [
   { id: 'repo_2', projectId: 'project_1', projectName: '订单平台', name: 'order-platform', displayName: '订单平台 monorepo', description: '多个应用共用的托管仓库', gitProvider: 'gitlab', httpUrl: 'https://gitlab.example/rnd/order/order-platform.git', sshUrl: 'git@gitlab.example:rnd/order/order-platform.git', defaultBranch: 'main', status: 'ready', associatedApplications: 2, updatedAt: '2026-05-29 18:22' }
 ];
 const applications: Application[] = [
-  { id: 'app_1', name: 'order-api', displayName: '订单服务', project: '订单平台', projectId: 'project_1', description: '订单服务应用', runtimeEnvironmentId: 'runtime_env_java17', runtimeEnvironments: [{ id: 'runtime_env_java17', name: 'java17', runtimeBaseImage: 'registry.example/runtime/java17:1.0', artifactDeployPath: '/app/' }], status: 'active', type: 'Spring Boot', envStatus: '运行中', build: '#128 成功', release: 'v1.8.2', owner: '李雷', updatedAt: '2026-05-30 10:12' },
-  { id: 'app_2', name: 'order-web', displayName: '订单前端', project: '订单平台', projectId: 'project_1', description: '', runtimeEnvironmentId: 'runtime_env_tomcat8', runtimeEnvironments: [{ id: 'runtime_env_tomcat8', name: 'tomcat8', runtimeBaseImage: 'registry.example/runtime/tomcat8:1.0', artifactDeployPath: '/usr/local/tomcat/webapps/' }], status: 'active', type: 'Tomcat', envStatus: '待绑定集群', build: '#42 成功', release: 'v0.9.4', owner: '王芳', updatedAt: '2026-05-29 18:22' }
+  { id: 'app_1', name: 'order-api', displayName: '订单服务', project: '订单平台', projectId: 'project_1', description: '订单服务应用', runtimeEnvironmentId: 'runtime_env_java17', runtimeEnvironments: [{ id: 'runtime_env_java17', name: 'java17', runtimeBaseImage: 'registry.example/runtime/java17:1.0', artifactDeployPath: '/app/' }], status: 'active', type: 'Spring Boot', stageStatus: '运行中', build: '#128 成功', release: 'v1.8.2', owner: '李雷', updatedAt: '2026-05-30 10:12' },
+  { id: 'app_2', name: 'order-web', displayName: '订单前端', project: '订单平台', projectId: 'project_1', description: '', runtimeEnvironmentId: 'runtime_env_tomcat8', runtimeEnvironments: [{ id: 'runtime_env_tomcat8', name: 'tomcat8', runtimeBaseImage: 'registry.example/runtime/tomcat8:1.0', artifactDeployPath: '/usr/local/tomcat/webapps/' }], status: 'active', type: 'Tomcat', stageStatus: '待绑定集群', build: '#42 成功', release: 'v0.9.4', owner: '王芳', updatedAt: '2026-05-29 18:22' }
 ];
 const applicationSources: Record<string, ApplicationSource[]> = {
   app_1: [{ id: 'app_source_1', key: 'main', displayName: '主代码源', sourceRepositoryId: 'repo_1', buildEnvironmentId: 'build_env_java_springboot', sourcePath: 'services/order-api', defaultRef: 'main', isPrimary: true, buildSpec: { sourcePath: 'services/order-api', buildCommand: 'mvn clean package -DskipTests', artifactCopyCommand: 'cp -ar target/order-api.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"', defaultRef: 'main' } }]
@@ -126,10 +129,10 @@ let buildRuns: BuildRun[] = [
   { id: 'build_worker_1', application: '订单服务', pipeline: '任务流水线', pipelineId: 'pipeline_worker', status: '成功', ref: 'main', commit: '9f0a12b', startedAt: '2026-05-28 14:20', duration: '4 分 01 秒' }
 ];
 const promotionStages: StageDefinition[] = [
-  { id: 'stage_dev', name: 'dev', environmentId: 'env_dev', currentFreightVersion: '20260611.1', replicasSummary: '1 / 1 / 1', domainSummary: 'dev-order.example.com', configSummary: 'dev values' },
-  { id: 'stage_test', name: 'test', environmentId: 'env_test', currentFreightVersion: '20260610.1', replicasSummary: '1 / 1 / 1', domainSummary: 'test-order.example.com', configSummary: 'test values' },
-  { id: 'stage_staging', name: 'staging', environmentId: 'env_staging', currentFreightVersion: '20260609.1', replicasSummary: '2 / 2 / 1', domainSummary: 'staging-order.example.com', configSummary: 'staging values' },
-  { id: 'stage_prod', name: 'prod', environmentId: 'env_prod', approvalRequired: true, approvalCount: 2, approverScope: '生产审批人', selfApprovalForbidden: true, currentFreightVersion: '20260609.1', replicasSummary: '2 / 4 / 2', domainSummary: 'order.example.com', configSummary: 'prod values' }
+  { id: 'stage_dev', name: 'dev', currentFreightVersion: '20260611.1', replicasSummary: '1 / 1 / 1', domainSummary: 'dev-order.example.com', configSummary: 'dev values' },
+  { id: 'stage_test', name: 'test', currentFreightVersion: '20260610.1', replicasSummary: '1 / 1 / 1', domainSummary: 'test-order.example.com', configSummary: 'test values' },
+  { id: 'stage_staging', name: 'staging', currentFreightVersion: '20260609.1', replicasSummary: '2 / 2 / 1', domainSummary: 'staging-order.example.com', configSummary: 'staging values' },
+  { id: 'stage_prod', name: 'prod', approvalRequired: true, approvalCount: 2, approverScope: '生产审批人', selfApprovalForbidden: true, currentFreightVersion: '20260609.1', replicasSummary: '2 / 4 / 2', domainSummary: 'order.example.com', configSummary: 'prod values' }
 ];
 let deliveryFlowTemplate: DeliveryFlowTemplate = {
   id: 'delivery_flow_template_1',
@@ -158,14 +161,12 @@ let stageClusterBindings: StageClusterBinding[] = [
   { id: 'stage_binding_dev_shanghai', tenantId: 'tenant_1', stageKey: 'dev', clusterId: 'cluster_shanghai', clusterName: '上海集群', status: 'active' },
   { id: 'stage_binding_test_beijing', tenantId: 'tenant_1', stageKey: 'test', clusterId: 'cluster_beijing', clusterName: '北京集群', status: 'active' }
 ];
-const environments: Record<string, Environment[]> = {
-  app_1: [
-    { id: 'env_dev', applicationId: 'app_1', name: 'dev', displayName: '开发环境' },
-    { id: 'env_test', applicationId: 'app_1', name: 'test', displayName: '测试环境' },
-    { id: 'env_staging', applicationId: 'app_1', name: 'staging', displayName: '预发环境' },
-    { id: 'env_prod', applicationId: 'app_1', name: 'prod', displayName: '生产环境' }
-  ]
-};
+const runtimeResources: RuntimeResource[] = [
+  { id: 'runtime_deploy_order_api_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', group: 'apps', version: 'v1', kind: 'Deployment', namespace: 'order-dev', name: 'order-api', status: 'Progressing', healthStatus: 'Degraded', desired: 2, ready: 1, message: '滚动更新中', reportedAt: '2026-06-15 10:00' },
+  { id: 'runtime_rs_order_api_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', group: 'apps', version: 'v1', kind: 'ReplicaSet', namespace: 'order-dev', name: 'order-api-7d9', parentKind: 'Deployment', parentName: 'order-api', status: 'Progressing', desired: 2, ready: 1, reportedAt: '2026-06-15 10:00' },
+  { id: 'runtime_pod_order_api_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', version: 'v1', kind: 'Pod', namespace: 'order-dev', name: 'order-api-7d9', parentKind: 'ReplicaSet', parentName: 'order-api-7d9', status: 'Pending', healthStatus: 'Degraded', message: 'ImagePullBackOff', desired: 1, ready: 0, containers: [{ name: 'app', image: 'registry.local/order-api:20260611.1', ready: false, restartCount: 3, state: 'waiting', message: 'ImagePullBackOff' }], reportedAt: '2026-06-15 10:00' },
+  { id: 'runtime_event_order_api_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', version: 'v1', kind: 'Event', namespace: 'order-dev', name: 'order-api-pull-failed', parentKind: 'Pod', parentName: 'order-api-7d9', status: 'Warning', message: '拉取镜像失败', events: [{ type: 'Warning', reason: 'FailedPull', message: '拉取镜像失败', count: 4, occurredAt: '2026-06-15 10:00' }], reportedAt: '2026-06-15 10:00' }
+];
 const enabledWorkloads: Workload[] = [
   {
     id: 'workload_frontend',
@@ -179,7 +180,7 @@ const enabledWorkloads: Workload[] = [
     imageSourceName: '前端流水线',
     latestRelease: '20260611.1',
     status: 'enabled',
-    envStatuses: [],
+    stageStatuses: [],
     updatedAt: '2026-06-11 09:00'
   },
   {
@@ -194,7 +195,7 @@ const enabledWorkloads: Workload[] = [
     imageSourceName: '主流水线',
     latestRelease: '20260611.1',
     status: 'enabled',
-    envStatuses: [],
+    stageStatuses: [],
     updatedAt: '2026-06-11 09:02'
   },
   {
@@ -209,7 +210,7 @@ const enabledWorkloads: Workload[] = [
     imageSourceName: '任务流水线',
     latestRelease: '20260611.1',
     status: 'enabled',
-    envStatuses: [],
+    stageStatuses: [],
     updatedAt: '2026-06-11 09:04'
   }
 ];
@@ -275,10 +276,10 @@ const workloads: Record<string, Workload[]> = {
       imageSourceName: '主流水线',
       latestRelease: 'v1.8.2',
       status: 'enabled',
-      envStatuses: [
-        { envName: 'dev', releaseVersion: 'v1.8.2', syncStatus: '已同步', healthStatus: '健康' },
-        { envName: 'test', releaseVersion: 'v1.8.1', syncStatus: '已同步', healthStatus: '健康' },
-        { envName: 'prod', releaseVersion: 'v1.8.1', syncStatus: '已同步', healthStatus: '健康' }
+      stageStatuses: [
+        { stageName: 'dev', releaseVersion: 'v1.8.2', syncStatus: '已同步', healthStatus: '健康' },
+        { stageName: 'test', releaseVersion: 'v1.8.1', syncStatus: '已同步', healthStatus: '健康' },
+        { stageName: 'prod', releaseVersion: 'v1.8.1', syncStatus: '已同步', healthStatus: '健康' }
       ],
       updatedAt: '2026-06-11 09:20'
     },
@@ -294,22 +295,22 @@ const workloads: Record<string, Workload[]> = {
       imageSourceName: '手工维护',
       latestRelease: 'worker-20260610',
       status: 'enabled',
-      envStatuses: [
-        { envName: 'dev', releaseVersion: 'worker-20260610', syncStatus: '已同步', healthStatus: '健康' },
-        { envName: 'test', releaseVersion: 'worker-20260609', syncStatus: '待发布', healthStatus: '未知' },
-        { envName: 'prod', releaseVersion: 'worker-20260608', syncStatus: '已同步', healthStatus: '健康' }
+      stageStatuses: [
+        { stageName: 'dev', releaseVersion: 'worker-20260610', syncStatus: '已同步', healthStatus: '健康' },
+        { stageName: 'test', releaseVersion: 'worker-20260609', syncStatus: '待发布', healthStatus: '未知' },
+        { stageName: 'prod', releaseVersion: 'worker-20260608', syncStatus: '已同步', healthStatus: '健康' }
       ],
       updatedAt: '2026-06-11 09:18'
     }
   ]
 };
-const workloadEnvironmentConfigs: Record<string, WorkloadEnvironmentConfig[]> = {
-  workload_api: [
-    {
-      id: 'workload_env_config_api_prod',
-      workloadId: 'workload_api',
-      environmentId: 'env_prod',
-      envName: 'prod',
+const workloadStageConfigs: Record<string, WorkloadStageConfig[]> = {
+	  workload_api: [
+	    {
+	      id: 'workload_stage_config_api_prod',
+	      workloadId: 'workload_api',
+	      stageKey: 'prod',
+	      stageName: 'prod',
       replicas: 3,
       servicePorts: [{ name: 'http', port: 8080, targetPort: 8080, protocol: 'TCP' }],
       resourceRequests: { cpu: '250m', memory: '256Mi' },
@@ -321,12 +322,12 @@ const workloadEnvironmentConfigs: Record<string, WorkloadEnvironmentConfig[]> = 
       writableDirs: [{ mountPath: '/logs', sizeLimit: '5Gi' }]
     }
   ],
-  workload_worker: [
-    {
-      id: 'workload_env_config_worker_prod',
-      workloadId: 'workload_worker',
-      environmentId: 'env_prod',
-      envName: 'prod',
+	  workload_worker: [
+	    {
+	      id: 'workload_stage_config_worker_prod',
+	      workloadId: 'workload_worker',
+	      stageKey: 'prod',
+	      stageName: 'prod',
       replicas: 1,
       servicePorts: [],
       resourceRequests: { cpu: '500m', memory: '512Mi' },
@@ -339,12 +340,12 @@ const workloadEnvironmentConfigs: Record<string, WorkloadEnvironmentConfig[]> = 
     }
   ]
 };
-const workloadDefaultConfigs: Record<string, WorkloadEnvironmentConfig> = {
-  workload_api: {
-    id: 'workload_default_config_api',
-    workloadId: 'workload_api',
-    environmentId: '',
-    envName: '默认值',
+const workloadDefaultConfigs: Record<string, WorkloadStageConfig> = {
+	  workload_api: {
+	    id: 'workload_default_config_api',
+	    workloadId: 'workload_api',
+	    stageKey: '',
+	    stageName: '默认值',
     replicas: 1,
     servicePorts: [{ name: 'http', port: 80, targetPort: 8080, protocol: 'TCP' }],
     resourceRequests: {},
@@ -557,16 +558,15 @@ export async function createFreight(_applicationId: string, input: CreateFreight
 
 export async function createPromotion(input: CreatePromotionInput) {
   await wait();
-  if (!input.freightId || (!input.targetEnvironmentId && !input.targetStageKey)) throw new Error('请选择 Freight 和目标 Stage');
-  const stageKey = input.targetStageKey || promotionStages.find((stage) => stage.environmentId === input.targetEnvironmentId)?.name || '';
+  if (!input.freightId || !input.targetStageKey) throw new Error('请选择 Freight 和目标 Stage');
+  const stageKey = input.targetStageKey;
   return {
     id: `promotion_${Date.now()}`,
     freightId: input.freightId,
-    targetEnvironmentId: input.targetEnvironmentId,
     targetStageKey: stageKey,
     targetClusterIds: input.targetClusterIds || [],
     namespaceOverride: input.namespaceOverride || '',
-    status: stageKey === 'prod' || input.targetEnvironmentId === 'env_prod' ? '待审批' : '发布中',
+    status: stageKey === 'prod' ? '待审批' : '发布中',
     message: input.message || ''
   };
 }
@@ -593,15 +593,15 @@ export async function createWorkload(applicationId: string, input: { name: strin
     imageSourceName: input.imageSourceMode === 'custom_image' ? (input.customImage || '自定义镜像') : (pipelineDisplayName(applicationId, input.pipelineId) || input.pipelineName || '流水线产物'),
     latestRelease: '-',
     status: 'enabled',
-    envStatuses: [
-      { envName: 'dev', releaseVersion: '-', syncStatus: '未发布', healthStatus: '未知' },
-      { envName: 'test', releaseVersion: '-', syncStatus: '未发布', healthStatus: '未知' },
-      { envName: 'prod', releaseVersion: '-', syncStatus: '未发布', healthStatus: '未知' }
+    stageStatuses: [
+      { stageName: 'dev', releaseVersion: '-', syncStatus: '未发布', healthStatus: '未知' },
+      { stageName: 'test', releaseVersion: '-', syncStatus: '未发布', healthStatus: '未知' },
+      { stageName: 'prod', releaseVersion: '-', syncStatus: '未发布', healthStatus: '未知' }
     ],
     updatedAt: '刚刚'
   };
   workloads[applicationId] = [workload, ...(workloads[applicationId] || [])];
-  workloadEnvironmentConfigs[workload.id] = [];
+  workloadStageConfigs[workload.id] = [];
   return cloneWorkload(workload);
 }
 
@@ -629,19 +629,14 @@ export async function deleteWorkload(applicationId: string, workloadId: string):
   return cloneWorkload(workload);
 }
 
-export async function listWorkloadEnvironmentConfigs(_applicationId: string, workloadId: string): Promise<WorkloadEnvironmentConfig[]> {
+export async function listWorkloadStageConfigs(_applicationId: string, workloadId: string): Promise<WorkloadStageConfig[]> {
   await wait();
-  return (workloadEnvironmentConfigs[workloadId] || []).map(cloneWorkloadEnvironmentConfig);
+  return (workloadStageConfigs[workloadId] || []).map(cloneWorkloadStageConfig);
 }
 
-export async function getWorkloadDefaultConfig(_applicationId: string, workloadId: string): Promise<WorkloadEnvironmentConfig> {
+export async function getWorkloadDefaultConfig(_applicationId: string, workloadId: string): Promise<WorkloadStageConfig> {
   await wait();
-  return cloneWorkloadEnvironmentConfig(workloadDefaultConfigs[workloadId] || emptyWorkloadConfig(workloadId));
-}
-
-export async function listApplicationEnvironments(applicationId: string): Promise<Environment[]> {
-  await wait();
-  return (environments[applicationId] || []).map((item) => ({ ...item }));
+  return cloneWorkloadStageConfig(workloadDefaultConfigs[workloadId] || emptyWorkloadConfig(workloadId));
 }
 
 export async function getDeliveryFlowTemplate(tenantId = 'tenant_1'): Promise<DeliveryFlowTemplate> {
@@ -748,8 +743,33 @@ export async function listAppStages(applicationId: string): Promise<AppStage[]> 
 		const binding = stageClusterBindings.find((item) => item.tenantId === deliveryFlowTemplate.tenantId && item.stageKey === stage.stageKey && item.status === 'active');
 		const currentFreightVersion = promotionStages.find((item) => item.name === stage.stageKey)?.currentFreightVersion || freights[freights.length - 1]?.version;
 		const currentFreight = freights.find((item) => item.version === currentFreightVersion);
-		return { tenantId: deliveryFlowTemplate.tenantId, projectId: app.projectId || 'project_1', applicationId, deliveryStageId: `delivery_stage_${stage.stageKey}`, environmentId: `env_${stage.stageKey}`, stageKey: stage.stageKey, displayName: stage.displayName, color: columnColor(stage.layoutColumn), order: stage.order, layoutColumn: stage.layoutColumn, layoutRow: stage.layoutRow, status: stage.status, requiresApproval: stage.requiresApproval, requiresVerification: stage.requiresVerification, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles], clusterPoolSize: binding ? 1 : 0, boundClusterId: binding?.clusterId, boundClusterName: binding?.clusterName, currentFreightId: currentFreight?.id, currentFreightVersion, syncStatus: 'Synced', healthStatus: 'Healthy', upstreamStageKeys: deliveryFlowTemplate.edges.filter((edge) => edge.toStageKey === stage.stageKey).map((edge) => edge.fromStageKey), downstreamStageKeys: deliveryFlowTemplate.edges.filter((edge) => edge.fromStageKey === stage.stageKey).map((edge) => edge.toStageKey) };
-	});
+			const runtime = stage.stageKey === 'dev'
+				? { syncStatus: 'OutOfSync', healthStatus: 'Degraded', operationState: 'running', runtimeMessage: 'Pod order-api-7d9 ImagePullBackOff' }
+				: { syncStatus: 'Synced', healthStatus: 'Healthy', operationState: 'succeeded', runtimeMessage: '' };
+				return { tenantId: deliveryFlowTemplate.tenantId, projectId: app.projectId || 'project_1', applicationId, deliveryStageId: `delivery_stage_${stage.stageKey}`, stageKey: stage.stageKey, displayName: stage.displayName, color: columnColor(stage.layoutColumn), order: stage.order, layoutColumn: stage.layoutColumn, layoutRow: stage.layoutRow, status: stage.status, requiresApproval: stage.requiresApproval, requiresVerification: stage.requiresVerification, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles], clusterPoolSize: binding ? 1 : 0, boundClusterId: binding?.clusterId, boundClusterName: binding?.clusterName, currentFreightId: currentFreight?.id, currentFreightVersion, ...runtime, upstreamStageKeys: deliveryFlowTemplate.edges.filter((edge) => edge.toStageKey === stage.stageKey).map((edge) => edge.fromStageKey), downstreamStageKeys: deliveryFlowTemplate.edges.filter((edge) => edge.fromStageKey === stage.stageKey).map((edge) => edge.toStageKey) };
+			});
+		}
+
+	export async function listRuntimeResources(applicationId: string, stageKey: string): Promise<RuntimeResource[]> {
+		await wait();
+		return runtimeResources
+			.filter((item) => item.applicationId === applicationId && item.stageKey === stageKey)
+			.map((item) => ({ ...item, containers: item.containers?.map((container) => ({ ...container })), events: item.events?.map((event) => ({ ...event })) }));
+	}
+
+export async function restartRuntimeResource(_applicationId: string, _stageKey: string, _resourceId: string) {
+	await wait();
+	return { status: 'accepted' };
+}
+
+export async function getRuntimeResourceLogs(_applicationId: string, _stageKey: string, resourceId: string, _container?: string): Promise<RuntimeCapabilityResponse> {
+	await wait();
+	return { capability: 'pod_logs', supported: false, resourceId, message: '日志流暂未启用' };
+}
+
+export async function openRuntimeResourceTerminal(_applicationId: string, _stageKey: string, resourceId: string, _container?: string): Promise<RuntimeCapabilityResponse> {
+	await wait();
+	return { capability: 'pod_terminal', supported: false, resourceId, message: '终端流暂未启用' };
 }
 
 function cloneDeliveryFlowTemplate(): DeliveryFlowTemplate {
@@ -772,20 +792,19 @@ export async function completeStageVerification(applicationId: string, stageKey:
   return { id: `stage_verification_${Date.now()}`, applicationId, stageKey, freightId: input.freightId, status: input.status, comment: input.comment || '', syncStatus: input.syncStatus || 'Synced', healthStatus: input.healthStatus || 'Healthy', agentStatus: input.agentStatus || 'ready' };
 }
 
-export async function saveWorkloadEnvironmentConfig(_applicationId: string, workloadId: string, environmentId: string, input: Partial<WorkloadEnvironmentConfig>) {
+export async function saveWorkloadStageConfig(_applicationId: string, workloadId: string, stageKey: string, input: Partial<WorkloadStageConfig>) {
   await wait();
-  const current = workloadEnvironmentConfigs[workloadId] || [];
-  const env = Object.values(environments).flat().find((item) => item.id === environmentId);
-  const next = buildWorkloadConfig(workloadId, environmentId, env?.name || environmentId, input, current.find((item) => item.environmentId === environmentId)?.id || `workload_env_config_${workloadId}_${environmentId}`);
-  workloadEnvironmentConfigs[workloadId] = [next, ...current.filter((item) => item.environmentId !== environmentId)];
-  return cloneWorkloadEnvironmentConfig(next);
+  const current = workloadStageConfigs[workloadId] || [];
+  const next = buildWorkloadConfig(workloadId, stageKey, stageKey, { ...input, stageKey }, current.find((item) => item.stageKey === stageKey)?.id || `workload_stage_config_${workloadId}_${stageKey}`);
+  workloadStageConfigs[workloadId] = [next, ...current.filter((item) => item.stageKey !== stageKey)];
+  return cloneWorkloadStageConfig(next);
 }
 
-export async function saveWorkloadDefaultConfig(_applicationId: string, workloadId: string, input: Partial<WorkloadEnvironmentConfig>) {
+export async function saveWorkloadDefaultConfig(_applicationId: string, workloadId: string, input: Partial<WorkloadStageConfig>) {
   await wait();
   const next = buildWorkloadConfig(workloadId, '', '默认值', input, workloadDefaultConfigs[workloadId]?.id || `workload_default_config_${workloadId}`);
   workloadDefaultConfigs[workloadId] = next;
-  return cloneWorkloadEnvironmentConfig(next);
+  return cloneWorkloadStageConfig(next);
 }
 
 export async function listSourceRepositories(projectId?: string): Promise<SourceRepository[]> {
@@ -1007,7 +1026,7 @@ export async function createApplication(input: any) {
   await wait();
   const id = `app_${Date.now()}`;
   const project = projects.find((item) => item.id === input.projectId);
-  const app: Application = { id, name: input.name, displayName: input.displayName || input.name, project: project?.displayName || '', projectId: input.projectId, description: input.description || '', status: 'active', type: '-', envStatus: '待绑定集群', build: '-', release: '-', owner: '平台管理员', updatedAt: '刚刚' };
+  const app: Application = { id, name: input.name, displayName: input.displayName || input.name, project: project?.displayName || '', projectId: input.projectId, description: input.description || '', status: 'active', type: '-', stageStatus: '待绑定集群', build: '-', release: '-', owner: '平台管理员', updatedAt: '刚刚' };
   applications.unshift(app);
   applicationSources[id] = [];
   buildPipelines[id] = [];
@@ -1106,7 +1125,7 @@ export async function triggerBuild(applicationId: string, input: { gitRef?: stri
 }
 
 function cloneWorkload(workload: Workload): Workload {
-  return { ...workload, envStatuses: workload.envStatuses.map((item) => ({ ...item })) };
+  return { ...workload, stageStatuses: workload.stageStatuses.map((item) => ({ ...item })) };
 }
 
 function pipelineDisplayName(applicationId: string, pipelineId?: string) {
@@ -1115,12 +1134,12 @@ function pipelineDisplayName(applicationId: string, pipelineId?: string) {
   return pipeline?.displayName || pipeline?.name || '';
 }
 
-function buildWorkloadConfig(workloadId: string, environmentId: string, envName: string, input: Partial<WorkloadEnvironmentConfig>, id: string): WorkloadEnvironmentConfig {
+function buildWorkloadConfig(workloadId: string, stageKey: string, stageName: string, input: Partial<WorkloadStageConfig>, id: string): WorkloadStageConfig {
   return {
     id,
     workloadId,
-    environmentId,
-    envName,
+    stageKey: input.stageKey || stageKey,
+    stageName,
     replicas: input.replicas ?? 1,
     servicePorts: (input.servicePorts || []).map((item) => ({ ...item })),
     resourceRequests: { ...(input.resourceRequests || {}) },
@@ -1133,11 +1152,11 @@ function buildWorkloadConfig(workloadId: string, environmentId: string, envName:
   };
 }
 
-function emptyWorkloadConfig(workloadId: string): WorkloadEnvironmentConfig {
+function emptyWorkloadConfig(workloadId: string): WorkloadStageConfig {
   return buildWorkloadConfig(workloadId, '', '默认值', {}, `workload_default_config_${workloadId}`);
 }
 
-function cloneWorkloadEnvironmentConfig(config: WorkloadEnvironmentConfig): WorkloadEnvironmentConfig {
+function cloneWorkloadStageConfig(config: WorkloadStageConfig): WorkloadStageConfig {
   return {
     ...config,
     servicePorts: config.servicePorts.map((item) => ({ ...item })),

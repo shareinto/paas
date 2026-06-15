@@ -12,7 +12,7 @@
 ## 任务进度
 
 - [x] 数据库迁移
-- [x] application-environment 模块 Workload 与环境配置
+- [x] application-workload 模块 Workload 与环境配置
 - [x] build 模块 Workload 适配
 - [x] release-delivery 模块手动 Freight
 - [x] gitops-deployment 多 Workload values 写入
@@ -28,12 +28,12 @@
 
 ## 合并记录
 
-- 2026-06-10：已合并 `feature/workload-v2-backend`，提交 `106ef2a`，包含 Workload 与 WorkloadEnvironmentConfig 后端基础、迁移、仓储、API、审计和测试。
+- 2026-06-10：已合并 `feature/workload-v2-backend`，提交 `106ef2a`，包含 Workload 与 WorkloadStageConfig 后端基础、迁移、仓储、API、审计和测试。
 - 2026-06-11：已合并 `feature/workload-v2-release-freight`，提交 `827d38d`，包含 Build Workload 绑定、Workload Release 候选、手动 Freight、FreightItem 来源、Stage eligible-freights、Promotion 前置校验、权限和审计。
-- 2026-06-11：已合并 `feature/workload-v2-gitops`，提交 `47db0f3`，包含多 Workload values 渲染、WorkloadEnvironmentConfig 写入、Deployment workload_summary、回滚镜像写回和 GitOps 失败 Deployment 记录。
+- 2026-06-11：已合并 `feature/workload-v2-gitops`，提交 `47db0f3`，包含多 Workload values 渲染、WorkloadStageConfig 写入、Deployment workload_summary、回滚镜像写回和 GitOps 失败 Deployment 记录。
 - 2026-06-11：已合并 `feature/workload-v2-web-workload`，提交 `e26c006`，包含应用详情默认 Workload 入口、Workload 列表、创建 Workload 抽屉、部署配置展示、真实 API 映射和前端测试。
 - 2026-06-11：已合并 `feature/workload-v2-web-promotion`，提交 `5625190`，包含 Freight 详情 items、creation-context 真实 Stage、创建 Freight 抽屉、发布晋级页类 Kargo 交互、真实应用路由和前端测试。
-- 2026-06-14：补充工作负载默认配置和 Stage 覆盖配置。创建/编辑工作负载改为中文单页滚动弹窗，默认配置作为 Helm values 默认值；部署页 Stage 卡片增加编辑配置入口，保存该 Stage 对应 Environment 的覆盖值。
+- 2026-06-14：补充工作负载默认配置和 Stage 覆盖配置。创建/编辑工作负载改为中文单页滚动弹窗，默认配置作为 Helm values 默认值；部署页 Stage 卡片增加编辑配置入口，保存该 Stage 对应 Stage 的覆盖值。
 
 ## 已运行测试
 
@@ -68,4 +68,4 @@
 - Workload 是最小可部署单元，一个镜像对应一个 Workload。
 - Freight 由用户手动创建，且必须包含所有启用 Workload。
 - Stage 发布按钮负责触发可发布 Freight 选择。
-- dev/prod 等环境差异由 WorkloadEnvironmentConfig 或环境 values 承载，不进入 Freight。
+- dev/prod 等环境差异由 WorkloadStageConfig 或环境 values 承载，不进入 Freight。

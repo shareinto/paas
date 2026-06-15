@@ -32,31 +32,18 @@ type Repository interface {
 	ListWorkloadsByApplication(ctx context.Context, applicationID shared.ID) ([]Workload, error)
 	ListEnabledWorkloadsByApplication(ctx context.Context, applicationID shared.ID) ([]Workload, error)
 
-	SaveWorkloadEnvironmentConfig(ctx context.Context, config WorkloadEnvironmentConfig) error
-	GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error)
-	ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error)
-	SaveWorkloadDefaultConfig(ctx context.Context, config WorkloadEnvironmentConfig) error
-	GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfig, error)
+	SaveWorkloadStageConfig(ctx context.Context, config WorkloadStageConfig) error
+	GetWorkloadStageConfig(ctx context.Context, workloadID shared.ID, stageKey string) (WorkloadStageConfig, error)
+	ListWorkloadStageConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadStageConfig, error)
+	SaveWorkloadDefaultConfig(ctx context.Context, config WorkloadStageConfig) error
+	GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadStageConfig, error)
 
-	CreateEnvironment(ctx context.Context, environment Environment) error
-	UpdateEnvironment(ctx context.Context, environment Environment) error
-	GetEnvironment(ctx context.Context, id shared.ID) (Environment, error)
-	ListEnvironmentsByApplication(ctx context.Context, applicationID shared.ID) ([]Environment, error)
+	SaveApplicationStageState(ctx context.Context, state ApplicationStageState) error
+	GetApplicationStageState(ctx context.Context, applicationID shared.ID, stageKey string) (ApplicationStageState, error)
+	ListApplicationStageStatesByApplication(ctx context.Context, applicationID shared.ID) ([]ApplicationStageState, error)
 
-	CreateEnvironmentConfig(ctx context.Context, config EnvironmentConfig) error
-	CreateEnvironmentSecret(ctx context.Context, secret EnvironmentSecret) error
-	CreateEnvironmentRoute(ctx context.Context, route EnvironmentRoute) error
-
-	CreateEnvironmentClusterBinding(ctx context.Context, binding EnvironmentClusterBinding) error
-	GetEnvironmentClusterBinding(ctx context.Context, environmentID shared.ID) (EnvironmentClusterBinding, error)
-	ListEnvironmentClusterBindingsByApplication(ctx context.Context, applicationID shared.ID) ([]EnvironmentClusterBinding, error)
-
-	SaveEnvironmentState(ctx context.Context, state EnvironmentState) error
-	GetEnvironmentState(ctx context.Context, environmentID shared.ID) (EnvironmentState, error)
-	ListEnvironmentStatesByApplication(ctx context.Context, applicationID shared.ID) ([]EnvironmentState, error)
-
-	AppendEnvironmentEvent(ctx context.Context, event EnvironmentEvent) error
-	ListEnvironmentEvents(ctx context.Context, environmentID shared.ID, page shared.PageRequest) (shared.PageResult[EnvironmentEvent], error)
+	AppendApplicationStageEvent(ctx context.Context, event ApplicationStageEvent) error
+	ListApplicationStageEvents(ctx context.Context, applicationID shared.ID, stageKey string, page shared.PageRequest) (shared.PageResult[ApplicationStageEvent], error)
 }
 
 type SourceRepositoryRef struct {
@@ -128,44 +115,6 @@ type BuildPipelineQuery interface {
 	GetBuildPipeline(ctx context.Context, id shared.ID) (BuildPipelineRef, error)
 }
 
-type ClusterCandidate struct {
-	ClusterID   shared.ID
-	ClusterName string
-	Namespace   string
-}
-
-type ClusterPlacementQuery interface {
-	SelectCluster(ctx context.Context, environment Environment) (ClusterCandidate, bool, error)
-}
-
-type ClusterRef struct {
-	ID       shared.ID
-	TenantID shared.ID
-	Name     string
-	Status   string
-}
-
-type ClusterQuery interface {
-	GetCluster(ctx context.Context, id shared.ID) (ClusterRef, error)
-}
-
-type GitOpsEnvironmentProvisioner interface {
-	ProvisionEnvironment(ctx context.Context, spec GitOpsEnvironmentSpec) error
-}
-
-type GitOpsEnvironmentSpec struct {
-	TenantID           shared.ID
-	ProjectID          shared.ID
-	ApplicationID      shared.ID
-	EnvironmentID      shared.ID
-	ApplicationName    string
-	EnvironmentName    string
-	SourceRepositoryID shared.ID
-	SourcePath         string
-	ClusterID          shared.ID
-	Namespace          string
-}
-
 type PermissionChecker interface {
 	Check(ctx context.Context, subject identityaccess.Subject, resource identityaccess.ResourceScope, action identityaccess.Permission) error
 }
@@ -211,37 +160,25 @@ type WorkloadCommand interface {
 	EnableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
 	DisableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
 	DeleteWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
-	SaveWorkloadEnvironmentConfig(ctx context.Context, input SaveWorkloadEnvironmentConfigInput) (WorkloadEnvironmentConfig, error)
-	SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkloadDefaultConfigInput) (WorkloadEnvironmentConfig, error)
+	SaveWorkloadStageConfig(ctx context.Context, input SaveWorkloadStageConfigInput) (WorkloadStageConfig, error)
+	SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkloadDefaultConfigInput) (WorkloadStageConfig, error)
 }
 
 type WorkloadQuery interface {
 	GetWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (Workload, error)
 	ListWorkloads(ctx context.Context, applicationID shared.ID) ([]Workload, error)
 	ListEnabledWorkloads(ctx context.Context, applicationID shared.ID) ([]Workload, error)
-	GetWorkloadEnvironmentConfig(ctx context.Context, workloadID shared.ID, environmentID shared.ID) (WorkloadEnvironmentConfig, error)
-	ListWorkloadEnvironmentConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error)
-	ListWorkloadEnvironmentConfigsForApplication(ctx context.Context, applicationID shared.ID, workloadID shared.ID) ([]WorkloadEnvironmentConfig, error)
-	GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadEnvironmentConfig, error)
+	GetWorkloadStageConfig(ctx context.Context, workloadID shared.ID, stageKey string) (WorkloadStageConfig, error)
+	ListWorkloadStageConfigs(ctx context.Context, workloadID shared.ID) ([]WorkloadStageConfig, error)
+	GetWorkloadDefaultConfig(ctx context.Context, workloadID shared.ID) (WorkloadStageConfig, error)
 }
 
-type EnvironmentCommand interface {
-	UpdateEnvironmentState(ctx context.Context, input UpdateEnvironmentStateInput) (EnvironmentState, error)
-	SetEnvironmentConfig(ctx context.Context, input SetEnvironmentConfigInput) (EnvironmentConfig, error)
-	SetEnvironmentSecret(ctx context.Context, input SetEnvironmentSecretInput) (EnvironmentSecret, error)
+type ApplicationStageCommand interface {
+	UpdateApplicationStageState(ctx context.Context, input UpdateApplicationStageStateInput) (ApplicationStageState, error)
 }
 
-type EnvironmentQuery interface {
-	ListEnvironments(ctx context.Context, applicationID shared.ID) ([]Environment, error)
-	GetEnvironment(ctx context.Context, id shared.ID) (Environment, error)
-	ListEnvironmentEvents(ctx context.Context, environmentID shared.ID, page shared.PageRequest) (shared.PageResult[EnvironmentEvent], error)
-}
-
-type EnvironmentBindingCommand interface {
-	BindEnvironmentCluster(ctx context.Context, input BindEnvironmentClusterInput) (EnvironmentClusterBinding, error)
-}
-
-type EnvironmentStateQuery interface {
-	GetEnvironmentState(ctx context.Context, environmentID shared.ID) (EnvironmentState, error)
-	ListEnvironmentStates(ctx context.Context, applicationID shared.ID) ([]EnvironmentState, error)
+type ApplicationStageQuery interface {
+	GetApplicationStageState(ctx context.Context, applicationID shared.ID, stageKey string) (ApplicationStageState, error)
+	ListApplicationStageStates(ctx context.Context, applicationID shared.ID) ([]ApplicationStageState, error)
+	ListApplicationStageEvents(ctx context.Context, applicationID shared.ID, stageKey string, page shared.PageRequest) (shared.PageResult[ApplicationStageEvent], error)
 }

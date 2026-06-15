@@ -9,7 +9,7 @@
 - `doc/总体设计.md`
 - `doc/模块划分.md`
 - `doc/验收清单.md`
-- `doc/tasks/application-environment/task.md`
+- `doc/tasks/application-workload/task.md`
 - `doc/tasks/workload-freight-v2/task.md`
 - `doc/tasks/workload-freight-v2/progress.md`
 
@@ -18,12 +18,12 @@
 只实现以下能力：
 
 - `workloads` 数据模型、仓储、迁移和测试。
-- `workload_environment_configs` 数据模型、仓储、迁移和测试。
+- `workload_stage_configs` 数据模型、仓储、迁移和测试。
 - Workload 创建、编辑、启用、禁用、删除。
 - Workload 列表、详情、按 Application 查询启用 Workload。
 - Workload 类型校验：只允许 Deployment 或 StatefulSet。
 - 同一 Application 下 Workload 名称唯一。
-- WorkloadEnvironmentConfig 查询和保存。
+- WorkloadStageConfig 查询和保存。
 - Workload 创建、状态变更、部署配置变更的审计日志。
 - 必要的 API handler 和 DTO。
 
@@ -44,7 +44,7 @@
 - Workload 支持 Deployment 和 StatefulSet。
 - `enabled` Workload 后续必须进入新 Freight。
 - `disabled` 或 `deleted` Workload 不进入新 Freight。
-- 环境变量、域名、配置文件、可写目录等环境差异属于 WorkloadEnvironmentConfig，不属于 Freight。
+- 环境变量、域名、配置文件、可写目录等环境差异属于 WorkloadStageConfig，不属于 Freight。
 
 ## 推荐实现顺序
 
@@ -64,7 +64,7 @@
 - 同一 Application 下 Workload 名称重复失败。
 - 非法 Workload 类型失败。
 - 禁用 Workload 后不出现在启用列表。
-- 保存并查询 WorkloadEnvironmentConfig。
+- 保存并查询 WorkloadStageConfig。
 - 配置里包含端口、资源、探针、域名、配置文件和可写目录。
 - Workload 创建和配置变更记录审计。
 

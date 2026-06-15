@@ -76,6 +76,36 @@ test('Stage 卡片显示 DAG 投影和部署状态', async () => {
   expect(within(await screen.findByLabelText('prod Stage')).getByText('需审批')).toBeInTheDocument();
 });
 
+test('Stage 卡片显示 Argo CD 运行状态和失败原因', async () => {
+  renderPromotionPage();
+
+  const devCard = await screen.findByLabelText('dev Stage');
+
+  expect(within(devCard).getByText('Argo CD 同步')).toBeInTheDocument();
+  expect(within(devCard).getByText('OutOfSync')).toBeInTheDocument();
+  expect(within(devCard).getByText('健康状态')).toBeInTheDocument();
+  expect(within(devCard).getByText('Degraded')).toBeInTheDocument();
+  expect(within(devCard).getByText('Pod order-api-7d9 ImagePullBackOff')).toBeInTheDocument();
+});
+
+test('点击 Stage 卡片打开运行资源详情并展示操作入口', async () => {
+  renderPromotionPage();
+
+  const devCard = await screen.findByLabelText('dev Stage');
+  await userEvent.click(devCard);
+
+  const drawer = await screen.findByRole('dialog', { name: 'dev 运行资源' });
+  expect(within(drawer).getByText('K8s 资源')).toBeInTheDocument();
+  expect(await within(drawer).findByText('Deployment')).toBeInTheDocument();
+  expect(within(drawer).getAllByText('order-api').length).toBeGreaterThan(0);
+  expect(within(drawer).getByText('Pod')).toBeInTheDocument();
+  expect(within(drawer).getAllByText('order-api-7d9').length).toBeGreaterThan(0);
+  expect(within(drawer).getByText('Event')).toBeInTheDocument();
+  expect(within(drawer).getByRole('button', { name: '重启' })).toBeInTheDocument();
+  expect(within(drawer).getByRole('button', { name: '日志' })).toBeInTheDocument();
+  expect(within(drawer).getByRole('button', { name: '终端' })).toBeDisabled();
+});
+
 test('部署画布和 Stage 节点使用更大的尺寸和间距', () => {
   const pageSource = readFileSync('src/pages/PromotionPage.tsx', 'utf8');
   const styles = readFileSync('src/styles.css', 'utf8');

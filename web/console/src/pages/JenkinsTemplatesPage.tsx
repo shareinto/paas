@@ -145,7 +145,7 @@ function BuildEnvironmentFields({ editing = false }: { editing?: boolean }) {
       <Form.Item label="描述" name="description"><Input.TextArea rows={2} /></Form.Item>
       <Form.Item label="构建镜像" name="buildImage" rules={[{ required: true, message: '请输入构建镜像' }]}><Input placeholder="cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11" /></Form.Item>
       {editing && <Form.Item label="状态" name="status" rules={[{ required: true, message: '请选择状态' }]}><Select options={STATUS_OPTIONS} /></Form.Item>}
-      <Form.Item label="默认环境" name="isDefault" valuePropName="checked"><Switch checkedChildren="是" unCheckedChildren="否" /></Form.Item>
+      <Form.Item label="默认项" name="isDefault" valuePropName="checked"><Switch checkedChildren="是" unCheckedChildren="否" /></Form.Item>
     </>
   );
 }
@@ -160,7 +160,7 @@ function RuntimeEnvironmentFields({ editing = false }: { editing?: boolean }) {
       <Form.Item label="Dockerfile路径" name="dockerfilePath"><Input placeholder="java/jar/Dockerfile" /></Form.Item>
       <Form.Item label="选择标签" name="selectorLabelsText"><Input placeholder="cloud=aliyun, os=anolis" /></Form.Item>
       {editing && <Form.Item label="状态" name="status" rules={[{ required: true, message: '请选择状态' }]}><Select options={STATUS_OPTIONS} /></Form.Item>}
-      <Form.Item label="默认环境" name="isDefault" valuePropName="checked"><Switch checkedChildren="是" unCheckedChildren="否" /></Form.Item>
+      <Form.Item label="默认项" name="isDefault" valuePropName="checked"><Switch checkedChildren="是" unCheckedChildren="否" /></Form.Item>
     </>
   );
 }

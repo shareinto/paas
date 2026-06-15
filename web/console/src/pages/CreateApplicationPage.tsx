@@ -45,7 +45,7 @@ export function CreateApplicationPage() {
       <div className="wizard-title">
         <Typography.Title level={3}>创建应用</Typography.Title>
         <Typography.Paragraph className="wizard-desc">
-          应用只维护交付单元和默认环境；代码源、BuildSpec、运行时环境和触发规则在应用详情中创建构建流水线。
+          应用只维护交付单元；Stage 来自租户 DeliverFlow 模板投影，代码源、BuildSpec、运行时环境和触发规则在应用详情中创建构建流水线。
         </Typography.Paragraph>
       </div>
 
@@ -89,9 +89,9 @@ export function CreateApplicationPage() {
               </Form.Item>
             </Card>
 
-            <Card title="默认环境">
-              <div className="environment-preview">
-                {['dev', 'test', 'staging', 'prod'].map((env) => <span key={env}>{env}</span>)}
+            <Card title="默认 Stage">
+              <div className="stage-preview">
+                {['dev', 'test', 'staging', 'prod'].map((stage) => <span key={stage}>{stage}</span>)}
               </div>
             </Card>
           </div>

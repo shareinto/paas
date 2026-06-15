@@ -305,6 +305,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 .deployment-stage-node .ant-descriptions { padding: 0 12px; margin: 8px 0 6px; }
 .deployment-stage-node .ant-descriptions-item { padding-bottom: 2px !important; }
 .deployment-stage-node > .ant-space { padding: 0 12px 10px; }
+.stage-runtime-message { display: block; max-width: 100%; padding: 0 12px 8px; font-size: 12px; line-height: 1.4; }
 .stage-drop-mask { margin: 8px 10px 0; padding: 5px 8px; border: 1px solid #c8d2df; border-radius: var(--radius); background: #f2f5f9; color: #667085; font-size: 12px; text-align: center; }
 .stage-drop-confirm { display: grid; gap: 6px; margin: 0 10px 10px; padding: 9px; border: 1px solid #8eb8ff; border-radius: var(--radius); background: #f0f6ff; }
 .stage-drop-confirm .ant-space { justify-content: flex-end; }

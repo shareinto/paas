@@ -36,7 +36,7 @@ CREATE TABLE manifest_revisions (
   deployment_id VARCHAR(64) NOT NULL,
   promotion_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
-  environment_id VARCHAR(64) NOT NULL,
+  stage_key VARCHAR(64) NOT NULL DEFAULT '',
   template_revision_id VARCHAR(64) NOT NULL,
   path VARCHAR(512) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
@@ -51,7 +51,7 @@ CREATE TABLE deployments (
   tenant_id VARCHAR(64) NOT NULL,
   project_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
-  environment_id VARCHAR(64) NOT NULL,
+  stage_key VARCHAR(64) NOT NULL DEFAULT '',
   cluster_binding_id VARCHAR(64) NOT NULL,
   promotion_id VARCHAR(64) NOT NULL,
   freight_id VARCHAR(64) NOT NULL,
@@ -65,6 +65,7 @@ CREATE TABLE deployments (
   updated_at DATETIME(6) NOT NULL,
   completed_at DATETIME(6) NULL,
   KEY idx_deployments_application_created (application_id, created_at),
+  KEY idx_deployments_application_stage (application_id, stage_key),
   KEY idx_deployments_promotion (promotion_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

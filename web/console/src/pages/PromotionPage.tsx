@@ -5,7 +5,7 @@ import { Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, M
 import { Background, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useParams } from 'react-router-dom';
-import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, getApplication, getFreight, getFreightCreationContext, listAppStages, listEligibleFreights, listFreights, listWorkloadEnvironmentConfigs, listWorkloads, saveWorkloadEnvironmentConfig, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type Workload, type WorkloadEnvironmentConfig } from '../api';
+import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, getApplication, getFreight, getFreightCreationContext, getRuntimeResourceLogs, listAppStages, listEligibleFreights, listFreights, listRuntimeResources, listWorkloadStageConfigs, listWorkloads, openRuntimeResourceTerminal, restartRuntimeResource, saveWorkloadStageConfig, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type RuntimeResource, type Workload, type WorkloadStageConfig } from '../api';
 import { ConfigValueLists, WorkloadRuntimeFields, workloadConfigFormValues, workloadConfigPayload } from './workloadConfigForm';
 
 const DEFAULT_APPLICATION_ID = 'app_1';
@@ -40,6 +40,7 @@ type StageNodeData = {
   onDropFreight: (stage: StageView, freightId: string) => void;
   onVerify: (stage: StageView) => void;
   onEditConfig: (stage: StageView) => void;
+  onOpenRuntime: (stage: StageView) => void;
   onConfirm: () => void;
   onCancel: () => void;
   confirming: boolean;
@@ -70,6 +71,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const [verificationStage, setVerificationStage] = useState<StageView | null>(null);
   const [verificationComment, setVerificationComment] = useState('');
   const [configStage, setConfigStage] = useState<StageView | null>(null);
+  const [runtimeStage, setRuntimeStage] = useState<StageView | null>(null);
   const [selectedConfigWorkloadId, setSelectedConfigWorkloadId] = useState('');
   const [configForm] = Form.useForm();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -85,9 +87,14 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const appStagesQuery = useQuery({ queryKey: ['app-stages', applicationId], queryFn: () => listAppStages(applicationId) });
   const workloadsQuery = useQuery({ queryKey: ['workloads', applicationId, 'stage-config'], queryFn: () => listWorkloads(applicationId), enabled: !!applicationId });
   const stageConfigQuery = useQuery({
-    queryKey: ['workload-environment-configs', applicationId, selectedConfigWorkloadId, configStage?.environmentId, 'stage-config'],
-    queryFn: () => listWorkloadEnvironmentConfigs(applicationId, selectedConfigWorkloadId),
-    enabled: !!configStage?.environmentId && !!selectedConfigWorkloadId
+    queryKey: ['workload-stage-configs', applicationId, selectedConfigWorkloadId, configStage?.stageKey],
+    queryFn: () => listWorkloadStageConfigs(applicationId, selectedConfigWorkloadId),
+    enabled: !!configStage?.stageKey && !!selectedConfigWorkloadId
+  });
+  const runtimeResourcesQuery = useQuery({
+    queryKey: ['runtime-resources', applicationId, runtimeStage?.stageKey],
+    queryFn: () => runtimeStage ? listRuntimeResources(applicationId, runtimeStage.stageKey) : Promise.resolve([]),
+    enabled: !!runtimeStage
   });
   const eligibleMutation = useMutation({ mutationFn: (stageId: string) => listEligibleFreights(applicationId, stageId) });
   const createPromotionMutation = useMutation({
@@ -132,18 +139,36 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   });
   const stageConfigMutation = useMutation({
     mutationFn: async () => {
-      if (!configStage?.environmentId || !selectedConfigWorkloadId) throw new Error('请选择工作负载和 Stage');
+      if (!configStage?.stageKey || !selectedConfigWorkloadId) throw new Error('请选择工作负载和 Stage');
       await configForm.validateFields();
-      return saveWorkloadEnvironmentConfig(applicationId, selectedConfigWorkloadId, configStage.environmentId, workloadConfigPayload(configForm.getFieldsValue(true)));
+      return saveWorkloadStageConfig(applicationId, selectedConfigWorkloadId, configStage.stageKey, workloadConfigPayload(configForm.getFieldsValue(true)));
     },
     onSuccess: () => {
       message.success('Stage 配置已保存');
-      queryClient.invalidateQueries({ queryKey: ['workload-environment-configs', applicationId] });
+      queryClient.invalidateQueries({ queryKey: ['workload-stage-configs', applicationId] });
       setConfigStage(null);
       setSelectedConfigWorkloadId('');
       configForm.resetFields();
     },
     onError: (error) => message.error(error instanceof Error ? error.message : '保存 Stage 配置失败')
+  });
+  const restartRuntimeMutation = useMutation({
+    mutationFn: (resource: RuntimeResource) => restartRuntimeResource(applicationId, resource.stageKey, resource.id),
+    onSuccess: () => {
+      message.success('重启任务已提交');
+      queryClient.invalidateQueries({ queryKey: ['runtime-resources', applicationId, runtimeStage?.stageKey] });
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '提交重启任务失败')
+  });
+  const runtimeCapabilityMutation = useMutation({
+    mutationFn: async ({ resource, action }: { resource: RuntimeResource; action: 'logs' | 'terminal' }) => {
+      const container = resource.containers?.[0]?.name;
+      return action === 'logs'
+        ? getRuntimeResourceLogs(applicationId, resource.stageKey, resource.id, container)
+        : openRuntimeResourceTerminal(applicationId, resource.stageKey, resource.id, container);
+    },
+    onSuccess: (result) => message.info(result.message || '能力暂未启用'),
+    onError: (error) => message.error(error instanceof Error ? error.message : '操作失败')
   });
   const createFreightMutation = useMutation({
     mutationFn: (input: CreateFreightInput) => createFreight(applicationId, input),
@@ -177,6 +202,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
       onDropFreight: handleDropFreight,
       onVerify: setVerificationStage,
       onEditConfig: handleOpenStageConfig,
+      onOpenRuntime: setRuntimeStage,
       onConfirm: () => pendingPromotion && createPromotionMutation.mutate(pendingPromotion),
       onCancel: () => setPendingPromotion(undefined),
       confirming: createPromotionMutation.isPending && pendingPromotion?.stage.stageKey === stage.stageKey
@@ -266,7 +292,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
 
   useEffect(() => {
     if (!configStage || !selectedConfigWorkloadId) return;
-    const currentConfig = (stageConfigQuery.data || []).find((item: WorkloadEnvironmentConfig) => item.environmentId === configStage.environmentId);
+    const currentConfig = (stageConfigQuery.data || []).find((item: WorkloadStageConfig) => item.stageKey === configStage.stageKey);
     configForm.setFieldsValue(workloadConfigFormValues(currentConfig));
   }, [configForm, configStage, selectedConfigWorkloadId, stageConfigQuery.data]);
 
@@ -437,6 +463,26 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
         </Form>
       </Modal>
 
+      <Drawer title={`${runtimeStage?.stageKey || ''} 运行资源`} open={!!runtimeStage} width={980} onClose={() => setRuntimeStage(null)}>
+        <Space direction="vertical" size={16} className="full-width">
+          <Descriptions size="small" column={2} items={[
+            { key: 'stage', label: 'Stage', children: runtimeStage?.displayName || runtimeStage?.stageKey || '-' },
+            { key: 'cluster', label: '绑定集群', children: runtimeStage?.boundClusterName || '未绑定' },
+            { key: 'sync', label: 'Argo CD 同步', children: <Tag color={runtimeTagColor(runtimeStage?.syncStatus)}>{runtimeStage?.syncStatus || '未知'}</Tag> },
+            { key: 'health', label: '健康状态', children: <Tag color={runtimeTagColor(runtimeStage?.healthStatus)}>{runtimeStage?.healthStatus || '未知'}</Tag> }
+          ]} />
+          <Typography.Text strong>K8s 资源</Typography.Text>
+          <Table
+            rowKey="id"
+            size="small"
+            loading={runtimeResourcesQuery.isLoading}
+            dataSource={runtimeResourcesQuery.data || []}
+            pagination={false}
+            columns={runtimeResourceColumns(restartRuntimeMutation.mutate, runtimeCapabilityMutation.mutate, restartRuntimeMutation.isPending || runtimeCapabilityMutation.isPending)}
+          />
+        </Space>
+      </Drawer>
+
       <Drawer title="创建 Freight" open={drawerOpen} width={980} onClose={() => setDrawerOpen(false)} extra={<Button type="primary" aria-label="创建 Freight" disabled={submitDisabled} loading={createFreightMutation.isPending} onClick={handleCreateFreight}>创建 Freight</Button>}>
         <Space direction="vertical" size={16} className="full-width">
           <Form layout="vertical"><Form.Item label="Freight 名称"><Input value={draftName} onChange={(event) => setDraftName(event.target.value)} placeholder="请输入 Freight 名称" /></Form.Item></Form>
@@ -465,6 +511,7 @@ function DeployStageNode({ data }: NodeProps<Node<StageNodeData>>) {
       style={{ '--stage-color': stage.color } as CSSProperties}
       aria-label={`${stage.stageKey} Stage`}
       onMouseDown={(event) => event.stopPropagation()}
+      onClick={() => data.onOpenRuntime(stage)}
       onDragOver={(event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = data.dropState === 'blocked' ? 'none' : 'move';
@@ -507,9 +554,12 @@ function DeployStageNode({ data }: NodeProps<Node<StageNodeData>>) {
       <Descriptions size="small" column={1} items={[
         { key: 'cluster', label: '绑定集群', children: stage.boundClusterName || '未绑定' },
         { key: 'freight', label: '当前 Freight', children: stage.currentFreightVersion || '-' },
+        { key: 'sync', label: 'Argo CD 同步', children: <Tag color={runtimeTagColor(stage.syncStatus)}>{stage.syncStatus || '未知'}</Tag> },
+        { key: 'health', label: '健康状态', children: <Tag color={runtimeTagColor(stage.healthStatus)}>{stage.healthStatus || '未知'}</Tag> },
         { key: 'upstream', label: '上游 Stage', children: stage.upstreamStageKeys?.length ? stage.upstreamStageKeys.join('、') : '无' },
         { key: 'verification', label: '验证状态', children: stage.requiresVerification ? '需要验证' : '无需验证' }
       ]} />
+      {stage.runtimeMessage && <Typography.Text className="stage-runtime-message" type="secondary" ellipsis>{stage.runtimeMessage}</Typography.Text>}
       <Space size={4} wrap>
         {stage.requiresApproval && <Tag color="orange">需审批</Tag>}
         {stage.requiresVerification && <Tag color="blue">需验证</Tag>}
@@ -539,6 +589,34 @@ function DeployStageNode({ data }: NodeProps<Node<StageNodeData>>) {
       <Handle type="source" position={Position.Right} />
     </div>
   );
+}
+
+function runtimeResourceColumns(
+  restart: (resource: RuntimeResource) => void,
+  capability: (input: { resource: RuntimeResource; action: 'logs' | 'terminal' }) => void,
+  loading: boolean
+) {
+  return [
+    { title: '类型', dataIndex: 'kind', width: 120, render: (kind: string) => <Tag color={runtimeKindColor(kind)}>{kind}</Tag> },
+    { title: '名称', dataIndex: 'name', render: (_: string, resource: RuntimeResource) => (
+      <Space direction="vertical" size={0}>
+        <Typography.Text strong>{resource.name}</Typography.Text>
+        <Typography.Text type="secondary">{resource.namespace || '-'}</Typography.Text>
+      </Space>
+    ) },
+    { title: '状态', key: 'status', width: 140, render: (_: unknown, resource: RuntimeResource) => <Tag color={runtimeTagColor(resource.healthStatus || resource.status)}>{resource.healthStatus || resource.status || '未知'}</Tag> },
+    { title: '副本', key: 'replicas', width: 92, render: (_: unknown, resource: RuntimeResource) => typeof resource.ready === 'number' || typeof resource.desired === 'number' ? `${resource.ready || 0}/${resource.desired || 0}` : '-' },
+    { title: '容器', key: 'containers', render: (_: unknown, resource: RuntimeResource) => resource.containers?.length ? (
+      <Space direction="vertical" size={0}>{resource.containers.map((container) => <Typography.Text key={container.name} type={container.ready ? undefined : 'danger'}>{container.name} · {container.state || (container.ready ? 'ready' : 'not ready')}{container.message ? ` · ${container.message}` : ''}</Typography.Text>)}</Space>
+    ) : <Typography.Text type="secondary">{resource.message || resource.parentName || '-'}</Typography.Text> },
+    { title: '操作', key: 'actions', width: 180, render: (_: unknown, resource: RuntimeResource) => (
+      <Space size={6}>
+        {isRestartableRuntimeKind(resource.kind) && <Button size="small" aria-label="重启" loading={loading} onClick={() => restart(resource)}>重启</Button>}
+        {resource.kind === 'Pod' && <Button size="small" aria-label="日志" loading={loading} onClick={() => capability({ resource, action: 'logs' })}>日志</Button>}
+        {resource.kind === 'Pod' && <Button size="small" aria-label="终端" disabled onClick={() => capability({ resource, action: 'terminal' })}>终端</Button>}
+      </Space>
+    ) }
+  ];
 }
 
 function freightDraftColumns(workloads: Workload[], draftItems: Record<string, FreightDraftItem>, releases: Record<string, any>, updateDraftItem: (workloadId: string, patch: Partial<FreightDraftItem>) => void) {
@@ -575,8 +653,28 @@ function timeValue(value: string) {
 }
 
 function currentVerificationFreight(stage: StageView | null, freights: Freight[]) {
-  if (!stage) return null;
-  return freights.find((freight) => freight.version === stage.currentFreightVersion) || freights[freights.length - 1] || null;
+	if (!stage) return null;
+	return freights.find((freight) => freight.version === stage.currentFreightVersion) || freights[freights.length - 1] || null;
+}
+
+function runtimeTagColor(status?: string) {
+	const value = (status || '').toLowerCase();
+	if (value === 'healthy' || value === 'synced' || value === 'succeeded') return 'green';
+	if (value === 'degraded' || value === 'failed' || value === 'outofsync') return 'red';
+	if (value === 'progressing' || value === 'running') return 'blue';
+	if (value === 'warning') return 'orange';
+	return 'default';
+}
+
+function runtimeKindColor(kind?: string) {
+  if (kind === 'Pod') return 'blue';
+  if (kind === 'Event') return 'orange';
+  if (isRestartableRuntimeKind(kind || '')) return 'purple';
+  return 'default';
+}
+
+function isRestartableRuntimeKind(kind: string) {
+  return ['Deployment', 'StatefulSet', 'DaemonSet'].includes(kind);
 }
 
 function withStageDefaults(stage: AppStage, freights: Freight[], current: Record<string, string>): StageView {
@@ -597,7 +695,7 @@ function bundleSummary(images?: ImageBundleImage[]) {
 function stageDropState(stage: StageView, freightId: string, stageEligibility?: Record<string, string[]>): 'ready' | 'blocked' {
   if (stage.status === 'disabled' || !stage.boundClusterId) return 'blocked';
   if (!stageEligibility) return 'ready';
-  const keys = [stage.deliveryStageId, stage.id, stage.stageKey, stage.environmentId].filter(Boolean) as string[];
+  const keys = [stage.deliveryStageId, stage.id, stage.stageKey].filter(Boolean) as string[];
   const eligibleIds = new Set(keys.flatMap((key) => stageEligibility[key] || []));
   return eligibleIds.has(freightId) ? 'ready' : 'blocked';
 }

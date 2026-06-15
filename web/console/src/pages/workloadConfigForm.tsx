@@ -1,6 +1,6 @@
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { Button, Checkbox, Form, Input, InputNumber, Space, Typography } from 'antd';
-import type { WorkloadEnvironmentConfig } from '../api';
+import type { WorkloadStageConfig } from '../api';
 
 export function WorkloadRuntimeFields() {
   return (
@@ -99,7 +99,7 @@ export function ConfigValueLists() {
   );
 }
 
-export function workloadConfigPayload(values: any): Partial<WorkloadEnvironmentConfig> {
+export function workloadConfigPayload(values: any): Partial<WorkloadStageConfig> {
   const containerPort = Number(values.containerPort || 0);
   const servicePort = Number(values.servicePort || containerPort || 0);
   return {
@@ -115,7 +115,7 @@ export function workloadConfigPayload(values: any): Partial<WorkloadEnvironmentC
   };
 }
 
-export function workloadConfigFormValues(config?: WorkloadEnvironmentConfig) {
+export function workloadConfigFormValues(config?: WorkloadStageConfig) {
   return {
     replicas: config?.replicas ?? 1,
     containerPort: config?.servicePorts?.[0]?.targetPort || 8080,

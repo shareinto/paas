@@ -10,22 +10,22 @@ import (
 )
 
 type Service struct {
-	repo        Repository
-	tenants     TenantQuery
-	permission  PermissionChecker
-	envUpdater  EnvironmentStateUpdater
-	deployments DeploymentStatusUpdater
-	audit       AuditLogger
-	ids         shared.IDGenerator
-	clock       shared.Clock
-	timeout     time.Duration
+	repo         Repository
+	tenants      TenantQuery
+	permission   PermissionChecker
+	stageUpdater StageStateUpdater
+	deployments  DeploymentStatusUpdater
+	audit        AuditLogger
+	ids          shared.IDGenerator
+	clock        shared.Clock
+	timeout      time.Duration
 }
 
 type Options struct {
 	Repository        Repository
 	TenantQuery       TenantQuery
 	PermissionChecker PermissionChecker
-	EnvironmentState  EnvironmentStateUpdater
+	StageState        StageStateUpdater
 	DeploymentStatus  DeploymentStatusUpdater
 	Audit             AuditLogger
 	IDGenerator       shared.IDGenerator
@@ -50,7 +50,7 @@ func NewService(opts Options) *Service {
 	if audit == nil {
 		audit = NoopAuditLogger{}
 	}
-	return &Service{repo: opts.Repository, tenants: opts.TenantQuery, permission: opts.PermissionChecker, envUpdater: opts.EnvironmentState, deployments: opts.DeploymentStatus, audit: audit, ids: ids, clock: clock, timeout: timeout}
+	return &Service{repo: opts.Repository, tenants: opts.TenantQuery, permission: opts.PermissionChecker, stageUpdater: opts.StageState, deployments: opts.DeploymentStatus, audit: audit, ids: ids, clock: clock, timeout: timeout}
 }
 
 type RegisterClusterInput struct {
@@ -64,6 +64,28 @@ type RegisterClusterInput struct {
 type RegisterClusterResult struct {
 	Cluster    Cluster `json:"cluster"`
 	AgentToken string  `json:"agent_token"`
+}
+
+type RuntimeResourceQuery struct {
+	Actor         identityaccess.Subject `json:"actor"`
+	ApplicationID shared.ID              `json:"application_id"`
+	StageKey      string                 `json:"stage_key"`
+	ResourceID    shared.ID              `json:"resource_id,omitempty"`
+}
+
+type RuntimeResourceActionInput struct {
+	Actor         identityaccess.Subject `json:"actor"`
+	ApplicationID shared.ID              `json:"application_id"`
+	StageKey      string                 `json:"stage_key"`
+	ResourceID    shared.ID              `json:"resource_id"`
+	Container     string                 `json:"container,omitempty"`
+}
+
+type RuntimeCapabilityResponse struct {
+	Capability string    `json:"capability"`
+	Supported  bool      `json:"supported"`
+	ResourceID shared.ID `json:"resource_id"`
+	Message    string    `json:"message"`
 }
 
 func (s *Service) RegisterCluster(ctx context.Context, input RegisterClusterInput) (RegisterClusterResult, error) {
@@ -251,8 +273,11 @@ func (s *Service) ReportStatus(ctx context.Context, clusterID shared.ID, token s
 	if err := s.repo.CreateSnapshot(ctx, ClusterResourceSnapshot{ID: id, ClusterID: cluster.ID, TenantID: cluster.TenantID, Payload: report, ReportedAt: report.ReportedAt}); err != nil {
 		return err
 	}
-	if s.envUpdater != nil {
-		if err := s.envUpdater.UpdateFromAgent(ctx, report); err != nil {
+	if err := s.repo.ReplaceRuntimeResources(ctx, cluster.ID, cluster.TenantID, report.ReportedAt, report.RuntimeResources); err != nil {
+		return err
+	}
+	if s.stageUpdater != nil {
+		if err := s.stageUpdater.UpdateFromAgent(ctx, report); err != nil {
 			return err
 		}
 	}
@@ -262,6 +287,121 @@ func (s *Service) ReportStatus(ctx context.Context, clusterID shared.ID, token s
 		}
 	}
 	return nil
+}
+
+func (s *Service) ListRuntimeResources(ctx context.Context, query RuntimeResourceQuery) ([]RuntimeResource, error) {
+	if query.ApplicationID.IsZero() {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "application_id is required")
+	}
+	if query.StageKey == "" {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "stage_key is required")
+	}
+	resources, err := s.repo.ListRuntimeResources(ctx, RuntimeResourceFilter{ApplicationID: query.ApplicationID, StageKey: query.StageKey})
+	if err != nil {
+		return nil, err
+	}
+	if len(resources) > 0 {
+		if err := s.check(ctx, query.Actor, resources[0].TenantID, "runtime:read"); err != nil {
+			return nil, err
+		}
+	}
+	return resources, nil
+}
+
+func (s *Service) GetRuntimeResource(ctx context.Context, query RuntimeResourceQuery) (RuntimeResource, error) {
+	if query.ResourceID.IsZero() {
+		return RuntimeResource{}, shared.NewError(shared.CodeInvalidArgument, "resource_id is required")
+	}
+	resource, err := s.repo.GetRuntimeResource(ctx, query.ResourceID)
+	if err != nil {
+		return RuntimeResource{}, err
+	}
+	if resource.ApplicationID != query.ApplicationID || resource.StageKey != query.StageKey {
+		return RuntimeResource{}, shared.NewError(shared.CodeNotFound, "runtime resource not found")
+	}
+	if err := s.check(ctx, query.Actor, resource.TenantID, "runtime:read"); err != nil {
+		return RuntimeResource{}, err
+	}
+	return resource, nil
+}
+
+func (s *Service) RestartRuntimeResource(ctx context.Context, input RuntimeResourceActionInput) (ClusterTask, error) {
+	resource, err := s.runtimeActionResource(ctx, input)
+	if err != nil {
+		return ClusterTask{}, err
+	}
+	if !isRestartableRuntimeKind(resource.Kind) {
+		return ClusterTask{}, shared.NewError(shared.CodeFailedPrecondition, "runtime resource does not support restart")
+	}
+	if err := s.check(ctx, input.Actor, resource.TenantID, "runtime:restart"); err != nil {
+		return ClusterTask{}, err
+	}
+	task := ClusterTask{
+		ClusterID: resource.ClusterID,
+		Type:      "runtime_restart",
+		TargetRef: resource.Kind + "/" + resource.Namespace + "/" + resource.Name,
+		Payload: map[string]string{
+			"application_id": string(resource.ApplicationID),
+			"stage_key":      resource.StageKey,
+			"kind":           resource.Kind,
+			"namespace":      resource.Namespace,
+			"name":           resource.Name,
+		},
+	}
+	created, err := s.CreateTask(ctx, task)
+	if err != nil {
+		return ClusterTask{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, TenantID: resource.TenantID, Action: "runtime.restart", ResourceType: "runtime_resource", ResourceID: resource.ID, Result: "succeeded", Summary: "创建运行时重启任务", OccurredAt: created.CreatedAt})
+	return created, nil
+}
+
+func (s *Service) GetPodLogs(ctx context.Context, input RuntimeResourceActionInput) (RuntimeCapabilityResponse, error) {
+	resource, err := s.runtimeActionResource(ctx, input)
+	if err != nil {
+		return RuntimeCapabilityResponse{}, err
+	}
+	if resource.Kind != "Pod" {
+		return RuntimeCapabilityResponse{}, shared.NewError(shared.CodeFailedPrecondition, "logs are only available for pods")
+	}
+	if err := s.check(ctx, input.Actor, resource.TenantID, "runtime:read"); err != nil {
+		return RuntimeCapabilityResponse{}, err
+	}
+	return RuntimeCapabilityResponse{Capability: "pod_logs", Supported: false, ResourceID: resource.ID, Message: "日志流暂未启用"}, nil
+}
+
+func (s *Service) OpenTerminal(ctx context.Context, input RuntimeResourceActionInput) (RuntimeCapabilityResponse, error) {
+	resource, err := s.runtimeActionResource(ctx, input)
+	if err != nil {
+		return RuntimeCapabilityResponse{}, err
+	}
+	if resource.Kind != "Pod" {
+		return RuntimeCapabilityResponse{}, shared.NewError(shared.CodeFailedPrecondition, "terminal is only available for pods")
+	}
+	if err := s.check(ctx, input.Actor, resource.TenantID, "runtime:terminal"); err != nil {
+		return RuntimeCapabilityResponse{}, err
+	}
+	return RuntimeCapabilityResponse{Capability: "pod_terminal", Supported: false, ResourceID: resource.ID, Message: "终端流暂未启用"}, nil
+}
+
+func (s *Service) runtimeActionResource(ctx context.Context, input RuntimeResourceActionInput) (RuntimeResource, error) {
+	resource, err := s.repo.GetRuntimeResource(ctx, input.ResourceID)
+	if err != nil {
+		return RuntimeResource{}, err
+	}
+	if resource.ApplicationID != input.ApplicationID || resource.StageKey != input.StageKey {
+		return RuntimeResource{}, shared.NewError(shared.CodeNotFound, "runtime resource not found")
+	}
+	return resource, nil
+}
+
+func isRestartableRuntimeKind(kind string) bool {
+	switch kind {
+	case "Deployment", "StatefulSet", "DaemonSet":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) CreateTask(ctx context.Context, task ClusterTask) (ClusterTask, error) {

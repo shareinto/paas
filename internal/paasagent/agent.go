@@ -72,14 +72,25 @@ func (a *Agent) executeTask(ctx context.Context, task Task) error {
 	if target == "" {
 		target = strings.TrimSpace(task.Payload["argo_application"])
 	}
-	if target == "" {
-		return shared.NewError(shared.CodeInvalidArgument, "argo application target is required")
-	}
 	switch task.Type {
 	case "argocd_refresh":
+		if target == "" {
+			return shared.NewError(shared.CodeInvalidArgument, "argo application target is required")
+		}
 		return a.reader.RefreshArgoApplication(ctx, target)
 	case "argocd_sync":
+		if target == "" {
+			return shared.NewError(shared.CodeInvalidArgument, "argo application target is required")
+		}
 		return a.reader.SyncArgoApplication(ctx, target)
+	case "runtime_restart":
+		kind := strings.TrimSpace(task.Payload["kind"])
+		namespace := strings.TrimSpace(task.Payload["namespace"])
+		name := strings.TrimSpace(task.Payload["name"])
+		if kind == "" || namespace == "" || name == "" {
+			return shared.NewError(shared.CodeInvalidArgument, "runtime restart target is required")
+		}
+		return a.reader.RestartRuntimeResource(ctx, kind, namespace, name)
 	default:
 		return shared.NewError(shared.CodeInvalidArgument, "unsupported agent task")
 	}

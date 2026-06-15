@@ -54,7 +54,7 @@ type ManifestRevision struct {
 	DeploymentID       shared.ID `json:"deployment_id"`
 	PromotionID        shared.ID `json:"promotion_id"`
 	ApplicationID      shared.ID `json:"application_id"`
-	EnvironmentID      shared.ID `json:"environment_id"`
+	StageKey           string    `json:"stage_key"`
 	TemplateRevisionID shared.ID `json:"template_revision_id"`
 	Path               string    `json:"path"`
 	CommitSHA          string    `json:"commit_sha"`
@@ -68,7 +68,7 @@ type Deployment struct {
 	TenantID           shared.ID        `json:"tenant_id"`
 	ProjectID          shared.ID        `json:"project_id"`
 	ApplicationID      shared.ID        `json:"application_id"`
-	EnvironmentID      shared.ID        `json:"environment_id"`
+	StageKey           string           `json:"stage_key"`
 	ClusterBindingID   shared.ID        `json:"cluster_binding_id"`
 	PromotionID        shared.ID        `json:"promotion_id"`
 	FreightID          shared.ID        `json:"freight_id"`
@@ -98,22 +98,14 @@ type ValidationResult struct {
 	Warnings []string `json:"warnings"`
 }
 
-type EnvironmentRef struct {
-	ID            shared.ID
-	TenantID      shared.ID
-	ProjectID     shared.ID
-	ApplicationID shared.ID
-	Name          string
-}
-
 type ClusterBindingRef struct {
-	ID            shared.ID
-	EnvironmentID shared.ID
-	ClusterID     shared.ID
-	ClusterName   string
-	Namespace     string
-	Labels        map[string]string
-	Active        bool
+	ID          shared.ID
+	StageKey    string
+	ClusterID   shared.ID
+	ClusterName string
+	Namespace   string
+	Labels      map[string]string
+	Active      bool
 }
 
 type WorkloadRef struct {
@@ -187,7 +179,7 @@ type WorkloadInitContainerRef struct {
 	Command []string `yaml:"command,omitempty"`
 }
 
-type WorkloadEnvironmentConfigRef struct {
+type WorkloadStageConfigRef struct {
 	Replicas         int
 	ServicePorts     []WorkloadServicePortRef
 	ResourceRequests WorkloadResourceListRef
@@ -203,24 +195,24 @@ type WorkloadEnvironmentConfigRef struct {
 	ValuesOverride   map[string]any
 }
 
-func manifestPath(appName, envName string) string {
-	return fmt.Sprintf("apps/%s/%s/values.yaml", appName, envName)
+func manifestPath(appName, stageKey string) string {
+	return fmt.Sprintf("apps/%s/%s/values.yaml", appName, stageKey)
 }
 
-func manifestPathForBinding(appName, envName string, binding ClusterBindingRef) string {
-	return manifestPath(appName, envName)
+func manifestPathForBinding(appName, stageKey string, binding ClusterBindingRef) string {
+	return manifestPath(appName, stageKey)
 }
 
-func argoApplicationPath(appName, envName string) string {
-	return fmt.Sprintf("argocd/apps/%s/%s-%s.yaml", envName, appName, envName)
+func argoApplicationPath(appName, stageKey string) string {
+	return fmt.Sprintf("argocd/apps/%s/%s-%s.yaml", stageKey, appName, stageKey)
 }
 
-func argoApplicationPathForBinding(appName, envName string, binding ClusterBindingRef) string {
-	return argoApplicationPath(appName, envName)
+func argoApplicationPathForBinding(appName, stageKey string, binding ClusterBindingRef) string {
+	return argoApplicationPath(appName, stageKey)
 }
 
-func commitDirectly(envName string) bool {
-	return envName == "dev" || envName == "test"
+func commitDirectly(stageKey string) bool {
+	return stageKey == "dev" || stageKey == "test"
 }
 
 func splitImage(uri string) (repository string, tag string) {
