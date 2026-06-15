@@ -37,11 +37,11 @@ export function App() {
         <Route path="apps" element={<ApplicationsPage />} />
         <Route path="apps/new" element={<CreateApplicationPage />} />
         <Route path="apps/:id/edit" element={<EditApplicationPage />} />
-        <Route path="apps/:id/build" element={<ApplicationWorkspacePage section="build" />} />
-        <Route path="apps/:id/deploy" element={<ApplicationWorkspacePage section="deploy" />} />
-        <Route path="apps/:id/config" element={<ApplicationWorkspacePage section="config" />} />
-        <Route path="apps/:id/promotions" element={<LegacyApplicationSectionRedirect section="deploy" />} />
-        <Route path="apps/:id" element={<LegacyApplicationSectionRedirect section="build" />} />
+        <Route path="apps/:id/build" element={<LegacyApplicationDetailRedirect />} />
+        <Route path="apps/:id/deploy" element={<LegacyApplicationDetailRedirect />} />
+        <Route path="apps/:id/config" element={<LegacyApplicationDetailRedirect />} />
+        <Route path="apps/:id/promotions" element={<LegacyApplicationDetailRedirect />} />
+        <Route path="apps/:id" element={<ApplicationWorkspacePage />} />
         <Route path="freights" element={<FreightsPage />} />
         <Route path="promotions" element={<Navigate to="/apps" replace />} />
         <Route path="audit" element={<AuditPage />} />
@@ -54,7 +54,7 @@ export function App() {
   );
 }
 
-function LegacyApplicationSectionRedirect({ section }: { section: 'build' | 'deploy' | 'config' }) {
+function LegacyApplicationDetailRedirect() {
   const { id = '' } = useParams();
-  return <Navigate to={id ? `/apps/${id}/${section}` : '/apps'} replace />;
+  return <Navigate to={id ? `/apps/${id}` : '/apps'} replace />;
 }

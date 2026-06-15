@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, type CSSProperties, type DragEvent } from 'react';
-import { CheckCircleOutlined, EditOutlined } from '@ant-design/icons';
+import { useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
+import { CheckCircleOutlined, EditOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Select, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Select, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { Background, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useParams } from 'react-router-dom';
@@ -53,7 +53,14 @@ export function PromotionPage() {
   return <PromotionContent applicationId={applicationId} showHeader />;
 }
 
-export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showHeader = false }: { applicationId?: string; showHeader?: boolean }) {
+type PromotionContentProps = {
+  applicationId?: string;
+  showHeader?: boolean;
+  mode?: 'default' | 'applicationWorkspace';
+  leftAfterTimeline?: ReactNode;
+};
+
+export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showHeader = false, mode = 'default', leftAfterTimeline }: PromotionContentProps) {
   const queryClient = useQueryClient();
   const [activeStage, setActiveStage] = useState<StageView | null>(null);
   const [pendingPromotion, setPendingPromotion] = useState<PendingPromotion | undefined>();
@@ -219,11 +226,6 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     setApprovalComment('');
   };
 
-  const handleRollback = () => {
-    const prodStage = stages.find((stage) => stage.stageKey === 'prod') || stages[0];
-    if (prodStage) setActiveStage(prodStage);
-  };
-
   const updateDraftItem = (workloadId: string, patch: Partial<FreightDraftItem>) => {
     setDraftItems((current) => ({
       ...current,
@@ -278,82 +280,106 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     });
   };
 
-  return (
-    <div data-testid={showHeader ? undefined : 'promotion-confirm-panel'}>
-      <div className="embedded-section-head promotion-actions-only">{contextQuery.isLoading ? null : <Button type="primary" aria-label="创建 Freight" onClick={() => setDrawerOpen(true)}>创建 Freight</Button>}</div>
+  const timelineSection = (
+    <section className="workspace-section-card promotion-timeline-card">
+      <div className="workspace-section-head">
+        <div className="workspace-section-title"><InboxOutlined /><Typography.Text strong>1 发布包</Typography.Text></div>
+        <Button
+          type="primary"
+          aria-label="创建 Freight"
+          icon={<PlusOutlined />}
+          disabled={contextQuery.isLoading}
+          onClick={() => setDrawerOpen(true)}
+        />
+      </div>
+      <div className="workspace-section-body">
+        {freightsQuery.isLoading ? <Spin /> : (
+          <div className="freight-timeline" aria-label="Freight 时间轴">
+            {sortedFreights.length === 0 ? <Empty description="暂无 Freight" /> : sortedFreights.map((freight) => (
+              <article
+                key={freight.id}
+                className={draggingFreightId === freight.id ? 'freight-timeline-card workspace-item-card workspace-item-card--freight dragging' : 'freight-timeline-card workspace-item-card workspace-item-card--freight'}
+                data-testid="freight-card"
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer.setData('text/plain', freight.id);
+                  event.dataTransfer.effectAllowed = 'move';
+                  setDraggingFreightId(freight.id);
+                  setFreightDragImage(event, freight.version);
+                }}
+                onDragEnd={() => setDraggingFreightId('')}
+              >
+                <div className="freight-stage-rail" aria-label="发布包标识色" />
+                <div className="freight-card-head">
+                  <Typography.Text strong data-testid="freight-name">{freight.version}</Typography.Text>
+                </div>
+                <Space className="freight-card-actions">
+                  <Button
+                    aria-label="审批"
+                    icon={<CheckCircleOutlined />}
+                    className="nodrag nopan"
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={(event) => { event.stopPropagation(); handleOpenApproval(freight); }}
+                  />
+                </Space>
+              </article>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
 
+  const dagSection = (
+    <section className="deployment-dag-canvas" aria-label="应用部署 DAG">
+      {appStagesQuery.isLoading ? <Spin /> : (
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          panOnDrag={false}
+          panOnScroll={false}
+          zoomOnScroll={false}
+          zoomOnDoubleClick={false}
+          zoomOnPinch={false}
+          selectNodesOnDrag={false}
+          fitView
+        >
+          <Background />
+        </ReactFlow>
+      )}
+    </section>
+  );
+
+  const publishAlert = publishResult ? <Alert className="form-alert" type="success" showIcon message={publishResult} /> : null;
+  const workspaceContent = mode === 'applicationWorkspace' ? (
+    <div className="application-delivery-workspace">
+      <div className="application-delivery-left" data-testid="delivery-workspace-left">
+        {timelineSection}
+        {leftAfterTimeline}
+      </div>
+      <div className="application-delivery-right" data-testid="delivery-workspace-right">
+        {dagSection}
+        {publishAlert}
+      </div>
+    </div>
+  ) : (
+    <>
       <div className="promotion-workspace">
         <div className="promotion-main-column">
-          <Card title="Freight 时间轴" className="promotion-timeline-card">
-            {freightsQuery.isLoading ? <Spin /> : (
-              <div className="freight-timeline" aria-label="Freight 时间轴">
-                {sortedFreights.length === 0 ? <Empty description="暂无 Freight" /> : sortedFreights.map((freight) => {
-                  const stageColors = freightStageColors(freight, stages);
-                  return (
-                    <article
-                      key={freight.id}
-                      className={draggingFreightId === freight.id ? 'freight-timeline-card dragging' : 'freight-timeline-card'}
-                      data-testid="freight-card"
-                      draggable
-                      onDragStart={(event) => {
-                        event.dataTransfer.setData('text/plain', freight.id);
-                        event.dataTransfer.effectAllowed = 'move';
-                        setDraggingFreightId(freight.id);
-                        setFreightDragImage(event, freight.version);
-                      }}
-                      onDragEnd={() => setDraggingFreightId('')}
-                    >
-                      <div className="freight-stage-rail" aria-label={stageColors.length ? `当前部署 Stage：${stageColors.map((item) => item.name).join('、')}` : '当前未部署到 Stage'}>
-                        {stageColors.length ? stageColors.map((item) => <span key={item.key} style={{ backgroundColor: item.color }} />) : <span />}
-                      </div>
-                      <div className="freight-card-head">
-                        <Typography.Text strong data-testid="freight-name">{freight.version}</Typography.Text>
-                        <Tag color="blue">拖拽</Tag>
-                      </div>
-                      <div className="muted">{freight.createdAt}</div>
-                      <div className="freight-card-items">
-                        {(freight.items || []).map((item) => <div key={item.id} className="freight-card-item"><span>{item.workloadDisplayName}</span><Typography.Text ellipsis>{item.image}</Typography.Text>{item.bundleImages?.length ? <Tag color="blue">{item.bundleImages.length} 个镜像</Tag> : null}</div>)}
-                      </div>
-                      <Space className="freight-card-actions">
-                        <Button aria-label="审批" className="nodrag nopan" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); handleOpenApproval(freight); }}>审批</Button>
-                      </Space>
-                    </article>
-                  );
-                })}
-              </div>
-            )}
-          </Card>
-
-          <section className="deployment-dag-canvas" aria-label="应用部署 DAG">
-            {appStagesQuery.isLoading ? <Spin /> : (
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                nodeTypes={nodeTypes}
-                nodesDraggable={false}
-                nodesConnectable={false}
-                panOnDrag={false}
-                panOnScroll={false}
-                zoomOnScroll={false}
-                zoomOnDoubleClick={false}
-                zoomOnPinch={false}
-                selectNodesOnDrag={false}
-                fitView
-              >
-                <Background />
-              </ReactFlow>
-            )}
-          </section>
-
-          <Card title="近期发布记录" className="compact-card">
-            <div className="promotion-history-row">
-              <Space direction="vertical" size={2}><Typography.Text strong>生产审批</Typography.Text><Typography.Text type="secondary">最新生产发布待审批，禁止发起人自审批。</Typography.Text></Space>
-              <Button onClick={handleRollback}>回滚</Button>
-            </div>
-          </Card>
+          {timelineSection}
+          {dagSection}
         </div>
       </div>
-      {publishResult && <Alert className="form-alert" type="success" showIcon message={publishResult} />}
+      {publishAlert}
+    </>
+  );
+
+  return (
+    <div data-testid={showHeader ? undefined : 'promotion-confirm-panel'}>
+      {workspaceContent}
 
       <Modal title="Freight 审批" open={!!approvalFreight} onCancel={() => setApprovalFreight(null)} destroyOnHidden footer={[
         <Button key="reject" danger loading={approvalMutation.isPending} onClick={() => approvalMutation.mutate('rejected')}>审批拒绝</Button>,
@@ -574,12 +600,6 @@ function stageDropState(stage: StageView, freightId: string, stageEligibility?: 
   const keys = [stage.deliveryStageId, stage.id, stage.stageKey, stage.environmentId].filter(Boolean) as string[];
   const eligibleIds = new Set(keys.flatMap((key) => stageEligibility[key] || []));
   return eligibleIds.has(freightId) ? 'ready' : 'blocked';
-}
-
-function freightStageColors(freight: Freight, stages: StageView[]) {
-  return stages
-    .filter((stage) => stage.currentFreightId === freight.id || stage.currentFreightVersion === freight.version)
-    .map((stage) => ({ key: stage.stageKey, name: stage.displayName || stage.stageKey, color: stage.color }));
 }
 
 function setFreightDragImage(event: DragEvent<HTMLElement>, version: string) {

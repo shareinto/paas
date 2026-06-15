@@ -1,21 +1,28 @@
-import { AppstoreOutlined, BuildOutlined, CloudUploadOutlined, DeploymentUnitOutlined, FileSearchOutlined, FolderOpenOutlined, MenuOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons';
-import { Layout, Menu } from 'antd';
+import { AppstoreOutlined, BuildOutlined, DeploymentUnitOutlined, FileSearchOutlined, FolderOpenOutlined, MenuOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { Layout, Menu, Tabs } from 'antd';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 const { Sider, Content } = Layout;
 
+type ApplicationTab = { id: string; title: string };
+type ApplicationTabsContextValue = {
+  openApplicationTab: (tab: ApplicationTab) => void;
+  updateApplicationTabTitle: (id: string, title: string) => void;
+};
+
+const ApplicationTabsContext = createContext<ApplicationTabsContextValue>({
+  openApplicationTab: () => undefined,
+  updateApplicationTabTitle: () => undefined
+});
+
+export function useApplicationTabs() {
+  return useContext(ApplicationTabsContext);
+}
+
 const platformItems = [
   { key: '/projects', icon: <FolderOpenOutlined />, label: '项目' },
-  {
-    key: '/apps',
-    icon: <DeploymentUnitOutlined />,
-    label: '应用',
-    children: [
-      { key: 'app-build', icon: <BuildOutlined />, label: '构建' },
-      { key: 'app-deploy', icon: <CloudUploadOutlined />, label: '部署' },
-      { key: 'app-config', icon: <SettingOutlined />, label: '配置' }
-    ]
-  }
+  { key: '/apps', icon: <DeploymentUnitOutlined />, label: '应用' }
 ];
 
 const adminItems = [
@@ -29,36 +36,72 @@ const adminItems = [
 export function ConsoleLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const appId = currentApplicationId(location.pathname);
-  const handlePlatformMenuClick = ({ key }: { key: string }) => {
-    if (key === 'app-build' || key === 'app-deploy' || key === 'app-config') {
-      if (!appId) {
-        navigate('/apps');
-        return;
-      }
-      const section = key.replace('app-', '');
-      navigate(`/apps/${appId}/${section}`);
-      return;
+  const activeApplicationId = currentApplicationDetailId(location.pathname);
+  const [applicationTabs, setApplicationTabs] = useState<ApplicationTab[]>([]);
+  const tabsContext = useMemo<ApplicationTabsContextValue>(() => ({
+    openApplicationTab: (tab) => {
+      setApplicationTabs((current) => {
+        if (current.some((item) => item.id === tab.id)) return current;
+        return [...current, tab];
+      });
+    },
+    updateApplicationTabTitle: (id, title) => {
+      setApplicationTabs((current) => current.map((item) => item.id === id && item.title !== title ? { ...item, title } : item));
     }
+  }), []);
+
+  useEffect(() => {
+    if (!activeApplicationId) return;
+    tabsContext.openApplicationTab({ id: activeApplicationId, title: activeApplicationId });
+  }, [activeApplicationId, tabsContext]);
+
+  const handlePlatformMenuClick = ({ key }: { key: string }) => {
     navigate(key);
+  };
+  const handleCloseApplicationTab = (targetKey: string) => {
+    setApplicationTabs((current) => {
+      const index = current.findIndex((tab) => tab.id === targetKey);
+      const nextTabs = current.filter((tab) => tab.id !== targetKey);
+      if (targetKey === activeApplicationId) {
+        const nextActive = nextTabs[index - 1] || nextTabs[index] || null;
+        navigate(nextActive ? `/apps/${nextActive.id}` : '/apps');
+      }
+      return nextTabs;
+    });
   };
 
   return (
-    <Layout className="console-shell">
-      <Sider width={256} className="console-sider">
-        <div className="brand"><MenuOutlined className="brand-menu" />平台控制台</div>
-        <div className="nav-section">平台</div>
-        <Menu theme="dark" mode="inline" selectedKeys={[selectedKey(location.pathname)]} defaultOpenKeys={['/apps']} items={platformItems} onClick={handlePlatformMenuClick} />
-        <div className="nav-section">平台管理</div>
-        <Menu theme="dark" mode="inline" selectedKeys={[selectedKey(location.pathname)]} items={adminItems} onClick={({ key }) => navigate(key)} />
-        <div className="sider-footer"><AppstoreOutlined />收起导航</div>
-      </Sider>
-      <Layout>
-        <Content className="console-content">
-          <Outlet />
-        </Content>
+    <ApplicationTabsContext.Provider value={tabsContext}>
+      <Layout className="console-shell">
+        <Sider width={256} className="console-sider">
+          <div className="brand"><MenuOutlined className="brand-menu" />平台控制台</div>
+          <div className="nav-section">平台</div>
+          <Menu theme="dark" mode="inline" selectedKeys={[selectedKey(location.pathname)]} items={platformItems} onClick={handlePlatformMenuClick} />
+          <div className="nav-section">平台管理</div>
+          <Menu theme="dark" mode="inline" selectedKeys={[selectedKey(location.pathname)]} items={adminItems} onClick={({ key }) => navigate(key)} />
+          <div className="sider-footer"><AppstoreOutlined />收起导航</div>
+        </Sider>
+        <Layout>
+          <Content className="console-content">
+            {applicationTabs.length > 0 && (
+              <Tabs
+                data-testid="application-detail-tabs"
+                className="application-detail-tabs"
+                type="editable-card"
+                hideAdd
+                activeKey={activeApplicationId || undefined}
+                onChange={(key) => navigate(`/apps/${key}`)}
+                onEdit={(targetKey, action) => {
+                  if (action === 'remove' && typeof targetKey === 'string') handleCloseApplicationTab(targetKey);
+                }}
+                items={applicationTabs.map((tab) => ({ key: tab.id, label: tab.title, closable: true }))}
+              />
+            )}
+            <Outlet />
+          </Content>
+        </Layout>
       </Layout>
-    </Layout>
+    </ApplicationTabsContext.Provider>
   );
 }
 
@@ -66,10 +109,6 @@ function selectedKey(pathname: string) {
   if (pathname.startsWith('/projects')) return '/projects';
   if (pathname.startsWith('/source-repositories')) return '/projects';
   if (pathname.startsWith('/apps/new')) return '/apps';
-  if (/^\/apps\/[^/]+\/build/.test(pathname)) return 'app-build';
-  if (/^\/apps\/[^/]+\/deploy/.test(pathname)) return 'app-deploy';
-  if (/^\/apps\/[^/]+\/config/.test(pathname)) return 'app-config';
-  if (/^\/apps\/[^/]+\/promotions/.test(pathname)) return 'app-deploy';
   if (pathname.startsWith('/apps')) return '/apps';
   if (pathname.startsWith('/freights')) return '/freights';
   if (pathname.startsWith('/audit')) return '/audit';
@@ -80,8 +119,8 @@ function selectedKey(pathname: string) {
   return pathname;
 }
 
-function currentApplicationId(pathname: string) {
-  const match = pathname.match(/^\/apps\/([^/]+)/);
+function currentApplicationDetailId(pathname: string) {
+  const match = pathname.match(/^\/apps\/([^/]+)(?:\/(build|deploy|config|promotions))?\/?$/);
   if (!match || match[1] === 'new') return '';
   return decodeURIComponent(match[1]);
 }

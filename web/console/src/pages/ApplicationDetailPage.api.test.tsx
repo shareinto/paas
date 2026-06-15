@@ -76,8 +76,10 @@ test('真实 API 创建流水线后即使列表接口暂未返回也立即显示
   await userEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
 
   const pipelinePanel = await screen.findByTestId('pipeline-panel');
-  expect(await within(pipelinePanel).findByText('主流水线')).toBeInTheDocument();
-  expect(within(pipelinePanel).getByText('主代码源')).toBeInTheDocument();
+  const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
+  expect(within(pipelineCard).queryByText('主代码源')).not.toBeInTheDocument();
+  expect(within(pipelineCard).getByRole('button', { name: /触发构建/ })).toHaveTextContent('');
+  expect(within(pipelineCard).getByRole('button', { name: /编辑/ })).toHaveTextContent('');
   expect(pipelineListCalls).toBeGreaterThanOrEqual(2);
 }, 10000);
 
@@ -276,7 +278,7 @@ test('真实 API 构建弹窗随日志流状态自动更新构建状态', async 
   expect(within(dialog).getAllByText('成功').length).toBeGreaterThan(0);
 }, 10000);
 
-test('真实 API 创建 Workload 后使用服务端镜像来源展示', async () => {
+test('真实 API 创建 Workload 后使用服务端名称展示简化卡片', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
   window.localStorage.setItem('paas_token', 'test');
   const { useSession } = await import('../app/store');
@@ -312,6 +314,9 @@ test('真实 API 创建 Workload 后使用服务端镜像来源展示', async ()
         status: 'enabled'
       }, 201);
     }
+    if (method === 'PUT' && url.endsWith('/api/applications/app_1/workloads/workload_worker/default-config')) {
+      return jsonResponse({ id: 'workload_default_config_worker', workload_id: 'workload_worker' });
+    }
     return jsonResponse({ error: { code: 'not_found', message: `未处理请求 ${method} ${url}` } }, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -319,23 +324,21 @@ test('真实 API 创建 Workload 后使用服务端镜像来源展示', async ()
   renderApp('/apps/app_1/config', App);
 
   expect(await screen.findByTestId('workload-panel')).toBeInTheDocument();
-  await userEvent.click(await screen.findByRole('button', { name: /创建 Workload/ }));
-  const dialog = await screen.findByRole('dialog', { name: '创建 Workload' });
-  await userEvent.type(within(dialog).getByLabelText('Workload 标识'), 'order-worker');
+  await userEvent.click(await screen.findByRole('button', { name: /创建工作负载/ }));
+  const dialog = await screen.findByRole('dialog', { name: '创建工作负载' });
+  await userEvent.type(within(dialog).getByLabelText('工作负载标识'), 'order-worker');
   await userEvent.type(within(dialog).getByLabelText('显示名称'), '订单任务');
-  await userEvent.click(within(dialog).getByText('StatefulSet'));
-  await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
+  await userEvent.click(within(dialog).getByText('有状态'));
   expect(await within(dialog).findByText('关联流水线')).toBeInTheDocument();
   expect(await within(dialog).findByText('主流水线 (main)')).toBeInTheDocument();
-  for (let i = 0; i < 4; i += 1) {
-    await userEvent.click(within(dialog).getByRole('button', { name: '下一步' }));
-  }
   await userEvent.click(within(dialog).getByRole('button', { name: '创建' }));
 
-  const card = (await screen.findByText('order-worker')).closest('.resource-card') as HTMLElement;
-  expect(within(card).getByText('流水线产物')).toBeInTheDocument();
-  expect(within(card).getByText('暂无端口')).toBeInTheDocument();
-  expect(within(card).getByText('集群内访问')).toBeInTheDocument();
+  const card = (await screen.findByText('订单任务')).closest('.resource-card') as HTMLElement;
+  expect(within(card).getByRole('button', { name: '编辑' })).toHaveTextContent('');
+  expect(within(card).getByRole('button', { name: '删除' })).toHaveTextContent('');
+  expect(within(card).queryByText('流水线产物')).not.toBeInTheDocument();
+  expect(within(card).queryByText('暂无端口')).not.toBeInTheDocument();
+  expect(within(card).queryByText('集群内访问')).not.toBeInTheDocument();
   expect(within(card).queryByText('自定义镜像')).not.toBeInTheDocument();
   expect(within(card).queryByText('registry.example.com/order/worker:20260611')).not.toBeInTheDocument();
 }, 10000);
