@@ -116,6 +116,16 @@ type recordingBuildPipelineProvisioner struct {
 	err            error
 }
 
+type recordingManifestCleaner struct {
+	applicationIDs []shared.ID
+	err            error
+}
+
+func (c *recordingManifestCleaner) DeleteApplicationManifests(_ context.Context, applicationID shared.ID) error {
+	c.applicationIDs = append(c.applicationIDs, applicationID)
+	return c.err
+}
+
 type fakeBuildPipelineQuery struct {
 	pipelines map[shared.ID]BuildPipelineRef
 }
@@ -143,6 +153,7 @@ type appenvTestEnv struct {
 	repo       Repository
 	permission *recordingPermission
 	pipelines  *recordingBuildPipelineProvisioner
+	cleaner    *recordingManifestCleaner
 	audit      *recordingAudit
 	events     *recordingPublisher
 }
@@ -174,6 +185,7 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 	}}
 	audit := &recordingAudit{}
 	events := &recordingPublisher{}
+	cleaner := &recordingManifestCleaner{}
 	svc := NewService(Options{
 		Repository: repo,
 		ProjectQuery: fakeProjectQuery{projects: map[shared.ID]tenantproject.Project{
@@ -186,13 +198,14 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 		}},
 		BuildPipelineProvisioner: pipelines,
 		BuildPipelineQuery:       pipelineQuery,
+		ManifestCleaner:          cleaner,
 		PermissionChecker:        permission,
 		Audit:                    audit,
 		EventPublisher:           events,
 		IDGenerator:              testutil.NewFakeIDGenerator(1),
 		Clock:                    testutil.NewFakeClock(time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)),
 	})
-	return appenvTestEnv{svc: svc, repo: repo, permission: permission, pipelines: pipelines, audit: audit, events: events}
+	return appenvTestEnv{svc: svc, repo: repo, permission: permission, pipelines: pipelines, cleaner: cleaner, audit: audit, events: events}
 }
 
 func TestNoopAuditAndEventPublisher(t *testing.T) {
@@ -948,6 +961,9 @@ func TestApplicationQueriesUpdateDelete(t *testing.T) {
 	if err := env.svc.DeleteApplication(ctx, appenvActor(), app.ID); err != nil {
 		t.Fatalf("DeleteApplication() error = %v", err)
 	}
+	if len(env.cleaner.applicationIDs) != 1 || env.cleaner.applicationIDs[0] != app.ID {
+		t.Fatalf("expected manifest cleanup before deletion, got %+v", env.cleaner.applicationIDs)
+	}
 	if len(env.pipelines.deletedIDs) != 1 || env.pipelines.deletedIDs[0] != app.ID {
 		t.Fatalf("expected Jenkins pipeline cleanup, got %+v", env.pipelines.deletedIDs)
 	}
@@ -959,6 +975,33 @@ func TestApplicationQueriesUpdateDelete(t *testing.T) {
 	}
 	if _, err := env.svc.ListApplicationStageStates(ctx, app.ID); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("deleted app stage states should be removed with app, got %v", err)
+	}
+}
+
+func TestDeleteApplicationStopsWhenManifestCleanupFails(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+	env.cleaner.err = shared.NewError(shared.CodeInternal, "gitlab manifest cleanup failed")
+
+	err = env.svc.DeleteApplication(ctx, appenvActor(), app.ID)
+	if shared.CodeOf(err) != shared.CodeInternal {
+		t.Fatalf("manifest cleanup failure should block delete, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "删除应用部署清单失败") {
+		t.Fatalf("cleanup failure should use Chinese message, got %v", err)
+	}
+	if len(env.cleaner.applicationIDs) != 1 || env.cleaner.applicationIDs[0] != app.ID {
+		t.Fatalf("expected one manifest cleanup attempt, got %+v", env.cleaner.applicationIDs)
+	}
+	if len(env.pipelines.deletedIDs) != 0 {
+		t.Fatalf("pipeline cleanup should not run after manifest cleanup failure, got %+v", env.pipelines.deletedIDs)
+	}
+	if _, err := env.svc.GetApplication(ctx, app.ID); err != nil {
+		t.Fatalf("application should remain when manifest cleanup fails, got %v", err)
 	}
 }
 

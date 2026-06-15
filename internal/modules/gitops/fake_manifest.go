@@ -11,6 +11,7 @@ type FakeManifestRepository struct {
 	mu         sync.Mutex
 	Files      map[string]string
 	Commits    []CommitSpec
+	Deletes    []DeleteFilesSpec
 	MRs        []MergeRequestSpec
 	Tags       map[string]string
 	nextCommit int
@@ -38,6 +39,17 @@ func (r *FakeManifestRepository) CommitFiles(_ context.Context, spec CommitSpec)
 		r.Files[file.Path] = file.Content
 	}
 	r.Commits = append(r.Commits, spec)
+	return CommitResult{CommitSHA: "commit_" + string(rune('0'+r.nextCommit))}, nil
+}
+
+func (r *FakeManifestRepository) DeleteFiles(_ context.Context, spec DeleteFilesSpec) (CommitResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextCommit++
+	for _, path := range spec.Paths {
+		delete(r.Files, path)
+	}
+	r.Deletes = append(r.Deletes, spec)
 	return CommitResult{CommitSHA: "commit_" + string(rune('0'+r.nextCommit))}, nil
 }
 

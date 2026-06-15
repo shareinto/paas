@@ -30,6 +30,7 @@ type Repository interface {
 type ManifestRepositoryPort interface {
 	ReadFile(ctx context.Context, path string, ref string) (string, error)
 	CommitFiles(ctx context.Context, spec CommitSpec) (CommitResult, error)
+	DeleteFiles(ctx context.Context, spec DeleteFilesSpec) (CommitResult, error)
 	CreateMergeRequest(ctx context.Context, spec MergeRequestSpec) (MergeRequestResult, error)
 	GetMergeRequest(ctx context.Context, mrID string) (MergeRequest, error)
 	CreateTag(ctx context.Context, name string, ref string) (TagResult, error)
@@ -49,6 +50,12 @@ type CommitSpec struct {
 
 type CommitResult struct {
 	CommitSHA string
+}
+
+type DeleteFilesSpec struct {
+	Branch  string
+	Message string
+	Paths   []string
 }
 
 type MergeRequestSpec struct {

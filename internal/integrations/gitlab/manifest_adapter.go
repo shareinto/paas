@@ -72,6 +72,35 @@ func (a *ManifestRepositoryAdapter) CommitFiles(ctx context.Context, spec gitops
 	return gitops.CommitResult{CommitSHA: out.ID}, nil
 }
 
+func (a *ManifestRepositoryAdapter) DeleteFiles(ctx context.Context, spec gitops.DeleteFilesSpec) (gitops.CommitResult, error) {
+	actions := make([]map[string]string, 0, len(spec.Paths))
+	ref := firstNonEmpty(spec.Branch, "main")
+	for _, path := range spec.Paths {
+		if _, err := a.ReadFile(ctx, path, ref); err != nil {
+			if shared.CodeOf(err) == shared.CodeNotFound {
+				continue
+			}
+			return gitops.CommitResult{}, err
+		}
+		actions = append(actions, map[string]string{"action": "delete", "file_path": path})
+	}
+	if len(actions) == 0 {
+		return gitops.CommitResult{}, nil
+	}
+	var out struct {
+		ID string `json:"id"`
+	}
+	body := map[string]any{"branch": ref, "commit_message": spec.Message, "actions": actions}
+	req, err := a.client.newRequest(http.MethodPost, "/api/v4/projects/"+url.PathEscape(a.projectID)+"/repository/commits", body)
+	if err != nil {
+		return gitops.CommitResult{}, err
+	}
+	if err := decodeResponseFromClient(ctx, a.client, req, &out); err != nil {
+		return gitops.CommitResult{}, err
+	}
+	return gitops.CommitResult{CommitSHA: out.ID}, nil
+}
+
 func (a *ManifestRepositoryAdapter) CreateMergeRequest(ctx context.Context, spec gitops.MergeRequestSpec) (gitops.MergeRequestResult, error) {
 	if _, err := a.CommitFiles(ctx, gitops.CommitSpec{Branch: spec.SourceBranch, StartBranch: spec.TargetBranch, Message: spec.Title, Files: spec.Files}); err != nil {
 		return gitops.MergeRequestResult{}, err

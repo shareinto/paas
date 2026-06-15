@@ -103,6 +103,10 @@ type BuildPipelineProvisioner interface {
 	DeleteBuildPipeline(ctx context.Context, applicationID shared.ID) error
 }
 
+type ApplicationManifestCleaner interface {
+	DeleteApplicationManifests(ctx context.Context, applicationID shared.ID) error
+}
+
 type BuildPipelineRef struct {
 	ID            shared.ID
 	ApplicationID shared.ID

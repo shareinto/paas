@@ -224,7 +224,14 @@ func TestManifestRepositoryAdapterCommitAndMR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mr: %v", err)
 	}
-	if mr.ID != "7" || commitCalls != 2 {
+	deleted, err := adapter.DeleteFiles(context.Background(), gitops.DeleteFilesSpec{Branch: "main", Message: "delete", Paths: []string{"apps/order/dev/existing.yaml", "apps/order/dev/missing.yaml"}})
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if deleted.CommitSHA != "abc123" {
+		t.Fatalf("unexpected delete commit: %#v", deleted)
+	}
+	if mr.ID != "7" || commitCalls != 3 {
 		t.Fatalf("unexpected mr result: %#v commitCalls=%d", mr, commitCalls)
 	}
 	firstActions := commitBodies[0]["actions"].([]any)
@@ -233,6 +240,10 @@ func TestManifestRepositoryAdapterCommitAndMR(t *testing.T) {
 	}
 	if commitBodies[1]["start_branch"] != "main" {
 		t.Fatalf("MR commit should create source branch from target branch, body=%+v", commitBodies[1])
+	}
+	deleteActions := commitBodies[2]["actions"].([]any)
+	if len(deleteActions) != 1 || deleteActions[0].(map[string]any)["action"] != "delete" || deleteActions[0].(map[string]any)["file_path"] != "apps/order/dev/existing.yaml" {
+		t.Fatalf("delete commit should delete only existing files, body=%+v", commitBodies[2])
 	}
 }
 

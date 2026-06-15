@@ -171,6 +171,7 @@ func newApplication(ctx context.Context) (*application, error) {
 		IDGenerator:     ids,
 		Clock:           clock,
 	})
+	appSvc.SetManifestCleaner(gitopsSvc)
 	stageRuntimeDelivery := stageRuntimeForDelivery{service: appSvc}
 	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc, projects: tenantSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, StageRuntimeStateQuery: stageRuntimeDelivery, StageSync: stageSyncForDelivery{service: appSvc}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 	buildEvents.delivery = deliverySvc
