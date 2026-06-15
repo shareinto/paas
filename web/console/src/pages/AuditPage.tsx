@@ -7,7 +7,7 @@ export function AuditPage() {
   const { data = [], isLoading } = useQuery({ queryKey: ['audit'], queryFn: listAuditLogs });
   return (
     <>
-      <PageHeader title="审计日志" />
+      <PageHeader title="审计日志" subtitle="查看发布、审批、配置和管理操作的留痕记录。" />
       <div className="toolbar">
         <Input.Search placeholder="搜索资源或摘要" />
         <Select placeholder="动作" options={[{ value: 'promotion.approve', label: '审批发布' }, { value: 'cluster.disable', label: '禁用集群' }]} />

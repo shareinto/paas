@@ -14,8 +14,7 @@ const STATUS_OPTIONS = [
 export function JenkinsTemplatesPage() {
   return (
     <>
-      <PageHeader title="构建管理" />
-      <Typography.Paragraph className="page-subtitle">平台管理员统一维护构建环境、运行时环境和全局构建模板。</Typography.Paragraph>
+      <PageHeader title="构建管理" subtitle="平台管理员统一维护构建环境、运行时环境和全局构建模板。" />
       <Tabs
         items={[
           { key: 'build-env', label: '构建环境', children: <BuildEnvironmentTab /> },

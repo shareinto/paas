@@ -70,7 +70,7 @@ export function TenantsPage() {
 
   return (
     <>
-      <PageHeader title="租户管理" extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>创建租户</Button>} />
+      <PageHeader title="租户管理" subtitle="维护平台内组织边界，关联项目、模板和权限配置。" extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>创建租户</Button>} />
       <div className="toolbar">
         <Input.Search placeholder="搜索租户名称或标识" allowClear onSearch={setKeyword} onChange={(event) => setKeyword(event.target.value)} />
       </div>
