@@ -70,6 +70,17 @@ test('默认入口进入项目工作台列表', async () => {
   expect(await screen.findByText('订单平台')).toBeInTheDocument();
 });
 
+test('左侧栏底部可以退出登录', async () => {
+  renderApp('/projects');
+
+  const sider = document.querySelector('.ant-layout-sider') as HTMLElement;
+  await userEvent.click(await within(sider).findByRole('button', { name: /退出登录/ }));
+
+  await waitFor(() => expect(useSession.getState().token).toBe(''));
+  expect(await screen.findByRole('button', { name: /^登\s*录$/ })).toBeInTheDocument();
+  expect(window.localStorage.getItem('paas_token')).toBeNull();
+});
+
 test('打开应用详情时维护可关闭的应用 tab', async () => {
   renderApp('/apps');
 

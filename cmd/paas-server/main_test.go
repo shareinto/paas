@@ -99,6 +99,47 @@ func TestNewApplicationEnsuresDevelopmentAdmin(t *testing.T) {
 	}
 }
 
+func TestDevelopmentLocalRegisterRoute(t *testing.T) {
+	app := newTestApplication(t)
+	defer app.db.Close()
+
+	registerBody := bytes.NewBufferString(`{"account":"self","password":"secret","displayName":"自助用户","email":"self@example.com"}`)
+	register := httptest.NewRecorder()
+	app.handler.ServeHTTP(register, httptest.NewRequest(http.MethodPost, "/api/auth/local/register", registerBody))
+	if register.Code != http.StatusCreated {
+		t.Fatalf("register status = %d body = %s", register.Code, register.Body.String())
+	}
+	var payload struct {
+		Token    string `json:"token"`
+		UserName string `json:"userName"`
+	}
+	if err := json.Unmarshal(register.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode register response: %v", err)
+	}
+	if payload.Token == "" || payload.UserName != "自助用户" {
+		t.Fatalf("unexpected register response: %#v", payload)
+	}
+	user, err := app.identity.AuthenticateAccessToken(context.Background(), payload.Token)
+	if err != nil {
+		t.Fatalf("registered token should authenticate: %v", err)
+	}
+	if err := app.identity.Check(context.Background(), identityaccess.Subject{Type: identityaccess.SubjectUser, ID: user.ID}, identityaccess.ResourceScope{Kind: identityaccess.ScopePlatform}, identityaccess.Permission("application:read")); shared.CodeOf(err) != shared.CodePermissionDenied {
+		t.Fatalf("registered user should not receive default role, got %v", err)
+	}
+}
+
+func TestDevelopmentLocalRegisterCanBeDisabled(t *testing.T) {
+	t.Setenv("PAAS_LOCAL_REGISTRATION_ENABLED", "false")
+	app := newTestApplication(t)
+	defer app.db.Close()
+
+	register := httptest.NewRecorder()
+	app.handler.ServeHTTP(register, httptest.NewRequest(http.MethodPost, "/api/auth/local/register", bytes.NewBufferString(`{"account":"closed","password":"secret"}`)))
+	if register.Code != http.StatusPreconditionFailed || !bytes.Contains(register.Body.Bytes(), []byte("注册功能未开启")) {
+		t.Fatalf("disabled register status = %d body = %s", register.Code, register.Body.String())
+	}
+}
+
 func newTestApplication(t *testing.T) *application {
 	t.Helper()
 	testsupport.ConfigureMySQLEnv(t, migrations.All()...)

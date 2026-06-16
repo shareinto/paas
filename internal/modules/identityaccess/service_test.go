@@ -173,6 +173,68 @@ func TestCreateLocalUserStoresPasswordHashAndLoginIssuesHashedTokens(t *testing.
 	}
 }
 
+func TestRegisterLocalCreatesUserAndIssuesHashedTokens(t *testing.T) {
+	svc, repo, audit := newTestService(t, nil)
+	ctx := context.Background()
+
+	pair, user, err := svc.RegisterLocal(ctx, RegisterLocalUserInput{Username: "NewUser", Password: "secret", DisplayName: "新用户", Email: "new@example.com"})
+	if err != nil {
+		t.Fatalf("RegisterLocal() error = %v", err)
+	}
+	if user.Username != "newuser" || user.DisplayName != "新用户" || pair.AccessToken == "" || pair.RefreshToken == "" {
+		t.Fatalf("unexpected register result: %+v %+v", pair, user)
+	}
+	credential, err := repo.GetLocalCredential(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetLocalCredential() error = %v", err)
+	}
+	if string(credential.PasswordHash) == "secret" {
+		t.Fatalf("password must not be stored in plaintext")
+	}
+	if err := bcrypt.CompareHashAndPassword(credential.PasswordHash, []byte("secret")); err != nil {
+		t.Fatalf("stored password hash should verify: %v", err)
+	}
+	identities, err := repo.ListIdentitiesByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListIdentitiesByUser() error = %v", err)
+	}
+	if len(identities) != 1 || identities[0].Provider != ProviderLocal || identities[0].Issuer != "local" || identities[0].Subject != "newuser" {
+		t.Fatalf("unexpected local identities: %+v", identities)
+	}
+	if _, err := repo.FindAccessTokenByHash(ctx, pair.AccessToken); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("raw access token must not be stored")
+	}
+	if _, err := repo.FindAccessTokenByHash(ctx, hashToken(pair.AccessToken)); err != nil {
+		t.Fatalf("hashed access token should be stored: %v", err)
+	}
+	if len(audit.events) != 1 || audit.events[0].Action != "auth.register_local" || audit.events[0].ActorID != user.ID {
+		t.Fatalf("register should write self audit event, got %+v", audit.events)
+	}
+}
+
+func TestRegisterLocalRejectsInvalidDuplicateAndDisabledRegistration(t *testing.T) {
+	svc, _, _ := newTestService(t, nil)
+	ctx := context.Background()
+	if _, _, err := svc.RegisterLocal(ctx, RegisterLocalUserInput{Username: "", Password: "secret"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("empty username should be invalid_argument, got %v", err)
+	}
+	if _, _, err := svc.RegisterLocal(ctx, RegisterLocalUserInput{Username: "dup", Password: ""}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("empty password should be invalid_argument, got %v", err)
+	}
+	if _, _, err := svc.RegisterLocal(ctx, RegisterLocalUserInput{Username: "dup", Password: "secret"}); err != nil {
+		t.Fatalf("first RegisterLocal() error = %v", err)
+	}
+	if _, _, err := svc.RegisterLocal(ctx, RegisterLocalUserInput{Username: "DUP", Password: "secret"}); shared.CodeOf(err) != shared.CodeConflict {
+		t.Fatalf("duplicate username should be conflict, got %v", err)
+	}
+
+	disabled := false
+	disabledSvc := NewService(Options{Repository: newTestRepository(t), IDGenerator: testutil.NewFakeIDGenerator(100), Clock: testutil.NewFakeClock(time.Date(2026, 5, 30, 1, 0, 0, 0, time.UTC)), LocalRegistrationEnabled: &disabled})
+	if _, _, err := disabledSvc.RegisterLocal(ctx, RegisterLocalUserInput{Username: "closed", Password: "secret"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("disabled registration should be failed_precondition, got %v", err)
+	}
+}
+
 func TestLocalLoginRejectsBadPasswordAndDisabledUser(t *testing.T) {
 	svc, _, _ := newTestService(t, nil)
 	ctx := context.Background()
@@ -767,6 +829,23 @@ func TestHTTPHandlersLoginMeAndOIDCProviderRedaction(t *testing.T) {
 		t.Fatalf("unexpected login response: %+v", loginResp)
 	}
 
+	registerReq := httptest.NewRequest(http.MethodPost, "/api/auth/register", strings.NewReader(`{"username":"self","password":"secret","display_name":"自助用户","email":"self@example.com"}`))
+	registerRec := httptest.NewRecorder()
+	mux.ServeHTTP(registerRec, registerReq)
+	if registerRec.Code != http.StatusCreated {
+		t.Fatalf("register status = %d body = %s", registerRec.Code, registerRec.Body.String())
+	}
+	var registerResp struct {
+		Token TokenPair `json:"token"`
+		User  UserDTO   `json:"user"`
+	}
+	if err := json.Unmarshal(registerRec.Body.Bytes(), &registerResp); err != nil {
+		t.Fatalf("unmarshal register response: %v", err)
+	}
+	if registerResp.Token.AccessToken == "" || registerResp.User.Username != "self" || registerResp.User.DisplayName != "自助用户" {
+		t.Fatalf("unexpected register response: %+v", registerResp)
+	}
+
 	meReq := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
 	meReq.Header.Set("Authorization", "Bearer "+loginResp.Token.AccessToken)
 	meRec := httptest.NewRecorder()
@@ -781,7 +860,7 @@ func TestHTTPHandlersLoginMeAndOIDCProviderRedaction(t *testing.T) {
 	if providerRec.Code != http.StatusOK {
 		t.Fatalf("providers status = %d body = %s", providerRec.Code, providerRec.Body.String())
 	}
-	forbiddenBody := loginRec.Body.String() + meRec.Body.String() + providerRec.Body.String()
+	forbiddenBody := loginRec.Body.String() + registerRec.Body.String() + meRec.Body.String() + providerRec.Body.String()
 	for _, forbidden := range []string{"password_hash", "token_hash", "client_secret", "secret/ref"} {
 		if strings.Contains(forbiddenBody, forbidden) {
 			t.Fatalf("API response leaked %q: %s", forbidden, forbiddenBody)
@@ -881,6 +960,18 @@ func TestHTTPHandlersCoverUserRoleTokenAndOIDCFlows(t *testing.T) {
 	badJSON := doJSON(mux, http.MethodPost, "/api/auth/login", `{bad`, "")
 	if badJSON.Code != http.StatusBadRequest {
 		t.Fatalf("bad json status = %d body = %s", badJSON.Code, badJSON.Body.String())
+	}
+	badRegister := doJSON(mux, http.MethodPost, "/api/auth/register", `{"username":"","password":"secret"}`, "")
+	if badRegister.Code != http.StatusBadRequest {
+		t.Fatalf("bad register status = %d body = %s", badRegister.Code, badRegister.Body.String())
+	}
+	disabled := false
+	disabledSvc := NewService(Options{Repository: newTestRepository(t), IDGenerator: testutil.NewFakeIDGenerator(200), Clock: testutil.NewFakeClock(time.Date(2026, 5, 30, 1, 0, 0, 0, time.UTC)), LocalRegistrationEnabled: &disabled})
+	disabledMux := http.NewServeMux()
+	NewHandler(disabledSvc).Register(disabledMux)
+	disabledRegister := doJSON(disabledMux, http.MethodPost, "/api/auth/register", `{"username":"closed","password":"secret"}`, "")
+	if disabledRegister.Code != http.StatusPreconditionFailed || !strings.Contains(disabledRegister.Body.String(), "注册功能未开启") {
+		t.Fatalf("disabled register status = %d body = %s", disabledRegister.Code, disabledRegister.Body.String())
 	}
 	noBearerLogout := doJSON(mux, http.MethodPost, "/api/auth/logout", ``, "")
 	if noBearerLogout.Code != http.StatusUnauthorized {

@@ -34,6 +34,21 @@ test('本地用户登录后可以进入项目工作台列表', async () => {
   expect(await screen.findByText('订单平台', {}, { timeout: 10000 })).toBeInTheDocument();
 });
 
+test('本地用户注册后可以进入项目工作台列表', async () => {
+  window.localStorage.clear();
+  useSession.setState({ token: '', userName: '平台用户' });
+  renderFlow('/login');
+  await userEvent.click(screen.getByText('注册账号'));
+  await userEvent.type(screen.getByPlaceholderText('请输入账号'), 'newuser');
+  await userEvent.type(screen.getByPlaceholderText('请输入显示名称'), '新用户');
+  await userEvent.type(screen.getByPlaceholderText('请输入邮箱'), 'newuser@example.com');
+  await userEvent.type(screen.getByPlaceholderText('请输入密码'), 'password');
+  await userEvent.type(screen.getByPlaceholderText('请再次输入密码'), 'password');
+  await userEvent.click(screen.getByRole('button', { name: '创建账号并登录' }));
+  expect(await screen.findByText('订单平台', {}, { timeout: 10000 })).toBeInTheDocument();
+  expect(useSession.getState()).toMatchObject({ token: 'mock-token-newuser', userName: '新用户' });
+});
+
 test('OIDC mock 登录可以完成回调', async () => {
   window.localStorage.clear();
   useSession.setState({ token: '', userName: '平台用户' });

@@ -2,6 +2,7 @@ package identityaccess
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -18,6 +19,7 @@ func NewHandler(service *Service) *Handler {
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/auth/login", h.handleLogin)
+	mux.HandleFunc("POST /api/auth/register", h.handleRegister)
 	mux.HandleFunc("POST /api/auth/logout", h.handleLogout)
 	mux.HandleFunc("POST /api/auth/refresh", h.handleRefresh)
 	mux.HandleFunc("GET /api/auth/me", h.handleMe)
@@ -46,6 +48,19 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"token": pair, "user": user})
+}
+
+func (h *Handler) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req RegisterLocalUserInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	pair, user, err := h.service.RegisterLocal(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"token": pair, "user": user})
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +228,15 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
-	writeJSON(w, shared.HTTPStatusOf(err), map[string]any{"error": map[string]any{"code": shared.CodeOf(err), "message": "请求处理失败"}})
+	writeJSON(w, shared.HTTPStatusOf(err), map[string]any{"error": map[string]any{"code": shared.CodeOf(err), "message": errorMessage(err)}})
+}
+
+func errorMessage(err error) string {
+	var appErr *shared.AppError
+	if errors.As(err, &appErr) && strings.TrimSpace(appErr.Message) != "" {
+		return appErr.Message
+	}
+	return "请求处理失败"
 }
 
 func bearerToken(r *http.Request) string {

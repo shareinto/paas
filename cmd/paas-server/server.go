@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -121,7 +122,8 @@ func newApplication(ctx context.Context) (*application, error) {
 	auditRepo := repos.audit
 	auditSvc := audit.NewService(audit.Options{Repository: auditRepo, IDGenerator: ids, Clock: clock})
 	identityRepo := repos.identity
-	identitySvc := identityaccess.NewService(identityaccess.Options{Repository: identityRepo, Audit: audit.IdentityAccessLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	localRegistrationEnabled := localRegistrationEnabledFromEnv()
+	identitySvc := identityaccess.NewService(identityaccess.Options{Repository: identityRepo, Audit: audit.IdentityAccessLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock, LocalRegistrationEnabled: &localRegistrationEnabled})
 	if err := ensureDevelopmentAdmin(ctx, identityRepo, identitySvc); err != nil {
 		return nil, err
 	}
@@ -246,6 +248,18 @@ func ensureDevelopmentAdmin(ctx context.Context, repo identityaccess.Repository,
 		return err
 	}
 	return nil
+}
+
+func localRegistrationEnabledFromEnv() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("PAAS_LOCAL_REGISTRATION_ENABLED")))
+	switch value {
+	case "", "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 type repositories struct {
@@ -400,6 +414,7 @@ func registerDevelopmentRoutes(mux *http.ServeMux, api developmentAPI) {
 	mux.HandleFunc("GET /readyz", api.readyz)
 	mux.HandleFunc("GET /metrics", api.metrics)
 	mux.HandleFunc("POST /api/auth/local/login", api.localLogin)
+	mux.HandleFunc("POST /api/auth/local/register", api.localRegister)
 	mux.HandleFunc("POST /api/auth/oidc/start", api.oidcStart)
 	mux.HandleFunc("GET /api/applications", api.listApplications)
 	mux.HandleFunc("GET /api/builds", api.listBuilds)
@@ -497,6 +512,31 @@ func (api developmentAPI) localLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeDevelopmentJSON(w, http.StatusOK, map[string]string{"token": pair.AccessToken, "userName": firstNonEmpty(user.DisplayName, user.Username)})
+}
+
+func (api developmentAPI) localRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Account          string `json:"account"`
+		Username         string `json:"username"`
+		Password         string `json:"password"`
+		DisplayName      string `json:"displayName"`
+		DisplayNameSnake string `json:"display_name"`
+		Email            string `json:"email"`
+	}
+	if !decodeDevelopmentJSON(w, r, &req) {
+		return
+	}
+	pair, user, err := api.identity.RegisterLocal(r.Context(), identityaccess.RegisterLocalUserInput{
+		Username:    firstNonEmpty(req.Username, req.Account),
+		Password:    req.Password,
+		DisplayName: firstNonEmpty(req.DisplayName, req.DisplayNameSnake),
+		Email:       req.Email,
+	})
+	if err != nil {
+		writeDevelopmentError(w, err)
+		return
+	}
+	writeDevelopmentJSON(w, http.StatusCreated, map[string]string{"token": pair.AccessToken, "userName": firstNonEmpty(user.DisplayName, user.Username)})
 }
 
 func (api developmentAPI) oidcStart(w http.ResponseWriter, _ *http.Request) {
@@ -1197,7 +1237,15 @@ func writeDevelopmentJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func writeDevelopmentError(w http.ResponseWriter, err error) {
-	writeDevelopmentJSON(w, shared.HTTPStatusOf(err), map[string]any{"error": map[string]string{"code": string(shared.CodeOf(err)), "message": "请求处理失败"}})
+	writeDevelopmentJSON(w, shared.HTTPStatusOf(err), map[string]any{"error": map[string]string{"code": string(shared.CodeOf(err)), "message": developmentErrorMessage(err)}})
+}
+
+func developmentErrorMessage(err error) string {
+	var appErr *shared.AppError
+	if errors.As(err, &appErr) && strings.TrimSpace(appErr.Message) != "" {
+		return appErr.Message
+	}
+	return "请求处理失败"
 }
 
 func withCORS(next http.Handler) http.Handler {

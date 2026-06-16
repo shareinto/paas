@@ -12,6 +12,20 @@ export async function login(account: string, password: string) {
   return request<{ token: string; userName: string }>('/api/auth/local/login', { method: 'POST', body: JSON.stringify({ account, password }) });
 }
 
+export async function register(input: { account: string; displayName: string; email: string; password: string }) {
+  if (!hasAPIBaseURL()) return mock.register(input);
+  const data = await request<{ token: string; userName?: string; user_name?: string }>('/api/auth/local/register', {
+    method: 'POST',
+    body: JSON.stringify({
+      account: input.account,
+      display_name: input.displayName,
+      email: input.email,
+      password: input.password
+    })
+  });
+  return { token: data.token, userName: data.userName || data.user_name || input.displayName || input.account };
+}
+
 export async function oidcLoginURL() {
   if (!hasAPIBaseURL()) return mock.oidcLoginURL();
   const data = await request<{ redirect_url: string }>('/api/auth/oidc/start', { method: 'POST', body: '{}' });

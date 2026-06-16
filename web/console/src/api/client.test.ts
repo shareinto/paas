@@ -40,8 +40,13 @@ test('request 将非 JSON 错误响应映射为标准错误', async () => {
 
 test('真实 API 分支使用 VITE_API_BASE_URL', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  let registerBody: any;
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (url.endsWith('/api/auth/local/login')) return new Response(JSON.stringify({ token: 'token_1', userName: '李雷' }), { status: 200 });
+    if (url.endsWith('/api/auth/local/register') && init?.method === 'POST') {
+      registerBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ token: 'token_2', user_name: '新用户' }), { status: 201 });
+    }
     if (url.endsWith('/api/auth/oidc/start')) return new Response(JSON.stringify({ redirect_url: 'https://idp.example/login' }), { status: 200 });
     if (url.endsWith('/api/tenants?page=1&page_size=100')) return new Response(JSON.stringify({ items: [{ id: 'tenant_1', name: 'rnd', displayName: '研发中心', description: '默认租户', updatedAt: '2026-05-30 10:00' }], total: 1, page: 1, page_size: 100 }), { status: 200 });
     if (url.endsWith('/api/tenants') && init?.method === 'POST') return new Response(JSON.stringify({ id: 'tenant_2', name: 'ops', display_name: '运维中心', description: '平台运维', updated_at: '2026-05-30T10:00:00Z' }), { status: 201 });
@@ -60,6 +65,8 @@ test('真实 API 分支使用 VITE_API_BASE_URL', async () => {
   vi.stubGlobal('fetch', fetchMock);
   const api = await import('./index');
   await expect(api.login('admin', 'password')).resolves.toEqual({ token: 'token_1', userName: '李雷' });
+  await expect(api.register({ account: 'newuser', displayName: '新用户', email: 'newuser@example.com', password: 'password' })).resolves.toEqual({ token: 'token_2', userName: '新用户' });
+  expect(registerBody).toEqual({ account: 'newuser', display_name: '新用户', email: 'newuser@example.com', password: 'password' });
   await expect(api.oidcLoginURL()).resolves.toBe('https://idp.example/login');
   await expect(api.listTenants()).resolves.toMatchObject([{ id: 'tenant_1', displayName: '研发中心' }]);
   await expect(api.createTenant({ name: 'ops', displayName: '运维中心', description: '平台运维' })).resolves.toMatchObject({ id: 'tenant_2', name: 'ops', displayName: '运维中心' });

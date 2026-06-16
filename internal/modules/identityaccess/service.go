@@ -21,14 +21,15 @@ const (
 )
 
 type Service struct {
-	repo       Repository
-	audit      AuditLogger
-	ids        shared.IDGenerator
-	clock      shared.Clock
-	verifier   OIDCVerifier
-	roles      map[RoleID]Role
-	accessTTL  time.Duration
-	refreshTTL time.Duration
+	repo                     Repository
+	audit                    AuditLogger
+	ids                      shared.IDGenerator
+	clock                    shared.Clock
+	verifier                 OIDCVerifier
+	roles                    map[RoleID]Role
+	accessTTL                time.Duration
+	refreshTTL               time.Duration
+	localRegistrationEnabled bool
 
 	stateMu sync.Mutex
 	states  map[string]oidcLoginState
@@ -41,13 +42,14 @@ type oidcLoginState struct {
 }
 
 type Options struct {
-	Repository  Repository
-	Audit       AuditLogger
-	IDGenerator shared.IDGenerator
-	Clock       shared.Clock
-	Verifier    OIDCVerifier
-	AccessTTL   time.Duration
-	RefreshTTL  time.Duration
+	Repository               Repository
+	Audit                    AuditLogger
+	IDGenerator              shared.IDGenerator
+	Clock                    shared.Clock
+	Verifier                 OIDCVerifier
+	AccessTTL                time.Duration
+	RefreshTTL               time.Duration
+	LocalRegistrationEnabled *bool
 }
 
 func NewService(opts Options) *Service {
@@ -71,16 +73,21 @@ func NewService(opts Options) *Service {
 	if refreshTTL == 0 {
 		refreshTTL = defaultRefreshTTL
 	}
+	localRegistrationEnabled := true
+	if opts.LocalRegistrationEnabled != nil {
+		localRegistrationEnabled = *opts.LocalRegistrationEnabled
+	}
 	return &Service{
-		repo:       opts.Repository,
-		audit:      audit,
-		ids:        ids,
-		clock:      clock,
-		verifier:   opts.Verifier,
-		roles:      BuiltInRoles(),
-		accessTTL:  accessTTL,
-		refreshTTL: refreshTTL,
-		states:     map[string]oidcLoginState{},
+		repo:                     opts.Repository,
+		audit:                    audit,
+		ids:                      ids,
+		clock:                    clock,
+		verifier:                 opts.Verifier,
+		roles:                    BuiltInRoles(),
+		accessTTL:                accessTTL,
+		refreshTTL:               refreshTTL,
+		localRegistrationEnabled: localRegistrationEnabled,
+		states:                   map[string]oidcLoginState{},
 	}
 }
 
@@ -90,6 +97,13 @@ type CreateLocalUserInput struct {
 	Password    string    `json:"password"`
 	DisplayName string    `json:"display_name"`
 	Email       string    `json:"email"`
+}
+
+type RegisterLocalUserInput struct {
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email"`
 }
 
 type UserDTO struct {
@@ -124,22 +138,47 @@ type OIDCStartResult struct {
 }
 
 func (s *Service) CreateLocalUser(ctx context.Context, input CreateLocalUserInput) (UserDTO, error) {
+	user, err := s.createLocalUser(ctx, RegisterLocalUserInput{Username: input.Username, Password: input.Password, DisplayName: input.DisplayName, Email: input.Email})
+	if err != nil {
+		return UserDTO{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.ActorID, Action: "user.create_local", ResourceType: "user", ResourceID: user.ID, Result: "succeeded", Summary: "创建本地用户", OccurredAt: user.CreatedAt})
+	return ToUserDTO(user), nil
+}
+
+func (s *Service) RegisterLocal(ctx context.Context, input RegisterLocalUserInput) (TokenPair, UserDTO, error) {
+	if !s.localRegistrationEnabled {
+		return TokenPair{}, UserDTO{}, shared.NewError(shared.CodeFailedPrecondition, "注册功能未开启")
+	}
+	user, err := s.createLocalUser(ctx, input)
+	if err != nil {
+		return TokenPair{}, UserDTO{}, err
+	}
+	pair, err := s.issueTokenPair(ctx, user.ID)
+	if err != nil {
+		return TokenPair{}, UserDTO{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: user.ID, Action: "auth.register_local", ResourceType: "user", ResourceID: user.ID, Result: "succeeded", Summary: "自助注册本地用户", OccurredAt: s.clock.Now()})
+	return pair, ToUserDTO(user), nil
+}
+
+func (s *Service) createLocalUser(ctx context.Context, input RegisterLocalUserInput) (User, error) {
 	username := normalizeUsername(input.Username)
 	if username == "" || strings.TrimSpace(input.Password) == "" {
-		return UserDTO{}, shared.NewError(shared.CodeInvalidArgument, "username and password are required")
+		return User{}, shared.NewError(shared.CodeInvalidArgument, "username and password are required")
 	}
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return UserDTO{}, shared.WrapError(shared.CodeInternal, "failed to hash password", err)
+		return User{}, shared.WrapError(shared.CodeInternal, "failed to hash password", err)
 	}
 	now := s.clock.Now()
 	userID, err := s.ids.NewID("usr")
 	if err != nil {
-		return UserDTO{}, err
+		return User{}, err
 	}
 	identityID, err := s.ids.NewID("idn")
 	if err != nil {
-		return UserDTO{}, err
+		return User{}, err
 	}
 	user := User{
 		ID:          userID,
@@ -150,16 +189,15 @@ func (s *Service) CreateLocalUser(ctx context.Context, input CreateLocalUserInpu
 		UpdatedAt:   now,
 	}
 	if err := s.repo.CreateUser(ctx, user); err != nil {
-		return UserDTO{}, err
+		return User{}, err
 	}
 	if err := s.repo.SaveLocalCredential(ctx, LocalCredential{UserID: userID, PasswordHash: passwordHash, UpdatedAt: now}); err != nil {
-		return UserDTO{}, err
+		return User{}, err
 	}
 	if err := s.repo.CreateIdentity(ctx, Identity{ID: identityID, UserID: userID, Provider: ProviderLocal, Issuer: "local", Subject: username, CreatedAt: now}); err != nil {
-		return UserDTO{}, err
+		return User{}, err
 	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.ActorID, Action: "user.create_local", ResourceType: "user", ResourceID: userID, Result: "succeeded", Summary: "创建本地用户", OccurredAt: now})
-	return ToUserDTO(user), nil
+	return user, nil
 }
 
 func (s *Service) DisableUser(ctx context.Context, actorID shared.ID, userID shared.ID) error {

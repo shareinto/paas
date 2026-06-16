@@ -1,7 +1,8 @@
-import { AppstoreOutlined, BuildOutlined, DeploymentUnitOutlined, FileSearchOutlined, FolderOpenOutlined, MenuOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, BuildOutlined, DeploymentUnitOutlined, FileSearchOutlined, FolderOpenOutlined, LogoutOutlined, MenuOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { Layout, Menu, Tabs } from 'antd';
+import { Button, Layout, Menu, Tabs } from 'antd';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { useSession } from '../app/store';
 
 const { Sider, Content } = Layout;
 
@@ -36,6 +37,7 @@ const adminItems = [
 export function ConsoleLayout() {
   const navigate = useNavigate();
   const location = useLocation();
+  const clearSession = useSession((state) => state.clear);
   const activeApplicationId = currentApplicationDetailId(location.pathname);
   const [applicationTabs, setApplicationTabs] = useState<ApplicationTab[]>([]);
   const tabsContext = useMemo<ApplicationTabsContextValue>(() => ({
@@ -58,6 +60,10 @@ export function ConsoleLayout() {
   const handlePlatformMenuClick = ({ key }: { key: string }) => {
     navigate(key);
   };
+  const handleLogout = () => {
+    clearSession();
+    navigate('/login', { replace: true });
+  };
   const handleCloseApplicationTab = (targetKey: string) => {
     setApplicationTabs((current) => {
       const index = current.findIndex((tab) => tab.id === targetKey);
@@ -75,11 +81,16 @@ export function ConsoleLayout() {
       <Layout className="console-shell">
         <Sider width={256} className="console-sider">
           <div className="brand"><MenuOutlined className="brand-menu" />CloudDeliver</div>
-          <div className="nav-section">平台</div>
-          <Menu theme="dark" mode="inline" selectedKeys={[selectedKey(location.pathname)]} items={platformItems} onClick={handlePlatformMenuClick} />
-          <div className="nav-section">平台管理</div>
-          <Menu theme="dark" mode="inline" selectedKeys={[selectedKey(location.pathname)]} items={adminItems} onClick={({ key }) => navigate(key)} />
-          <div className="sider-footer"><AppstoreOutlined />收起导航</div>
+          <div className="sider-menu-stack">
+            <div className="nav-section">平台</div>
+            <Menu theme="dark" mode="inline" selectedKeys={[selectedKey(location.pathname)]} items={platformItems} onClick={handlePlatformMenuClick} />
+            <div className="nav-section">平台管理</div>
+            <Menu theme="dark" mode="inline" selectedKeys={[selectedKey(location.pathname)]} items={adminItems} onClick={({ key }) => navigate(key)} />
+          </div>
+          <div className="sider-footer">
+            <div className="sider-footer-item"><AppstoreOutlined />收起导航</div>
+            <Button className="sider-logout" type="text" icon={<LogoutOutlined />} onClick={handleLogout}>退出登录</Button>
+          </div>
         </Sider>
         <Layout>
           <Content className="console-content">

@@ -365,6 +365,14 @@ export async function login(account: string, password: string) {
   return { token: 'mock-token', userName: account };
 }
 
+export async function register(input: { account: string; displayName: string; email: string; password: string }) {
+  await wait();
+  if (!input.account || !input.displayName || !input.email || !input.password) {
+    throw new Error('请输入完整注册信息');
+  }
+  return { token: `mock-token-${input.account}`, userName: input.displayName || input.account };
+}
+
 export async function oidcLoginURL() {
   await wait();
   return '/oidc/callback?code=mock';
