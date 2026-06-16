@@ -1,5 +1,5 @@
 ﻿# AGENTS.md
-开始编码之前，必须新建worktree,在.worktree下创建新的目录，禁止在当前文件夹修改代码
+开始编码之前，必须新建worktree,在.worktrees下创建新的目录，禁止在当前文件夹修改代码
 开始编码之前，你如果判断可以开始启多个子agent并行开发，就直接开启子agent
 
 本文件为在本仓库中工作的 coding agent 提供项目约定和工作指引。
