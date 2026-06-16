@@ -756,9 +756,108 @@ func TestServiceQueryPorts(t *testing.T) {
 	if len(identities) != 1 || identities[0].Provider != ProviderLocal {
 		t.Fatalf("unexpected identities: %+v", identities)
 	}
-	roles := svc.ListRoles()
+	roles, err := svc.ListRoles(ctx)
+	if err != nil {
+		t.Fatalf("ListRoles() error = %v", err)
+	}
 	if len(roles) != len(BuiltInRoles()) {
 		t.Fatalf("roles length = %d", len(roles))
+	}
+	users, err := svc.ListUsers(ctx, shared.PageRequest{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("ListUsers() error = %v", err)
+	}
+	if users.Total != 1 || users.Items[0].Username != "query" {
+		t.Fatalf("unexpected users page: %+v", users)
+	}
+}
+
+func TestScopedRoleBindingReplacementAndDeletion(t *testing.T) {
+	svc, _, audit := newTestService(t, nil)
+	ctx := context.Background()
+	user, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "member", Password: "secret"})
+	if err != nil {
+		t.Fatalf("CreateLocalUser() error = %v", err)
+	}
+	first, err := svc.ReplaceRoleBindingForSubjectScope(ctx, RoleBinding{SubjectType: SubjectUser, SubjectID: user.ID, RoleID: RoleDeveloper, ScopeKind: ScopeProject, ScopeID: "project_1"})
+	if err != nil {
+		t.Fatalf("ReplaceRoleBindingForSubjectScope() error = %v", err)
+	}
+	second, err := svc.ReplaceRoleBindingForSubjectScope(ctx, RoleBinding{SubjectType: SubjectUser, SubjectID: user.ID, RoleID: RoleProjectAdmin, ScopeKind: ScopeProject, ScopeID: "project_1"})
+	if err != nil {
+		t.Fatalf("ReplaceRoleBindingForSubjectScope second error = %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("replacement should create a fresh binding")
+	}
+	bindings, err := svc.ListRoleBindingsByScope(ctx, ScopeProject, "project_1")
+	if err != nil {
+		t.Fatalf("ListRoleBindingsByScope() error = %v", err)
+	}
+	if len(bindings) != 1 || bindings[0].RoleID != RoleProjectAdmin || bindings[0].SubjectID != user.ID {
+		t.Fatalf("unexpected scoped bindings: %+v", bindings)
+	}
+	if err := svc.DeleteRoleBindingsForSubjectScope(ctx, Subject{Type: SubjectUser, ID: user.ID}, ScopeProject, "project_1"); err != nil {
+		t.Fatalf("DeleteRoleBindingsForSubjectScope() error = %v", err)
+	}
+	bindings, err = svc.ListRoleBindingsByScope(ctx, ScopeProject, "project_1")
+	if err != nil {
+		t.Fatalf("ListRoleBindingsByScope after delete error = %v", err)
+	}
+	if len(bindings) != 0 {
+		t.Fatalf("expected scoped bindings to be removed, got %+v", bindings)
+	}
+	if err := svc.DeleteRoleBindingsForSubjectScope(ctx, Subject{Type: SubjectUser, ID: user.ID}, ScopeProject, "project_1"); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("deleting missing scoped binding should be not_found, got %v", err)
+	}
+	if len(audit.events) == 0 || audit.events[0].Action != "user.create_local" {
+		t.Fatalf("user creation should still be audited, got %+v", audit.events)
+	}
+}
+
+func TestUpdateRolePermissionsPersistsAndAffectsRBAC(t *testing.T) {
+	svc, repo, audit := newTestService(t, nil)
+	ctx := context.Background()
+	admin, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "admin-role", Password: "secret"})
+	if err != nil {
+		t.Fatalf("CreateLocalUser admin error = %v", err)
+	}
+	dev, err := svc.CreateLocalUser(ctx, CreateLocalUserInput{Username: "dev-role", Password: "secret"})
+	if err != nil {
+		t.Fatalf("CreateLocalUser dev error = %v", err)
+	}
+	if _, err := svc.CreateRoleBinding(ctx, RoleBinding{SubjectType: SubjectUser, SubjectID: admin.ID, RoleID: RolePlatformAdmin, ScopeKind: ScopePlatform}); err != nil {
+		t.Fatalf("CreateRoleBinding admin error = %v", err)
+	}
+	if _, err := svc.CreateRoleBinding(ctx, RoleBinding{SubjectType: SubjectUser, SubjectID: dev.ID, RoleID: RoleDeveloper, ScopeKind: ScopeProject, ScopeID: "project_1"}); err != nil {
+		t.Fatalf("CreateRoleBinding developer error = %v", err)
+	}
+	if err := svc.Check(ctx, Subject{Type: SubjectUser, ID: dev.ID}, ResourceScope{Kind: ScopeProject, ProjectID: "project_1"}, "build:create"); err != nil {
+		t.Fatalf("developer should initially create builds: %v", err)
+	}
+
+	updated, err := svc.UpdateRolePermissions(ctx, RoleDeveloper, UpdateRolePermissionsInput{Actor: Subject{Type: SubjectUser, ID: admin.ID}, Permissions: []Permission{"application:read", "build:read"}})
+	if err != nil {
+		t.Fatalf("UpdateRolePermissions() error = %v", err)
+	}
+	if len(updated.Permissions) != 2 || updated.Permissions[0] != "application:read" {
+		t.Fatalf("unexpected updated role: %+v", updated)
+	}
+	if err := svc.Check(ctx, Subject{Type: SubjectUser, ID: dev.ID}, ResourceScope{Kind: ScopeProject, ProjectID: "project_1"}, "build:create"); shared.CodeOf(err) != shared.CodePermissionDenied {
+		t.Fatalf("developer build:create should be denied after edit, got %v", err)
+	}
+	if err := svc.Check(ctx, Subject{Type: SubjectUser, ID: dev.ID}, ResourceScope{Kind: ScopeProject, ProjectID: "project_1"}, "build:read"); err != nil {
+		t.Fatalf("developer build:read should remain allowed: %v", err)
+	}
+	stored, err := repo.ListRoles(ctx)
+	if err != nil {
+		t.Fatalf("repository ListRoles() error = %v", err)
+	}
+	if len(stored) != 1 || stored[0].ID != RoleDeveloper || len(stored[0].Permissions) != 2 {
+		t.Fatalf("role permissions should be persisted, got %+v", stored)
+	}
+	if audit.events[len(audit.events)-1].Action != "role.update_permissions" {
+		t.Fatalf("role update should be audited, got %+v", audit.events)
 	}
 }
 
@@ -921,11 +1020,37 @@ func TestHTTPHandlersCoverUserRoleTokenAndOIDCFlows(t *testing.T) {
 	if rolesRec.Code != http.StatusOK {
 		t.Fatalf("roles status = %d body = %s", rolesRec.Code, rolesRec.Body.String())
 	}
+	if !strings.Contains(rolesRec.Body.String(), `"suggestedScopes"`) || strings.Contains(rolesRec.Body.String(), `"Permissions"`) {
+		t.Fatalf("roles response should use stable frontend fields: %s", rolesRec.Body.String())
+	}
+
+	usersRec := doJSON(mux, http.MethodGet, "/api/users?page=1&page_size=20", ``, "")
+	if usersRec.Code != http.StatusOK {
+		t.Fatalf("users status = %d body = %s", usersRec.Code, usersRec.Body.String())
+	}
+	for _, forbidden := range []string{"password_hash", "token_hash", "secret"} {
+		if strings.Contains(usersRec.Body.String(), forbidden) {
+			t.Fatalf("users response leaked %q: %s", forbidden, usersRec.Body.String())
+		}
+	}
 
 	roleBindingBody := `{"subject_type":"user","subject_id":"` + created.ID.String() + `","role_id":"viewer","scope_kind":"platform","scope_id":""}`
 	roleBindingRec := doJSON(mux, http.MethodPost, "/api/role-bindings", roleBindingBody, "")
 	if roleBindingRec.Code != http.StatusCreated {
 		t.Fatalf("role binding status = %d body = %s", roleBindingRec.Code, roleBindingRec.Body.String())
+	}
+
+	platformBindingBody := `{"subject_type":"user","subject_id":"` + created.ID.String() + `","role_id":"platform_admin","scope_kind":"platform","scope_id":""}`
+	if rec := doJSON(mux, http.MethodPost, "/api/role-bindings", platformBindingBody, ""); rec.Code != http.StatusCreated {
+		t.Fatalf("platform role binding status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	permissionsRec := doJSON(mux, http.MethodGet, "/api/permissions", ``, "")
+	if permissionsRec.Code != http.StatusOK || !strings.Contains(permissionsRec.Body.String(), "build:create") {
+		t.Fatalf("permissions status = %d body = %s", permissionsRec.Code, permissionsRec.Body.String())
+	}
+	updateRoleRec := doJSON(mux, http.MethodPatch, "/api/roles/developer/permissions", `{"actor":{"type":"user","id":"`+created.ID.String()+`"},"permissions":["application:read","build:read"]}`, "")
+	if updateRoleRec.Code != http.StatusOK || strings.Contains(updateRoleRec.Body.String(), "build:create") {
+		t.Fatalf("update role status = %d body = %s", updateRoleRec.Code, updateRoleRec.Body.String())
 	}
 
 	logoutRec := doJSON(mux, http.MethodPost, "/api/auth/logout", ``, loginResp.Token.AccessToken)

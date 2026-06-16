@@ -38,6 +38,14 @@ type Project struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type ProjectMember struct {
+	ProjectID shared.ID             `json:"project_id"`
+	UserID    shared.ID             `json:"user_id"`
+	RoleID    identityaccess.RoleID `json:"role_id"`
+	CreatedAt time.Time             `json:"created_at"`
+	UpdatedAt time.Time             `json:"updated_at"`
+}
+
 type TenantCreatedPayload struct {
 	TenantID shared.ID `json:"tenant_id"`
 	Name     string    `json:"name"`

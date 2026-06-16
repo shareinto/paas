@@ -62,6 +62,62 @@ func (g *recordingDeletionGuard) PrepareProjectDeletion(_ context.Context, actor
 	return g.err
 }
 
+type recordingRoleBindings struct {
+	bindings []identityaccess.RoleBinding
+	err      error
+}
+
+func (r *recordingRoleBindings) ReplaceRoleBindingForSubjectScope(_ context.Context, binding identityaccess.RoleBinding) (identityaccess.RoleBinding, error) {
+	if r.err != nil {
+		return identityaccess.RoleBinding{}, r.err
+	}
+	filtered := r.bindings[:0]
+	for _, existing := range r.bindings {
+		if existing.SubjectType == binding.SubjectType && existing.SubjectID == binding.SubjectID && existing.ScopeKind == binding.ScopeKind && existing.ScopeID == binding.ScopeID {
+			continue
+		}
+		filtered = append(filtered, existing)
+	}
+	r.bindings = filtered
+	binding.ID = shared.ID("rb_" + binding.RoleID)
+	binding.CreatedAt = time.Date(2026, 5, 30, 2, 0, 0, 0, time.UTC)
+	r.bindings = append(r.bindings, binding)
+	return binding, nil
+}
+
+func (r *recordingRoleBindings) DeleteRoleBindingsForSubjectScope(_ context.Context, subject identityaccess.Subject, scopeKind identityaccess.ScopeKind, scopeID shared.ID) error {
+	if r.err != nil {
+		return r.err
+	}
+	filtered := r.bindings[:0]
+	deleted := false
+	for _, existing := range r.bindings {
+		if existing.SubjectType == subject.Type && existing.SubjectID == subject.ID && existing.ScopeKind == scopeKind && existing.ScopeID == scopeID {
+			deleted = true
+			continue
+		}
+		filtered = append(filtered, existing)
+	}
+	r.bindings = filtered
+	if !deleted {
+		return shared.NewError(shared.CodeNotFound, "role binding not found")
+	}
+	return nil
+}
+
+func (r *recordingRoleBindings) ListRoleBindingsByScope(_ context.Context, scopeKind identityaccess.ScopeKind, scopeID shared.ID) ([]identityaccess.RoleBinding, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	result := []identityaccess.RoleBinding{}
+	for _, binding := range r.bindings {
+		if binding.ScopeKind == scopeKind && binding.ScopeID == scopeID {
+			result = append(result, binding)
+		}
+	}
+	return result, nil
+}
+
 func newTestRepository(t *testing.T) Repository {
 	t.Helper()
 	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
@@ -213,6 +269,90 @@ func TestTenantMemberValidationAndRepositoryErrors(t *testing.T) {
 	}
 	if err := repo.DeleteTenantMember(ctx, "missing", "usr_dev"); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("deleting member for missing tenant should fail, got %v", err)
+	}
+}
+
+func TestProjectMemberUsesProjectScopedRoleBindingAndAudit(t *testing.T) {
+	svc, _, permission, audit, _ := newTestService(t)
+	roles := &recordingRoleBindings{}
+	svc.roles = roles
+	ctx := context.Background()
+	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "platform"})
+	if err != nil {
+		t.Fatalf("CreateTenant() error = %v", err)
+	}
+	project, err := svc.CreateProject(ctx, CreateProjectInput{Actor: testActor(), TenantID: tenant.ID, Name: "checkout"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+
+	member, err := svc.UpsertProjectMember(ctx, UpsertProjectMemberInput{Actor: testActor(), ProjectID: project.ID, UserID: "usr_dev", RoleID: identityaccess.RoleDeveloper})
+	if err != nil {
+		t.Fatalf("UpsertProjectMember() error = %v", err)
+	}
+	if member.ProjectID != project.ID || member.UserID != "usr_dev" || member.RoleID != identityaccess.RoleDeveloper {
+		t.Fatalf("unexpected project member: %+v", member)
+	}
+	member, err = svc.UpsertProjectMember(ctx, UpsertProjectMemberInput{Actor: testActor(), ProjectID: project.ID, UserID: "usr_dev", RoleID: identityaccess.RoleProjectAdmin})
+	if err != nil {
+		t.Fatalf("UpsertProjectMember replace error = %v", err)
+	}
+	members, err := svc.ListProjectMembers(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ListProjectMembers() error = %v", err)
+	}
+	if len(members) != 1 || members[0].RoleID != identityaccess.RoleProjectAdmin {
+		t.Fatalf("expected one replaced project member, got %+v", members)
+	}
+	lastCall := permission.calls[len(permission.calls)-1]
+	if lastCall.resource.Kind != identityaccess.ScopeProject || lastCall.resource.ProjectID != project.ID || lastCall.action != "project:update" {
+		t.Fatalf("project member update should check project scope, got %+v", lastCall)
+	}
+	if audit.events[len(audit.events)-1].Action != "project_member.upsert" {
+		t.Fatalf("project member upsert should be audited, got %+v", audit.events)
+	}
+	if err := svc.RemoveProjectMember(ctx, RemoveProjectMemberInput{Actor: testActor(), ProjectID: project.ID, UserID: "usr_dev"}); err != nil {
+		t.Fatalf("RemoveProjectMember() error = %v", err)
+	}
+	members, err = svc.ListProjectMembers(ctx, project.ID)
+	if err != nil {
+		t.Fatalf("ListProjectMembers after delete error = %v", err)
+	}
+	if len(members) != 0 {
+		t.Fatalf("expected project member to be removed, got %+v", members)
+	}
+	if audit.events[len(audit.events)-1].Action != "project_member.remove" {
+		t.Fatalf("project member removal should be audited, got %+v", audit.events)
+	}
+}
+
+func TestProjectMemberValidationPermissionAndMissingRoleManager(t *testing.T) {
+	svc, _, permission, _, _ := newTestService(t)
+	ctx := context.Background()
+	tenant, err := svc.CreateTenant(ctx, CreateTenantInput{Actor: testActor(), Name: "platform"})
+	if err != nil {
+		t.Fatalf("CreateTenant() error = %v", err)
+	}
+	project, err := svc.CreateProject(ctx, CreateProjectInput{Actor: testActor(), TenantID: tenant.ID, Name: "checkout"})
+	if err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	if _, err := svc.UpsertProjectMember(ctx, UpsertProjectMemberInput{Actor: testActor(), ProjectID: project.ID}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("missing project member fields should fail, got %v", err)
+	}
+	if _, err := svc.UpsertProjectMember(ctx, UpsertProjectMemberInput{Actor: testActor(), ProjectID: "missing", UserID: "usr_dev", RoleID: identityaccess.RoleDeveloper}); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("missing project should fail, got %v", err)
+	}
+	permission.err = shared.NewError(shared.CodePermissionDenied, "denied")
+	if _, err := svc.UpsertProjectMember(ctx, UpsertProjectMemberInput{Actor: testActor(), ProjectID: project.ID, UserID: "usr_dev", RoleID: identityaccess.RoleDeveloper}); shared.CodeOf(err) != shared.CodePermissionDenied {
+		t.Fatalf("permission denied should fail, got %v", err)
+	}
+	permission.err = nil
+	if _, err := svc.UpsertProjectMember(ctx, UpsertProjectMemberInput{Actor: testActor(), ProjectID: project.ID, UserID: "usr_dev", RoleID: identityaccess.RoleDeveloper}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("missing role binding manager should fail, got %v", err)
+	}
+	if err := svc.RemoveProjectMember(ctx, RemoveProjectMemberInput{Actor: testActor(), ProjectID: project.ID}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("missing remove project member fields should fail, got %v", err)
 	}
 }
 

@@ -63,6 +63,17 @@ type ProjectMembershipQuery interface {
 	ListTenantMembers(ctx context.Context, tenantID shared.ID) ([]TenantMember, error)
 }
 
+type RoleBindingManager interface {
+	ReplaceRoleBindingForSubjectScope(ctx context.Context, binding identityaccess.RoleBinding) (identityaccess.RoleBinding, error)
+	DeleteRoleBindingsForSubjectScope(ctx context.Context, subject identityaccess.Subject, scopeKind identityaccess.ScopeKind, scopeID shared.ID) error
+	ListRoleBindingsByScope(ctx context.Context, scopeKind identityaccess.ScopeKind, scopeID shared.ID) ([]identityaccess.RoleBinding, error)
+}
+
+type SubjectQuery interface {
+	GetUser(ctx context.Context, id shared.ID) (identityaccess.User, error)
+	ListUsers(ctx context.Context, page shared.PageRequest) (shared.PageResult[identityaccess.UserDTO], error)
+}
+
 type PermissionChecker interface {
 	Check(ctx context.Context, subject identityaccess.Subject, resource identityaccess.ResourceScope, action identityaccess.Permission) error
 }

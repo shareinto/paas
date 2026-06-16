@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Card, Descriptions, Tabs, Tag } from 'antd';
 import { useParams } from 'react-router-dom';
 import { listProjects } from '../api';
+import { MemberManagement } from '../components/MemberManagement';
 import { PageHeader } from '../components/PageHeader';
 import { ApplicationsPage } from './ApplicationsPage';
 import { SourceRepositoryList } from './SourceRepositoriesPage';
@@ -24,7 +25,8 @@ export function ProjectDetailPage() {
       </Card>
       <Tabs className="detail-tabs" items={[
         { key: 'applications', label: '应用', children: <ApplicationsPage projectId={id} embedded /> },
-        { key: 'source-repositories', label: '源码仓库', children: <SourceRepositoryList projectId={id} hideProjectFilter /> }
+        { key: 'source-repositories', label: '源码仓库', children: <SourceRepositoryList projectId={id} hideProjectFilter /> },
+        { key: 'members', label: '成员', children: <MemberManagement scopeKind="project" scopeId={id} title="项目成员" /> }
       ]} />
     </>
   );

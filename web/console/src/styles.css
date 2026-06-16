@@ -258,6 +258,20 @@ button, input, textarea, select { font-family: inherit; }
 .log-color-magenta { color: #f0abfc; }
 .log-color-cyan { color: #67e8f9; }
 .template-grid { display: grid; grid-template-columns: minmax(520px, 1.35fr) minmax(320px, 0.65fr); gap: 16px; }
+.roles-layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: start; }
+.roles-list-card .ant-card-body { padding: 0; }
+.role-list-item { padding: 12px 16px !important; cursor: pointer; border-inline-start: 3px solid transparent; }
+.role-list-item.active, .role-list-item:hover { background: #f1f6ff; border-inline-start-color: var(--primary); }
+.roles-detail-card .ant-card-body { min-height: 520px; padding: 16px; }
+.roles-detail { width: 100%; }
+.roles-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border-soft); }
+.roles-detail-head .ant-typography { margin: 0; }
+.permission-groups { display: grid; gap: 8px; }
+.permission-group { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; align-items: start; padding: 10px 0; border-top: 1px solid var(--border-soft); }
+.permission-group:first-child { border-top: 0; padding-top: 0; }
+.permission-group-title { color: var(--text); font-size: 13px; font-weight: 600; line-height: 24px; white-space: nowrap; }
+.permission-checkbox-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 6px 12px; }
+.permission-checkbox-grid .ant-checkbox-wrapper { min-height: 24px; margin-inline-start: 0; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
 .delivery-template-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .delivery-template-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
 .delivery-stage-template-card { display: grid; grid-template-rows: auto 1fr; border: 1px solid var(--border); border-radius: var(--radius); background: #fff; overflow: hidden; min-height: 270px; }

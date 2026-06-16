@@ -131,7 +131,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	tenantRepo := repos.tenant
 	sourceRepo := repos.source
 	appRepo := repos.app
-	tenantSvc := tenantproject.NewService(tenantproject.Options{Repository: tenantRepo, Audit: audit.TenantProjectLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	tenantSvc := tenantproject.NewService(tenantproject.Options{Repository: tenantRepo, PermissionChecker: identitySvc, RoleBindings: identitySvc, Audit: audit.TenantProjectLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	gitAdapter, webhookURL := sourceGitAdapterFromEnv()
 	sourceSvc := sourcerepository.NewService(sourcerepository.Options{Repository: sourceRepo, Git: gitAdapter, ProjectQuery: tenantSvc, MembershipQuery: tenantSvc, Audit: audit.SourceRepositoryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock, WebhookCallbackURL: webhookURL})
@@ -199,7 +199,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	mux := http.NewServeMux()
 	state := serverState{tenantRepo: tenantRepo, sourceRepo: sourceRepo, appRepo: appRepo, buildRepo: buildRepo, deliveryRepo: deliveryRepo, auditRepo: auditRepo, gitopsRepo: gitopsRepo, clusterRepo: clusterRepo}
 	registerDevelopmentRoutes(mux, developmentAPI{identity: identitySvc, tenants: tenantSvc, apps: appSvc, builds: buildSvc, delivery: deliverySvc, state: state})
-	tenantproject.NewHandler(tenantSvc).Register(mux)
+	tenantproject.NewHandler(tenantSvc, tenantproject.HandlerOptions{SubjectQuery: identitySvc}).Register(mux)
 	identityaccess.NewHandler(identitySvc).Register(mux)
 	sourcerepository.NewHandler(sourceSvc).Register(mux)
 	appenv.NewHandler(appSvc).Register(mux)
@@ -218,34 +218,43 @@ func ensureDevelopmentAdmin(ctx context.Context, repo identityaccess.Repository,
 	if err != nil {
 		return err
 	}
+	var adminID shared.ID
 	if users.Total > 0 {
-		return nil
-	}
-	admin, err := service.CreateLocalUser(ctx, identityaccess.CreateLocalUserInput{
-		ActorID:     "usr_admin",
-		Username:    "admin",
-		Password:    "password",
-		DisplayName: "平台管理员",
-	})
-	if err != nil && shared.CodeOf(err) != shared.CodeConflict {
-		return err
-	}
-	adminID := admin.ID
-	if adminID.IsZero() {
-		existing, findErr := repo.FindUserByUsername(ctx, "admin")
-		if findErr != nil {
-			return findErr
+		if existing, findErr := repo.FindUserByUsername(ctx, "admin"); findErr == nil {
+			adminID = existing.ID
 		}
-		adminID = existing.ID
+	} else {
+		admin, err := service.CreateLocalUser(ctx, identityaccess.CreateLocalUserInput{
+			ActorID:     "usr_admin",
+			Username:    "admin",
+			Password:    "password",
+			DisplayName: "平台管理员",
+		})
+		if err != nil && shared.CodeOf(err) != shared.CodeConflict {
+			return err
+		}
+		adminID = admin.ID
+		if adminID.IsZero() {
+			existing, findErr := repo.FindUserByUsername(ctx, "admin")
+			if findErr != nil {
+				return findErr
+			}
+			adminID = existing.ID
+		}
 	}
-	_, err = service.CreateRoleBinding(ctx, identityaccess.RoleBinding{
-		SubjectType: identityaccess.SubjectUser,
-		SubjectID:   adminID,
-		RoleID:      identityaccess.RolePlatformAdmin,
-		ScopeKind:   identityaccess.ScopePlatform,
-	})
-	if err != nil && shared.CodeOf(err) != shared.CodeConflict {
-		return err
+	for _, subjectID := range []shared.ID{adminID, "usr_admin"} {
+		if subjectID.IsZero() {
+			continue
+		}
+		_, err = service.ReplaceRoleBindingForSubjectScope(ctx, identityaccess.RoleBinding{
+			SubjectType: identityaccess.SubjectUser,
+			SubjectID:   subjectID,
+			RoleID:      identityaccess.RolePlatformAdmin,
+			ScopeKind:   identityaccess.ScopePlatform,
+		})
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }

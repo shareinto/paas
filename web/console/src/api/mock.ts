@@ -1,5 +1,8 @@
 export type Tenant = { id: string; name: string; displayName: string; description?: string; updatedAt: string };
 export type Project = { id: string; tenantId: string; name: string; displayName: string; description?: string; tenant: string; owner: string; updatedAt: string };
+export type User = { id: string; username: string; displayName: string; email?: string; avatarUrl?: string; disabled: boolean };
+export type Role = { id: string; name: string; permissions: string[]; suggestedScopes: string[] };
+export type Member = { userId: string; username: string; displayName: string; email?: string; disabled: boolean; roleId: string; createdAt: string; updatedAt: string };
 export type StringMap = Record<string, string>;
 export type Application = { id: string; name: string; displayName: string; project: string; projectId?: string; description?: string; runtimeEnvironmentId?: string; runtimeEnvironments?: ApplicationRuntimeEnvironment[]; status?: string; type: string; stageStatus: string; build: string; release: string; owner: string; updatedAt: string };
 export type ApplicationRuntimeEnvironment = { id: string; name: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string; selectorLabels?: StringMap };
@@ -89,6 +92,38 @@ const projects: Project[] = [
   { id: 'project_1', tenantId: 'tenant_1', name: 'order', displayName: '订单平台', description: '订单业务应用', tenant: '研发中心', owner: '李雷', updatedAt: '2026-05-30 09:30' },
   { id: 'project_2', tenantId: 'tenant_1', name: 'payment', displayName: '支付平台', description: '支付业务应用', tenant: '研发中心', owner: '韩梅梅', updatedAt: '2026-05-29 17:12' }
 ];
+const users: User[] = [
+  { id: 'usr_admin', username: 'admin', displayName: '平台管理员', email: 'admin@example.com', disabled: false },
+  { id: 'usr_lilei', username: 'lilei', displayName: '李雷', email: 'lilei@example.com', disabled: false },
+  { id: 'usr_hanmeimei', username: 'hanmeimei', displayName: '韩梅梅', email: 'hanmeimei@example.com', disabled: false },
+  { id: 'usr_wangfang', username: 'wangfang', displayName: '王芳', email: 'wangfang@example.com', disabled: false }
+];
+const roles: Role[] = [
+  { id: 'platform_admin', name: '平台管理员', permissions: ['*:*'], suggestedScopes: ['platform'] },
+  { id: 'tenant_owner', name: '租户所有者', permissions: ['tenant:update', 'project:update', 'cluster:read', 'cluster:manage', 'application:create', 'application:read', 'build:create', 'build:read', 'build:cancel', 'freight:create', 'freight:delete', 'deployment:create', 'deployment:approve', 'runtime:read', 'runtime:restart', 'audit:read'], suggestedScopes: ['tenant'] },
+  { id: 'tenant_admin', name: '租户管理员', permissions: ['tenant:update', 'project:update', 'cluster:read', 'cluster:manage', 'application:create', 'application:read', 'build:create', 'build:read', 'build:cancel', 'freight:create', 'freight:delete', 'deployment:create', 'runtime:read', 'runtime:restart'], suggestedScopes: ['tenant'] },
+  { id: 'project_admin', name: '项目管理员', permissions: ['project:update', 'application:create', 'application:read', 'application:update', 'build:create', 'build:read', 'build:cancel', 'freight:create', 'freight:delete', 'deployment:create', 'runtime:read', 'runtime:restart'], suggestedScopes: ['tenant', 'project'] },
+  { id: 'developer', name: '开发者', permissions: ['application:create', 'application:read', 'application:update', 'build:create', 'build:read', 'build:cancel', 'freight:create', 'freight:delete', 'deployment:create', 'runtime:read'], suggestedScopes: ['tenant', 'project'] },
+  { id: 'viewer', name: '只读成员', permissions: ['application:read', 'stage:read', 'build:read', 'deployment:read', 'runtime:read'], suggestedScopes: ['tenant', 'project'] },
+  { id: 'operator', name: '运维人员', permissions: ['stage:read', 'stage:update', 'deployment:create', 'deployment:rollback', 'build:read', 'runtime:read', 'runtime:restart', 'runtime:terminal'], suggestedScopes: ['tenant', 'project'] },
+  { id: 'prod_approver', name: '生产审批人', permissions: ['deployment:approve', 'deployment:read', 'runtime:read'], suggestedScopes: ['tenant', 'project'] },
+  { id: 'security_auditor', name: '安全审计员', permissions: ['audit:read', 'application:read', 'deployment:read', 'runtime:read'], suggestedScopes: ['tenant', 'project'] }
+];
+const tenantMembers: Record<string, Member[]> = {
+  tenant_1: [
+    { userId: 'usr_admin', username: 'admin', displayName: '平台管理员', email: 'admin@example.com', disabled: false, roleId: 'tenant_owner', createdAt: '2026-05-30 09:30', updatedAt: '2026-05-30 09:30' },
+    { userId: 'usr_lilei', username: 'lilei', displayName: '李雷', email: 'lilei@example.com', disabled: false, roleId: 'developer', createdAt: '2026-05-30 09:40', updatedAt: '2026-05-30 09:40' }
+  ]
+};
+const projectMembers: Record<string, Member[]> = {
+  project_1: [
+    { userId: 'usr_lilei', username: 'lilei', displayName: '李雷', email: 'lilei@example.com', disabled: false, roleId: 'project_admin', createdAt: '2026-05-30 09:45', updatedAt: '2026-05-30 09:45' },
+    { userId: 'usr_wangfang', username: 'wangfang', displayName: '王芳', email: 'wangfang@example.com', disabled: false, roleId: 'developer', createdAt: '2026-05-30 10:00', updatedAt: '2026-05-30 10:00' }
+  ],
+  project_2: [
+    { userId: 'usr_hanmeimei', username: 'hanmeimei', displayName: '韩梅梅', email: 'hanmeimei@example.com', disabled: false, roleId: 'project_admin', createdAt: '2026-05-29 17:20', updatedAt: '2026-05-29 17:20' }
+  ]
+};
 const jenkinsJobTemplates: JenkinsJobTemplate[] = [
   { id: 'java-unified-v1', name: 'java-unified-v1', version: 1, status: 'enabled', isDefault: true, updatedAt: '2026-05-31 10:00' },
   { id: 'java-tomcat-v1', name: 'java-tomcat-v1', version: 2, status: 'enabled', isDefault: false, updatedAt: '2026-05-30 18:20' }
@@ -383,6 +418,30 @@ export async function currentUser() {
   return { name: '平台用户', permissions: ['application:create', 'deployment:create'] };
 }
 
+export async function listUsers(): Promise<User[]> {
+  await wait();
+  return users.map((item) => ({ ...item }));
+}
+
+export async function listRoles(): Promise<Role[]> {
+  await wait();
+  return roles.map((item) => ({ ...item, permissions: [...item.permissions], suggestedScopes: [...item.suggestedScopes] }));
+}
+
+export async function listPermissions(): Promise<string[]> {
+  await wait();
+  return [...new Set(roles.flatMap((role) => role.permissions))].sort();
+}
+
+export async function updateRolePermissions(roleId: string, permissions: string[]): Promise<Role> {
+  await wait();
+  const role = roles.find((item) => item.id === roleId);
+  if (!role) throw new Error('角色不存在');
+  if (role.id === 'platform_admin' && !permissions.includes('*:*')) throw new Error('平台管理员必须保留全部权限');
+  role.permissions = [...new Set(permissions.filter(Boolean))].sort();
+  return { ...role, permissions: [...role.permissions], suggestedScopes: [...role.suggestedScopes] };
+}
+
 export async function listTenants(): Promise<Tenant[]> {
   await wait();
   return tenants.map((item) => ({ ...item }));
@@ -409,6 +468,37 @@ export async function updateTenant(id: string, input: { displayName: string; des
   return { ...tenant };
 }
 
+export async function listTenantMembers(tenantId: string): Promise<Member[]> {
+  await wait();
+  if (!tenants.some((item) => item.id === tenantId)) throw new Error('租户不存在');
+  return (tenantMembers[tenantId] || []).map((item) => ({ ...item }));
+}
+
+export async function upsertTenantMember(tenantId: string, input: { userId: string; roleId: string }) {
+  await wait();
+  const user = users.find((item) => item.id === input.userId);
+  if (!user) throw new Error('用户不存在');
+  const members = tenantMembers[tenantId] || [];
+  const next: Member = { userId: user.id, username: user.username, displayName: user.displayName, email: user.email, disabled: user.disabled, roleId: input.roleId, createdAt: '刚刚', updatedAt: '刚刚' };
+  const index = members.findIndex((item) => item.userId === input.userId);
+  if (index >= 0) {
+    next.createdAt = members[index].createdAt;
+    members[index] = next;
+  } else {
+    members.unshift(next);
+  }
+  tenantMembers[tenantId] = members;
+  return { ...next };
+}
+
+export async function removeTenantMember(tenantId: string, userId: string) {
+  await wait();
+  const members = tenantMembers[tenantId] || [];
+  const index = members.findIndex((item) => item.userId === userId);
+  if (index < 0) throw new Error('租户成员不存在');
+  members.splice(index, 1);
+}
+
 export async function listProjects(): Promise<Project[]> {
   await wait();
   return projects.map((item) => ({ ...item }));
@@ -428,6 +518,37 @@ export async function deleteProject(id: string) {
   const index = projects.findIndex((item) => item.id === id);
   if (index < 0) throw new Error('项目不存在');
   projects.splice(index, 1);
+}
+
+export async function listProjectMembers(projectId: string): Promise<Member[]> {
+  await wait();
+  if (!projects.some((item) => item.id === projectId)) throw new Error('项目不存在');
+  return (projectMembers[projectId] || []).map((item) => ({ ...item }));
+}
+
+export async function upsertProjectMember(projectId: string, input: { userId: string; roleId: string }) {
+  await wait();
+  const user = users.find((item) => item.id === input.userId);
+  if (!user) throw new Error('用户不存在');
+  const members = projectMembers[projectId] || [];
+  const next: Member = { userId: user.id, username: user.username, displayName: user.displayName, email: user.email, disabled: user.disabled, roleId: input.roleId, createdAt: '刚刚', updatedAt: '刚刚' };
+  const index = members.findIndex((item) => item.userId === input.userId);
+  if (index >= 0) {
+    next.createdAt = members[index].createdAt;
+    members[index] = next;
+  } else {
+    members.unshift(next);
+  }
+  projectMembers[projectId] = members;
+  return { ...next };
+}
+
+export async function removeProjectMember(projectId: string, userId: string) {
+  await wait();
+  const members = projectMembers[projectId] || [];
+  const index = members.findIndex((item) => item.userId === userId);
+  if (index < 0) throw new Error('项目成员不存在');
+  members.splice(index, 1);
 }
 
 export async function listApplications(projectId?: string): Promise<Application[]> {

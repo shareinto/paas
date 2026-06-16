@@ -3,28 +3,44 @@ package tenantproject
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
 )
 
 type Handler struct {
-	service *Service
+	service  *Service
+	subjects SubjectQuery
 }
 
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+type HandlerOptions struct {
+	SubjectQuery SubjectQuery
+}
+
+func NewHandler(service *Service, opts ...HandlerOptions) *Handler {
+	handler := &Handler{service: service}
+	if len(opts) > 0 {
+		handler.subjects = opts[0].SubjectQuery
+	}
+	return handler
 }
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tenants", h.handleListTenants)
 	mux.HandleFunc("POST /api/tenants", h.handleCreateTenant)
 	mux.HandleFunc("PATCH /api/tenants/{tenantId}", h.handleUpdateTenant)
+	mux.HandleFunc("GET /api/tenants/{tenantId}/members", h.handleListTenantMembers)
+	mux.HandleFunc("PUT /api/tenants/{tenantId}/members/{userId}", h.handleUpsertTenantMember)
+	mux.HandleFunc("DELETE /api/tenants/{tenantId}/members/{userId}", h.handleRemoveTenantMember)
 	mux.HandleFunc("GET /api/projects", h.handleListProjects)
 	mux.HandleFunc("POST /api/projects", h.handleCreateProject)
 	mux.HandleFunc("GET /api/projects/{projectId}", h.handleGetProject)
 	mux.HandleFunc("PATCH /api/projects/{projectId}", h.handleUpdateProject)
 	mux.HandleFunc("DELETE /api/projects/{projectId}", h.handleDeleteProject)
+	mux.HandleFunc("GET /api/projects/{projectId}/members", h.handleListProjectMembers)
+	mux.HandleFunc("PUT /api/projects/{projectId}/members/{userId}", h.handleUpsertProjectMember)
+	mux.HandleFunc("DELETE /api/projects/{projectId}/members/{userId}", h.handleRemoveProjectMember)
 }
 
 type tenantRow struct {
@@ -44,6 +60,17 @@ type projectRow struct {
 	Tenant      string    `json:"tenant"`
 	Owner       string    `json:"owner"`
 	UpdatedAt   string    `json:"updatedAt"`
+}
+
+type memberRow struct {
+	UserID      shared.ID             `json:"userId"`
+	Username    string                `json:"username"`
+	DisplayName string                `json:"displayName"`
+	Email       string                `json:"email"`
+	Disabled    bool                  `json:"disabled"`
+	RoleID      identityaccess.RoleID `json:"roleId"`
+	CreatedAt   string                `json:"createdAt"`
+	UpdatedAt   string                `json:"updatedAt"`
 }
 
 func (h *Handler) handleListTenants(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +113,49 @@ func (h *Handler) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tenant)
 }
 
+func (h *Handler) handleListTenantMembers(w http.ResponseWriter, r *http.Request) {
+	members, err := h.service.ListTenantMembers(r.Context(), shared.ID(r.PathValue("tenantId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	rows := make([]memberRow, 0, len(members))
+	for _, member := range members {
+		rows = append(rows, h.memberRow(r, member.UserID, member.RoleID, member.CreatedAt, member.UpdatedAt))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": rows})
+}
+
+func (h *Handler) handleUpsertTenantMember(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Actor  identityaccess.Subject `json:"actor"`
+		RoleID identityaccess.RoleID  `json:"role_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	member, err := h.service.AddTenantMember(r.Context(), AddTenantMemberInput{Actor: req.Actor, TenantID: shared.ID(r.PathValue("tenantId")), UserID: shared.ID(r.PathValue("userId")), RoleID: req.RoleID})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.memberRow(r, member.UserID, member.RoleID, member.CreatedAt, member.UpdatedAt))
+}
+
+func (h *Handler) handleRemoveTenantMember(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Actor identityaccess.Subject `json:"actor"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.service.RemoveTenantMember(r.Context(), RemoveTenantMemberInput{Actor: req.Actor, TenantID: shared.ID(r.PathValue("tenantId")), UserID: shared.ID(r.PathValue("userId"))}); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	tenants, err := h.service.ListTenants(r.Context(), shared.PageRequest{Page: 1, PageSize: 100})
 	if err != nil {
@@ -107,6 +177,49 @@ func (h *Handler) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, shared.NewPageResult(rows, int64(len(rows)), pageFromQuery(r)))
+}
+
+func (h *Handler) handleListProjectMembers(w http.ResponseWriter, r *http.Request) {
+	members, err := h.service.ListProjectMembers(r.Context(), shared.ID(r.PathValue("projectId")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	rows := make([]memberRow, 0, len(members))
+	for _, member := range members {
+		rows = append(rows, h.memberRow(r, member.UserID, member.RoleID, member.CreatedAt, member.UpdatedAt))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": rows})
+}
+
+func (h *Handler) handleUpsertProjectMember(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Actor  identityaccess.Subject `json:"actor"`
+		RoleID identityaccess.RoleID  `json:"role_id"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	member, err := h.service.UpsertProjectMember(r.Context(), UpsertProjectMemberInput{Actor: req.Actor, ProjectID: shared.ID(r.PathValue("projectId")), UserID: shared.ID(r.PathValue("userId")), RoleID: req.RoleID})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.memberRow(r, member.UserID, member.RoleID, member.CreatedAt, member.UpdatedAt))
+}
+
+func (h *Handler) handleRemoveProjectMember(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Actor identityaccess.Subject `json:"actor"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if err := h.service.RemoveProjectMember(r.Context(), RemoveProjectMemberInput{Actor: req.Actor, ProjectID: shared.ID(r.PathValue("projectId")), UserID: shared.ID(r.PathValue("userId"))}); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) handleCreateProject(w http.ResponseWriter, r *http.Request) {
@@ -196,4 +309,20 @@ func parsePositiveInt(value string) int {
 
 func formatAPITime(value interface{ Format(string) string }) string {
 	return value.Format("2006-01-02 15:04")
+}
+
+func (h *Handler) memberRow(r *http.Request, userID shared.ID, roleID identityaccess.RoleID, createdAt time.Time, updatedAt time.Time) memberRow {
+	row := memberRow{UserID: userID, Username: userID.String(), DisplayName: userID.String(), RoleID: roleID, CreatedAt: formatAPITime(createdAt), UpdatedAt: formatAPITime(updatedAt)}
+	if h.subjects == nil {
+		return row
+	}
+	user, err := h.subjects.GetUser(r.Context(), userID)
+	if err != nil {
+		return row
+	}
+	row.Username = user.Username
+	row.DisplayName = normalizeDisplayName(user.DisplayName, user.Username)
+	row.Email = user.Email
+	row.Disabled = user.Disabled
+	return row
 }

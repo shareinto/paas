@@ -1,7 +1,7 @@
 import * as mock from './mock';
 import { APIError, hasAPIBaseURL, openWebSocket, request, requestText, streamSSE, type PageResult, type WebSocketConnection } from './client';
 
-export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadStageConfig, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, AppStage, RuntimeResource, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, User, Role, Member, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadStageConfig, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, AppStage, RuntimeResource, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -30,6 +30,33 @@ export async function oidcLoginURL() {
   if (!hasAPIBaseURL()) return mock.oidcLoginURL();
   const data = await request<{ redirect_url: string }>('/api/auth/oidc/start', { method: 'POST', body: '{}' });
   return data.redirect_url;
+}
+
+export async function listUsers() {
+  if (!hasAPIBaseURL()) return mock.listUsers();
+  const data = await request<PageResult<any>>('/api/users?page=1&page_size=100');
+  return data.items.map(mapUser);
+}
+
+export async function listRoles() {
+  if (!hasAPIBaseURL()) return mock.listRoles();
+  const data = await request<{ items: any[] }>('/api/roles');
+  return data.items.map(mapRole);
+}
+
+export async function listPermissions() {
+  if (!hasAPIBaseURL()) return mock.listPermissions();
+  const data = await request<{ items: string[] }>('/api/permissions');
+  return data.items;
+}
+
+export async function updateRolePermissions(roleId: string, permissions: string[]) {
+  if (!hasAPIBaseURL()) return mock.updateRolePermissions(roleId, permissions);
+  const item = await request<any>(`/api/roles/${encodeURIComponent(roleId)}/permissions`, {
+    method: 'PATCH',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, permissions })
+  });
+  return mapRole(item);
 }
 
 export async function listProjects() {
@@ -62,6 +89,29 @@ export async function updateTenant(id: string, input: { displayName: string; des
   return mapTenant(item);
 }
 
+export async function listTenantMembers(tenantId: string) {
+  if (!hasAPIBaseURL()) return mock.listTenantMembers(tenantId);
+  const data = await request<{ items: any[] }>(`/api/tenants/${encodeURIComponent(tenantId)}/members`);
+  return data.items.map(mapMember);
+}
+
+export async function upsertTenantMember(tenantId: string, input: { userId: string; roleId: string }) {
+  if (!hasAPIBaseURL()) return mock.upsertTenantMember(tenantId, input);
+  const item = await request<any>(`/api/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(input.userId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, role_id: input.roleId })
+  });
+  return mapMember(item);
+}
+
+export async function removeTenantMember(tenantId: string, userId: string) {
+  if (!hasAPIBaseURL()) return mock.removeTenantMember(tenantId, userId);
+  await request<void>(`/api/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' } })
+  });
+}
+
 export async function createProject(input: { tenantId: string; name: string; displayName: string; description?: string }) {
   if (!hasAPIBaseURL()) return mock.createProject(input);
   const item = await request<any>('/api/projects', {
@@ -83,6 +133,29 @@ export async function createProject(input: { tenantId: string; name: string; dis
 export async function deleteProject(id: string) {
   if (!hasAPIBaseURL()) return mock.deleteProject(id);
   await request<void>(`/api/projects/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' } })
+  });
+}
+
+export async function listProjectMembers(projectId: string) {
+  if (!hasAPIBaseURL()) return mock.listProjectMembers(projectId);
+  const data = await request<{ items: any[] }>(`/api/projects/${encodeURIComponent(projectId)}/members`);
+  return data.items.map(mapMember);
+}
+
+export async function upsertProjectMember(projectId: string, input: { userId: string; roleId: string }) {
+  if (!hasAPIBaseURL()) return mock.upsertProjectMember(projectId, input);
+  const item = await request<any>(`/api/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(input.userId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, role_id: input.roleId })
+  });
+  return mapMember(item);
+}
+
+export async function removeProjectMember(projectId: string, userId: string) {
+  if (!hasAPIBaseURL()) return mock.removeProjectMember(projectId, userId);
+  await request<void>(`/api/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`, {
     method: 'DELETE',
     body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' } })
   });
@@ -1008,6 +1081,39 @@ function mapStageDefinition(item: any): mock.StageDefinition {
     replicasSummary: item.replicasSummary || item.replicas_summary || '',
     domainSummary: item.domainSummary || item.domain_summary || '',
     configSummary: item.configSummary || item.config_summary || ''
+  };
+}
+
+function mapUser(item: any): mock.User {
+  return {
+    id: item.id,
+    username: item.username || item.name || item.id,
+    displayName: item.display_name || item.displayName || item.username || item.name || item.id,
+    email: item.email || '',
+    avatarUrl: item.avatar_url || item.avatarUrl || '',
+    disabled: !!item.disabled
+  };
+}
+
+function mapRole(item: any): mock.Role {
+  return {
+    id: item.id || item.ID,
+    name: item.name || item.Name || item.id || item.ID,
+    permissions: [...(item.permissions || item.Permissions || [])],
+    suggestedScopes: [...(item.suggestedScopes || item.suggested_scopes || [])]
+  };
+}
+
+function mapMember(item: any): mock.Member {
+  return {
+    userId: item.userId || item.user_id || '',
+    username: item.username || item.userName || item.user_id || item.userId || '',
+    displayName: item.displayName || item.display_name || item.username || item.user_id || item.userId || '',
+    email: item.email || '',
+    disabled: !!item.disabled,
+    roleId: item.roleId || item.role_id || '',
+    createdAt: item.createdAt || formatTime(item.created_at || item.createdAt),
+    updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
   };
 }
 

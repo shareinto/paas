@@ -243,6 +243,71 @@ SELECT id, name, disabled, created_at FROM service_accounts WHERE id = ?`, id).
 	return account, nil
 }
 
+func (r *MySQLRepository) ListRoles(ctx context.Context) ([]Role, error) {
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
+SELECT r.id, r.name, rp.permission_id
+FROM roles r
+LEFT JOIN role_permissions rp ON rp.role_id = r.id
+ORDER BY r.id ASC, rp.permission_id ASC`)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list roles failed")
+	}
+	defer rows.Close()
+	roles := []Role{}
+	indexByID := map[RoleID]int{}
+	for rows.Next() {
+		var roleID RoleID
+		var name string
+		var permission sql.NullString
+		if err := rows.Scan(&roleID, &name, &permission); err != nil {
+			return nil, err
+		}
+		index, ok := indexByID[roleID]
+		if !ok {
+			roles = append(roles, Role{ID: roleID, Name: name, Permissions: []Permission{}})
+			index = len(roles) - 1
+			indexByID[roleID] = index
+		}
+		if permission.Valid {
+			roles[index].Permissions = append(roles[index].Permissions, Permission(permission.String))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, database.WrapUnavailable(err, "list roles failed")
+	}
+	return roles, nil
+}
+
+func (r *MySQLRepository) UpsertRole(ctx context.Context, role Role) error {
+	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO roles (id, name) VALUES (?, ?)
+ON DUPLICATE KEY UPDATE name = VALUES(name)`, role.ID, role.Name)
+	return database.WrapUnavailable(err, "upsert role failed")
+}
+
+func (r *MySQLRepository) ReplaceRolePermissions(ctx context.Context, roleID RoleID, permissions []Permission) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return database.WrapUnavailable(err, "replace role permissions failed")
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM role_permissions WHERE role_id = ?", roleID); err != nil {
+		return database.WrapUnavailable(err, "replace role permissions failed")
+	}
+	for _, permission := range permissions {
+		if _, err := tx.ExecContext(ctx, "INSERT IGNORE INTO permissions (id) VALUES (?)", permission); err != nil {
+			return database.WrapUnavailable(err, "replace role permissions failed")
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)", roleID, permission); err != nil {
+			return database.WrapUnavailable(err, "replace role permissions failed")
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return database.WrapUnavailable(err, "replace role permissions failed")
+	}
+	return nil
+}
+
 func (r *MySQLRepository) CreateRoleBinding(ctx context.Context, binding RoleBinding) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO role_bindings (id, subject_type, subject_id, role_id, scope_kind, scope_id, created_at)
@@ -272,6 +337,39 @@ FROM role_bindings WHERE subject_type = ? AND subject_id = ? ORDER BY created_at
 		return nil, database.WrapUnavailable(err, "list role bindings failed")
 	}
 	return items, nil
+}
+
+func (r *MySQLRepository) ListRoleBindingsByScope(ctx context.Context, scopeKind ScopeKind, scopeID shared.ID) ([]RoleBinding, error) {
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
+SELECT id, subject_type, subject_id, role_id, scope_kind, scope_id, created_at
+FROM role_bindings WHERE scope_kind = ? AND scope_id = ? ORDER BY created_at ASC, id ASC`,
+		scopeKind, scopeID)
+	if err != nil {
+		return nil, database.WrapUnavailable(err, "list scoped role bindings failed")
+	}
+	defer rows.Close()
+	items := []RoleBinding{}
+	for rows.Next() {
+		binding, err := scanRoleBinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, database.WrapUnavailable(err, "list scoped role bindings failed")
+	}
+	return items, nil
+}
+
+func (r *MySQLRepository) DeleteRoleBindingsForSubjectScope(ctx context.Context, subject Subject, scopeKind ScopeKind, scopeID shared.ID) error {
+	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+DELETE FROM role_bindings WHERE subject_type = ? AND subject_id = ? AND scope_kind = ? AND scope_id = ?`,
+		subject.Type, subject.ID, scopeKind, scopeID)
+	if err != nil {
+		return database.WrapUnavailable(err, "delete role bindings failed")
+	}
+	return database.RequireAffected(result, "role binding not found")
 }
 
 func (r *MySQLRepository) CreateAccessToken(ctx context.Context, token AccessToken) error {

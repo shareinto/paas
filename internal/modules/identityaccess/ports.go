@@ -32,8 +32,13 @@ type Repository interface {
 	CreateServiceAccount(ctx context.Context, account ServiceAccount) error
 	GetServiceAccount(ctx context.Context, id shared.ID) (ServiceAccount, error)
 
+	ListRoles(ctx context.Context) ([]Role, error)
+	UpsertRole(ctx context.Context, role Role) error
+	ReplaceRolePermissions(ctx context.Context, roleID RoleID, permissions []Permission) error
 	CreateRoleBinding(ctx context.Context, binding RoleBinding) error
 	ListRoleBindingsForSubject(ctx context.Context, subject Subject) ([]RoleBinding, error)
+	ListRoleBindingsByScope(ctx context.Context, scopeKind ScopeKind, scopeID shared.ID) ([]RoleBinding, error)
+	DeleteRoleBindingsForSubjectScope(ctx context.Context, subject Subject, scopeKind ScopeKind, scopeID shared.ID) error
 
 	CreateAccessToken(ctx context.Context, token AccessToken) error
 	FindAccessTokenByHash(ctx context.Context, hash string) (AccessToken, error)
@@ -78,5 +83,6 @@ type AuthService interface {
 
 type SubjectQuery interface {
 	GetUser(ctx context.Context, id shared.ID) (User, error)
+	ListUsers(ctx context.Context, page shared.PageRequest) (shared.PageResult[UserDTO], error)
 	ListIdentitiesByUser(ctx context.Context, userID shared.ID) ([]Identity, error)
 }

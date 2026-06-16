@@ -28,9 +28,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/auth/oidc/{providerId}/start", h.handleOIDCStart)
 	mux.HandleFunc("GET /api/auth/oidc/{providerId}/callback", h.handleOIDCCallback)
 	mux.HandleFunc("POST /api/users", h.handleCreateUser)
+	mux.HandleFunc("GET /api/users", h.handleListUsers)
 	mux.HandleFunc("GET /api/users/{userId}", h.handleGetUser)
 	mux.HandleFunc("POST /api/users/{userId}/reset-password", h.handleResetPassword)
 	mux.HandleFunc("GET /api/roles", h.handleRoles)
+	mux.HandleFunc("PATCH /api/roles/{roleId}/permissions", h.handleUpdateRolePermissions)
+	mux.HandleFunc("GET /api/permissions", h.handlePermissions)
 	mux.HandleFunc("POST /api/role-bindings", h.handleRoleBinding)
 }
 
@@ -171,6 +174,15 @@ func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, user)
 }
 
+func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListUsers(r.Context(), pageFromQuery(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (h *Handler) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	user, err := h.service.GetUser(r.Context(), shared.ID(r.PathValue("userId")))
 	if err != nil {
@@ -195,8 +207,35 @@ func (h *Handler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) handleRoles(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": h.service.ListRoles()})
+func (h *Handler) handleRoles(w http.ResponseWriter, r *http.Request) {
+	roles, err := h.service.ListRoles(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": roles})
+}
+
+func (h *Handler) handleUpdateRolePermissions(w http.ResponseWriter, r *http.Request) {
+	var req UpdateRolePermissionsInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	role, err := h.service.UpdateRolePermissions(r.Context(), RoleID(r.PathValue("roleId")), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, role)
+}
+
+func (h *Handler) handlePermissions(w http.ResponseWriter, r *http.Request) {
+	permissions, err := h.service.ListPermissions(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": permissions})
 }
 
 func (h *Handler) handleRoleBinding(w http.ResponseWriter, r *http.Request) {
@@ -245,4 +284,20 @@ func bearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
+}
+
+func pageFromQuery(r *http.Request) shared.PageRequest {
+	query := r.URL.Query()
+	return shared.PageRequest{Page: parsePositiveInt(query.Get("page")), PageSize: parsePositiveInt(query.Get("page_size"))}
+}
+
+func parsePositiveInt(value string) int {
+	var result int
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		result = result*10 + int(r-'0')
+	}
+	return result
 }

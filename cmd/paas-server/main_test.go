@@ -304,6 +304,58 @@ func TestTenantManagementUpdateRoute(t *testing.T) {
 	}
 }
 
+func TestMemberManagementRoutes(t *testing.T) {
+	app := newTestApplication(t)
+	defer app.db.Close()
+	fixture := seedServerTestData(t, app)
+
+	createUser := httptest.NewRecorder()
+	app.handler.ServeHTTP(createUser, httptest.NewRequest(http.MethodPost, "/api/users", bytes.NewBufferString(`{"actor_id":"usr_admin","username":"dev-member","password":"secret","display_name":"开发成员","email":"dev@example.com"}`)))
+	if createUser.Code != http.StatusCreated {
+		t.Fatalf("create user status = %d body = %s", createUser.Code, createUser.Body.String())
+	}
+	var user struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(createUser.Body.Bytes(), &user); err != nil || user.ID == "" {
+		t.Fatalf("decode created user: id=%q err=%v body=%s", user.ID, err, createUser.Body.String())
+	}
+
+	users := httptest.NewRecorder()
+	app.handler.ServeHTTP(users, httptest.NewRequest(http.MethodGet, "/api/users?page=1&page_size=20", nil))
+	if users.Code != http.StatusOK || !bytes.Contains(users.Body.Bytes(), []byte("开发成员")) || bytes.Contains(users.Body.Bytes(), []byte("password")) {
+		t.Fatalf("users response = %d %s", users.Code, users.Body.String())
+	}
+
+	addTenantMember := httptest.NewRecorder()
+	app.handler.ServeHTTP(addTenantMember, httptest.NewRequest(http.MethodPut, "/api/tenants/"+fixture.tenant.ID.String()+"/members/"+user.ID, bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"role_id":"developer"}`)))
+	if addTenantMember.Code != http.StatusOK {
+		t.Fatalf("add tenant member status = %d body = %s", addTenantMember.Code, addTenantMember.Body.String())
+	}
+	listTenantMembers := httptest.NewRecorder()
+	app.handler.ServeHTTP(listTenantMembers, httptest.NewRequest(http.MethodGet, "/api/tenants/"+fixture.tenant.ID.String()+"/members", nil))
+	if listTenantMembers.Code != http.StatusOK || !bytes.Contains(listTenantMembers.Body.Bytes(), []byte("开发成员")) || !bytes.Contains(listTenantMembers.Body.Bytes(), []byte("developer")) {
+		t.Fatalf("tenant members response = %d %s", listTenantMembers.Code, listTenantMembers.Body.String())
+	}
+
+	addProjectMember := httptest.NewRecorder()
+	app.handler.ServeHTTP(addProjectMember, httptest.NewRequest(http.MethodPut, "/api/projects/"+fixture.project.ID.String()+"/members/"+user.ID, bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"role_id":"project_admin"}`)))
+	if addProjectMember.Code != http.StatusOK {
+		t.Fatalf("add project member status = %d body = %s", addProjectMember.Code, addProjectMember.Body.String())
+	}
+	listProjectMembers := httptest.NewRecorder()
+	app.handler.ServeHTTP(listProjectMembers, httptest.NewRequest(http.MethodGet, "/api/projects/"+fixture.project.ID.String()+"/members", nil))
+	if listProjectMembers.Code != http.StatusOK || !bytes.Contains(listProjectMembers.Body.Bytes(), []byte("开发成员")) || !bytes.Contains(listProjectMembers.Body.Bytes(), []byte("project_admin")) {
+		t.Fatalf("project members response = %d %s", listProjectMembers.Code, listProjectMembers.Body.String())
+	}
+
+	removeProjectMember := httptest.NewRecorder()
+	app.handler.ServeHTTP(removeProjectMember, httptest.NewRequest(http.MethodDelete, "/api/projects/"+fixture.project.ID.String()+"/members/"+user.ID, bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"}}`)))
+	if removeProjectMember.Code != http.StatusNoContent {
+		t.Fatalf("remove project member status = %d body = %s", removeProjectMember.Code, removeProjectMember.Body.String())
+	}
+}
+
 func TestManifestRepositoriesFromEnvUseRealGitLabWhenConfigured(t *testing.T) {
 	t.Setenv("GITLAB_BASE_URL", "https://gitlab.example")
 	t.Setenv("GITLAB_TOKEN", "secret")

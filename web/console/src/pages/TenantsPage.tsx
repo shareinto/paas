@@ -1,8 +1,9 @@
-import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { EditOutlined, PlusOutlined, TeamOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, Form, Input, Modal, Space, Table, Typography, message } from 'antd';
+import { Button, Card, Drawer, Form, Input, Modal, Space, Table, Typography, message } from 'antd';
 import { useMemo, useState } from 'react';
 import { createTenant, listTenants, updateTenant, type Tenant } from '../api';
+import { MemberManagement } from '../components/MemberManagement';
 import { PageHeader } from '../components/PageHeader';
 
 type TenantForm = {
@@ -16,6 +17,7 @@ export function TenantsPage() {
   const [form] = Form.useForm<TenantForm>();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Tenant>();
+  const [memberTenant, setMemberTenant] = useState<Tenant>();
   const [keyword, setKeyword] = useState('');
   const { data = [], isLoading } = useQuery({ queryKey: ['tenants'], queryFn: listTenants });
   const filteredTenants = useMemo(() => {
@@ -82,11 +84,19 @@ export function TenantsPage() {
           {
             title: '操作',
             key: 'actions',
-            width: 120,
-            render: (_, record) => <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+            width: 180,
+            render: (_, record) => (
+              <Space>
+                <Button type="text" icon={<TeamOutlined />} onClick={() => setMemberTenant(record)}>成员</Button>
+                <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+              </Space>
+            )
           }
         ]} />
       </Card>
+      <Drawer title={`${memberTenant?.displayName || '租户'}成员`} open={!!memberTenant} onClose={() => setMemberTenant(undefined)} width={860} destroyOnClose>
+        {memberTenant && <MemberManagement scopeKind="tenant" scopeId={memberTenant.id} title="租户成员" />}
+      </Drawer>
       <Modal title={editing ? '编辑租户' : '创建租户'} open={open} onCancel={closeDialog} onOk={() => form.submit()} confirmLoading={createMutation.isPending || updateMutation.isPending} okText={editing ? '保存' : '创建'} cancelText="取消">
         <Form layout="vertical" form={form} onFinish={submit}>
           <Form.Item label="租户标识" name="name" rules={[{ required: true, message: '请输入租户标识' }, { pattern: /^[a-z][a-z0-9-]{1,62}$/, message: '仅支持小写字母、数字和连字符' }]}>

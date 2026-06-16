@@ -87,6 +87,16 @@ func ValidatePermission(permission Permission) error {
 	return nil
 }
 
+func ValidateGrantedPermission(permission Permission) error {
+	if permission == "*:*" {
+		return nil
+	}
+	if strings.HasSuffix(string(permission), ":*") && permissionPattern.MatchString(strings.TrimSuffix(string(permission), "*")+"read") {
+		return nil
+	}
+	return ValidatePermission(permission)
+}
+
 type RoleID string
 
 const (

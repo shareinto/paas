@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -135,6 +136,18 @@ type OIDCStartResult struct {
 	State        string    `json:"state"`
 	RedirectURL  string    `json:"redirect_url"`
 	NonceExpires time.Time `json:"nonce_expires_at"`
+}
+
+type RoleDTO struct {
+	ID              RoleID       `json:"id"`
+	Name            string       `json:"name"`
+	Permissions     []Permission `json:"permissions"`
+	SuggestedScopes []ScopeKind  `json:"suggestedScopes"`
+}
+
+type UpdateRolePermissionsInput struct {
+	Actor       Subject      `json:"actor"`
+	Permissions []Permission `json:"permissions"`
 }
 
 func (s *Service) CreateLocalUser(ctx context.Context, input CreateLocalUserInput) (UserDTO, error) {
@@ -394,6 +407,10 @@ func (s *Service) Check(ctx context.Context, subject Subject, resource ResourceS
 	if err := ValidatePermission(action); err != nil {
 		return err
 	}
+	roles, err := s.effectiveRoles(ctx)
+	if err != nil {
+		return err
+	}
 	subjects := []Subject{subject}
 	if subject.Type == SubjectUser {
 		groupIDs, err := s.repo.ListGroupIDsByUser(ctx, subject.ID)
@@ -413,7 +430,7 @@ func (s *Service) Check(ctx context.Context, subject Subject, resource ResourceS
 			if !ScopeCovers(binding.ScopeKind, binding.ScopeID, resource) {
 				continue
 			}
-			role, ok := s.roles[binding.RoleID]
+			role, ok := roles[binding.RoleID]
 			if !ok {
 				continue
 			}
@@ -448,16 +465,111 @@ func (s *Service) CreateRoleBinding(ctx context.Context, binding RoleBinding) (R
 	return binding, nil
 }
 
-func (s *Service) ListRoles() []Role {
-	roles := make([]Role, 0, len(s.roles))
-	for _, role := range s.roles {
-		roles = append(roles, role)
+func (s *Service) ReplaceRoleBindingForSubjectScope(ctx context.Context, binding RoleBinding) (RoleBinding, error) {
+	if binding.SubjectType == "" {
+		binding.SubjectType = SubjectUser
 	}
-	return roles
+	if binding.ScopeKind == "" {
+		return RoleBinding{}, shared.NewError(shared.CodeInvalidArgument, "scope_kind is required")
+	}
+	_ = s.repo.DeleteRoleBindingsForSubjectScope(ctx, Subject{Type: binding.SubjectType, ID: binding.SubjectID}, binding.ScopeKind, binding.ScopeID)
+	return s.CreateRoleBinding(ctx, binding)
+}
+
+func (s *Service) DeleteRoleBindingsForSubjectScope(ctx context.Context, subject Subject, scopeKind ScopeKind, scopeID shared.ID) error {
+	if subject.ID.IsZero() || subject.Type == "" || scopeKind == "" {
+		return shared.NewError(shared.CodeInvalidArgument, "subject and scope are required")
+	}
+	return s.repo.DeleteRoleBindingsForSubjectScope(ctx, subject, scopeKind, scopeID)
+}
+
+func (s *Service) ListRoleBindingsByScope(ctx context.Context, scopeKind ScopeKind, scopeID shared.ID) ([]RoleBinding, error) {
+	return s.repo.ListRoleBindingsByScope(ctx, scopeKind, scopeID)
+}
+
+func (s *Service) UpdateRolePermissions(ctx context.Context, roleID RoleID, input UpdateRolePermissionsInput) (RoleDTO, error) {
+	if input.Actor.ID.IsZero() {
+		return RoleDTO{}, shared.NewError(shared.CodeUnauthenticated, "actor is required")
+	}
+	if err := s.Check(ctx, input.Actor, ResourceScope{Kind: ScopePlatform}, "role:update"); err != nil {
+		return RoleDTO{}, err
+	}
+	roles, err := s.effectiveRoles(ctx)
+	if err != nil {
+		return RoleDTO{}, err
+	}
+	role, ok := roles[roleID]
+	if !ok {
+		return RoleDTO{}, shared.NewError(shared.CodeInvalidArgument, "role is not supported")
+	}
+	permissions, err := normalizeGrantedPermissions(input.Permissions)
+	if err != nil {
+		return RoleDTO{}, err
+	}
+	if roleID == RolePlatformAdmin && !hasPermission(permissions, "*:*") {
+		return RoleDTO{}, shared.NewError(shared.CodeInvalidArgument, "platform admin must keep full access")
+	}
+	role.Permissions = permissions
+	if err := s.repo.UpsertRole(ctx, role); err != nil {
+		return RoleDTO{}, err
+	}
+	if err := s.repo.ReplaceRolePermissions(ctx, role.ID, permissions); err != nil {
+		return RoleDTO{}, err
+	}
+	s.roles[role.ID] = role
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "role.update_permissions", ResourceType: "role", ResourceID: shared.ID(role.ID), Result: "succeeded", Summary: "修改角色权限", OccurredAt: s.clock.Now()})
+	return toRoleDTO(role), nil
+}
+
+func (s *Service) ListRoles(ctx context.Context) ([]RoleDTO, error) {
+	effective, err := s.effectiveRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	roles := make([]RoleDTO, 0, len(effective))
+	for _, roleID := range orderedRoleIDs(effective) {
+		roles = append(roles, toRoleDTO(effective[roleID]))
+	}
+	return roles, nil
+}
+
+func (s *Service) ListPermissions(ctx context.Context) ([]Permission, error) {
+	effective, err := s.effectiveRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[Permission]bool{}
+	for _, roles := range []map[RoleID]Role{BuiltInRoles(), effective} {
+		for _, role := range roles {
+			for _, permission := range role.Permissions {
+				seen[permission] = true
+			}
+		}
+	}
+	items := make([]Permission, 0, len(seen))
+	for permission := range seen {
+		items = append(items, permission)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i] < items[j]
+	})
+	return items, nil
 }
 
 func (s *Service) GetUser(ctx context.Context, id shared.ID) (User, error) {
 	return s.repo.GetUser(ctx, id)
+}
+
+func (s *Service) ListUsers(ctx context.Context, page shared.PageRequest) (shared.PageResult[UserDTO], error) {
+	result, err := s.repo.ListUsers(ctx, page)
+	if err != nil {
+		return shared.PageResult[UserDTO]{}, err
+	}
+	items := make([]UserDTO, 0, len(result.Items))
+	for _, user := range result.Items {
+		items = append(items, ToUserDTO(user))
+	}
+	return shared.NewPageResult(items, result.Total, page), nil
 }
 
 func (s *Service) ListIdentitiesByUser(ctx context.Context, userID shared.ID) ([]Identity, error) {
@@ -554,6 +666,118 @@ func ToUserDTO(user User) UserDTO {
 
 func ToOIDCProviderDTO(provider OIDCProvider) OIDCProviderDTO {
 	return OIDCProviderDTO{ID: provider.ID, Name: provider.Name, Issuer: provider.Issuer, ClientID: provider.ClientID, Scopes: append([]string(nil), provider.Scopes...), RedirectURI: provider.RedirectURI, Enabled: provider.Enabled}
+}
+
+func (s *Service) effectiveRoles(ctx context.Context) (map[RoleID]Role, error) {
+	roles := cloneRoles(s.roles)
+	if len(roles) == 0 {
+		roles = cloneRoles(BuiltInRoles())
+	}
+	stored, err := s.repo.ListRoles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, role := range stored {
+		if role.Name == "" {
+			if existing, ok := roles[role.ID]; ok {
+				role.Name = existing.Name
+			}
+		}
+		role.Permissions = append([]Permission(nil), role.Permissions...)
+		roles[role.ID] = role
+	}
+	return roles, nil
+}
+
+func cloneRoles(input map[RoleID]Role) map[RoleID]Role {
+	roles := make(map[RoleID]Role, len(input))
+	for id, role := range input {
+		role.Permissions = append([]Permission(nil), role.Permissions...)
+		roles[id] = role
+	}
+	return roles
+}
+
+func orderedRoleIDs(roles map[RoleID]Role) []RoleID {
+	order := []RoleID{RolePlatformAdmin, RoleTenantOwner, RoleTenantAdmin, RoleProjectAdmin, RoleDeveloper, RoleViewer, RoleOperator, RoleProdApprover, RoleSecurityAuditor}
+	seen := map[RoleID]bool{}
+	result := make([]RoleID, 0, len(roles))
+	for _, roleID := range order {
+		if _, ok := roles[roleID]; ok {
+			result = append(result, roleID)
+			seen[roleID] = true
+		}
+	}
+	for roleID := range roles {
+		if !seen[roleID] {
+			result = append(result, roleID)
+		}
+	}
+	prefix := orderedBuiltInPrefix(result)
+	offset := prefix
+	sort.SliceStable(result[prefix:], func(i, j int) bool {
+		return result[offset+i] < result[offset+j]
+	})
+	return result
+}
+
+func orderedBuiltInPrefix(ids []RoleID) int {
+	count := 0
+	for _, roleID := range ids {
+		switch roleID {
+		case RolePlatformAdmin, RoleTenantOwner, RoleTenantAdmin, RoleProjectAdmin, RoleDeveloper, RoleViewer, RoleOperator, RoleProdApprover, RoleSecurityAuditor:
+			count++
+		default:
+			return count
+		}
+	}
+	return count
+}
+
+func normalizeGrantedPermissions(input []Permission) ([]Permission, error) {
+	seen := map[Permission]bool{}
+	permissions := make([]Permission, 0, len(input))
+	for _, permission := range input {
+		permission = Permission(strings.TrimSpace(string(permission)))
+		if permission == "" || seen[permission] {
+			continue
+		}
+		if err := ValidateGrantedPermission(permission); err != nil {
+			return nil, err
+		}
+		seen[permission] = true
+		permissions = append(permissions, permission)
+	}
+	sort.Slice(permissions, func(i, j int) bool {
+		return permissions[i] < permissions[j]
+	})
+	return permissions, nil
+}
+
+func hasPermission(permissions []Permission, required Permission) bool {
+	for _, permission := range permissions {
+		if permission == required {
+			return true
+		}
+	}
+	return false
+}
+
+func toRoleDTO(role Role) RoleDTO {
+	return RoleDTO{ID: role.ID, Name: role.Name, Permissions: append([]Permission(nil), role.Permissions...), SuggestedScopes: suggestedScopesForRole(role.ID)}
+}
+
+func suggestedScopesForRole(roleID RoleID) []ScopeKind {
+	switch roleID {
+	case RolePlatformAdmin:
+		return []ScopeKind{ScopePlatform}
+	case RoleTenantOwner, RoleTenantAdmin:
+		return []ScopeKind{ScopeTenant}
+	case RoleProjectAdmin, RoleDeveloper, RoleViewer, RoleOperator, RoleProdApprover, RoleSecurityAuditor:
+		return []ScopeKind{ScopeTenant, ScopeProject}
+	default:
+		return nil
+	}
 }
 
 func buildOIDCRedirect(provider OIDCProvider, state string, nonce string) (string, error) {

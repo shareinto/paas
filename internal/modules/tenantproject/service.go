@@ -12,6 +12,7 @@ import (
 type Service struct {
 	repo       Repository
 	permission PermissionChecker
+	roles      RoleBindingManager
 	deletion   ProjectDeletionGuard
 	audit      AuditLogger
 	events     EventPublisher
@@ -22,6 +23,7 @@ type Service struct {
 type Options struct {
 	Repository        Repository
 	PermissionChecker PermissionChecker
+	RoleBindings      RoleBindingManager
 	ProjectDeletion   ProjectDeletionGuard
 	Audit             AuditLogger
 	EventPublisher    EventPublisher
@@ -49,6 +51,7 @@ func NewService(opts Options) *Service {
 	return &Service{
 		repo:       opts.Repository,
 		permission: opts.PermissionChecker,
+		roles:      opts.RoleBindings,
 		deletion:   opts.ProjectDeletion,
 		audit:      audit,
 		events:     events,
@@ -86,6 +89,19 @@ type RemoveTenantMemberInput struct {
 	Actor    identityaccess.Subject `json:"actor"`
 	TenantID shared.ID              `json:"tenant_id"`
 	UserID   shared.ID              `json:"user_id"`
+}
+
+type UpsertProjectMemberInput struct {
+	Actor     identityaccess.Subject `json:"actor"`
+	ProjectID shared.ID              `json:"project_id"`
+	UserID    shared.ID              `json:"user_id"`
+	RoleID    identityaccess.RoleID  `json:"role_id"`
+}
+
+type RemoveProjectMemberInput struct {
+	Actor     identityaccess.Subject `json:"actor"`
+	ProjectID shared.ID              `json:"project_id"`
+	UserID    shared.ID              `json:"user_id"`
 }
 
 type CreateProjectInput struct {
@@ -190,6 +206,80 @@ func (s *Service) RemoveTenantMember(ctx context.Context, input RemoveTenantMemb
 		return err
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "tenant_member.remove", ResourceType: "tenant", ResourceID: input.TenantID, Result: "succeeded", Summary: "移除租户成员", OccurredAt: s.clock.Now()})
+	return nil
+}
+
+func (s *Service) ListProjectMembers(ctx context.Context, projectID shared.ID) ([]ProjectMember, error) {
+	if projectID.IsZero() {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "project_id is required")
+	}
+	if _, err := s.repo.GetProject(ctx, projectID); err != nil {
+		return nil, err
+	}
+	if s.roles == nil {
+		return []ProjectMember{}, nil
+	}
+	bindings, err := s.roles.ListRoleBindingsByScope(ctx, identityaccess.ScopeProject, projectID)
+	if err != nil {
+		return nil, err
+	}
+	members := make([]ProjectMember, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.SubjectType != identityaccess.SubjectUser {
+			continue
+		}
+		members = append(members, ProjectMember{ProjectID: projectID, UserID: binding.SubjectID, RoleID: binding.RoleID, CreatedAt: binding.CreatedAt, UpdatedAt: binding.CreatedAt})
+	}
+	return members, nil
+}
+
+func (s *Service) UpsertProjectMember(ctx context.Context, input UpsertProjectMemberInput) (ProjectMember, error) {
+	if input.ProjectID.IsZero() || input.UserID.IsZero() || input.RoleID == "" {
+		return ProjectMember{}, shared.NewError(shared.CodeInvalidArgument, "project_id, user_id and role_id are required")
+	}
+	project, err := s.repo.GetProject(ctx, input.ProjectID)
+	if err != nil {
+		return ProjectMember{}, err
+	}
+	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeProject, TenantID: project.TenantID, ProjectID: project.ID}, "project:update"); err != nil {
+		return ProjectMember{}, err
+	}
+	if s.roles == nil {
+		return ProjectMember{}, shared.NewError(shared.CodeFailedPrecondition, "role binding manager is required")
+	}
+	binding, err := s.roles.ReplaceRoleBindingForSubjectScope(ctx, identityaccess.RoleBinding{
+		SubjectType: identityaccess.SubjectUser,
+		SubjectID:   input.UserID,
+		RoleID:      input.RoleID,
+		ScopeKind:   identityaccess.ScopeProject,
+		ScopeID:     project.ID,
+	})
+	if err != nil {
+		return ProjectMember{}, err
+	}
+	now := s.clock.Now()
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "project_member.upsert", ResourceType: "project", ResourceID: project.ID, Result: "succeeded", Summary: "修改项目成员权限", OccurredAt: now})
+	return ProjectMember{ProjectID: project.ID, UserID: input.UserID, RoleID: input.RoleID, CreatedAt: binding.CreatedAt, UpdatedAt: binding.CreatedAt}, nil
+}
+
+func (s *Service) RemoveProjectMember(ctx context.Context, input RemoveProjectMemberInput) error {
+	if input.ProjectID.IsZero() || input.UserID.IsZero() {
+		return shared.NewError(shared.CodeInvalidArgument, "project_id and user_id are required")
+	}
+	project, err := s.repo.GetProject(ctx, input.ProjectID)
+	if err != nil {
+		return err
+	}
+	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeProject, TenantID: project.TenantID, ProjectID: project.ID}, "project:update"); err != nil {
+		return err
+	}
+	if s.roles == nil {
+		return shared.NewError(shared.CodeFailedPrecondition, "role binding manager is required")
+	}
+	if err := s.roles.DeleteRoleBindingsForSubjectScope(ctx, identityaccess.Subject{Type: identityaccess.SubjectUser, ID: input.UserID}, identityaccess.ScopeProject, project.ID); err != nil {
+		return err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "project_member.remove", ResourceType: "project", ResourceID: project.ID, Result: "succeeded", Summary: "移除项目成员", OccurredAt: s.clock.Now()})
 	return nil
 }
 
