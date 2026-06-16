@@ -112,8 +112,8 @@ let buildTemplate: BuildTemplate = {
   updatedAt: '2026-05-31 10:00'
 };
 const sourceRepositories: SourceRepository[] = [
-  { id: 'repo_1', projectId: 'project_1', projectName: '订单平台', name: 'order-api', displayName: '订单服务仓库', description: '平台托管 GitLab 源码仓库', gitProvider: 'gitlab', httpUrl: 'https://gitlab.example/rnd/order/order-api.git', sshUrl: 'git@gitlab.example:rnd/order/order-api.git', defaultBranch: 'main', status: 'ready', associatedApplications: 1, updatedAt: '2026-05-30 10:12' },
-  { id: 'repo_2', projectId: 'project_1', projectName: '订单平台', name: 'order-platform', displayName: '订单平台 monorepo', description: '多个应用共用的托管仓库', gitProvider: 'gitlab', httpUrl: 'https://gitlab.example/rnd/order/order-platform.git', sshUrl: 'git@gitlab.example:rnd/order/order-platform.git', defaultBranch: 'main', status: 'ready', associatedApplications: 2, updatedAt: '2026-05-29 18:22' }
+  { id: 'repo_1', projectId: 'project_1', projectName: '订单平台', name: 'order-api', displayName: '订单服务仓库', description: '已登记 GitLab 源码仓库', gitProvider: 'gitlab', httpUrl: 'https://gitlab.example/rnd/order/order-api.git', sshUrl: 'git@gitlab.example:rnd/order/order-api.git', defaultBranch: 'main', status: 'ready', associatedApplications: 1, updatedAt: '2026-05-30 10:12' },
+  { id: 'repo_2', projectId: 'project_1', projectName: '订单平台', name: 'order-platform', displayName: '订单平台 monorepo', description: '多个应用共用的已登记仓库', gitProvider: 'gitlab', httpUrl: 'https://gitlab.example/rnd/order/order-platform.git', sshUrl: 'git@gitlab.example:rnd/order/order-platform.git', defaultBranch: 'main', status: 'ready', associatedApplications: 2, updatedAt: '2026-05-29 18:22' }
 ];
 const applications: Application[] = [
   { id: 'app_1', name: 'order-api', displayName: '订单服务', project: '订单平台', projectId: 'project_1', description: '订单服务应用', runtimeEnvironmentId: 'runtime_env_java17', runtimeEnvironments: [{ id: 'runtime_env_java17', name: 'java17', runtimeBaseImage: 'registry.example/runtime/java17:1.0', artifactDeployPath: '/app/' }], status: 'active', type: 'Spring Boot', stageStatus: '运行中', build: '#128 成功', release: 'v1.8.2', owner: '李雷', updatedAt: '2026-05-30 10:12' },
@@ -473,7 +473,7 @@ export async function listApplicationBuilds(_applicationId: string): Promise<Bui
 export async function buildLog() {
   await wait();
   return [
-    '[INFO] 检出平台托管源码仓库',
+    '[INFO] 检出已登记源码仓库',
     '[INFO] 执行构建命令 mvn clean package -DskipTests',
     '[INFO] 校验产物 target/order-api.jar',
     '[INFO] 构建并推送镜像 registry.local/order-api:v1.8.2',
@@ -890,10 +890,10 @@ export async function getSourceRepository(id: string): Promise<SourceRepository>
   return repo;
 }
 
-export async function createSourceRepository(input: { projectId: string; name: string; displayName: string; description?: string; defaultBranch: string }) {
+export async function createSourceRepository(input: { projectId: string; name: string; displayName: string; description?: string; httpUrl: string; defaultBranch: string }) {
   await wait();
   const project = projects.find((item) => item.id === input.projectId);
-  const repo = { id: `repo_${Date.now()}`, projectId: input.projectId, projectName: project?.displayName || '', name: input.name, displayName: input.displayName || input.name, description: input.description || '', gitProvider: 'gitlab', httpUrl: `https://gitlab.example/rnd/${project?.name || 'project'}/${input.name}.git`, sshUrl: `git@gitlab.example:rnd/${project?.name || 'project'}/${input.name}.git`, defaultBranch: input.defaultBranch, status: 'ready', associatedApplications: 0, updatedAt: '刚刚' };
+  const repo = { id: `repo_${Date.now()}`, projectId: input.projectId, projectName: project?.displayName || '', name: input.name, displayName: input.displayName || input.name, description: input.description || '', gitProvider: 'gitlab', httpUrl: input.httpUrl, sshUrl: '', defaultBranch: input.defaultBranch, status: 'ready', associatedApplications: 0, updatedAt: '刚刚' };
   sourceRepositories.unshift(repo);
   return { ...repo };
 }

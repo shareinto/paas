@@ -153,7 +153,7 @@ test('流水线构建弹窗按倒序号展示构建并可查看日志', async ()
   expect(within(dialog).getByText('构建时间')).toBeInTheDocument();
   expect(within(dialog).queryByText(/build_/)).not.toBeInTheDocument();
   await userEvent.click(within(dialog).getByText('构建 2'));
-  expect(await within(dialog).findByText(/\[INFO\] 检出平台托管源码仓库/)).toBeInTheDocument();
+  expect(await within(dialog).findByText(/\[INFO\] 检出已登记源码仓库/)).toBeInTheDocument();
 });
 
 test('工作负载创建弹层使用滚动大页并最终创建', async () => {

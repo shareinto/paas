@@ -309,7 +309,7 @@ test('租户管理页面支持创建、搜索和编辑租户', async () => {
   expect(await screen.findByText('统一运维租户')).toBeInTheDocument();
 });
 
-test('项目详情源码仓库支持创建、筛选和删除仓库', async () => {
+test('项目详情源码仓库支持登记、筛选和删除仓库', async () => {
   window.localStorage.setItem('paas_token', 'test');
   useSession.setState({ token: 'test', userName: '测试用户' });
   renderFlow('/projects');
@@ -319,12 +319,13 @@ test('项目详情源码仓库支持创建、筛选和删除仓库', async () =>
   await userEvent.click(screen.getByRole('tab', { name: '源码仓库' }));
   expect(screen.queryByPlaceholderText('所属项目')).not.toBeInTheDocument();
 
-  await userEvent.click(screen.getByRole('button', { name: /创建仓库/ }));
-  const dialog = screen.getByRole('dialog', { name: '创建平台托管源码仓库' });
+  await userEvent.click(screen.getByRole('button', { name: /登记仓库/ }));
+  const dialog = screen.getByRole('dialog', { name: '登记源码仓库' });
   expect(within(dialog).queryByLabelText('所属项目')).not.toBeInTheDocument();
   await userEvent.type(screen.getByPlaceholderText('order-api'), 'test-repo');
   await userEvent.type(screen.getByPlaceholderText('订单服务仓库'), '测试源码仓库');
-  await userEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
+  await userEvent.type(screen.getByPlaceholderText('https://gitlab.example/rnd/order/order-api.git'), 'https://gitlab.example/rnd/order/test-repo.git');
+  await userEvent.click(within(dialog).getByRole('button', { name: /登\s*记/ }));
 
   expect(await screen.findByText('测试源码仓库')).toBeInTheDocument();
   await userEvent.type(screen.getByPlaceholderText('搜索仓库名称'), 'test-repo');

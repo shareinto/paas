@@ -82,6 +82,7 @@ func (p *recordingPublisher) Publish(_ context.Context, event shared.DomainEvent
 }
 
 type fakeGit struct {
+	resolveCalls []string
 	createCalls  []GitProjectSpec
 	initCalls    []string
 	protectCalls []string
@@ -92,6 +93,7 @@ type fakeGit struct {
 	deleteCalls  []string
 	files        []RepositoryFile
 	tree         map[string][]RepositoryTreeItem
+	resolveErr   error
 	createErr    error
 	initErr      error
 	protectErr   error
@@ -128,6 +130,14 @@ func (g *fakeGit) CreateProject(_ context.Context, spec GitProjectSpec) (GitProj
 	}
 	id := "git-" + spec.RepositoryName
 	return GitProject{ID: id, HTTPURL: "https://gitlab.example/" + spec.RepositoryName + ".git", SSHURL: "git@gitlab.example:" + spec.RepositoryName + ".git"}, nil
+}
+
+func (g *fakeGit) ResolveProjectByHTTPURL(_ context.Context, httpURL string) (GitProject, error) {
+	g.resolveCalls = append(g.resolveCalls, httpURL)
+	if g.resolveErr != nil {
+		return GitProject{}, g.resolveErr
+	}
+	return GitProject{ID: "git-resolved", HTTPURL: httpURL, SSHURL: "git@gitlab.example:rnd/payment/resolved.git"}, nil
 }
 
 func (g *fakeGit) InitializeRepository(_ context.Context, gitProjectID string, _ string) error {
@@ -255,26 +265,25 @@ func actor() identityaccess.Subject {
 	return identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_actor"}
 }
 
-func TestCreateSourceRepositoryCallsGitAndPublishesEvent(t *testing.T) {
+func TestCreateSourceRepositoryRegistersExistingHTTPRepositoryAndPublishesEvent(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
 
-	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "User-API", DisplayName: "用户接口", Description: " core "})
+	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "User-API", DisplayName: "用户接口", Description: " core ", HTTPURL: "https://gitlab.example/rnd/payment/user-api.git"})
 	if err != nil {
 		t.Fatalf("CreateSourceRepository() error = %v", err)
 	}
 	if repository.ID != "repo_1" || repository.Name != "user-api" || repository.Status != RepositoryStatusReady || repository.DefaultBranch != "main" {
 		t.Fatalf("unexpected repository: %+v", repository)
 	}
-	if repository.GitProjectID != "git-user-api" || !strings.Contains(repository.HTTPURL, "user-api.git") {
-		t.Fatalf("git project should be persisted: %+v", repository)
+	if repository.GitProjectID != "git-resolved" || repository.HTTPURL != "https://gitlab.example/rnd/payment/user-api.git" || repository.SSHURL == "" {
+		t.Fatalf("resolved git project should be persisted: %+v", repository)
 	}
-	if len(env.git.createCalls) != 1 || len(env.git.initCalls) != 0 || len(env.git.protectCalls) != 1 || len(env.git.webhookCalls) != 1 {
-		t.Fatalf("expected create/protect/webhook calls without repository initialization, got %+v", env.git)
+	if len(env.git.resolveCalls) != 1 || env.git.resolveCalls[0] != repository.HTTPURL {
+		t.Fatalf("expected resolve call with http url, got %+v", env.git.resolveCalls)
 	}
-	createSpec := env.git.createCalls[0]
-	if createSpec.TenantID != "tenant_a" || createSpec.TenantName != "rnd" || createSpec.ProjectName != "payment" || createSpec.RepositoryName != "user-api" {
-		t.Fatalf("git create spec should use tenant name for namespace path while preserving ids, got %+v", createSpec)
+	if len(env.git.createCalls) != 0 || len(env.git.initCalls) != 0 || len(env.git.protectCalls) != 0 || len(env.git.webhookCalls) != 0 {
+		t.Fatalf("registration must not create or configure GitLab projects, got %+v", env.git)
 	}
 	if len(env.permission.calls) != 1 || env.permission.calls[0].resource.ProjectID != "project_payment" || env.permission.calls[0].action != "project:update" {
 		t.Fatalf("unexpected permission calls: %+v", env.permission.calls)
@@ -291,10 +300,10 @@ func TestCreateSourceRepositoryCallsGitAndPublishesEvent(t *testing.T) {
 	}
 }
 
-func TestDeleteSourceRepositoryRemovesGitProjectAndBlocksAssociatedApplications(t *testing.T) {
+func TestDeleteSourceRepositoryRemovesPlatformRecordAndBlocksAssociatedApplications(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
-	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "delete-api"})
+	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "delete-api", HTTPURL: "https://gitlab.example/rnd/payment/delete-api.git"})
 	if err != nil {
 		t.Fatalf("CreateSourceRepository() error = %v", err)
 	}
@@ -310,8 +319,8 @@ func TestDeleteSourceRepositoryRemovesGitProjectAndBlocksAssociatedApplications(
 	if err := env.svc.DeleteSourceRepository(ctx, DeleteSourceRepositoryInput{Actor: actor(), SourceRepositoryID: repository.ID}); err != nil {
 		t.Fatalf("DeleteSourceRepository() error = %v", err)
 	}
-	if len(env.git.deleteCalls) != 1 || env.git.deleteCalls[0] != repository.GitProjectID {
-		t.Fatalf("delete git calls = %#v", env.git.deleteCalls)
+	if len(env.git.deleteCalls) != 0 {
+		t.Fatalf("registration delete must not delete GitLab project, got %#v", env.git.deleteCalls)
 	}
 	if _, err := env.repo.GetSourceRepository(ctx, repository.ID); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("repository should be removed, got %v", err)
@@ -331,22 +340,42 @@ func TestCreateSourceRepositoryValidationAndFailures(t *testing.T) {
 		t.Fatalf("missing actor should fail, got %v", err)
 	}
 	env.permission.err = shared.NewError(shared.CodePermissionDenied, "denied")
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api"}); shared.CodeOf(err) != shared.CodePermissionDenied {
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api", HTTPURL: "https://gitlab.example/rnd/payment/api.git"}); shared.CodeOf(err) != shared.CodePermissionDenied {
 		t.Fatalf("permission denial should fail, got %v", err)
 	}
 	env.permission.err = nil
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "1bad"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "1bad", HTTPURL: "https://gitlab.example/rnd/payment/api.git"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("invalid name should fail, got %v", err)
 	}
-	env.git.createErr = errors.New("gitlab unavailable")
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api"}); err == nil {
-		t.Fatalf("git create failure should fail")
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api", HTTPURL: "ssh://gitlab.example/rnd/payment/api.git"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("non-http url should fail, got %v", err)
 	}
-	env.git.createErr = nil
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api-ok"}); err != nil {
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api", HTTPURL: "https://token@gitlab.example/rnd/payment/api.git"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("credentialed url should fail, got %v", err)
+	}
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api", HTTPURL: "https://gitlab.example/rnd/payment/api.git?private_token=secret"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("url query should fail, got %v", err)
+	}
+	env.git.resolveErr = shared.NewError(shared.CodeNotFound, "repository not found")
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "missing-api", HTTPURL: "https://gitlab.example/rnd/payment/missing-api.git"}); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("missing git repository should fail, got %v", err)
+	}
+	if _, err := env.repo.FindSourceRepositoryByProjectAndName(ctx, "project_payment", "missing-api"); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("failed registration must not persist repository, got %v", err)
+	}
+	env.git.resolveErr = nil
+	env.git.listErr = errors.New("default branch unreadable")
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "scan-fail", HTTPURL: "https://gitlab.example/rnd/payment/scan-fail.git"}); err == nil {
+		t.Fatalf("default branch scan failure should fail")
+	}
+	if _, err := env.repo.FindSourceRepositoryByProjectAndName(ctx, "project_payment", "scan-fail"); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("scan failure must not persist repository, got %v", err)
+	}
+	env.git.listErr = nil
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api-ok", HTTPURL: "https://gitlab.example/rnd/payment/api-ok.git"}); err != nil {
 		t.Fatalf("CreateSourceRepository() error = %v", err)
 	}
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api-ok"}); shared.CodeOf(err) != shared.CodeConflict {
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api-ok", HTTPURL: "https://gitlab.example/rnd/payment/api-ok.git"}); shared.CodeOf(err) != shared.CodeConflict {
 		t.Fatalf("duplicate repository should conflict, got %v", err)
 	}
 }
@@ -354,7 +383,7 @@ func TestCreateSourceRepositoryValidationAndFailures(t *testing.T) {
 func TestPermissionMappingAndSync(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
-	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api"})
+	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "api", HTTPURL: "https://gitlab.example/rnd/payment/api.git"})
 	if err != nil {
 		t.Fatalf("CreateSourceRepository() error = %v", err)
 	}
@@ -385,82 +414,17 @@ func TestPermissionMappingAndSync(t *testing.T) {
 	}
 }
 
-func TestRepositoryMigrationLifecycleAndSuggestions(t *testing.T) {
+func TestRepositoryMigrationIsNoLongerSupported(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
-	migration, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "legacy-web", SourceURL: "https://example.com/legacy.git"})
-	if err != nil {
-		t.Fatalf("CreateRepositoryMigration() error = %v", err)
+	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "legacy-web", SourceURL: "https://example.com/legacy.git"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("migration create should be unsupported, got %v", err)
 	}
-	if migration.ID != "repo_migration_2" || migration.Status != MigrationPending {
-		t.Fatalf("unexpected migration: %+v", migration)
+	if _, err := env.repo.FindSourceRepositoryByProjectAndName(ctx, "project_payment", "legacy-web"); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("unsupported migration must not create repository, got %v", err)
 	}
-	processed, suggestions, err := env.svc.ProcessRepositoryMigration(ctx, migration.ID)
-	if err != nil {
-		t.Fatalf("ProcessRepositoryMigration() error = %v", err)
-	}
-	if processed.Status != MigrationSucceeded || processed.CompletedAt == nil {
-		t.Fatalf("migration should succeed, got %+v", processed)
-	}
-	repository, err := env.svc.GetSourceRepository(ctx, processed.SourceRepositoryID)
-	if err != nil {
-		t.Fatalf("GetSourceRepository() error = %v", err)
-	}
-	if repository.Status != RepositoryStatusReady || repository.GitProjectID == "" {
-		t.Fatalf("repository should be ready after migration, got %+v", repository)
-	}
-	if len(suggestions) != 2 {
-		t.Fatalf("expected jar and war suggestions, got %+v", suggestions)
-	}
-	if suggestions[0].SourcePath != "apps/legacy-web" || suggestions[0].ArtifactCopyCommand != `cp -ar target/legacy-web.war "$PAAS_ARTIFACT_OUTPUT/app.war"` || !containsString(suggestions[0].Evidence, "apps/legacy-web/target/legacy-web.war") {
-		t.Fatalf("unexpected first sorted suggestion: %+v", suggestions[0])
-	}
-	if len(env.git.mirrorCalls) != 1 || env.git.mirrorCalls[0].SourceURL != "https://example.com/legacy.git" {
-		t.Fatalf("expected mirror call, got %+v", env.git.mirrorCalls)
-	}
-	page, err := env.repo.ListMigrationsByRepository(ctx, processed.SourceRepositoryID, shared.PageRequest{})
-	if err != nil || page.Total != 1 {
-		t.Fatalf("ListMigrationsByRepository() = %+v, %v", page, err)
-	}
-}
-
-func TestMigrationCancelRetryAndFailure(t *testing.T) {
-	env := newTestEnv(t)
-	ctx := context.Background()
-	migration, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "api", SourceURL: "https://example.com/api.git"})
-	if err != nil {
-		t.Fatalf("CreateRepositoryMigration() error = %v", err)
-	}
-	canceled, err := env.svc.CancelRepositoryMigration(ctx, actor(), migration.ID)
-	if err != nil {
-		t.Fatalf("CancelRepositoryMigration() error = %v", err)
-	}
-	if canceled.Status != MigrationCanceled {
-		t.Fatalf("unexpected canceled migration: %+v", canceled)
-	}
-	if _, err := env.svc.CancelRepositoryMigration(ctx, actor(), canceled.ID); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("canceling terminal migration should fail, got %v", err)
-	}
-
-	failing := newTestEnv(t)
-	failing.git.mirrorErr = errors.New("mirror rejected")
-	failedMigration, err := failing.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "mirror-fail", SourceURL: "https://example.com/fail.git"})
-	if err != nil {
-		t.Fatalf("CreateRepositoryMigration() error = %v", err)
-	}
-	processed, _, err := failing.svc.ProcessRepositoryMigration(ctx, failedMigration.ID)
-	if err == nil || processed.Status != MigrationFailed || !strings.Contains(processed.ErrorMessage, "mirror rejected") {
-		t.Fatalf("process should fail and persist status, got %+v, %v", processed, err)
-	}
-	retried, err := failing.svc.RetryRepositoryMigration(ctx, actor(), failedMigration.ID)
-	if err != nil {
-		t.Fatalf("RetryRepositoryMigration() error = %v", err)
-	}
-	if retried.Status != MigrationPending {
-		t.Fatalf("retry should reset status, got %+v", retried)
-	}
-	if _, err := failing.svc.RetryRepositoryMigration(ctx, actor(), retried.ID); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("retrying non-failed migration should fail, got %v", err)
+	if len(env.git.createCalls) != 0 || len(env.git.mirrorCalls) != 0 {
+		t.Fatalf("unsupported migration must not call GitLab mutating APIs, got %+v", env.git)
 	}
 }
 
@@ -578,7 +542,7 @@ func TestHTTPHandler(t *testing.T) {
 	env := newTestEnv(t)
 	mux := http.NewServeMux()
 	NewHandler(env.svc).Register(mux)
-	body := bytes.NewBufferString(`{"actor":{"Type":"user","ID":"usr_actor"},"project_id":"project_payment","name":"api"}`)
+	body := bytes.NewBufferString(`{"actor":{"Type":"user","ID":"usr_actor"},"project_id":"project_payment","name":"api","http_url":"https://gitlab.example/rnd/payment/api.git"}`)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/source-repositories", body))
 	if recorder.Code != http.StatusCreated {
@@ -626,28 +590,8 @@ func TestHTTPHandler(t *testing.T) {
 	}
 	recorder = httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/repository-migrations", bytes.NewBufferString(`{"actor":{"Type":"user","ID":"usr_actor"},"project_id":"project_payment","name":"legacy","source_url":"https://example.com/legacy.git"}`)))
-	if recorder.Code != http.StatusCreated || !strings.Contains(recorder.Body.String(), `"pending"`) {
+	if recorder.Code != http.StatusPreconditionFailed || !strings.Contains(recorder.Body.String(), "请求处理失败") {
 		t.Fatalf("migration create response = %d, %s", recorder.Code, recorder.Body.String())
-	}
-	recorder = httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/repository-migrations/repo_migration_5", nil))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "repo_migration_5") {
-		t.Fatalf("migration get response = %d, %s", recorder.Code, recorder.Body.String())
-	}
-	recorder = httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/repository-migrations/repo_migration_5/process", nil))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "build_spec_suggestions") {
-		t.Fatalf("migration process response = %d, %s", recorder.Code, recorder.Body.String())
-	}
-	recorder = httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/repository-migrations", bytes.NewBufferString(`{"actor":{"Type":"user","ID":"usr_actor"},"project_id":"project_payment","name":"cancel-me","source_url":"https://example.com/cancel.git"}`)))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("second migration create response = %d, %s", recorder.Code, recorder.Body.String())
-	}
-	recorder = httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/repository-migrations/repo_migration_8/cancel", bytes.NewBufferString(`{"actor":{"Type":"user","ID":"usr_actor"}}`)))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "canceled") {
-		t.Fatalf("migration cancel response = %d, %s", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/source-repositories/missing", nil))
@@ -658,34 +602,6 @@ func TestHTTPHandler(t *testing.T) {
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/source-repositories", bytes.NewBufferString(`{bad json`)))
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid json response = %d, %s", recorder.Code, recorder.Body.String())
-	}
-}
-
-func TestHTTPRetryMigrationEndpoint(t *testing.T) {
-	env := newTestEnv(t)
-	mux := http.NewServeMux()
-	NewHandler(env.svc).Register(mux)
-
-	recorder := httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/repository-migrations", bytes.NewBufferString(`{"actor":{"Type":"user","ID":"usr_actor"},"project_id":"project_payment","name":"retry-me","source_url":"https://example.com/retry.git"}`)))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("migration create response = %d, %s", recorder.Code, recorder.Body.String())
-	}
-	env.git.mirrorErr = errors.New("mirror failed")
-	recorder = httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/repository-migrations/repo_migration_2/process", nil))
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("migration process failure response = %d, %s", recorder.Code, recorder.Body.String())
-	}
-	recorder = httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/repository-migrations/repo_migration_2/retry", bytes.NewBufferString(`{"actor":{"Type":"user","ID":"usr_actor"}}`)))
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"pending"`) {
-		t.Fatalf("migration retry response = %d, %s", recorder.Code, recorder.Body.String())
-	}
-	recorder = httptest.NewRecorder()
-	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/repository-migrations/repo_migration_2/retry", bytes.NewBufferString(`{bad`)))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("bad retry json response = %d, %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -707,9 +623,9 @@ func TestHTTPErrorBranches(t *testing.T) {
 		{method: http.MethodPost, path: "/api/source-repositories/missing/scan/java", body: `{}`, status: http.StatusNotFound},
 		{method: http.MethodPost, path: "/api/source-repositories/missing/permission-sync", body: `{bad`, status: http.StatusBadRequest},
 		{method: http.MethodPost, path: "/api/repository-migrations", body: `{bad`, status: http.StatusBadRequest},
-		{method: http.MethodGet, path: "/api/repository-migrations/missing", status: http.StatusNotFound},
+		{method: http.MethodGet, path: "/api/repository-migrations/missing", status: http.StatusPreconditionFailed},
 		{method: http.MethodPost, path: "/api/repository-migrations/missing/cancel", body: `{bad`, status: http.StatusBadRequest},
-		{method: http.MethodPost, path: "/api/repository-migrations/missing/cancel", body: `{"actor":{"Type":"user","ID":"usr_actor"}}`, status: http.StatusNotFound},
+		{method: http.MethodPost, path: "/api/repository-migrations/missing/cancel", body: `{"actor":{"Type":"user","ID":"usr_actor"}}`, status: http.StatusPreconditionFailed},
 	}
 	for _, tc := range cases {
 		var body *bytes.Buffer
@@ -743,7 +659,7 @@ func TestNoopAndDefaultServiceFailures(t *testing.T) {
 func TestServiceAdditionalErrorBranches(t *testing.T) {
 	ctx := context.Background()
 	env := newTestEnv(t)
-	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "develop-repo", DefaultBranch: "develop"})
+	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "develop-repo", DefaultBranch: "develop", HTTPURL: "https://gitlab.example/rnd/payment/develop-repo.git"})
 	if err != nil {
 		t.Fatalf("CreateSourceRepository() error = %v", err)
 	}
@@ -751,41 +667,23 @@ func TestServiceAdditionalErrorBranches(t *testing.T) {
 		t.Fatalf("explicit default branch should be kept, got %+v", repository)
 	}
 	env = newTestEnv(t)
-	env.git.protectErr = errors.New("protect failed")
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "protect-fail"}); err == nil {
-		t.Fatalf("protect failure should fail create")
-	}
-	env = newTestEnv(t)
-	env.git.webhookErr = errors.New("webhook failed")
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "webhook-fail"}); err == nil {
-		t.Fatalf("webhook failure should fail create")
-	}
-	env = newTestEnv(t)
 	env.events.err = errors.New("event bus down")
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "event-fail"}); err == nil {
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "event-fail", HTTPURL: "https://gitlab.example/rnd/payment/event-fail.git"}); err == nil {
 		t.Fatalf("event publish failure should fail create")
 	}
 	env = newTestEnv(t)
 	env.svc.ids = failingIDGenerator{}
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "id-fail"}); err == nil {
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "id-fail", HTTPURL: "https://gitlab.example/rnd/payment/id-fail.git"}); err == nil {
 		t.Fatalf("id generation failure should fail create")
 	}
 	env = newTestEnv(t)
-	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "bad"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
-		t.Fatalf("missing source_url should fail, got %v", err)
+	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "bad"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("migration create should be unsupported, got %v", err)
 	}
-	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "1bad", SourceURL: "https://example.com/repo.git"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
-		t.Fatalf("bad migration name should fail, got %v", err)
-	}
-	env.events.err = errors.New("event bus down")
-	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "event-migration", SourceURL: "https://example.com/repo.git"}); err == nil {
-		t.Fatalf("event publish failure should fail migration create")
-	}
-	env.events.err = nil
 	if _, _, err := NewService(Options{Repository: env.repo}).ProcessRepositoryMigration(ctx, "missing"); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing git should fail process, got %v", err)
 	}
-	repository, err = env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "scan"})
+	repository, err = env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "scan", HTTPURL: "https://gitlab.example/rnd/payment/scan.git"})
 	if err != nil {
 		t.Fatalf("CreateSourceRepository() error = %v", err)
 	}
@@ -802,82 +700,30 @@ func TestIDGenerationFailuresAfterPrimaryID(t *testing.T) {
 	ctx := context.Background()
 	env := newTestEnv(t)
 	env.svc.ids = &sequenceIDGenerator{ids: []shared.ID{"repo_custom"}}
-	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "event-id-fail"}); err == nil {
+	if _, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "event-id-fail", HTTPURL: "https://gitlab.example/rnd/payment/event-id-fail.git"}); err == nil {
 		t.Fatalf("event id failure should fail source repository create")
 	}
 
 	env = newTestEnv(t)
 	env.svc.ids = &sequenceIDGenerator{ids: []shared.ID{"repo_custom"}}
-	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "migration-id-fail", SourceURL: "https://example.com/repo.git"}); err == nil {
-		t.Fatalf("second migration id failure should fail migration create")
-	}
-
-	env = newTestEnv(t)
-	env.svc.ids = &sequenceIDGenerator{ids: []shared.ID{"repo_custom", "migration_custom"}}
-	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "migration-event-id-fail", SourceURL: "https://example.com/repo.git"}); err == nil {
-		t.Fatalf("event id failure should fail migration create")
+	if _, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "migration-id-fail", SourceURL: "https://example.com/repo.git"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("migration create should be unsupported before id generation, got %v", err)
 	}
 }
 
-func TestProcessMigrationFailureBranches(t *testing.T) {
-	cases := []struct {
-		name    string
-		mutate  func(*fakeGit)
-		message string
-	}{
-		{name: "protect-fail", mutate: func(g *fakeGit) { g.protectErr = errors.New("protect failed") }, message: "protect failed"},
-		{name: "webhook-fail", mutate: func(g *fakeGit) { g.webhookErr = errors.New("webhook failed") }, message: "webhook failed"},
-		{name: "verify-fail", mutate: func(g *fakeGit) { g.verifyErr = errors.New("verify failed") }, message: "verify failed"},
-		{name: "list-fail", mutate: func(g *fakeGit) { g.listErr = errors.New("list failed") }, message: "list failed"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			env := newTestEnv(t)
-			tc.mutate(env.git)
-			ctx := context.Background()
-			migration, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: tc.name, SourceURL: "https://example.com/" + tc.name + ".git"})
-			if err != nil {
-				t.Fatalf("CreateRepositoryMigration() error = %v", err)
-			}
-			processed, _, err := env.svc.ProcessRepositoryMigration(ctx, migration.ID)
-			if err == nil || processed.Status != MigrationFailed || !strings.Contains(processed.ErrorMessage, tc.message) {
-				t.Fatalf("expected failed migration containing %q, got %+v, %v", tc.message, processed, err)
-			}
-			repository, getErr := env.svc.GetSourceRepository(ctx, processed.SourceRepositoryID)
-			if getErr != nil || repository.Status != RepositoryStatusFailed {
-				t.Fatalf("repository should be marked failed, got %+v, %v", repository, getErr)
-			}
-		})
-	}
-}
-
-func TestProcessMigrationTerminalAndInvalidTransition(t *testing.T) {
+func TestInvalidMigrationTransition(t *testing.T) {
 	env := newTestEnv(t)
-	ctx := context.Background()
-	migration, err := env.svc.CreateRepositoryMigration(ctx, CreateRepositoryMigrationInput{Actor: actor(), ProjectID: "project_payment", Name: "terminal", SourceURL: "https://example.com/terminal.git"})
-	if err != nil {
-		t.Fatalf("CreateRepositoryMigration() error = %v", err)
-	}
-	succeeded, _, err := env.svc.ProcessRepositoryMigration(ctx, migration.ID)
-	if err != nil {
-		t.Fatalf("ProcessRepositoryMigration() error = %v", err)
-	}
-	again, suggestions, err := env.svc.ProcessRepositoryMigration(ctx, migration.ID)
-	if err != nil || again.Status != MigrationSucceeded || suggestions != nil {
-		t.Fatalf("terminal migration should be a no-op, got %+v, %+v, %v", again, suggestions, err)
-	}
-	if _, err := env.svc.transitionMigration(ctx, succeeded, MigrationPending, ""); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+	now := time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)
+	succeeded := RepositoryMigration{ID: "migration_succeeded", Status: MigrationSucceeded, UpdatedAt: now}
+	if _, err := env.svc.transitionMigration(context.Background(), succeeded, MigrationPending, ""); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("invalid transition should fail, got %v", err)
-	}
-	if _, _, err := env.svc.ProcessRepositoryMigration(ctx, "missing"); shared.CodeOf(err) != shared.CodeNotFound {
-		t.Fatalf("missing migration should fail, got %v", err)
 	}
 }
 
 func TestSyncRepositoryPermissionsPortFailures(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
-	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "sync-port"})
+	repository, err := env.svc.CreateSourceRepository(ctx, CreateSourceRepositoryInput{Actor: actor(), ProjectID: "project_payment", Name: "sync-port", HTTPURL: "https://gitlab.example/rnd/payment/sync-port.git"})
 	if err != nil {
 		t.Fatalf("CreateSourceRepository() error = %v", err)
 	}

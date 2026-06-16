@@ -42,12 +42,12 @@ export function SourceRepositoryList({ projectId: fixedProjectId, hideProjectFil
   const createMutation = useMutation({
     mutationFn: createSourceRepository,
     onSuccess: async () => {
-      message.success('源码仓库已创建');
+      message.success('源码仓库已登记');
       setOpen(false);
       form.resetFields();
       await queryClient.invalidateQueries({ queryKey: ['source-repositories'] });
     },
-    onError: (error) => message.error(error instanceof Error ? error.message : '源码仓库创建失败')
+    onError: (error) => message.error(error instanceof Error ? error.message : '源码仓库登记失败')
   });
   const deleteMutation = useMutation({
     mutationFn: deleteSourceRepository,
@@ -69,7 +69,7 @@ export function SourceRepositoryList({ projectId: fixedProjectId, hideProjectFil
         <Input.Search placeholder="搜索仓库名称" value={keyword} onChange={(event) => setKeyword(event.target.value)} allowClear />
         {!hideProjectFilter && <Select allowClear placeholder="所属项目" options={projectOptions} value={projectId} onChange={setProjectId} />}
         <Select allowClear placeholder="状态" options={[{ value: 'ready', label: '可用' }, { value: 'failed', label: '失败' }, { value: 'migrating', label: '迁移中' }, { value: 'provisioning', label: '创建中' }]} value={status} onChange={setStatus} />
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>创建仓库</Button>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>登记仓库</Button>
       </div>
       <Card className="compact-card">
         <Table<SourceRepository>
@@ -106,7 +106,7 @@ export function SourceRepositoryList({ projectId: fixedProjectId, hideProjectFil
           ]}
         />
       </Card>
-      <Modal title="创建平台托管源码仓库" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={createMutation.isPending} okText="创建" cancelText="取消">
+      <Modal title="登记源码仓库" open={open} onCancel={() => setOpen(false)} onOk={() => form.submit()} confirmLoading={createMutation.isPending} okText="登记" cancelText="取消">
         <Form layout="vertical" form={form} onFinish={(values) => createMutation.mutate({ ...values, projectId: fixedProjectId || values.projectId })} initialValues={{ defaultBranch: 'main', projectId: fixedProjectId || projectOptions[0]?.value }}>
           {!fixedProjectId && (
             <Form.Item label="所属项目" name="projectId" rules={[{ required: true, message: '请选择所属项目' }]}>
@@ -118,6 +118,9 @@ export function SourceRepositoryList({ projectId: fixedProjectId, hideProjectFil
           </Form.Item>
           <Form.Item label="显示名称" name="displayName" rules={[{ required: true, message: '请输入显示名称' }]}>
             <Input placeholder="订单服务仓库" />
+          </Form.Item>
+          <Form.Item label="HTTP 仓库地址" name="httpUrl" rules={[{ required: true, message: '请输入 HTTP 仓库地址' }, { type: 'url', message: '请输入有效的 HTTP 仓库地址' }, { pattern: /^https?:\/\//, message: '仅支持 HTTP 或 HTTPS 地址' }]}>
+            <Input placeholder="https://gitlab.example/rnd/order/order-api.git" />
           </Form.Item>
           <Form.Item label="默认分支" name="defaultBranch" rules={[{ required: true, message: '请输入默认分支' }]}>
             <Input prefix={<CloudSyncOutlined />} />

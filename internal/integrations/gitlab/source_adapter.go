@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/shareinto/paas/internal/modules/sourcerepository"
+	"github.com/shareinto/paas/internal/shared"
 )
 
 type SourceRepositoryAdapter struct {
@@ -21,6 +22,62 @@ func NewSourceRepositoryAdapter(client *Client) *SourceRepositoryAdapter {
 
 func NewSourceRepositoryAdapterWithNamespace(client *Client, rootGroupPath string) *SourceRepositoryAdapter {
 	return &SourceRepositoryAdapter{client: client, rootGroupPath: normalizePath(rootGroupPath)}
+}
+
+func (a *SourceRepositoryAdapter) ResolveProjectByHTTPURL(ctx context.Context, httpURL string) (sourcerepository.GitProject, error) {
+	projectPath, err := a.projectPathFromHTTPURL(httpURL)
+	if err != nil {
+		return sourcerepository.GitProject{}, err
+	}
+	return a.getProject(ctx, projectPath)
+}
+
+func (a *SourceRepositoryAdapter) projectPathFromHTTPURL(httpURL string) (string, error) {
+	repoURL, err := url.Parse(strings.TrimSpace(httpURL))
+	if err != nil || repoURL.Scheme == "" || repoURL.Host == "" {
+		return "", sourcerepositoryURLInvalid()
+	}
+	baseURL, err := url.Parse(a.client.baseURL)
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
+		return "", sourcerepositoryURLInvalid()
+	}
+	if !strings.EqualFold(repoURL.Scheme, baseURL.Scheme) || !strings.EqualFold(repoURL.Host, baseURL.Host) {
+		return "", sourcerepositoryURLInvalid()
+	}
+	if repoURL.User != nil {
+		return "", sourcerepositoryURLInvalid()
+	}
+	if repoURL.RawQuery != "" || repoURL.Fragment != "" {
+		return "", sourcerepositoryURLInvalid()
+	}
+	basePath := strings.Trim(strings.TrimSuffix(baseURL.Path, "/"), "/")
+	repoPath := strings.Trim(repoURL.EscapedPath(), "/")
+	if repoPath == "" {
+		return "", sourcerepositoryURLInvalid()
+	}
+	if basePath != "" {
+		if repoPath == basePath {
+			return "", sourcerepositoryURLInvalid()
+		}
+		prefix := basePath + "/"
+		if !strings.HasPrefix(repoPath, prefix) {
+			return "", sourcerepositoryURLInvalid()
+		}
+		repoPath = strings.TrimPrefix(repoPath, prefix)
+	}
+	repoPath = strings.TrimSuffix(repoPath, ".git")
+	if repoPath == "" || strings.Contains(repoPath, "..") {
+		return "", sourcerepositoryURLInvalid()
+	}
+	unescaped, err := url.PathUnescape(repoPath)
+	if err != nil || strings.TrimSpace(unescaped) == "" {
+		return "", sourcerepositoryURLInvalid()
+	}
+	return unescaped, nil
+}
+
+func sourcerepositoryURLInvalid() error {
+	return shared.NewError(shared.CodeInvalidArgument, "http_url must point to the configured GitLab instance")
 }
 
 func (a *SourceRepositoryAdapter) CreateProject(ctx context.Context, spec sourcerepository.GitProjectSpec) (sourcerepository.GitProject, error) {

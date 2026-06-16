@@ -30,6 +30,7 @@ type Repository interface {
 }
 
 type GitSourceRepositoryPort interface {
+	ResolveProjectByHTTPURL(ctx context.Context, httpURL string) (GitProject, error)
 	CreateProject(ctx context.Context, spec GitProjectSpec) (GitProject, error)
 	DeleteProject(ctx context.Context, gitProjectID string) error
 	InitializeRepository(ctx context.Context, gitProjectID string, defaultBranch string) error

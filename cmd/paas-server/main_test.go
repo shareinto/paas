@@ -384,7 +384,7 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 	defer app.db.Close()
 	fixture := seedServerTestData(t, app)
 
-	repoBody := bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"project_id":"` + fixture.project.ID.String() + `","name":"invoice-api","display_name":"发票服务仓库","default_branch":"main"}`)
+	repoBody := bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"project_id":"` + fixture.project.ID.String() + `","name":"invoice-api","display_name":"发票服务仓库","http_url":"https://gitlab.example/invoice-api.git","default_branch":"main"}`)
 	repoRec := httptest.NewRecorder()
 	app.handler.ServeHTTP(repoRec, httptest.NewRequest(http.MethodPost, "/api/source-repositories", repoBody))
 	if repoRec.Code != http.StatusCreated {
@@ -563,7 +563,7 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	repo, err := app.sources.CreateSourceRepository(ctx, sourcerepository.CreateSourceRepositoryInput{Actor: actor, ProjectID: project.ID, Name: "test-api-" + suffix, DisplayName: "测试服务仓库", DefaultBranch: "main"})
+	repo, err := app.sources.CreateSourceRepository(ctx, sourcerepository.CreateSourceRepositoryInput{Actor: actor, ProjectID: project.ID, Name: "test-api-" + suffix, DisplayName: "测试服务仓库", HTTPURL: "https://gitlab.example/test-api-" + suffix + ".git", DefaultBranch: "main"})
 	if err != nil {
 		t.Fatalf("create source repository: %v", err)
 	}
