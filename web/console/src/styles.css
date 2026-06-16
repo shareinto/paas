@@ -241,6 +241,9 @@ body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; }
 .build-log-truncated-tip { flex: 0 0 auto; min-height: 34px; display: flex; align-items: center; padding: 7px 20px; background: #0d1b2e; color: #b7c7dc; border-bottom: 1px solid rgba(255,255,255,0.08); font-size: 12px; }
 .terminal-log { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 18px 20px; background: #07111f; color: #c7f9cc; border-radius: 0 0 var(--radius) var(--radius); line-height: 1.65; border: 0; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; }
 .terminal-log-line { display: inline; }
+.runtime-stream-panel { min-height: calc(100vh - 130px); }
+.runtime-log-output, .runtime-terminal-output { min-height: 360px; border-radius: var(--radius); }
+.runtime-terminal-output { min-height: 300px; }
 .log-color-red { color: #ff8a8a; }
 .log-color-yellow { color: #ffd166; }
 .log-color-green { color: #74e39a; }

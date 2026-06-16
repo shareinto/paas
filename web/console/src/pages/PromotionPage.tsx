@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
 import { CheckCircleOutlined, DeleteOutlined, EditOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useParams } from 'react-router-dom';
-import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, deleteFreight, getApplication, getFreight, getFreightCreationContext, getRuntimeResourceLogs, listAppStages, listEligibleFreights, listFreights, listRuntimeResources, listWorkloadStageConfigs, listWorkloads, openRuntimeResourceTerminal, restartRuntimeResource, saveWorkloadStageConfig, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type RuntimeResource, type Workload, type WorkloadStageConfig } from '../api';
+import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, deleteFreight, getApplication, getFreight, getFreightCreationContext, listAppStages, listEligibleFreights, listFreights, listWorkloadStageConfigs, listWorkloads, openRuntimePodTerminal, restartRuntimeResource, saveWorkloadStageConfig, streamRuntimePodLogs, streamRuntimeResources, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type RuntimeResource, type Workload, type WorkloadStageConfig } from '../api';
 import { ConfigValueLists, WorkloadRuntimeFields, workloadConfigFormValues, workloadConfigPayload } from './workloadConfigForm';
 
 const DEFAULT_APPLICATION_ID = 'app_1';
@@ -31,6 +31,13 @@ type PendingPromotion = {
   stage: StageView;
   freight: Freight;
 };
+
+type RuntimePanel = {
+  resource: RuntimeResource;
+  container?: string;
+};
+
+type TerminalStatus = 'connecting' | 'connected' | 'disconnected' | 'forbidden';
 
 type StageNodeData = {
   stage: StageView;
@@ -72,6 +79,17 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const [verificationComment, setVerificationComment] = useState('');
   const [configStage, setConfigStage] = useState<StageView | null>(null);
   const [runtimeStage, setRuntimeStage] = useState<StageView | null>(null);
+  const [runtimeResources, setRuntimeResources] = useState<RuntimeResource[]>([]);
+  const [runtimeLoading, setRuntimeLoading] = useState(false);
+  const [runtimeStreamStatus, setRuntimeStreamStatus] = useState('');
+  const [logPanel, setLogPanel] = useState<RuntimePanel | null>(null);
+  const [runtimeLogs, setRuntimeLogs] = useState('');
+  const [logStreamStatus, setLogStreamStatus] = useState('');
+  const [terminalPanel, setTerminalPanel] = useState<RuntimePanel | null>(null);
+  const [terminalStatus, setTerminalStatus] = useState<TerminalStatus>('disconnected');
+  const [terminalOutput, setTerminalOutput] = useState('');
+  const [terminalInput, setTerminalInput] = useState('');
+  const terminalConnectionRef = useRef<{ send: (text: string) => void; close: () => void } | null>(null);
   const [selectedConfigWorkloadId, setSelectedConfigWorkloadId] = useState('');
   const [configForm] = Form.useForm();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -90,11 +108,6 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     queryKey: ['workload-stage-configs', applicationId, selectedConfigWorkloadId, configStage?.stageKey],
     queryFn: () => listWorkloadStageConfigs(applicationId, selectedConfigWorkloadId),
     enabled: !!configStage?.stageKey && !!selectedConfigWorkloadId
-  });
-  const runtimeResourcesQuery = useQuery({
-    queryKey: ['runtime-resources', applicationId, runtimeStage?.stageKey],
-    queryFn: () => runtimeStage ? listRuntimeResources(applicationId, runtimeStage.stageKey) : Promise.resolve([]),
-    enabled: !!runtimeStage
   });
   const eligibleMutation = useMutation({ mutationFn: (stageId: string) => listEligibleFreights(applicationId, stageId) });
   const createPromotionMutation = useMutation({
@@ -159,16 +172,6 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
       queryClient.invalidateQueries({ queryKey: ['runtime-resources', applicationId, runtimeStage?.stageKey] });
     },
     onError: (error) => message.error(error instanceof Error ? error.message : '提交重启任务失败')
-  });
-  const runtimeCapabilityMutation = useMutation({
-    mutationFn: async ({ resource, action }: { resource: RuntimeResource; action: 'logs' | 'terminal' }) => {
-      const container = resource.containers?.[0]?.name;
-      return action === 'logs'
-        ? getRuntimeResourceLogs(applicationId, resource.stageKey, resource.id, container)
-        : openRuntimeResourceTerminal(applicationId, resource.stageKey, resource.id, container);
-    },
-    onSuccess: (result) => message.info(result.message || '能力暂未启用'),
-    onError: (error) => message.error(error instanceof Error ? error.message : '操作失败')
   });
   const createFreightMutation = useMutation({
     mutationFn: (input: CreateFreightInput) => createFreight(applicationId, input),
@@ -307,6 +310,75 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     configForm.setFieldsValue(workloadConfigFormValues(currentConfig));
   }, [configForm, configStage, selectedConfigWorkloadId, stageConfigQuery.data]);
 
+  useEffect(() => {
+    if (!runtimeStage) {
+      setRuntimeResources([]);
+      setRuntimeStreamStatus('');
+      return;
+    }
+    let closed = false;
+    setRuntimeLoading(true);
+    setRuntimeStreamStatus('连接中');
+    const close = streamRuntimeResources(applicationId, runtimeStage.stageKey, (items) => {
+      if (closed) return;
+      setRuntimeResources(items);
+      setRuntimeLoading(false);
+    }, (status) => {
+      if (!closed) setRuntimeStreamStatus(runtimeStreamStatusText(status));
+    });
+    return () => {
+      closed = true;
+      close();
+    };
+  }, [applicationId, runtimeStage?.stageKey]);
+
+  useEffect(() => {
+    if (!logPanel) {
+      setRuntimeLogs('');
+      setLogStreamStatus('');
+      return;
+    }
+    setRuntimeLogs('');
+    setLogStreamStatus('连接中');
+    const close = streamRuntimePodLogs(
+      applicationId,
+      logPanel.resource.stageKey,
+      logPanel.resource.namespace,
+      logPanel.resource.name,
+      logPanel.container,
+      (text) => setRuntimeLogs((current) => current + text),
+      (status) => setLogStreamStatus(runtimeStreamStatusText(status))
+    );
+    return close;
+  }, [applicationId, logPanel]);
+
+  useEffect(() => {
+    terminalConnectionRef.current?.close();
+    terminalConnectionRef.current = null;
+    if (!terminalPanel) {
+      setTerminalStatus('disconnected');
+      setTerminalOutput('');
+      setTerminalInput('');
+      return;
+    }
+    setTerminalStatus('connecting');
+    setTerminalOutput('');
+    setTerminalInput('');
+    terminalConnectionRef.current = openRuntimePodTerminal(applicationId, terminalPanel.resource.stageKey, terminalPanel.resource.namespace, terminalPanel.resource.name, terminalPanel.container, {
+      onOpen: () => setTerminalStatus('connected'),
+      onMessage: (text) => setTerminalOutput((current) => current + text),
+      onClose: () => setTerminalStatus('disconnected'),
+      onError: () => {
+        setTerminalStatus('forbidden');
+        setTerminalOutput((current) => current || '无权限或终端连接失败\n');
+      }
+    });
+    return () => {
+      terminalConnectionRef.current?.close();
+      terminalConnectionRef.current = null;
+    };
+  }, [applicationId, terminalPanel]);
+
   const handleCreateFreight = () => {
     createFreightMutation.mutate({
       name: draftName.trim() || `freight-${Date.now()}`,
@@ -315,6 +387,15 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
         return { workloadId: workload.id, sourceType: item.sourceType, releaseId: item.releaseId, buildArtifactId: item.buildArtifactId, imageRef: item.imageRef };
       })
     });
+  };
+
+  const openRuntimeLogPanel = (resource: RuntimeResource) => setLogPanel({ resource, container: resource.containers?.[0]?.name });
+  const openRuntimeTerminalPanel = (resource: RuntimeResource) => setTerminalPanel({ resource, container: resource.containers?.[0]?.name });
+  const sendTerminalInput = () => {
+    const text = terminalInput;
+    if (!text.trim() || terminalStatus !== 'connected') return;
+    terminalConnectionRef.current?.send(text);
+    setTerminalInput('');
   };
 
   const timelineSection = (
@@ -516,14 +597,51 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
             { key: 'sync', label: 'Argo CD 同步', children: <Tag color={runtimeTagColor(runtimeStage?.syncStatus)}>{runtimeStage?.syncStatus || '未知'}</Tag> },
             { key: 'health', label: '健康状态', children: <Tag color={runtimeTagColor(runtimeStage?.healthStatus)}>{runtimeStage?.healthStatus || '未知'}</Tag> }
           ]} />
-          <Typography.Text strong>K8s 资源</Typography.Text>
+          <Space className="full-width" align="center" style={{ justifyContent: 'space-between' }}>
+            <Typography.Text strong>K8s 资源</Typography.Text>
+            {runtimeStreamStatus && <Tag color={runtimeStreamStatusColor(runtimeStreamStatus)}>{runtimeStreamStatus}</Tag>}
+          </Space>
           <Table
             rowKey="id"
             size="small"
-            loading={runtimeResourcesQuery.isLoading}
-            dataSource={runtimeResourcesQuery.data || []}
+            loading={runtimeLoading}
+            dataSource={runtimeResources}
             pagination={false}
-            columns={runtimeResourceColumns(restartRuntimeMutation.mutate, runtimeCapabilityMutation.mutate, restartRuntimeMutation.isPending || runtimeCapabilityMutation.isPending)}
+            columns={runtimeResourceColumns(restartRuntimeMutation.mutate, openRuntimeLogPanel, openRuntimeTerminalPanel, restartRuntimeMutation.isPending)}
+          />
+        </Space>
+      </Drawer>
+
+      <Drawer title={logPanel ? `${logPanel.resource.name} 日志` : 'Pod 日志'} open={!!logPanel} width={780} destroyOnHidden onClose={() => setLogPanel(null)}>
+        <Space direction="vertical" size={12} className="full-width runtime-stream-panel">
+          <Descriptions size="small" column={2} items={[
+            { key: 'pod', label: 'Pod', children: logPanel?.resource.name || '-' },
+            { key: 'namespace', label: '命名空间', children: logPanel?.resource.namespace || '-' },
+            { key: 'container', label: '容器', children: logPanel?.container || '-' },
+            { key: 'status', label: '连接状态', children: <Tag color={runtimeStreamStatusColor(logStreamStatus)}>{logStreamStatus || '连接中'}</Tag> }
+          ]} />
+          <pre className="terminal-log runtime-log-output" role="log">{runtimeLogs || '等待日志输出...'}</pre>
+        </Space>
+      </Drawer>
+
+      <Drawer title={terminalPanel ? `${terminalPanel.resource.name} 终端` : 'Pod 终端'} open={!!terminalPanel} width={780} destroyOnHidden onClose={() => setTerminalPanel(null)}>
+        <Space direction="vertical" size={12} className="full-width runtime-stream-panel">
+          <Descriptions size="small" column={2} items={[
+            { key: 'pod', label: 'Pod', children: terminalPanel?.resource.name || '-' },
+            { key: 'namespace', label: '命名空间', children: terminalPanel?.resource.namespace || '-' },
+            { key: 'container', label: '容器', children: terminalPanel?.container || '-' },
+            { key: 'status', label: '连接状态', children: <Tag color={terminalStatusColor(terminalStatus)}>{terminalStatusText(terminalStatus)}</Tag> }
+          ]} />
+          {terminalStatus === 'forbidden' && <Alert type="warning" showIcon message="无权限或终端连接失败，请确认后端已授权该 Pod 终端访问。" />}
+          <pre className="terminal-log runtime-terminal-output" role="log">{terminalOutput || terminalStatusText(terminalStatus)}</pre>
+          <Input.Search
+            aria-label="终端输入"
+            enterButton={<Button aria-label="发送">发送</Button>}
+            value={terminalInput}
+            disabled={terminalStatus !== 'connected'}
+            placeholder={terminalStatus === 'connected' ? '输入命令后发送' : terminalStatusText(terminalStatus)}
+            onChange={(event) => setTerminalInput(event.target.value)}
+            onSearch={sendTerminalInput}
           />
         </Space>
       </Drawer>
@@ -657,7 +775,8 @@ function DeployStageNode({ data }: NodeProps<Node<StageNodeData>>) {
 
 function runtimeResourceColumns(
   restart: (resource: RuntimeResource) => void,
-  capability: (input: { resource: RuntimeResource; action: 'logs' | 'terminal' }) => void,
+  openLogs: (resource: RuntimeResource) => void,
+  openTerminal: (resource: RuntimeResource) => void,
   loading: boolean
 ) {
   return [
@@ -676,8 +795,8 @@ function runtimeResourceColumns(
     { title: '操作', key: 'actions', width: 180, render: (_: unknown, resource: RuntimeResource) => (
       <Space size={6}>
         {isRestartableRuntimeKind(resource.kind) && <Button size="small" aria-label="重启" loading={loading} onClick={() => restart(resource)}>重启</Button>}
-        {resource.kind === 'Pod' && <Button size="small" aria-label="日志" loading={loading} onClick={() => capability({ resource, action: 'logs' })}>日志</Button>}
-        {resource.kind === 'Pod' && <Button size="small" aria-label="终端" disabled onClick={() => capability({ resource, action: 'terminal' })}>终端</Button>}
+        {resource.kind === 'Pod' && <Button size="small" aria-label="日志" onClick={() => openLogs(resource)}>日志</Button>}
+        {resource.kind === 'Pod' && <Button size="small" aria-label="终端" onClick={() => openTerminal(resource)}>终端</Button>}
       </Space>
     ) }
   ];
@@ -727,19 +846,58 @@ function runtimeTagColor(status?: string) {
 	if (value === 'healthy' || value === 'synced' || value === 'succeeded') return 'green';
 	if (value === 'degraded' || value === 'failed' || value === 'outofsync') return 'red';
 	if (value === 'progressing' || value === 'running') return 'blue';
+	if (value === 'terminating') return 'orange';
 	if (value === 'warning') return 'orange';
 	return 'default';
 }
 
 function runtimeKindColor(kind?: string) {
   if (kind === 'Pod') return 'blue';
-  if (kind === 'Event') return 'orange';
   if (isRestartableRuntimeKind(kind || '')) return 'purple';
   return 'default';
 }
 
 function isRestartableRuntimeKind(kind: string) {
   return ['Deployment', 'StatefulSet', 'DaemonSet'].includes(kind);
+}
+
+function runtimeStreamStatusText(status: string) {
+  const map: Record<string, string> = {
+    connecting: '连接中',
+    connected: '已连接',
+    refreshing: '刷新中',
+    agent_offline: 'Agent 未连接',
+    reconnecting: '重连中',
+    closed: '已断开',
+    error: '连接异常',
+    'mock-streaming': '已连接'
+  };
+  return map[status] || status || '未知';
+}
+
+function runtimeStreamStatusColor(status?: string) {
+  if (status === '已连接') return 'green';
+  if (status === '连接中' || status === '重连中') return 'blue';
+  if (status === '连接异常' || status === '加载失败') return 'red';
+  if (status === '已断开') return 'default';
+  return 'default';
+}
+
+function terminalStatusText(status: TerminalStatus) {
+  const map: Record<TerminalStatus, string> = {
+    connecting: '连接中',
+    connected: '已连接',
+    disconnected: '已断开',
+    forbidden: '无权限'
+  };
+  return map[status];
+}
+
+function terminalStatusColor(status: TerminalStatus) {
+  if (status === 'connected') return 'green';
+  if (status === 'connecting') return 'blue';
+  if (status === 'forbidden') return 'red';
+  return 'default';
 }
 
 function withStageDefaults(stage: AppStage, freights: Freight[], current: Record<string, string>): StageView {

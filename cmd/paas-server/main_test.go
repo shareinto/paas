@@ -79,6 +79,26 @@ func TestApplicationStartsAndServesDevelopmentAPI(t *testing.T) {
 	}
 }
 
+func TestNewApplicationEnsuresDevelopmentAdmin(t *testing.T) {
+	app := newTestApplication(t)
+	defer app.db.Close()
+
+	loginBody := bytes.NewBufferString(`{"account":"admin","password":"password"}`)
+	login := httptest.NewRecorder()
+	app.handler.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/api/auth/local/login", loginBody))
+	if login.Code != http.StatusOK {
+		t.Fatalf("login status = %d body = %s", login.Code, login.Body.String())
+	}
+
+	user, err := app.identity.AuthenticateAccessToken(context.Background(), decodeDevelopmentLoginToken(t, login.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("AuthenticateAccessToken() error = %v", err)
+	}
+	if err := app.identity.Check(context.Background(), identityaccess.Subject{Type: identityaccess.SubjectUser, ID: user.ID}, identityaccess.ResourceScope{Kind: identityaccess.ScopePlatform}, identityaccess.Permission("runtime:restart")); err != nil {
+		t.Fatalf("development admin should have platform permissions: %v", err)
+	}
+}
+
 func newTestApplication(t *testing.T) *application {
 	t.Helper()
 	testsupport.ConfigureMySQLEnv(t, migrations.All()...)
@@ -87,6 +107,20 @@ func newTestApplication(t *testing.T) *application {
 		t.Fatalf("newApplication() error = %v", err)
 	}
 	return app
+}
+
+func decodeDevelopmentLoginToken(t *testing.T, body []byte) string {
+	t.Helper()
+	var payload struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	if payload.Token == "" {
+		t.Fatalf("login response missing token: %s", string(body))
+	}
+	return payload.Token
 }
 
 func TestMigrateDatabaseIfEnabledSkipsByDefault(t *testing.T) {

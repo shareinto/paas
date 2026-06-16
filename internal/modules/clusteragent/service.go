@@ -2,6 +2,7 @@ package clusteragent
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/shareinto/paas/internal/modules/identityaccess"
@@ -13,6 +14,8 @@ type Service struct {
 	repo         Repository
 	tenants      TenantQuery
 	permission   PermissionChecker
+	runtime      RuntimeGateway
+	stages       StageClusterResolver
 	stageUpdater StageStateUpdater
 	deployments  DeploymentStatusUpdater
 	audit        AuditLogger
@@ -25,6 +28,8 @@ type Options struct {
 	Repository        Repository
 	TenantQuery       TenantQuery
 	PermissionChecker PermissionChecker
+	RuntimeGateway    RuntimeGateway
+	StageClusters     StageClusterResolver
 	StageState        StageStateUpdater
 	DeploymentStatus  DeploymentStatusUpdater
 	Audit             AuditLogger
@@ -50,7 +55,7 @@ func NewService(opts Options) *Service {
 	if audit == nil {
 		audit = NoopAuditLogger{}
 	}
-	return &Service{repo: opts.Repository, tenants: opts.TenantQuery, permission: opts.PermissionChecker, stageUpdater: opts.StageState, deployments: opts.DeploymentStatus, audit: audit, ids: ids, clock: clock, timeout: timeout}
+	return &Service{repo: opts.Repository, tenants: opts.TenantQuery, permission: opts.PermissionChecker, runtime: opts.RuntimeGateway, stages: opts.StageClusters, stageUpdater: opts.StageState, deployments: opts.DeploymentStatus, audit: audit, ids: ids, clock: clock, timeout: timeout}
 }
 
 type RegisterClusterInput struct {
@@ -78,6 +83,8 @@ type RuntimeResourceActionInput struct {
 	ApplicationID shared.ID              `json:"application_id"`
 	StageKey      string                 `json:"stage_key"`
 	ResourceID    shared.ID              `json:"resource_id"`
+	Namespace     string                 `json:"namespace,omitempty"`
+	Name          string                 `json:"name,omitempty"`
 	Container     string                 `json:"container,omitempty"`
 }
 
@@ -86,6 +93,11 @@ type RuntimeCapabilityResponse struct {
 	Supported  bool      `json:"supported"`
 	ResourceID shared.ID `json:"resource_id"`
 	Message    string    `json:"message"`
+}
+
+type RuntimeStreamWriter interface {
+	WriteRuntimeSnapshot(resources []RuntimeResource) error
+	WriteRuntimeStatus(status string) error
 }
 
 func (s *Service) RegisterCluster(ctx context.Context, input RegisterClusterInput) (RegisterClusterResult, error) {
@@ -273,8 +285,10 @@ func (s *Service) ReportStatus(ctx context.Context, clusterID shared.ID, token s
 	if err := s.repo.CreateSnapshot(ctx, ClusterResourceSnapshot{ID: id, ClusterID: cluster.ID, TenantID: cluster.TenantID, Payload: report, ReportedAt: report.ReportedAt}); err != nil {
 		return err
 	}
-	if err := s.repo.ReplaceRuntimeResources(ctx, cluster.ID, cluster.TenantID, report.ReportedAt, report.RuntimeResources); err != nil {
-		return err
+	if s.runtime == nil {
+		if err := s.repo.ReplaceRuntimeResources(ctx, cluster.ID, cluster.TenantID, report.ReportedAt, report.RuntimeResources); err != nil {
+			return err
+		}
 	}
 	if s.stageUpdater != nil {
 		if err := s.stageUpdater.UpdateFromAgent(ctx, report); err != nil {
@@ -290,39 +304,55 @@ func (s *Service) ReportStatus(ctx context.Context, clusterID shared.ID, token s
 }
 
 func (s *Service) ListRuntimeResources(ctx context.Context, query RuntimeResourceQuery) ([]RuntimeResource, error) {
-	if query.ApplicationID.IsZero() {
-		return nil, shared.NewError(shared.CodeInvalidArgument, "application_id is required")
-	}
-	if query.StageKey == "" {
-		return nil, shared.NewError(shared.CodeInvalidArgument, "stage_key is required")
-	}
-	resources, err := s.repo.ListRuntimeResources(ctx, RuntimeResourceFilter{ApplicationID: query.ApplicationID, StageKey: query.StageKey})
+	stage, err := s.resolveRuntimeStage(ctx, query.Actor, query.ApplicationID, query.StageKey, "runtime:read")
 	if err != nil {
 		return nil, err
 	}
-	if len(resources) > 0 {
-		if err := s.check(ctx, query.Actor, resources[0].TenantID, "runtime:read"); err != nil {
+	if s.runtime != nil {
+		resources, err := s.runtime.ListRuntimeResources(ctx, stage.ClusterID, query.ApplicationID, query.StageKey)
+		if err != nil {
 			return nil, err
 		}
+		enrichRuntimeResources(resources, stage)
+		return resources, nil
 	}
-	return resources, nil
+	return s.repo.ListRuntimeResources(ctx, RuntimeResourceFilter{ApplicationID: query.ApplicationID, StageKey: query.StageKey})
 }
 
 func (s *Service) GetRuntimeResource(ctx context.Context, query RuntimeResourceQuery) (RuntimeResource, error) {
-	if query.ResourceID.IsZero() {
-		return RuntimeResource{}, shared.NewError(shared.CodeInvalidArgument, "resource_id is required")
-	}
-	resource, err := s.repo.GetRuntimeResource(ctx, query.ResourceID)
+	resources, err := s.ListRuntimeResources(ctx, query)
 	if err != nil {
 		return RuntimeResource{}, err
 	}
-	if resource.ApplicationID != query.ApplicationID || resource.StageKey != query.StageKey {
-		return RuntimeResource{}, shared.NewError(shared.CodeNotFound, "runtime resource not found")
+	for _, resource := range resources {
+		if resource.ID == query.ResourceID {
+			return resource, nil
+		}
 	}
-	if err := s.check(ctx, query.Actor, resource.TenantID, "runtime:read"); err != nil {
-		return RuntimeResource{}, err
+	return RuntimeResource{}, shared.NewError(shared.CodeNotFound, "runtime resource not found")
+}
+
+func (s *Service) WatchRuntimeResources(ctx context.Context, query RuntimeResourceQuery, writer RuntimeStreamWriter) error {
+	if writer == nil {
+		return shared.NewError(shared.CodeInvalidArgument, "runtime stream writer is required")
 	}
-	return resource, nil
+	stage, err := s.resolveRuntimeStage(ctx, query.Actor, query.ApplicationID, query.StageKey, "runtime:read")
+	if err != nil {
+		return err
+	}
+	if s.runtime == nil {
+		resources, err := s.repo.ListRuntimeResources(ctx, RuntimeResourceFilter{ApplicationID: query.ApplicationID, StageKey: query.StageKey})
+		if err != nil {
+			return err
+		}
+		return writer.WriteRuntimeSnapshot(resources)
+	}
+	return s.runtime.WatchRuntimeResources(ctx, stage.ClusterID, query.ApplicationID, query.StageKey, func(resources []RuntimeResource) error {
+		enrichRuntimeResources(resources, stage)
+		return writer.WriteRuntimeSnapshot(resources)
+	}, func(status string) error {
+		return writer.WriteRuntimeStatus(status)
+	})
 }
 
 func (s *Service) RestartRuntimeResource(ctx context.Context, input RuntimeResourceActionInput) (ClusterTask, error) {
@@ -335,6 +365,15 @@ func (s *Service) RestartRuntimeResource(ctx context.Context, input RuntimeResou
 	}
 	if err := s.check(ctx, input.Actor, resource.TenantID, "runtime:restart"); err != nil {
 		return ClusterTask{}, err
+	}
+	if s.runtime != nil {
+		if err := s.runtime.RestartRuntimeResource(ctx, runtimeTargetFromResource(resource)); err != nil {
+			return ClusterTask{}, err
+		}
+		now := s.clock.Now()
+		task := ClusterTask{ID: stableRuntimeActionID("runtime_restart", resource), ClusterID: resource.ClusterID, Type: "runtime_restart", TargetRef: resource.Kind + "/" + resource.Namespace + "/" + resource.Name, Payload: map[string]string{"application_id": string(resource.ApplicationID), "stage_key": resource.StageKey, "kind": resource.Kind, "namespace": resource.Namespace, "name": resource.Name}, Status: ClusterTaskSucceeded, CreatedAt: now, UpdatedAt: now, CompletedAt: &now, ResultMessage: "实时重启请求已发送"}
+		_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, TenantID: resource.TenantID, Action: "runtime.restart", ResourceType: "runtime_resource", ResourceID: resource.ID, Result: "succeeded", Summary: "执行运行时重启", OccurredAt: now})
+		return task, nil
 	}
 	task := ClusterTask{
 		ClusterID: resource.ClusterID,
@@ -367,7 +406,24 @@ func (s *Service) GetPodLogs(ctx context.Context, input RuntimeResourceActionInp
 	if err := s.check(ctx, input.Actor, resource.TenantID, "runtime:read"); err != nil {
 		return RuntimeCapabilityResponse{}, err
 	}
-	return RuntimeCapabilityResponse{Capability: "pod_logs", Supported: false, ResourceID: resource.ID, Message: "日志流暂未启用"}, nil
+	return RuntimeCapabilityResponse{Capability: "pod_logs", Supported: s.runtime != nil, ResourceID: resource.ID, Message: ""}, nil
+}
+
+func (s *Service) StreamPodLogs(ctx context.Context, input RuntimeResourceActionInput, writer interface{ Write([]byte) (int, error) }) error {
+	resource, err := s.runtimeActionResource(ctx, input)
+	if err != nil {
+		return err
+	}
+	if resource.Kind != "Pod" {
+		return shared.NewError(shared.CodeFailedPrecondition, "logs are only available for pods")
+	}
+	if err := s.check(ctx, input.Actor, resource.TenantID, "runtime:read"); err != nil {
+		return err
+	}
+	if s.runtime == nil {
+		return shared.NewError(shared.CodeUnavailable, "agent_offline")
+	}
+	return s.runtime.StreamPodLogs(ctx, runtimeTargetFromResource(resource), RuntimeLogOptions{Container: strings.TrimSpace(input.Container), TailLines: 500, Follow: true}, writer)
 }
 
 func (s *Service) OpenTerminal(ctx context.Context, input RuntimeResourceActionInput) (RuntimeCapabilityResponse, error) {
@@ -381,18 +437,40 @@ func (s *Service) OpenTerminal(ctx context.Context, input RuntimeResourceActionI
 	if err := s.check(ctx, input.Actor, resource.TenantID, "runtime:terminal"); err != nil {
 		return RuntimeCapabilityResponse{}, err
 	}
-	return RuntimeCapabilityResponse{Capability: "pod_terminal", Supported: false, ResourceID: resource.ID, Message: "终端流暂未启用"}, nil
+	return RuntimeCapabilityResponse{Capability: "pod_terminal", Supported: s.runtime != nil, ResourceID: resource.ID, Message: ""}, nil
+}
+
+func (s *Service) Terminal(ctx context.Context, input RuntimeResourceActionInput, in <-chan []byte, out chan<- []byte) error {
+	resource, err := s.runtimeActionResource(ctx, input)
+	if err != nil {
+		return err
+	}
+	if resource.Kind != "Pod" {
+		return shared.NewError(shared.CodeFailedPrecondition, "terminal is only available for pods")
+	}
+	if err := s.check(ctx, input.Actor, resource.TenantID, "runtime:terminal"); err != nil {
+		return err
+	}
+	if s.runtime == nil {
+		return shared.NewError(shared.CodeUnavailable, "agent_offline")
+	}
+	return s.runtime.Terminal(ctx, runtimeTargetFromResource(resource), RuntimeTerminalOptions{Container: strings.TrimSpace(input.Container), Command: "/bin/sh"}, in, out)
 }
 
 func (s *Service) runtimeActionResource(ctx context.Context, input RuntimeResourceActionInput) (RuntimeResource, error) {
-	resource, err := s.repo.GetRuntimeResource(ctx, input.ResourceID)
+	resources, err := s.ListRuntimeResources(ctx, RuntimeResourceQuery{Actor: input.Actor, ApplicationID: input.ApplicationID, StageKey: input.StageKey})
 	if err != nil {
 		return RuntimeResource{}, err
 	}
-	if resource.ApplicationID != input.ApplicationID || resource.StageKey != input.StageKey {
-		return RuntimeResource{}, shared.NewError(shared.CodeNotFound, "runtime resource not found")
+	for _, resource := range resources {
+		if input.ResourceID != "" && resource.ID == input.ResourceID {
+			return resource, nil
+		}
+		if input.ResourceID == "" && resource.Kind == "Pod" && resource.Namespace == strings.TrimSpace(input.Namespace) && resource.Name == strings.TrimSpace(input.Name) {
+			return resource, nil
+		}
 	}
-	return resource, nil
+	return RuntimeResource{}, shared.NewError(shared.CodeNotFound, "runtime resource not found")
 }
 
 func isRestartableRuntimeKind(kind string) bool {
@@ -402,6 +480,67 @@ func isRestartableRuntimeKind(kind string) bool {
 	default:
 		return false
 	}
+}
+
+func (s *Service) resolveRuntimeStage(ctx context.Context, actor identityaccess.Subject, applicationID shared.ID, stageKey string, action identityaccess.Permission) (StageClusterRef, error) {
+	if applicationID.IsZero() {
+		return StageClusterRef{}, shared.NewError(shared.CodeInvalidArgument, "application_id is required")
+	}
+	stageKey = strings.TrimSpace(stageKey)
+	if stageKey == "" {
+		return StageClusterRef{}, shared.NewError(shared.CodeInvalidArgument, "stage_key is required")
+	}
+	if s.stages == nil {
+		resources, err := s.repo.ListRuntimeResources(ctx, RuntimeResourceFilter{ApplicationID: applicationID, StageKey: stageKey})
+		if err != nil {
+			return StageClusterRef{}, err
+		}
+		if len(resources) == 0 {
+			return StageClusterRef{}, shared.NewError(shared.CodeNotFound, "runtime resource not found")
+		}
+		if err := s.check(ctx, actor, resources[0].TenantID, action); err != nil {
+			return StageClusterRef{}, err
+		}
+		return StageClusterRef{ClusterID: resources[0].ClusterID, TenantID: resources[0].TenantID}, nil
+	}
+	stage, err := s.stages.ResolveStageCluster(ctx, applicationID, stageKey)
+	if err != nil {
+		return StageClusterRef{}, err
+	}
+	if stage.ClusterID.IsZero() {
+		return StageClusterRef{}, shared.NewError(shared.CodeFailedPrecondition, "stage has no bound cluster")
+	}
+	if err := s.check(ctx, actor, stage.TenantID, action); err != nil {
+		return StageClusterRef{}, err
+	}
+	return stage, nil
+}
+
+func runtimeTargetFromResource(resource RuntimeResource) RuntimeResourceTarget {
+	return RuntimeResourceTarget{
+		ClusterID: resource.ClusterID, TenantID: resource.TenantID, ApplicationID: resource.ApplicationID, StageKey: resource.StageKey,
+		Group: resource.Group, Version: resource.Version, Kind: resource.Kind, Namespace: resource.Namespace, Name: resource.Name,
+		ParentKind: resource.ParentKind, ParentNamespace: resource.ParentNamespace, ParentName: resource.ParentName,
+	}
+}
+
+func enrichRuntimeResources(resources []RuntimeResource, stage StageClusterRef) {
+	for i := range resources {
+		if resources[i].ClusterID.IsZero() {
+			resources[i].ClusterID = stage.ClusterID
+		}
+		if resources[i].TenantID.IsZero() {
+			resources[i].TenantID = stage.TenantID
+		}
+	}
+}
+
+func stableRuntimeActionID(prefix string, resource RuntimeResource) shared.ID {
+	value := strings.ToLower(strings.TrimSpace(prefix + "_" + string(resource.ID)))
+	if value == "_" {
+		return shared.ID(prefix)
+	}
+	return shared.ID(strings.ReplaceAll(value, "/", "_"))
 }
 
 func (s *Service) CreateTask(ctx context.Context, task ClusterTask) (ClusterTask, error) {

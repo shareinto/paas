@@ -2,6 +2,7 @@ package clusteragent
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"github.com/shareinto/paas/internal/modules/identityaccess"
@@ -26,6 +27,23 @@ type Repository interface {
 	GetTask(ctx context.Context, id shared.ID) (ClusterTask, error)
 	ListPendingTasks(ctx context.Context, clusterID shared.ID, limit int) ([]ClusterTask, error)
 	CreateTaskResult(ctx context.Context, result ClusterTaskResult) error
+}
+
+type RuntimeGateway interface {
+	ListRuntimeResources(ctx context.Context, clusterID shared.ID, applicationID shared.ID, stageKey string) ([]RuntimeResource, error)
+	WatchRuntimeResources(ctx context.Context, clusterID shared.ID, applicationID shared.ID, stageKey string, onSnapshot func([]RuntimeResource) error, onStatus func(string) error) error
+	RestartRuntimeResource(ctx context.Context, target RuntimeResourceTarget) error
+	StreamPodLogs(ctx context.Context, target RuntimeResourceTarget, opts RuntimeLogOptions, writer io.Writer) error
+	Terminal(ctx context.Context, target RuntimeResourceTarget, opts RuntimeTerminalOptions, input <-chan []byte, output chan<- []byte) error
+}
+
+type StageClusterResolver interface {
+	ResolveStageCluster(ctx context.Context, applicationID shared.ID, stageKey string) (StageClusterRef, error)
+}
+
+type StageClusterRef struct {
+	ClusterID shared.ID
+	TenantID  shared.ID
 }
 
 type StageStateUpdater interface {

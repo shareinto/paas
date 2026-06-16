@@ -97,6 +97,7 @@ type fakeRuntimeAgent struct {
 	snapshots  int
 	tasks      int
 	watches    int
+	runtime    int
 	watchErr   error
 }
 
@@ -123,6 +124,12 @@ func (a *fakeRuntimeAgent) WatchChanges(ctx context.Context) error {
 	if a.watchErr != nil {
 		return a.watchErr
 	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (a *fakeRuntimeAgent) ConnectRuntime(ctx context.Context) error {
+	a.runtime++
 	<-ctx.Done()
 	return ctx.Err()
 }

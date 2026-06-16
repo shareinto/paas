@@ -1,7 +1,7 @@
 import * as mock from './mock';
-import { APIError, hasAPIBaseURL, request, requestText, streamSSE, type PageResult } from './client';
+import { APIError, hasAPIBaseURL, openWebSocket, request, requestText, streamSSE, type PageResult, type WebSocketConnection } from './client';
 
-export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadStageConfig, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, AppStage, RuntimeResource, RuntimeCapabilityResponse, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadStageConfig, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, AppStage, RuntimeResource, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -438,7 +438,29 @@ export async function listAppStages(applicationId: string) {
 export async function listRuntimeResources(applicationId: string, stageKey: string) {
   if (!hasAPIBaseURL()) return mock.listRuntimeResources(applicationId, stageKey);
   const data = await request<{ items: any[] }>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources?actor_id=usr_admin`);
-  return data.items.map(mapRuntimeResource);
+  return data.items.map(mapRuntimeResource).filter(isVisibleRuntimeResource);
+}
+
+export function streamRuntimeResources(applicationId: string, stageKey: string, onSnapshot: (items: mock.RuntimeResource[]) => void, onStatus?: (status: string) => void) {
+  if (!hasAPIBaseURL()) return mock.streamRuntimeResources(applicationId, stageKey, onSnapshot, onStatus);
+  return streamSSE(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources/stream?actor_id=usr_admin`, (event) => {
+    if (event.event === 'snapshot') {
+      try {
+        const data = JSON.parse(event.data);
+        onSnapshot((data.items || []).map(mapRuntimeResource).filter(isVisibleRuntimeResource));
+      } catch {
+        onStatus?.('error');
+      }
+      return;
+    }
+    if (event.event === 'status') {
+      onStatus?.(event.data);
+      return;
+    }
+    if (event.event === 'error') {
+      onStatus?.(event.data || 'error');
+    }
+  }, () => onStatus?.('reconnecting'));
 }
 
 export async function restartRuntimeResource(applicationId: string, stageKey: string, resourceId: string) {
@@ -446,15 +468,33 @@ export async function restartRuntimeResource(applicationId: string, stageKey: st
   return request<any>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources/${encodeURIComponent(resourceId)}/restart?actor_id=usr_admin`, { method: 'POST', body: '{}' });
 }
 
-export async function getRuntimeResourceLogs(applicationId: string, stageKey: string, resourceId: string, container?: string) {
-  if (!hasAPIBaseURL()) return mock.getRuntimeResourceLogs(applicationId, stageKey, resourceId, container);
+export function streamRuntimePodLogs(applicationId: string, stageKey: string, namespace: string, pod: string, container: string | undefined, onLog: (text: string) => void, onStatus?: (status: string) => void) {
+  if (!hasAPIBaseURL()) return mock.streamRuntimePodLogs(applicationId, stageKey, namespace, pod, container, onLog, onStatus);
   const query = `?actor_id=usr_admin${container ? `&container=${encodeURIComponent(container)}` : ''}`;
-  return request<mock.RuntimeCapabilityResponse>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources/${encodeURIComponent(resourceId)}/logs${query}`);
+  return streamSSE(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/pods/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/logs/stream${query}`, (event) => {
+    if (event.event === 'log') {
+      onLog(event.data);
+      return;
+    }
+    if (event.event === 'status') {
+      onStatus?.(event.data);
+      return;
+    }
+    if (event.event === 'error') {
+      onStatus?.(event.data || 'error');
+    }
+  }, () => onStatus?.('reconnecting'));
 }
 
-export async function openRuntimeResourceTerminal(applicationId: string, stageKey: string, resourceId: string, container?: string) {
-  if (!hasAPIBaseURL()) return mock.openRuntimeResourceTerminal(applicationId, stageKey, resourceId, container);
-  return request<mock.RuntimeCapabilityResponse>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources/${encodeURIComponent(resourceId)}/terminal`, { method: 'POST', body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, container: container || '' }) });
+export function openRuntimePodTerminal(applicationId: string, stageKey: string, namespace: string, pod: string, container: string | undefined, handlers: { onOpen?: () => void; onMessage?: (text: string) => void; onClose?: () => void; onError?: () => void }): WebSocketConnection {
+  if (!hasAPIBaseURL()) return mock.openRuntimePodTerminal(applicationId, stageKey, namespace, pod, container, handlers);
+  const query = `?actor_id=usr_admin${container ? `&container=${encodeURIComponent(container)}` : ''}`;
+  return openWebSocket(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/pods/${encodeURIComponent(namespace)}/${encodeURIComponent(pod)}/terminal${query}`, {
+    onOpen: handlers.onOpen,
+    onMessage: handlers.onMessage,
+    onClose: handlers.onClose,
+    onError: () => handlers.onError?.()
+  });
 }
 
 export async function saveWorkloadStageConfig(applicationId: string, workloadId: string, stageKey: string, input: Partial<mock.WorkloadStageConfig>) {
@@ -1126,6 +1166,10 @@ function mapRuntimeResource(item: any): mock.RuntimeResource {
     reportedAt: item.reported_at || item.reportedAt || '',
     updatedAt: item.updated_at || item.updatedAt || ''
   };
+}
+
+function isVisibleRuntimeResource(resource: mock.RuntimeResource) {
+  return ['Pod', 'Deployment', 'StatefulSet', 'DaemonSet'].includes(resource.kind);
 }
 
 function mapAppStage(item: any): mock.AppStage {

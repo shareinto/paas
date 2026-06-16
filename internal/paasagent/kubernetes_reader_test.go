@@ -128,6 +128,33 @@ func TestKubernetesReaderSnapshotCollectsRuntimeResources(t *testing.T) {
 	}
 }
 
+func TestPodRuntimeResourceMarksDeletingPodTerminating(t *testing.T) {
+	deletingAt := metav1.NewTime(time.Date(2026, 6, 16, 16, 58, 0, 0, time.UTC))
+	resource := podRuntimeResource(corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "order-pod", Namespace: "apps", Labels: workloadLabels(), DeletionTimestamp: &deletingAt},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
+	})
+	if resource.Status != "Terminating" || resource.HealthStatus != "Terminating" || resource.Message != "Pod 正在终止" {
+		t.Fatalf("deleting pod should be marked terminating, got %+v", resource)
+	}
+}
+
+func TestRuntimeInvalidationDetectsPodTerminatingTransition(t *testing.T) {
+	oldPod := podRuntimeResource(corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "order-pod", Namespace: "apps", Labels: workloadLabels()},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	})
+	deletingAt := metav1.NewTime(time.Date(2026, 6, 16, 16, 59, 0, 0, time.UTC))
+	newPod := podRuntimeResource(corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "order-pod", Namespace: "apps", Labels: workloadLabels(), DeletionTimestamp: &deletingAt},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	})
+	invalidations := runtimeInvalidationsBetween(Snapshot{RuntimeResources: []RuntimeResource{oldPod}}, Snapshot{RuntimeResources: []RuntimeResource{newPod}})
+	if _, ok := invalidations[RuntimeInvalidation{ApplicationID: "app_1", StageKey: "dev"}]; !ok {
+		t.Fatalf("terminating transition should invalidate app/stage, got %+v", invalidations)
+	}
+}
+
 func TestKubernetesReaderRuntimeResourcesInheritArgoApplicationOwnership(t *testing.T) {
 	replicas := int32(1)
 	ownerController := true
@@ -188,6 +215,9 @@ func TestKubernetesReaderConstructors(t *testing.T) {
 	}
 	if reader.argoWatchNamespace() != "argocd" {
 		t.Fatalf("namespace not trimmed")
+	}
+	if reader.restConfig.QPS != 50 || reader.restConfig.Burst != 100 {
+		t.Fatalf("unexpected kubernetes client rate limits: qps=%v burst=%d", reader.restConfig.QPS, reader.restConfig.Burst)
 	}
 	if _, err := NewInClusterKubernetesReader("argocd"); err == nil {
 		t.Fatalf("in-cluster reader should fail outside Kubernetes")

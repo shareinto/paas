@@ -123,3 +123,33 @@ export function streamSSE(path: string, onEvent: (event: SSEEvent) => void, onEr
 
   return () => controller.abort();
 }
+
+export type WebSocketConnection = {
+  send: (text: string) => void;
+  close: () => void;
+};
+
+export function openWebSocket(path: string, handlers: { onOpen?: () => void; onMessage?: (text: string) => void; onClose?: () => void; onError?: (error: Event) => void }): WebSocketConnection {
+  const url = websocketURL(path);
+  const socket = new WebSocket(url);
+  socket.addEventListener('open', () => handlers.onOpen?.());
+  socket.addEventListener('message', (event) => handlers.onMessage?.(String(event.data)));
+  socket.addEventListener('close', () => handlers.onClose?.());
+  socket.addEventListener('error', (event) => handlers.onError?.(event));
+  return {
+    send: (text: string) => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(text);
+    },
+    close: () => socket.close()
+  };
+}
+
+function websocketURL(path: string) {
+  const base = API_BASE_URL.trim();
+  if (/^wss?:\/\//.test(path)) return path;
+  const absolute = /^https?:\/\//.test(base)
+    ? new URL(path, base)
+    : new URL(path, window.location.origin);
+  absolute.protocol = absolute.protocol === 'https:' ? 'wss:' : 'ws:';
+  return absolute.toString();
+}

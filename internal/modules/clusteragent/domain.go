@@ -183,6 +183,32 @@ type RuntimeResource struct {
 	UpdatedAt       time.Time                `json:"updated_at"`
 }
 
+type RuntimeResourceTarget struct {
+	ClusterID       shared.ID `json:"cluster_id"`
+	TenantID        shared.ID `json:"tenant_id"`
+	ApplicationID   shared.ID `json:"application_id"`
+	StageKey        string    `json:"stage_key"`
+	Group           string    `json:"group,omitempty"`
+	Version         string    `json:"version,omitempty"`
+	Kind            string    `json:"kind"`
+	Namespace       string    `json:"namespace"`
+	Name            string    `json:"name"`
+	ParentKind      string    `json:"parent_kind,omitempty"`
+	ParentNamespace string    `json:"parent_namespace,omitempty"`
+	ParentName      string    `json:"parent_name,omitempty"`
+}
+
+type RuntimeLogOptions struct {
+	Container string `json:"container,omitempty"`
+	TailLines int64  `json:"tail_lines,omitempty"`
+	Follow    bool   `json:"follow"`
+}
+
+type RuntimeTerminalOptions struct {
+	Container string `json:"container,omitempty"`
+	Command   string `json:"command,omitempty"`
+}
+
 func normalizeCluster(cluster Cluster) (Cluster, error) {
 	cluster.Name = strings.TrimSpace(cluster.Name)
 	cluster.Region = strings.TrimSpace(cluster.Region)

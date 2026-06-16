@@ -122,6 +122,9 @@ func newApplication(ctx context.Context) (*application, error) {
 	auditSvc := audit.NewService(audit.Options{Repository: auditRepo, IDGenerator: ids, Clock: clock})
 	identityRepo := repos.identity
 	identitySvc := identityaccess.NewService(identityaccess.Options{Repository: identityRepo, Audit: audit.IdentityAccessLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	if err := ensureDevelopmentAdmin(ctx, identityRepo, identitySvc); err != nil {
+		return nil, err
+	}
 
 	tenantRepo := repos.tenant
 	sourceRepo := repos.source
@@ -183,7 +186,8 @@ func newApplication(ctx context.Context) (*application, error) {
 	}
 
 	clusterRepo := repos.cluster
-	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, TenantQuery: tenantForClusterAgent{service: tenantSvc}, PermissionChecker: identitySvc, StageState: stageUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	runtimeGateway := clusteragent.NewWebSocketRuntimeGateway()
+	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, TenantQuery: tenantForClusterAgent{service: tenantSvc}, PermissionChecker: identitySvc, RuntimeGateway: runtimeGateway, StageClusters: stageClusterForRuntime{apps: appSvc, delivery: deliveryRepo}, StageState: stageUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	notificationSvc := notification.NewService(notification.Options{Repository: repos.notification, IDGenerator: ids, Clock: clock})
 	if err := notificationSvc.EnsureDefaults(ctx); err != nil {
@@ -205,6 +209,43 @@ func newApplication(ctx context.Context) (*application, error) {
 	clusteragent.NewHandler(clusterSvc).Register(mux)
 
 	return &application{handler: withCORS(mux), identity: identitySvc, tenants: tenantSvc, sources: sourceSvc, apps: appSvc, builds: buildSvc, delivery: deliverySvc, audit: auditSvc, state: state, db: db}, nil
+}
+
+func ensureDevelopmentAdmin(ctx context.Context, repo identityaccess.Repository, service *identityaccess.Service) error {
+	users, err := repo.ListUsers(ctx, shared.PageRequest{Page: 1, PageSize: 1})
+	if err != nil {
+		return err
+	}
+	if users.Total > 0 {
+		return nil
+	}
+	admin, err := service.CreateLocalUser(ctx, identityaccess.CreateLocalUserInput{
+		ActorID:     "usr_admin",
+		Username:    "admin",
+		Password:    "password",
+		DisplayName: "平台管理员",
+	})
+	if err != nil && shared.CodeOf(err) != shared.CodeConflict {
+		return err
+	}
+	adminID := admin.ID
+	if adminID.IsZero() {
+		existing, findErr := repo.FindUserByUsername(ctx, "admin")
+		if findErr != nil {
+			return findErr
+		}
+		adminID = existing.ID
+	}
+	_, err = service.CreateRoleBinding(ctx, identityaccess.RoleBinding{
+		SubjectType: identityaccess.SubjectUser,
+		SubjectID:   adminID,
+		RoleID:      identityaccess.RolePlatformAdmin,
+		ScopeKind:   identityaccess.ScopePlatform,
+	})
+	if err != nil && shared.CodeOf(err) != shared.CodeConflict {
+		return err
+	}
+	return nil
 }
 
 type repositories struct {
@@ -818,6 +859,28 @@ func (q tenantForClusterAgent) GetTenant(ctx context.Context, id shared.ID) (clu
 		return clusteragent.TenantRef{}, err
 	}
 	return clusteragent.TenantRef{ID: tenant.ID}, nil
+}
+
+type stageClusterForRuntime struct {
+	apps     *appenv.Service
+	delivery delivery.Repository
+}
+
+func (q stageClusterForRuntime) ResolveStageCluster(ctx context.Context, applicationID shared.ID, stageKey string) (clusteragent.StageClusterRef, error) {
+	app, err := q.apps.GetApplication(ctx, applicationID)
+	if err != nil {
+		return clusteragent.StageClusterRef{}, err
+	}
+	bindings, err := q.delivery.ListStageClusterBindings(ctx, app.TenantID, stageKey)
+	if err != nil {
+		return clusteragent.StageClusterRef{}, err
+	}
+	for _, binding := range bindings {
+		if binding.Status == delivery.StageClusterBindingActive {
+			return clusteragent.StageClusterRef{ClusterID: binding.ClusterID, TenantID: app.TenantID}, nil
+		}
+	}
+	return clusteragent.StageClusterRef{TenantID: app.TenantID}, nil
 }
 
 type runtimeEnvironmentSyncerForAppEnv struct{ service *appenv.Service }

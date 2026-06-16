@@ -2,7 +2,11 @@ package paasagent
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -15,6 +19,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/shareinto/paas/internal/modules/clusteragent"
 	"github.com/shareinto/paas/internal/shared"
@@ -31,10 +36,21 @@ var argoApplicationGVR = schema.GroupVersionResource{Group: "argoproj.io", Versi
 type KubernetesClientReader struct {
 	client        kubernetes.Interface
 	dynamicClient dynamic.Interface
+	restConfig    *rest.Config
 	argoNamespace string
+	cacheMu       sync.RWMutex
+	cacheSynced   bool
+	cacheSnapshot Snapshot
 }
 
 func NewKubernetesClientReader(config *rest.Config, argoNamespace string) (*KubernetesClientReader, error) {
+	config = rest.CopyConfig(config)
+	if config.QPS <= 0 {
+		config.QPS = 50
+	}
+	if config.Burst <= 0 {
+		config.Burst = 100
+	}
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, err
@@ -43,7 +59,7 @@ func NewKubernetesClientReader(config *rest.Config, argoNamespace string) (*Kube
 	if err != nil {
 		return nil, err
 	}
-	return &KubernetesClientReader{client: client, dynamicClient: dynamicClient, argoNamespace: strings.TrimSpace(argoNamespace)}, nil
+	return &KubernetesClientReader{client: client, dynamicClient: dynamicClient, restConfig: config, argoNamespace: strings.TrimSpace(argoNamespace)}, nil
 }
 
 func NewInClusterKubernetesReader(argoNamespace string) (*KubernetesClientReader, error) {
@@ -137,6 +153,118 @@ func (r *KubernetesClientReader) Snapshot(ctx context.Context, namespaces []stri
 	return snapshot, nil
 }
 
+func (r *KubernetesClientReader) ListRuntimeResources(ctx context.Context, namespaces []string, applicationID shared.ID, stageKey string) ([]RuntimeResource, error) {
+	snapshot, ok := r.cachedRuntimeSnapshot()
+	if !ok {
+		var err error
+		snapshot, err = r.Snapshot(ctx, namespaces)
+		if err != nil {
+			return nil, err
+		}
+		r.storeRuntimeSnapshot(snapshot)
+	}
+	out := make([]RuntimeResource, 0, len(snapshot.RuntimeResources))
+	for _, resource := range snapshot.RuntimeResources {
+		if resource.ApplicationID == applicationID && resource.StageKey == strings.TrimSpace(stageKey) && userVisibleRuntimeKind(resource.Kind) {
+			out = append(out, resource)
+		}
+	}
+	return out, nil
+}
+
+func (r *KubernetesClientReader) RunRuntimeCache(ctx context.Context, namespaces []string, onInvalidation func(RuntimeInvalidation)) error {
+	if _, err := r.refreshRuntimeCache(ctx, namespaces); err != nil {
+		return err
+	}
+	changes := make(chan struct{}, 1)
+	watchErr := make(chan error, 1)
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		watchErr <- r.Watch(watchCtx, namespaces, func() {
+			select {
+			case changes <- struct{}{}:
+			default:
+			}
+		})
+	}()
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			cancel()
+			return ctx.Err()
+		case err := <-watchErr:
+			cancel()
+			return err
+		case <-changes:
+			if timer == nil {
+				timer = time.NewTimer(time.Second)
+				timerC = timer.C
+			}
+		case <-timerC:
+			invalidations, err := r.refreshRuntimeCache(ctx, namespaces)
+			if err == nil && onInvalidation != nil {
+				for invalidation := range invalidations {
+					onInvalidation(invalidation)
+				}
+			}
+			timer = nil
+			timerC = nil
+		}
+	}
+}
+
+func (r *KubernetesClientReader) WatchRuntimeResources(ctx context.Context, namespaces []string, applicationID shared.ID, stageKey string, onChange func([]RuntimeResource)) error {
+	emit := func() {
+		resources, err := r.ListRuntimeResources(ctx, namespaces, applicationID, stageKey)
+		if err == nil && onChange != nil {
+			onChange(resources)
+		}
+	}
+	emit()
+	watchers := make([]interface{ Stop() }, 0)
+	for _, namespace := range normalizeNamespaces(namespaces) {
+		deployments, err := r.client.AppsV1().Deployments(namespace).Watch(ctx, metav1.ListOptions{})
+		if err != nil {
+			stopWatchers(watchers)
+			return err
+		}
+		watchers = append(watchers, deployments)
+		go notifyOnWatch(ctx, deployments.ResultChan(), emit)
+		statefulSets, err := r.client.AppsV1().StatefulSets(namespace).Watch(ctx, metav1.ListOptions{})
+		if err != nil {
+			stopWatchers(watchers)
+			return err
+		}
+		watchers = append(watchers, statefulSets)
+		go notifyOnWatch(ctx, statefulSets.ResultChan(), emit)
+		daemonSets, err := r.client.AppsV1().DaemonSets(namespace).Watch(ctx, metav1.ListOptions{})
+		if err != nil {
+			stopWatchers(watchers)
+			return err
+		}
+		watchers = append(watchers, daemonSets)
+		go notifyOnWatch(ctx, daemonSets.ResultChan(), emit)
+		pods, err := r.client.CoreV1().Pods(namespace).Watch(ctx, metav1.ListOptions{})
+		if err != nil {
+			stopWatchers(watchers)
+			return err
+		}
+		watchers = append(watchers, pods)
+		go notifyOnWatch(ctx, pods.ResultChan(), emit)
+	}
+	<-ctx.Done()
+	stopWatchers(watchers)
+	return ctx.Err()
+}
+
 func (r *KubernetesClientReader) Watch(ctx context.Context, namespaces []string, onChange func()) error {
 	watchers := make([]interface{ Stop() }, 0)
 	for _, namespace := range normalizeNamespaces(namespaces) {
@@ -147,6 +275,27 @@ func (r *KubernetesClientReader) Watch(ctx context.Context, namespaces []string,
 		}
 		watchers = append(watchers, deployments)
 		go notifyOnWatch(ctx, deployments.ResultChan(), onChange)
+		statefulSets, err := r.client.AppsV1().StatefulSets(namespace).Watch(ctx, metav1.ListOptions{})
+		if err != nil {
+			stopWatchers(watchers)
+			return err
+		}
+		watchers = append(watchers, statefulSets)
+		go notifyOnWatch(ctx, statefulSets.ResultChan(), onChange)
+		daemonSets, err := r.client.AppsV1().DaemonSets(namespace).Watch(ctx, metav1.ListOptions{})
+		if err != nil {
+			stopWatchers(watchers)
+			return err
+		}
+		watchers = append(watchers, daemonSets)
+		go notifyOnWatch(ctx, daemonSets.ResultChan(), onChange)
+		replicaSets, err := r.client.AppsV1().ReplicaSets(namespace).Watch(ctx, metav1.ListOptions{})
+		if err != nil {
+			stopWatchers(watchers)
+			return err
+		}
+		watchers = append(watchers, replicaSets)
+		go notifyOnWatch(ctx, replicaSets.ResultChan(), onChange)
 		pods, err := r.client.CoreV1().Pods(namespace).Watch(ctx, metav1.ListOptions{})
 		if err != nil {
 			stopWatchers(watchers)
@@ -203,6 +352,71 @@ func (r *KubernetesClientReader) RestartRuntimeResource(ctx context.Context, kin
 	default:
 		return shared.NewError(shared.CodeInvalidArgument, "unsupported runtime restart kind")
 	}
+}
+
+func (r *KubernetesClientReader) StreamPodLogs(ctx context.Context, namespace string, name string, container string, tailLines int64, writer io.Writer) error {
+	if tailLines <= 0 {
+		tailLines = 500
+	}
+	req := r.client.CoreV1().Pods(namespace).GetLogs(name, &corev1.PodLogOptions{Container: strings.TrimSpace(container), Follow: true, TailLines: &tailLines})
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	_, err = io.Copy(writer, stream)
+	return err
+}
+
+func (r *KubernetesClientReader) refreshRuntimeCache(ctx context.Context, namespaces []string) (map[RuntimeInvalidation]struct{}, error) {
+	oldSnapshot, _ := r.cachedRuntimeSnapshot()
+	snapshot, err := r.Snapshot(ctx, namespaces)
+	if err != nil {
+		return nil, err
+	}
+	r.storeRuntimeSnapshot(snapshot)
+	return runtimeInvalidationsBetween(oldSnapshot, snapshot), nil
+}
+
+func (r *KubernetesClientReader) cachedRuntimeSnapshot() (Snapshot, bool) {
+	r.cacheMu.RLock()
+	defer r.cacheMu.RUnlock()
+	if !r.cacheSynced {
+		return Snapshot{}, false
+	}
+	return cloneSnapshot(r.cacheSnapshot), true
+}
+
+func (r *KubernetesClientReader) storeRuntimeSnapshot(snapshot Snapshot) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	r.cacheSnapshot = cloneSnapshot(snapshot)
+	r.cacheSynced = true
+}
+
+func (r *KubernetesClientReader) Terminal(ctx context.Context, namespace string, name string, container string, command string, input <-chan []byte, output chan<- []byte) error {
+	if r.restConfig == nil {
+		return shared.NewError(shared.CodeFailedPrecondition, "kubernetes rest config is required")
+	}
+	if strings.TrimSpace(command) == "" {
+		command = "/bin/sh"
+	}
+	req := r.client.CoreV1().RESTClient().Post().Resource("pods").Name(name).Namespace(namespace).SubResource("exec")
+	req.VersionedParams(&corev1.PodExecOptions{
+		Container: strings.TrimSpace(container),
+		Command:   []string{command},
+		Stdin:     true,
+		Stdout:    true,
+		Stderr:    true,
+		TTY:       true,
+	}, metav1.ParameterCodec)
+	exec, err := remotecommand.NewSPDYExecutor(r.restConfig, http.MethodPost, req.URL())
+	if err != nil {
+		return err
+	}
+	stdin := &channelReader{ctx: ctx, ch: input}
+	stdout := channelWriter{ch: output}
+	return exec.StreamWithContext(ctx, remotecommand.StreamOptions{Stdin: stdin, Stdout: stdout, Stderr: stdout, Tty: true})
 }
 
 func (r *KubernetesClientReader) patchArgoApplication(ctx context.Context, name string, patch string) error {
@@ -287,6 +501,15 @@ func daemonSetRuntimeResource(item appsv1.DaemonSet) RuntimeResource {
 	return workloadRuntimeResource("apps", "v1", "DaemonSet", item.ObjectMeta, desired, ready, statusForReady(desired, ready))
 }
 
+func userVisibleRuntimeKind(kind string) bool {
+	switch kind {
+	case "Deployment", "StatefulSet", "DaemonSet", "Pod":
+		return true
+	default:
+		return false
+	}
+}
+
 func replicaSetStatus(item appsv1.ReplicaSet) Workload {
 	desired := int32Value(item.Spec.Replicas)
 	return workloadFromLabels("ReplicaSet", item.Name, item.Labels, int(desired), int(item.Status.ReadyReplicas), int(item.Status.FullyLabeledReplicas), int(item.Status.AvailableReplicas))
@@ -318,6 +541,11 @@ func podRuntimeResource(item corev1.Pod) RuntimeResource {
 		}
 	}
 	resource := workloadRuntimeResource("", "v1", "Pod", item.ObjectMeta, 1, ready, string(item.Status.Phase))
+	if item.DeletionTimestamp != nil {
+		resource.Status = "Terminating"
+		resource.HealthStatus = "Terminating"
+		resource.Message = "Pod 正在终止"
+	}
 	for _, container := range item.Status.ContainerStatuses {
 		state, message := containerState(container.State)
 		resource.Containers = append(resource.Containers, clusteragent.RuntimeContainerStatus{Name: container.Name, Image: container.Image, Ready: container.Ready, RestartCount: int(container.RestartCount), State: state, Message: message})
@@ -511,6 +739,101 @@ func inheritArgoResource(resource RuntimeResource, ref ArgoApplicationResource) 
 	return resource
 }
 
+func runtimeInvalidationPairs(snapshot Snapshot) map[RuntimeInvalidation]struct{} {
+	out := map[RuntimeInvalidation]struct{}{}
+	for _, resource := range snapshot.RuntimeResources {
+		if resource.ApplicationID.IsZero() || strings.TrimSpace(resource.StageKey) == "" {
+			continue
+		}
+		out[RuntimeInvalidation{ApplicationID: resource.ApplicationID, StageKey: strings.TrimSpace(resource.StageKey)}] = struct{}{}
+	}
+	return out
+}
+
+func runtimeInvalidationsBetween(oldSnapshot Snapshot, newSnapshot Snapshot) map[RuntimeInvalidation]struct{} {
+	if len(oldSnapshot.RuntimeResources) == 0 {
+		return runtimeInvalidationPairs(newSnapshot)
+	}
+	oldResources := runtimeResourceFingerprintIndex(oldSnapshot.RuntimeResources)
+	newResources := runtimeResourceFingerprintIndex(newSnapshot.RuntimeResources)
+	out := map[RuntimeInvalidation]struct{}{}
+	addPair := func(resource RuntimeResource) {
+		if resource.ApplicationID.IsZero() || strings.TrimSpace(resource.StageKey) == "" {
+			return
+		}
+		out[RuntimeInvalidation{ApplicationID: resource.ApplicationID, StageKey: strings.TrimSpace(resource.StageKey)}] = struct{}{}
+	}
+	for key, oldResource := range oldResources {
+		newResource, ok := newResources[key]
+		if !ok {
+			addPair(oldResource.resource)
+			continue
+		}
+		if oldResource.fingerprint != newResource.fingerprint {
+			addPair(oldResource.resource)
+			addPair(newResource.resource)
+		}
+	}
+	for key, newResource := range newResources {
+		if _, ok := oldResources[key]; !ok {
+			addPair(newResource.resource)
+		}
+	}
+	return out
+}
+
+type runtimeResourceFingerprint struct {
+	resource    RuntimeResource
+	fingerprint string
+}
+
+func runtimeResourceFingerprintIndex(resources []RuntimeResource) map[string]runtimeResourceFingerprint {
+	out := map[string]runtimeResourceFingerprint{}
+	for _, resource := range resources {
+		key := resource.Group + "/" + runtimeResourceLookupKey(resource.Kind, resource.Namespace, resource.Name)
+		out[key] = runtimeResourceFingerprint{resource: resource, fingerprint: resource.ApplicationID.String() + "|" + resource.StageKey + "|" + resource.Status + "|" + resource.HealthStatus + "|" + resource.Message + "|" + strconv.Itoa(resource.Desired) + "|" + strconv.Itoa(resource.Ready) + "|" + resource.ParentKind + "|" + resource.ParentNamespace + "|" + resource.ParentName + "|" + runtimeContainerFingerprint(resource.Containers)}
+	}
+	return out
+}
+
+func runtimeContainerFingerprint(containers []clusteragent.RuntimeContainerStatus) string {
+	var b strings.Builder
+	for _, container := range containers {
+		b.WriteString(container.Name)
+		b.WriteString("/")
+		b.WriteString(container.Image)
+		b.WriteString("/")
+		b.WriteString(container.State)
+		b.WriteString("/")
+		b.WriteString(container.Message)
+		b.WriteString("/")
+		if container.Ready {
+			b.WriteString("ready")
+		}
+		b.WriteString("/")
+		b.WriteString(strconv.Itoa(container.RestartCount))
+		b.WriteString(";")
+	}
+	return b.String()
+}
+
+func cloneSnapshot(snapshot Snapshot) Snapshot {
+	out := snapshot
+	if snapshot.Applications != nil {
+		out.Applications = append([]ArgoApplication(nil), snapshot.Applications...)
+	}
+	if snapshot.Workloads != nil {
+		out.Workloads = append([]Workload(nil), snapshot.Workloads...)
+	}
+	if snapshot.Events != nil {
+		out.Events = append([]KubernetesEvent(nil), snapshot.Events...)
+	}
+	if snapshot.RuntimeResources != nil {
+		out.RuntimeResources = append([]RuntimeResource(nil), snapshot.RuntimeResources...)
+	}
+	return out
+}
+
 func stringValue(value any) string {
 	text, _ := value.(string)
 	return strings.TrimSpace(text)
@@ -544,4 +867,37 @@ func notifyOnWatch(ctx context.Context, ch <-chan watch.Event, onChange func()) 
 			}
 		}
 	}
+}
+
+type channelReader struct {
+	ctx context.Context
+	ch  <-chan []byte
+	buf []byte
+}
+
+func (r *channelReader) Read(p []byte) (int, error) {
+	for len(r.buf) == 0 {
+		select {
+		case <-r.ctx.Done():
+			return 0, r.ctx.Err()
+		case data, ok := <-r.ch:
+			if !ok {
+				return 0, io.EOF
+			}
+			r.buf = data
+		}
+	}
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
+}
+
+type channelWriter struct {
+	ch chan<- []byte
+}
+
+func (w channelWriter) Write(p []byte) (int, error) {
+	data := append([]byte(nil), p...)
+	w.ch <- data
+	return len(p), nil
 }

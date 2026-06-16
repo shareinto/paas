@@ -259,6 +259,20 @@ wait_for_backend_ready() {
   return 1
 }
 
+wait_for_any_process_exit() {
+  local pid running
+  while :; do
+    running="$(jobs -pr)"
+    for pid in "${pids[@]}"; do
+      if ! printf '%s\n' "$running" | grep -qx "$pid"; then
+        wait "$pid"
+        return $?
+      fi
+    done
+    sleep 1
+  done
+}
+
 if [[ "$RECREATE_DB" == "true" ]]; then
   export PAAS_AUTO_MIGRATE=true
   recreate_database
@@ -313,5 +327,5 @@ fi
 ) &
 pids+=("$!")
 
-wait -n "${pids[@]}"
+wait_for_any_process_exit
 cleanup

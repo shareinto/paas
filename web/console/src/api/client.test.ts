@@ -196,3 +196,78 @@ test('streamBuildLog 使用 fetch 流式读取 SSE 并携带 token', async () =>
   expect(logs).toEqual(['第一行']);
   expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/builds/build_1/logs/stream', expect.objectContaining({ signal: expect.any(AbortSignal) }));
 });
+
+test('运行时资源真实 API 使用计划接口并过滤非展示资源', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  const encoder = new TextEncoder();
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/apps/app_1/stages/dev/runtime/resources?actor_id=usr_admin')) {
+      return new Response(JSON.stringify({ items: [
+        { id: 'deploy_1', kind: 'Deployment', namespace: 'order-dev', name: 'order-api' },
+        { id: 'rs_1', kind: 'ReplicaSet', namespace: 'order-dev', name: 'order-api-7d9' },
+        { id: 'event_1', kind: 'Event', namespace: 'order-dev', name: 'pull-failed' }
+      ] }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_1/stages/dev/runtime/resources/stream?actor_id=usr_admin')) {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('event: snapshot\ndata: {"items":[{"id":"pod_1","kind":"Pod","namespace":"order-dev","name":"order-api-7d9"},{"id":"event_1","kind":"Event","namespace":"order-dev","name":"pull-failed"}]}\n\n'));
+          controller.enqueue(encoder.encode('event: status\ndata: connected\n\n'));
+          controller.close();
+        }
+      }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_1/stages/dev/runtime/pods/order-dev/order-api-7d9/logs/stream?actor_id=usr_admin&container=app')) {
+      return new Response('event: log\ndata: pod 日志\n\n', { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_1/stages/dev/runtime/resources/deploy_1/restart?actor_id=usr_admin') && init?.method === 'POST') {
+      return new Response(JSON.stringify({ status: 'accepted' }), { status: 202 });
+    }
+    return new Response('', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const api = await import('./index');
+  await expect(api.listRuntimeResources('app_1', 'dev')).resolves.toMatchObject([{ id: 'deploy_1', kind: 'Deployment' }]);
+  const snapshots: any[] = [];
+  const statuses: string[] = [];
+  api.streamRuntimeResources('app_1', 'dev', (items) => snapshots.push(items), (status) => statuses.push(status));
+  await vi.waitFor(() => expect(statuses).toContain('connected'));
+  expect(snapshots[0]).toMatchObject([{ id: 'pod_1', kind: 'Pod' }]);
+  const logs: string[] = [];
+  api.streamRuntimePodLogs('app_1', 'dev', 'order-dev', 'order-api-7d9', 'app', (text) => logs.push(text));
+  await vi.waitFor(() => expect(logs).toEqual(['pod 日志']));
+  await expect(api.restartRuntimeResource('app_1', 'dev', 'deploy_1')).resolves.toMatchObject({ status: 'accepted' });
+});
+
+test('openWebSocket 将 API 地址转换为 WebSocket 地址并发送文本帧', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example/base');
+  const sockets: any[] = [];
+  class WebSocketMock extends EventTarget {
+    static OPEN = 1;
+    readyState = 1;
+    sent: string[] = [];
+    url: string;
+    constructor(url: string) {
+      super();
+      this.url = url;
+      sockets.push(this);
+    }
+    send(text: string) {
+      this.sent.push(text);
+    }
+    close() {
+      this.dispatchEvent(new Event('close'));
+    }
+  }
+  vi.stubGlobal('WebSocket', WebSocketMock);
+
+  const { openWebSocket } = await import('./client');
+  const closed = vi.fn();
+  const connection = openWebSocket('/api/terminal?actor_id=usr_admin', { onClose: closed });
+  expect(sockets[0].url).toBe('wss://paas.example/api/terminal?actor_id=usr_admin');
+  connection.send('ls');
+  expect(sockets[0].sent).toEqual(['ls']);
+  connection.close();
+  expect(closed).toHaveBeenCalled();
+});

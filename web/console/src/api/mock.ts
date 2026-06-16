@@ -64,7 +64,6 @@ export type AppStage = { tenantId: string; projectId: string; applicationId: str
 export type RuntimeContainerStatus = { name: string; image?: string; ready: boolean; restartCount: number; state?: string; message?: string };
 export type RuntimeResourceEvent = { type: string; reason?: string; message: string; count?: number; occurredAt?: string };
 export type RuntimeResource = { id: string; clusterId: string; tenantId: string; applicationId: string; stageKey: string; group?: string; version?: string; kind: string; namespace: string; name: string; parentKind?: string; parentNamespace?: string; parentName?: string; status: string; healthStatus?: string; message?: string; desired?: number; ready?: number; containers?: RuntimeContainerStatus[]; events?: RuntimeResourceEvent[]; reportedAt?: string; updatedAt?: string };
-export type RuntimeCapabilityResponse = { capability: string; supported: boolean; resourceId: string; message: string };
 export type FreightCreationContext = { enabledWorkloads: Workload[]; latestReleasesByWorkload: Record<string, ReleaseCandidate>; latestArtifactsByWorkload: Record<string, BuildArtifactCandidate>; stageEligibility: Record<string, string[]>; stages: StageDefinition[] };
 export type CreateFreightInput = { name: string; items: { workloadId: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageRef?: string }[] };
 export type CreatePromotionInput = { freightId: string; targetStageKey?: string; targetClusterIds?: string[]; namespaceOverride?: string; message?: string };
@@ -163,9 +162,9 @@ let stageClusterBindings: StageClusterBinding[] = [
 ];
 const runtimeResources: RuntimeResource[] = [
   { id: 'runtime_deploy_order_api_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', group: 'apps', version: 'v1', kind: 'Deployment', namespace: 'order-dev', name: 'order-api', status: 'Progressing', healthStatus: 'Degraded', desired: 2, ready: 1, message: '滚动更新中', reportedAt: '2026-06-15 10:00' },
-  { id: 'runtime_rs_order_api_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', group: 'apps', version: 'v1', kind: 'ReplicaSet', namespace: 'order-dev', name: 'order-api-7d9', parentKind: 'Deployment', parentName: 'order-api', status: 'Progressing', desired: 2, ready: 1, reportedAt: '2026-06-15 10:00' },
-  { id: 'runtime_pod_order_api_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', version: 'v1', kind: 'Pod', namespace: 'order-dev', name: 'order-api-7d9', parentKind: 'ReplicaSet', parentName: 'order-api-7d9', status: 'Pending', healthStatus: 'Degraded', message: 'ImagePullBackOff', desired: 1, ready: 0, containers: [{ name: 'app', image: 'registry.local/order-api:20260611.1', ready: false, restartCount: 3, state: 'waiting', message: 'ImagePullBackOff' }], reportedAt: '2026-06-15 10:00' },
-  { id: 'runtime_event_order_api_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', version: 'v1', kind: 'Event', namespace: 'order-dev', name: 'order-api-pull-failed', parentKind: 'Pod', parentName: 'order-api-7d9', status: 'Warning', message: '拉取镜像失败', events: [{ type: 'Warning', reason: 'FailedPull', message: '拉取镜像失败', count: 4, occurredAt: '2026-06-15 10:00' }], reportedAt: '2026-06-15 10:00' }
+  { id: 'runtime_stateful_order_mysql_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', group: 'apps', version: 'v1', kind: 'StatefulSet', namespace: 'order-dev', name: 'order-mysql', status: 'Healthy', healthStatus: 'Healthy', desired: 1, ready: 1, message: '运行中', reportedAt: '2026-06-15 10:00' },
+  { id: 'runtime_daemon_log_agent_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', group: 'apps', version: 'v1', kind: 'DaemonSet', namespace: 'order-dev', name: 'log-agent', status: 'Healthy', healthStatus: 'Healthy', desired: 3, ready: 3, message: '运行中', reportedAt: '2026-06-15 10:00' },
+  { id: 'runtime_pod_order_api_dev', clusterId: 'cluster_shanghai', tenantId: 'tenant_1', applicationId: 'app_1', stageKey: 'dev', version: 'v1', kind: 'Pod', namespace: 'order-dev', name: 'order-api-7d9', parentKind: 'Deployment', parentName: 'order-api', status: 'Pending', healthStatus: 'Degraded', message: 'ImagePullBackOff', desired: 1, ready: 0, containers: [{ name: 'app', image: 'registry.local/order-api:20260611.1', ready: false, restartCount: 3, state: 'waiting', message: 'ImagePullBackOff' }], reportedAt: '2026-06-15 10:00' }
 ];
 const enabledWorkloads: Workload[] = [
   {
@@ -774,19 +773,75 @@ export async function listAppStages(applicationId: string): Promise<AppStage[]> 
 			.map((item) => ({ ...item, containers: item.containers?.map((container) => ({ ...container })), events: item.events?.map((event) => ({ ...event })) }));
 	}
 
+export function streamRuntimeResources(applicationId: string, stageKey: string, onSnapshot: (items: RuntimeResource[]) => void, onStatus?: (status: string) => void) {
+	let closed = false;
+	onStatus?.('connecting');
+	const timers = [
+		window.setTimeout(() => {
+			if (closed) return;
+			onSnapshot(runtimeResources
+				.filter((item) => item.applicationId === applicationId && item.stageKey === stageKey)
+				.map((item) => ({ ...item, containers: item.containers?.map((container) => ({ ...container })) })));
+			onStatus?.('connected');
+		}, 80),
+		window.setTimeout(() => {
+			if (closed) return;
+			onStatus?.('mock-streaming');
+		}, 320)
+	];
+	return () => {
+		closed = true;
+		timers.forEach((timer) => window.clearTimeout(timer));
+	};
+}
+
 export async function restartRuntimeResource(_applicationId: string, _stageKey: string, _resourceId: string) {
 	await wait();
 	return { status: 'accepted' };
 }
 
-export async function getRuntimeResourceLogs(_applicationId: string, _stageKey: string, resourceId: string, _container?: string): Promise<RuntimeCapabilityResponse> {
-	await wait();
-	return { capability: 'pod_logs', supported: false, resourceId, message: '日志流暂未启用' };
+export function streamRuntimePodLogs(_applicationId: string, _stageKey: string, _namespace: string, pod: string, container: string | undefined, onLog: (text: string) => void, onStatus?: (status: string) => void) {
+	let closed = false;
+	const lines = [
+		`正在连接 ${pod}/${container || 'app'} 日志流...`,
+		'2026-06-16 10:00:01 INFO 应用启动参数已加载',
+		'2026-06-16 10:00:02 WARN 镜像拉取重试中，等待节点缓存刷新',
+		'2026-06-16 10:00:03 INFO 日志流保持连接'
+	];
+	onStatus?.('connecting');
+	const timers = lines.map((line, index) => window.setTimeout(() => {
+		if (closed) return;
+		if (index === 0) onStatus?.('connected');
+		onLog(`${line}\n`);
+	}, 100 + index * 120));
+	return () => {
+		closed = true;
+		timers.forEach((timer) => window.clearTimeout(timer));
+		onStatus?.('closed');
+	};
 }
 
-export async function openRuntimeResourceTerminal(_applicationId: string, _stageKey: string, resourceId: string, _container?: string): Promise<RuntimeCapabilityResponse> {
-	await wait();
-	return { capability: 'pod_terminal', supported: false, resourceId, message: '终端流暂未启用' };
+export function openRuntimePodTerminal(_applicationId: string, _stageKey: string, _namespace: string, pod: string, container: string | undefined, handlers: { onOpen?: () => void; onMessage?: (text: string) => void; onClose?: () => void; onError?: () => void }) {
+	let closed = false;
+	const openTimer = window.setTimeout(() => {
+		if (closed) return;
+		handlers.onOpen?.();
+		handlers.onMessage?.(`已连接到 ${pod}/${container || 'app'}\n$ `);
+	}, 120);
+	return {
+		send: (text: string) => {
+			if (closed) return;
+			window.setTimeout(() => {
+				if (!closed) handlers.onMessage?.(`${text}\n已发送到容器\n$ `);
+			}, 60);
+		},
+		close: () => {
+			if (closed) return;
+			closed = true;
+			window.clearTimeout(openTimer);
+			handlers.onClose?.();
+		}
+	};
 }
 
 function cloneDeliveryFlowTemplate(): DeliveryFlowTemplate {

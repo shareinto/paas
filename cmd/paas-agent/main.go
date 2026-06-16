@@ -43,6 +43,7 @@ type runtimeAgent interface {
 	ReportSnapshot(ctx context.Context) (clusteragent.StatusReport, error)
 	RunTaskOnce(ctx context.Context) error
 	WatchChanges(ctx context.Context) error
+	ConnectRuntime(ctx context.Context) error
 }
 
 func runtimeConfigFromEnv() (paasagent.Config, string) {
@@ -91,6 +92,20 @@ func runAgent(ctx context.Context, agent runtimeAgent, heartbeatInterval time.Du
 		defer wg.Done()
 		if err := agent.WatchChanges(childCtx); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- err
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for childCtx.Err() == nil {
+			if err := agent.ConnectRuntime(childCtx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Printf("paas-agent 实时通道断开: %v", err)
+				select {
+				case <-childCtx.Done():
+					return
+				case <-time.After(3 * time.Second):
+				}
+			}
 		}
 	}()
 	heartbeatTicker := time.NewTicker(heartbeatInterval)

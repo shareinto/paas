@@ -64,15 +64,58 @@ func TestRuntimeRestartTaskRestartsSupportedWorkload(t *testing.T) {
 	}
 }
 
-func TestWatchChangesReportsSnapshotImmediatelyOnChange(t *testing.T) {
+func TestWatchChangesDebouncesSnapshotReports(t *testing.T) {
 	control := &FakeControlPlaneClient{}
-	reader := &FakeKubernetesReader{SnapshotValue: Snapshot{Applications: []ArgoApplication{{Name: "order-dev", SyncStatus: "Synced", HealthStatus: "Healthy"}}}}
+	reader := &FakeKubernetesReader{SnapshotValue: Snapshot{Applications: []ArgoApplication{{Name: "order-dev", SyncStatus: "Synced", HealthStatus: "Healthy"}}}, WatchChanges: 3, WatchBlock: true}
 	agent := New(Config{ClusterID: "cluster_1"}, control, reader, nil)
-	if err := agent.WatchChanges(context.Background()); err != nil {
-		t.Fatalf("watch changes: %v", err)
+	agent.watchDebounce = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.WatchChanges(ctx)
+	}()
+	for i := 0; i < 100; i++ {
+		if len(control.Reports) == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if len(control.Reports) != 1 {
-		t.Fatalf("expected immediate report on watch change, got %+v", control.Reports)
+		cancel()
+		t.Fatalf("expected debounced report on watch changes, got %+v", control.Reports)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("watch changes error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("watch changes did not stop")
+	}
+}
+
+func TestAgentSendsRuntimeStageChangedInvalidation(t *testing.T) {
+	control := &FakeControlPlaneClient{}
+	reader := &FakeKubernetesReader{SnapshotValue: Snapshot{RuntimeResources: []RuntimeResource{{ApplicationID: "app_1", StageKey: "dev", Kind: "Pod", Namespace: "order-dev", Name: "order-api-abc"}}}, WatchBlock: true}
+	agent := New(Config{ClusterID: "cluster_1"}, control, reader, nil)
+	sender := &recordingRuntimeSender{messages: make(chan clusteragent.RuntimeWireMessage, 1)}
+	agent.SetRuntimeSender(sender)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- agent.WatchChanges(ctx)
+	}()
+	var msg clusteragent.RuntimeWireMessage
+	select {
+	case msg = <-sender.messages:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for stage_changed")
+	}
+	cancel()
+	<-done
+	if msg.ID != "" || msg.Type != "stage_changed" || msg.ApplicationID != "app_1" || msg.StageKey != "dev" {
+		t.Fatalf("unexpected stage_changed message: %+v", msg)
 	}
 }
 
@@ -81,6 +124,15 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.HeartbeatInterval != 10*time.Second || cfg.SnapshotInterval != 30*time.Second {
 		t.Fatalf("unexpected defaults: %#v", cfg)
 	}
+}
+
+type recordingRuntimeSender struct {
+	messages chan clusteragent.RuntimeWireMessage
+}
+
+func (s *recordingRuntimeSender) SendRuntimeMessage(_ context.Context, msg clusteragent.RuntimeWireMessage) error {
+	s.messages <- msg
+	return nil
 }
 
 func TestConfigValidateRequiresControlPlaneIdentityAndToken(t *testing.T) {

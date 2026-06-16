@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -80,6 +81,49 @@ func tenantQuery(ids ...shared.ID) fakeTenantQuery {
 
 func clusterActor() identityaccess.Subject {
 	return identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_cluster_admin"}
+}
+
+type fakeRuntimeGateway struct {
+	resources []RuntimeResource
+	restarted []RuntimeResourceTarget
+	logs      string
+}
+
+func (g *fakeRuntimeGateway) ListRuntimeResources(_ context.Context, clusterID shared.ID, _ shared.ID, _ string) ([]RuntimeResource, error) {
+	out := make([]RuntimeResource, 0, len(g.resources))
+	for _, resource := range g.resources {
+		resource.ClusterID = clusterID
+		out = append(out, resource)
+	}
+	return out, nil
+}
+
+func (g *fakeRuntimeGateway) WatchRuntimeResources(_ context.Context, clusterID shared.ID, _ shared.ID, _ string, onSnapshot func([]RuntimeResource) error, onStatus func(string) error) error {
+	if onStatus != nil {
+		_ = onStatus("connected")
+	}
+	resources, _ := g.ListRuntimeResources(context.Background(), clusterID, "", "")
+	return onSnapshot(resources)
+}
+
+func (g *fakeRuntimeGateway) RestartRuntimeResource(_ context.Context, target RuntimeResourceTarget) error {
+	g.restarted = append(g.restarted, target)
+	return nil
+}
+
+func (g *fakeRuntimeGateway) StreamPodLogs(_ context.Context, _ RuntimeResourceTarget, _ RuntimeLogOptions, writer io.Writer) error {
+	_, err := writer.Write([]byte(g.logs))
+	return err
+}
+
+func (g *fakeRuntimeGateway) Terminal(context.Context, RuntimeResourceTarget, RuntimeTerminalOptions, <-chan []byte, chan<- []byte) error {
+	return nil
+}
+
+type fakeStageResolver struct{ ref StageClusterRef }
+
+func (r fakeStageResolver) ResolveStageCluster(context.Context, shared.ID, string) (StageClusterRef, error) {
+	return r.ref, nil
 }
 
 type clusterRepoWithErrors struct {
@@ -297,6 +341,40 @@ func TestRuntimeResourceReportStoresLatestAndQueriesByStage(t *testing.T) {
 	}
 	if len(updated) != 1 || updated[0].ID != resource.ID || updated[0].Status != "Healthy" || updated[0].Ready != 3 || len(updated[0].Events) != 0 {
 		t.Fatalf("latest report should replace prior resource snapshot, got %#v", updated)
+	}
+}
+
+func TestRuntimeResourcesUseRealtimeGatewayWhenConfigured(t *testing.T) {
+	repo := newTestRepository(t)
+	permission := &recordingClusterPermission{}
+	gateway := &fakeRuntimeGateway{resources: []RuntimeResource{
+		{ID: "runtime_deploy", ApplicationID: "app_1", StageKey: "dev", Kind: "Deployment", Namespace: "order-dev", Name: "order-api", Status: "Healthy"},
+		{ID: "runtime_pod", ApplicationID: "app_1", StageKey: "dev", Kind: "Pod", Namespace: "order-dev", Name: "order-api-abc", Status: "Running", Containers: []RuntimeContainerStatus{{Name: "app", Ready: true}}},
+	}}
+	svc := NewService(Options{
+		Repository:        repo,
+		PermissionChecker: permission,
+		RuntimeGateway:    gateway,
+		StageClusters:     fakeStageResolver{ref: StageClusterRef{ClusterID: "cluster_1", TenantID: "tenant_1"}},
+		IDGenerator:       &staticIDs{ids: []shared.ID{"cluster_task_unused"}},
+		Clock:             &mutableClock{now: time.Date(2026, 6, 16, 10, 0, 0, 0, time.UTC)},
+	})
+	resources, err := svc.ListRuntimeResources(context.Background(), RuntimeResourceQuery{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_runtime"}, ApplicationID: "app_1", StageKey: "dev"})
+	if err != nil {
+		t.Fatalf("ListRuntimeResources() error = %v", err)
+	}
+	if len(resources) != 2 || resources[0].TenantID != "tenant_1" || resources[0].ClusterID != "cluster_1" {
+		t.Fatalf("runtime gateway resources should be enriched with stage scope, got %+v", resources)
+	}
+	task, err := svc.RestartRuntimeResource(context.Background(), RuntimeResourceActionInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_operator"}, ApplicationID: "app_1", StageKey: "dev", ResourceID: "runtime_deploy"})
+	if err != nil {
+		t.Fatalf("RestartRuntimeResource() error = %v", err)
+	}
+	if task.Status != ClusterTaskSucceeded || len(gateway.restarted) != 1 || gateway.restarted[0].Kind != "Deployment" {
+		t.Fatalf("restart should execute through runtime gateway, task=%+v restarted=%+v", task, gateway.restarted)
+	}
+	if permission.calls[len(permission.calls)-1].action != "runtime:restart" {
+		t.Fatalf("restart should check runtime permission, calls=%+v", permission.calls)
 	}
 }
 

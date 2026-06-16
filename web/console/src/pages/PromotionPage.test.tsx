@@ -112,10 +112,41 @@ test('点击 Stage 卡片打开运行资源详情并展示操作入口', async (
   expect(within(drawer).getAllByText('order-api').length).toBeGreaterThan(0);
   expect(within(drawer).getByText('Pod')).toBeInTheDocument();
   expect(within(drawer).getAllByText('order-api-7d9').length).toBeGreaterThan(0);
-  expect(within(drawer).getByText('Event')).toBeInTheDocument();
-  expect(within(drawer).getByRole('button', { name: '重启' })).toBeInTheDocument();
+  expect(within(drawer).getByText('StatefulSet')).toBeInTheDocument();
+  expect(within(drawer).getByText('DaemonSet')).toBeInTheDocument();
+  expect(within(drawer).queryByText('ReplicaSet')).not.toBeInTheDocument();
+  expect(within(drawer).queryByText('Event')).not.toBeInTheDocument();
+  expect(within(drawer).getAllByRole('button', { name: '重启' }).length).toBeGreaterThan(0);
   expect(within(drawer).getByRole('button', { name: '日志' })).toBeInTheDocument();
-  expect(within(drawer).getByRole('button', { name: '终端' })).toBeDisabled();
+  expect(within(drawer).getByRole('button', { name: '终端' })).toBeEnabled();
+});
+
+test('Pod 日志按钮打开中文日志面板并流式追加日志', async () => {
+  renderPromotionPage();
+
+  await userEvent.click(await screen.findByLabelText('dev Stage'));
+  const drawer = await screen.findByRole('dialog', { name: 'dev 运行资源' });
+  await userEvent.click(await within(drawer).findByRole('button', { name: '日志' }));
+
+  expect(await screen.findByText('order-api-7d9 日志')).toBeInTheDocument();
+  const logDrawer = screen.getByText('order-api-7d9 日志').closest('.ant-drawer-content') as HTMLElement;
+  expect(within(logDrawer).getByText('连接状态')).toBeInTheDocument();
+  expect(await within(logDrawer).findByText(/应用启动参数已加载/)).toBeInTheDocument();
+});
+
+test('Pod 终端按钮打开中文终端面板并支持输入发送', async () => {
+  renderPromotionPage();
+
+  await userEvent.click(await screen.findByLabelText('dev Stage'));
+  const drawer = await screen.findByRole('dialog', { name: 'dev 运行资源' });
+  await userEvent.click(await within(drawer).findByRole('button', { name: '终端' }));
+
+  expect(await screen.findByText('order-api-7d9 终端')).toBeInTheDocument();
+  const terminalDrawer = screen.getByText('order-api-7d9 终端').closest('.ant-drawer-content') as HTMLElement;
+  expect(await within(terminalDrawer).findByText('已连接')).toBeInTheDocument();
+  await userEvent.type(within(terminalDrawer).getByLabelText('终端输入'), 'pwd');
+  await userEvent.click(within(terminalDrawer).getByRole('button', { name: '发送' }));
+  expect(await within(terminalDrawer).findByText(/已发送到容器/)).toBeInTheDocument();
 });
 
 test('部署画布和 Stage 节点使用稳定尺寸和操作面板字号', () => {
