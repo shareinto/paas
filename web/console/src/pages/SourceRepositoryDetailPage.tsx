@@ -59,7 +59,7 @@ function Overview({ repo }: { repo: any }) {
         <Typography.Text><CodeOutlined /> 仓库地址</Typography.Text>
         <Input readOnly value={repo?.httpUrl || '-'} />
         <Input readOnly value={repo?.sshUrl || '-'} />
-        <Typography.Text type="secondary">源码仓库由平台托管在 GitLab 中，构建、发布和权限同步仍由 PaaS 控制。</Typography.Text>
+        <Typography.Text type="secondary">源码仓库由用户预先创建，平台校验后登记并用于构建、扫描和权限同步。</Typography.Text>
       </Space>
     </Card>
   );

@@ -145,6 +145,65 @@ func TestSourceRepositoryAdapterAdoptsExistingProjectInExpectedNamespace(t *test
 	}
 }
 
+func TestSourceRepositoryAdapterResolveProjectByHTTPURL(t *testing.T) {
+	var seenPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.EscapedPath()
+		if r.Method != http.MethodGet || seenPath != "/api/v4/projects/rnd%2Fpayment%2Forder-api" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 30, "http_url_to_repo": "https://gitlab.example/rnd/payment/order-api.git", "ssh_url_to_repo": "git@gitlab.example:rnd/payment/order-api.git"})
+	}))
+	defer server.Close()
+
+	adapter := NewSourceRepositoryAdapter(NewClient(Config{BaseURL: server.URL, Token: "secret"}))
+	project, err := adapter.ResolveProjectByHTTPURL(context.Background(), server.URL+"/rnd/payment/order-api.git")
+	if err != nil {
+		t.Fatalf("resolve project: %v", err)
+	}
+	if project.ID != "30" || project.SSHURL == "" {
+		t.Fatalf("unexpected project: %#v", project)
+	}
+	if seenPath == "" {
+		t.Fatalf("server should be called")
+	}
+}
+
+func TestSourceRepositoryAdapterResolveProjectByHTTPURLRejectsForeignHost(t *testing.T) {
+	adapter := NewSourceRepositoryAdapter(NewClient(Config{BaseURL: "https://gitlab.example", Token: "secret"}))
+	if _, err := adapter.ResolveProjectByHTTPURL(context.Background(), "https://evil.example/rnd/payment/order-api.git"); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("foreign host should fail, got %v", err)
+	}
+	if _, err := adapter.ResolveProjectByHTTPURL(context.Background(), "https://token@gitlab.example/rnd/payment/order-api.git"); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("credentialed url should fail, got %v", err)
+	}
+	if _, err := adapter.ResolveProjectByHTTPURL(context.Background(), "https://gitlab.example/rnd/payment/order-api.git?private_token=secret"); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("query url should fail, got %v", err)
+	}
+}
+
+func TestSourceRepositoryAdapterResolveProjectByHTTPURLMapsGitLabErrors(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		code   shared.ErrorCode
+	}{
+		{status: http.StatusNotFound, code: shared.CodeNotFound},
+		{status: http.StatusForbidden, code: shared.CodePermissionDenied},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"message":"no access"}`))
+			}))
+			defer server.Close()
+			adapter := NewSourceRepositoryAdapter(NewClient(Config{BaseURL: server.URL, Token: "secret"}))
+			if _, err := adapter.ResolveProjectByHTTPURL(context.Background(), server.URL+"/rnd/payment/order-api.git"); shared.CodeOf(err) != tc.code {
+				t.Fatalf("status %d should map to %s, got %v", tc.status, tc.code, err)
+			}
+		})
+	}
+}
+
 func TestSourceRepositoryAdapterProtectBranchTreatsAlreadyProtectedAsSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

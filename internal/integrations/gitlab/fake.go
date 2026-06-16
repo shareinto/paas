@@ -15,6 +15,10 @@ type FakeSourceRepositoryAdapter struct {
 	Branches []sourcerepository.RepositoryBranch
 }
 
+func (f *FakeSourceRepositoryAdapter) ResolveProjectByHTTPURL(_ context.Context, httpURL string) (sourcerepository.GitProject, error) {
+	return sourcerepository.GitProject{ID: "git_fake_source_repository", HTTPURL: httpURL, SSHURL: ""}, nil
+}
+
 func (f *FakeSourceRepositoryAdapter) CreateProject(_ context.Context, spec sourcerepository.GitProjectSpec) (sourcerepository.GitProject, error) {
 	f.Projects = append(f.Projects, spec)
 	return sourcerepository.GitProject{ID: "git_" + spec.RepositoryID.String(), HTTPURL: "https://gitlab.example/" + spec.RepositoryName + ".git", SSHURL: "git@gitlab.example:" + spec.RepositoryName + ".git"}, nil

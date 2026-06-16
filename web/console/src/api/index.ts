@@ -590,14 +590,14 @@ export async function getSourceRepository(id: string) {
   return mapSourceRepository(item);
 }
 
-export async function createSourceRepository(input: { projectId: string; name: string; displayName: string; description?: string; defaultBranch: string }) {
-  if (!hasAPIBaseURL()) return mock.createSourceRepository(input);
-  const actor = { type: 'user', id: 'usr_admin' };
-  const item = await request<any>('/api/source-repositories', {
-    method: 'POST',
-    body: JSON.stringify({ actor, project_id: input.projectId, name: input.name, display_name: input.displayName, description: input.description || '', default_branch: input.defaultBranch })
-  });
-  return mapSourceRepository(item);
+export async function createSourceRepository(input: { projectId: string; name: string; displayName: string; description?: string; httpUrl: string; defaultBranch: string }) {
+	if (!hasAPIBaseURL()) return mock.createSourceRepository(input);
+	const actor = { type: 'user', id: 'usr_admin' };
+	const item = await request<any>('/api/source-repositories', {
+		method: 'POST',
+		body: JSON.stringify({ actor, project_id: input.projectId, name: input.name, display_name: input.displayName, description: input.description || '', http_url: input.httpUrl, default_branch: input.defaultBranch })
+	});
+	return mapSourceRepository(item);
 }
 
 export async function deleteSourceRepository(id: string) {

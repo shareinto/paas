@@ -2,6 +2,7 @@ package sourcerepository
 
 import (
 	"context"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -75,6 +76,7 @@ type CreateSourceRepositoryInput struct {
 	Name          string                 `json:"name"`
 	DisplayName   string                 `json:"display_name"`
 	Description   string                 `json:"description"`
+	HTTPURL       string                 `json:"http_url"`
 	DefaultBranch string                 `json:"default_branch"`
 }
 
@@ -93,10 +95,6 @@ func (s *Service) CreateSourceRepository(ctx context.Context, input CreateSource
 	if err != nil {
 		return SourceRepository{}, err
 	}
-	tenant, err := s.projects.GetTenant(ctx, project.TenantID)
-	if err != nil {
-		return SourceRepository{}, err
-	}
 	if err := s.checkProject(ctx, input.Actor, project, "project:update"); err != nil {
 		return SourceRepository{}, err
 	}
@@ -104,7 +102,21 @@ func (s *Service) CreateSourceRepository(ctx context.Context, input CreateSource
 	if err := validateRepositoryName(name); err != nil {
 		return SourceRepository{}, err
 	}
+	httpURL, err := normalizeHTTPRepositoryURL(input.HTTPURL)
+	if err != nil {
+		return SourceRepository{}, err
+	}
 	defaultBranch := normalizeDefaultBranch(input.DefaultBranch)
+	if s.git == nil {
+		return SourceRepository{}, shared.NewError(shared.CodeFailedPrecondition, "git source repository port is required")
+	}
+	gitProject, err := s.git.ResolveProjectByHTTPURL(ctx, httpURL)
+	if err != nil {
+		return SourceRepository{}, mapGitIntegrationError(err)
+	}
+	if _, err := s.git.ListFiles(ctx, gitProject.ID, defaultBranch); err != nil {
+		return SourceRepository{}, mapGitIntegrationError(err)
+	}
 	id, err := s.ids.NewID("repo")
 	if err != nil {
 		return SourceRepository{}, err
@@ -118,56 +130,24 @@ func (s *Service) CreateSourceRepository(ctx context.Context, input CreateSource
 		DisplayName:   normalizeDisplayName(input.DisplayName, name),
 		Description:   strings.TrimSpace(input.Description),
 		GitProvider:   "gitlab",
+		GitProjectID:  gitProject.ID,
+		HTTPURL:       httpURL,
+		SSHURL:        gitProject.SSHURL,
 		DefaultBranch: defaultBranch,
-		Status:        RepositoryStatusProvisioning,
+		Status:        RepositoryStatusReady,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
-	if s.git == nil {
-		return SourceRepository{}, shared.NewError(shared.CodeFailedPrecondition, "git source repository port is required")
+	if repository.SSHURL == "" {
+		repository.SSHURL = gitProject.SSHURL
 	}
 	if err := s.repo.CreateSourceRepository(ctx, repository); err != nil {
-		return SourceRepository{}, err
-	}
-	failCreate := func(cause error) (SourceRepository, error) {
-		repository.Status = RepositoryStatusFailed
-		repository.UpdatedAt = s.clock.Now()
-		_ = s.repo.UpdateSourceRepository(ctx, repository)
-		_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "source_repository.create", ResourceType: "source_repository", ResourceID: repository.ID, Result: "failed", Summary: "创建平台托管源码仓库失败", OccurredAt: repository.UpdatedAt})
-		return SourceRepository{}, mapGitIntegrationError(cause)
-	}
-	gitProject, err := s.git.CreateProject(ctx, GitProjectSpec{
-		TenantID:       project.TenantID,
-		TenantName:     tenant.Name,
-		ProjectID:      project.ID,
-		ProjectName:    project.Name,
-		RepositoryID:   repository.ID,
-		RepositoryName: repository.Name,
-		DefaultBranch:  defaultBranch,
-	})
-	if err != nil {
-		return failCreate(err)
-	}
-	repository.GitProjectID = gitProject.ID
-	repository.HTTPURL = gitProject.HTTPURL
-	repository.SSHURL = gitProject.SSHURL
-	if err := s.git.ProtectBranch(ctx, gitProject.ID, defaultBranch); err != nil {
-		return failCreate(err)
-	}
-	if s.webhookCallbackURL != "" {
-		if err := s.git.ConfigureWebhook(ctx, gitProject.ID, s.webhookCallbackURL); err != nil {
-			return failCreate(err)
-		}
-	}
-	repository.Status = RepositoryStatusReady
-	repository.UpdatedAt = s.clock.Now()
-	if err := s.repo.UpdateSourceRepository(ctx, repository); err != nil {
 		return SourceRepository{}, err
 	}
 	if err := s.publish(ctx, "SourceRepositoryCreated", now, RepositoryCreatedPayload{SourceRepositoryID: repository.ID, TenantID: repository.TenantID, ProjectID: repository.ProjectID, Name: repository.Name}); err != nil {
 		return SourceRepository{}, err
 	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "source_repository.create", ResourceType: "source_repository", ResourceID: repository.ID, Result: "succeeded", Summary: "创建平台托管源码仓库", OccurredAt: now})
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "source_repository.create", ResourceType: "source_repository", ResourceID: repository.ID, Result: "succeeded", Summary: "登记源码仓库", OccurredAt: now})
 	return repository, nil
 }
 
@@ -207,14 +187,6 @@ func (s *Service) DeleteSourceRepository(ctx context.Context, input DeleteSource
 	if len(applications) > 0 {
 		return shared.NewError(shared.CodeFailedPrecondition, "source repository has associated applications")
 	}
-	if repository.GitProjectID != "" {
-		if s.git == nil {
-			return shared.NewError(shared.CodeFailedPrecondition, "git source repository port is required")
-		}
-		if err := s.git.DeleteProject(ctx, repository.GitProjectID); err != nil && shared.CodeOf(err) != shared.CodeNotFound {
-			return mapGitIntegrationError(err)
-		}
-	}
 	if err := s.repo.DeleteSourceRepository(ctx, repository.ID); err != nil {
 		return err
 	}
@@ -222,7 +194,7 @@ func (s *Service) DeleteSourceRepository(ctx context.Context, input DeleteSource
 	if err := s.publish(ctx, "SourceRepositoryDeleted", now, RepositoryDeletedPayload{SourceRepositoryID: repository.ID, TenantID: repository.TenantID, ProjectID: repository.ProjectID, Name: repository.Name}); err != nil {
 		return err
 	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "source_repository.delete", ResourceType: "source_repository", ResourceID: repository.ID, Result: "succeeded", Summary: "删除平台托管源码仓库", OccurredAt: now})
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "source_repository.delete", ResourceType: "source_repository", ResourceID: repository.ID, Result: "succeeded", Summary: "删除源码仓库登记", OccurredAt: now})
 	return nil
 }
 
@@ -281,206 +253,23 @@ func (s *Service) SyncRepositoryPermissions(ctx context.Context, actor identitya
 }
 
 func (s *Service) CreateRepositoryMigration(ctx context.Context, input CreateRepositoryMigrationInput) (RepositoryMigration, error) {
-	project, err := s.requireProject(ctx, input.ProjectID)
-	if err != nil {
-		return RepositoryMigration{}, err
-	}
-	if err := s.checkProject(ctx, input.Actor, project, "project:update"); err != nil {
-		return RepositoryMigration{}, err
-	}
-	sourceURL := strings.TrimSpace(input.SourceURL)
-	if sourceURL == "" {
-		return RepositoryMigration{}, shared.NewError(shared.CodeInvalidArgument, "source_url is required")
-	}
-	name := normalizeRepositoryName(input.Name)
-	if err := validateRepositoryName(name); err != nil {
-		return RepositoryMigration{}, err
-	}
-	repoID, err := s.ids.NewID("repo")
-	if err != nil {
-		return RepositoryMigration{}, err
-	}
-	migrationID, err := s.ids.NewID("repo_migration")
-	if err != nil {
-		return RepositoryMigration{}, err
-	}
-	now := s.clock.Now()
-	repository := SourceRepository{
-		ID:            repoID,
-		TenantID:      project.TenantID,
-		ProjectID:     project.ID,
-		Name:          name,
-		DisplayName:   normalizeDisplayName(input.DisplayName, name),
-		Description:   strings.TrimSpace(input.Description),
-		GitProvider:   "gitlab",
-		DefaultBranch: normalizeDefaultBranch(input.DefaultBranch),
-		Status:        RepositoryStatusMigrating,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-	}
-	if err := s.repo.CreateSourceRepository(ctx, repository); err != nil {
-		return RepositoryMigration{}, err
-	}
-	migration := RepositoryMigration{
-		ID:                 migrationID,
-		TenantID:           project.TenantID,
-		ProjectID:          project.ID,
-		SourceRepositoryID: repoID,
-		SourceURL:          sourceURL,
-		Status:             MigrationPending,
-		RequestedBy:        input.Actor.ID,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-	}
-	if err := s.repo.CreateMigration(ctx, migration); err != nil {
-		return RepositoryMigration{}, err
-	}
-	if err := s.publish(ctx, "RepositoryMigrationCreated", now, RepositoryMigrationCreatedPayload{MigrationID: migration.ID, SourceRepositoryID: repoID, ProjectID: project.ID}); err != nil {
-		return RepositoryMigration{}, err
-	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "repository_migration.create", ResourceType: "repository_migration", ResourceID: migration.ID, Result: "succeeded", Summary: "创建源码仓库迁移任务", OccurredAt: now})
-	return migration, nil
+	return RepositoryMigration{}, shared.NewError(shared.CodeFailedPrecondition, "repository migration is no longer supported; create the repository in GitLab and register its http_url")
 }
 
 func (s *Service) GetRepositoryMigration(ctx context.Context, id shared.ID) (RepositoryMigration, error) {
-	return s.repo.GetMigration(ctx, id)
+	return RepositoryMigration{}, shared.NewError(shared.CodeFailedPrecondition, "repository migration is no longer supported; create the repository in GitLab and register its http_url")
 }
 
 func (s *Service) RetryRepositoryMigration(ctx context.Context, actor identityaccess.Subject, id shared.ID) (RepositoryMigration, error) {
-	migration, err := s.repo.GetMigration(ctx, id)
-	if err != nil {
-		return RepositoryMigration{}, err
-	}
-	project := tenantproject.Project{ID: migration.ProjectID, TenantID: migration.TenantID}
-	if err := s.checkProject(ctx, actor, project, "project:update"); err != nil {
-		return RepositoryMigration{}, err
-	}
-	if migration.Status != MigrationFailed {
-		return RepositoryMigration{}, shared.NewError(shared.CodeFailedPrecondition, "only failed migrations can be retried")
-	}
-	return s.transitionMigration(ctx, migration, MigrationPending, "")
+	return RepositoryMigration{}, shared.NewError(shared.CodeFailedPrecondition, "repository migration is no longer supported; create the repository in GitLab and register its http_url")
 }
 
 func (s *Service) CancelRepositoryMigration(ctx context.Context, actor identityaccess.Subject, id shared.ID) (RepositoryMigration, error) {
-	migration, err := s.repo.GetMigration(ctx, id)
-	if err != nil {
-		return RepositoryMigration{}, err
-	}
-	project := tenantproject.Project{ID: migration.ProjectID, TenantID: migration.TenantID}
-	if err := s.checkProject(ctx, actor, project, "project:update"); err != nil {
-		return RepositoryMigration{}, err
-	}
-	if terminalMigrationStatus(migration.Status) || migration.Status == MigrationFailed {
-		return RepositoryMigration{}, shared.NewError(shared.CodeFailedPrecondition, "migration cannot be canceled in current status")
-	}
-	updated, err := s.transitionMigration(ctx, migration, MigrationCanceled, "")
-	if err != nil {
-		return RepositoryMigration{}, err
-	}
-	repository, err := s.repo.GetSourceRepository(ctx, updated.SourceRepositoryID)
-	if err == nil {
-		repository.Status = RepositoryStatusFailed
-		repository.UpdatedAt = updated.UpdatedAt
-		_ = s.repo.UpdateSourceRepository(ctx, repository)
-	}
-	return updated, nil
+	return RepositoryMigration{}, shared.NewError(shared.CodeFailedPrecondition, "repository migration is no longer supported; create the repository in GitLab and register its http_url")
 }
 
 func (s *Service) ProcessRepositoryMigration(ctx context.Context, id shared.ID) (RepositoryMigration, []BuildSpecSuggestion, error) {
-	if s.git == nil {
-		return RepositoryMigration{}, nil, shared.NewError(shared.CodeFailedPrecondition, "git source repository port is required")
-	}
-	migration, err := s.repo.GetMigration(ctx, id)
-	if err != nil {
-		return RepositoryMigration{}, nil, err
-	}
-	if terminalMigrationStatus(migration.Status) {
-		return migration, nil, nil
-	}
-	repository, err := s.repo.GetSourceRepository(ctx, migration.SourceRepositoryID)
-	if err != nil {
-		return RepositoryMigration{}, nil, err
-	}
-
-	var suggestions []BuildSpecSuggestion
-	if migration.Status == MigrationPending {
-		if migration, err = s.transitionMigration(ctx, migration, MigrationCreatingTargetRepo, ""); err != nil {
-			return RepositoryMigration{}, nil, err
-		}
-		gitProject, createErr := s.git.CreateProject(ctx, GitProjectSpec{
-			TenantID:       repository.TenantID,
-			ProjectID:      repository.ProjectID,
-			RepositoryID:   repository.ID,
-			RepositoryName: repository.Name,
-			DefaultBranch:  repository.DefaultBranch,
-		})
-		if createErr != nil {
-			return s.failMigration(ctx, migration, repository, createErr)
-		}
-		repository.GitProjectID = gitProject.ID
-		repository.HTTPURL = gitProject.HTTPURL
-		repository.SSHURL = gitProject.SSHURL
-		repository.UpdatedAt = s.clock.Now()
-		if err := s.repo.UpdateSourceRepository(ctx, repository); err != nil {
-			return RepositoryMigration{}, nil, err
-		}
-		if err := s.git.ProtectBranch(ctx, gitProject.ID, repository.DefaultBranch); err != nil {
-			return s.failMigration(ctx, migration, repository, err)
-		}
-		if s.webhookCallbackURL != "" {
-			if err := s.git.ConfigureWebhook(ctx, gitProject.ID, s.webhookCallbackURL); err != nil {
-				return s.failMigration(ctx, migration, repository, err)
-			}
-		}
-	}
-	if migration.Status == MigrationCreatingTargetRepo {
-		if migration, err = s.transitionMigration(ctx, migration, MigrationCloningSource, ""); err != nil {
-			return RepositoryMigration{}, nil, err
-		}
-	}
-	if migration.Status == MigrationCloningSource {
-		if err := s.git.MirrorRepository(ctx, GitMirrorSpec{SourceURL: migration.SourceURL, GitProjectID: repository.GitProjectID}); err != nil {
-			return s.failMigration(ctx, migration, repository, err)
-		}
-		if migration, err = s.transitionMigration(ctx, migration, MigrationPushingTarget, ""); err != nil {
-			return RepositoryMigration{}, nil, err
-		}
-	}
-	if migration.Status == MigrationPushingTarget {
-		if migration, err = s.transitionMigration(ctx, migration, MigrationVerifying, ""); err != nil {
-			return RepositoryMigration{}, nil, err
-		}
-	}
-	if migration.Status == MigrationVerifying {
-		if err := s.git.VerifyRepository(ctx, repository.GitProjectID); err != nil {
-			return s.failMigration(ctx, migration, repository, err)
-		}
-		if migration, err = s.transitionMigration(ctx, migration, MigrationAnalyzing, ""); err != nil {
-			return RepositoryMigration{}, nil, err
-		}
-	}
-	if migration.Status == MigrationAnalyzing {
-		files, err := s.git.ListFiles(ctx, repository.GitProjectID, repository.DefaultBranch)
-		if err != nil {
-			return s.failMigration(ctx, migration, repository, err)
-		}
-		suggestions = GenerateJavaBuildSpecSuggestions(files)
-		if migration, err = s.transitionMigration(ctx, migration, MigrationReadyForApplicationBinding, ""); err != nil {
-			return RepositoryMigration{}, nil, err
-		}
-	}
-	if migration.Status == MigrationReadyForApplicationBinding {
-		if migration, err = s.transitionMigration(ctx, migration, MigrationSucceeded, ""); err != nil {
-			return RepositoryMigration{}, nil, err
-		}
-		repository.Status = RepositoryStatusReady
-		repository.UpdatedAt = migration.UpdatedAt
-		if err := s.repo.UpdateSourceRepository(ctx, repository); err != nil {
-			return RepositoryMigration{}, nil, err
-		}
-		_ = s.audit.Log(ctx, AuditEvent{ActorID: migration.RequestedBy, Action: "repository_migration.succeed", ResourceType: "repository_migration", ResourceID: migration.ID, Result: "succeeded", Summary: "源码仓库迁移完成", OccurredAt: migration.UpdatedAt})
-	}
-	return migration, suggestions, nil
+	return RepositoryMigration{}, nil, shared.NewError(shared.CodeFailedPrecondition, "repository migration is no longer supported; create the repository in GitLab and register its http_url")
 }
 
 func (s *Service) GenerateBuildSpecSuggestions(ctx context.Context, sourceRepositoryID shared.ID, ref string) ([]BuildSpecSuggestion, error) {
@@ -633,19 +422,6 @@ func (s *Service) transitionMigration(ctx context.Context, migration RepositoryM
 	return migration, nil
 }
 
-func (s *Service) failMigration(ctx context.Context, migration RepositoryMigration, repository SourceRepository, cause error) (RepositoryMigration, []BuildSpecSuggestion, error) {
-	message := strings.TrimSpace(cause.Error())
-	failed, err := s.transitionMigration(ctx, migration, MigrationFailed, message)
-	if err != nil {
-		return RepositoryMigration{}, nil, err
-	}
-	repository.Status = RepositoryStatusFailed
-	repository.UpdatedAt = failed.UpdatedAt
-	_ = s.repo.UpdateSourceRepository(ctx, repository)
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: migration.RequestedBy, Action: "repository_migration.fail", ResourceType: "repository_migration", ResourceID: migration.ID, Result: "failed", Summary: "源码仓库迁移失败", OccurredAt: failed.UpdatedAt})
-	return failed, nil, cause
-}
-
 func (s *Service) failPermissionJob(ctx context.Context, job RepositoryPermissionSyncJob, cause error) (RepositoryPermissionSyncJob, error) {
 	job.Status = PermissionSyncFailed
 	job.ErrorMessage = strings.TrimSpace(cause.Error())
@@ -681,4 +457,25 @@ func normalizeDefaultBranch(branch string) string {
 		return "main"
 	}
 	return branch
+}
+
+func normalizeHTTPRepositoryURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", shared.NewError(shared.CodeInvalidArgument, "http_url is required")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", shared.NewError(shared.CodeInvalidArgument, "http_url must be a valid http or https repository url")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", shared.NewError(shared.CodeInvalidArgument, "http_url must use http or https")
+	}
+	if parsed.User != nil {
+		return "", shared.NewError(shared.CodeInvalidArgument, "http_url must not contain credentials")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", shared.NewError(shared.CodeInvalidArgument, "http_url must not contain query or fragment")
+	}
+	return value, nil
 }

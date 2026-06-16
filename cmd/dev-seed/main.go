@@ -3,9 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,36 +11,24 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	_ "github.com/go-sql-driver/mysql"
 )
 
 const (
-	defaultAPIBase      = "http://127.0.0.1:8080"
-	defaultSourceURL    = "http://192.168.100.80/paas/sbg/macc/log-receiver.git"
-	defaultSourceSSHURL = "ssh://git@192.168.100.80:2422/paas/sbg/macc/log-receiver.git"
+	defaultAPIBase   = "http://127.0.0.1:8080"
+	defaultSourceURL = "http://192.168.100.80/paas/sbg/macc/log-receiver.git"
 )
 
 type seedOptions struct {
-	APIBase      string
-	SourceURL    string
-	SourceSSHURL string
-	DryRun       bool
-	Updater      sourceRepositoryPatcher
-	Client       *http.Client
+	APIBase   string
+	SourceURL string
+	DryRun    bool
+	Client    *http.Client
 }
-
-type sourceRepositoryPatcher interface {
-	PatchSourceRepository(ctx context.Context, repositoryID, httpURL, sshURL string) error
-}
-
-type mysqlSourceRepositoryPatcher struct{}
 
 func main() {
 	var opts seedOptions
 	flag.StringVar(&opts.APIBase, "api-base", firstNonEmpty(os.Getenv("PAAS_DEV_SEED_API_BASE"), defaultAPIBase), "PaaS control plane API base URL")
-	flag.StringVar(&opts.SourceURL, "source-url", firstNonEmpty(os.Getenv("PAAS_DEV_SEED_SOURCE_URL"), defaultSourceURL), "source repository HTTP URL to patch into MySQL")
-	flag.StringVar(&opts.SourceSSHURL, "source-ssh-url", firstNonEmpty(os.Getenv("PAAS_DEV_SEED_SOURCE_SSH_URL"), defaultSourceSSHURL), "source repository SSH URL to patch into MySQL")
+	flag.StringVar(&opts.SourceURL, "source-url", firstNonEmpty(os.Getenv("PAAS_DEV_SEED_SOURCE_URL"), defaultSourceURL), "source repository HTTP URL to register")
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "print planned seed data without calling API or MySQL")
 	flag.Parse()
 
@@ -57,9 +43,8 @@ func main() {
 func runSeed(ctx context.Context, opts seedOptions) error {
 	opts.APIBase = strings.TrimRight(firstNonEmpty(opts.APIBase, defaultAPIBase), "/")
 	opts.SourceURL = firstNonEmpty(strings.TrimSpace(opts.SourceURL), defaultSourceURL)
-	opts.SourceSSHURL = firstNonEmpty(strings.TrimSpace(opts.SourceSSHURL), defaultSourceSSHURL)
 	if opts.DryRun {
-		fmt.Printf("dry-run: seed tenant=sbg project=macc repository=log-receiver application=log-receiver workload=log-receiver pipeline=main api_base=%s source_url=%s source_ssh_url=%s\n", opts.APIBase, opts.SourceURL, opts.SourceSSHURL)
+		fmt.Printf("dry-run: seed tenant=sbg project=macc repository=log-receiver application=log-receiver workload=log-receiver pipeline=main api_base=%s source_url=%s\n", opts.APIBase, opts.SourceURL)
 		return nil
 	}
 	client := seedClient{base: opts.APIBase, http: opts.Client}
@@ -89,13 +74,6 @@ func runSeed(ctx context.Context, opts seedOptions) error {
 	}
 	repositoryID, err := client.ensureSourceRepository(ctx, projectID, actor, opts.SourceURL)
 	if err != nil {
-		return err
-	}
-	updater := opts.Updater
-	if updater == nil {
-		updater = mysqlSourceRepositoryPatcher{}
-	}
-	if err := updater.PatchSourceRepository(ctx, repositoryID, opts.SourceURL, opts.SourceSSHURL); err != nil {
 		return err
 	}
 	applicationID, err := client.ensureByName(ctx, "GET", "/api/projects/"+projectID+"/applications?page=1&page_size=100", "POST", "/api/applications", "log-receiver", map[string]any{
@@ -184,46 +162,16 @@ func (c seedClient) ensureSourceRepository(ctx context.Context, projectID string
 		"name":           "log-receiver",
 		"display_name":   "log-receiver",
 		"description":    "日志接收服务源码仓库",
+		"http_url":       sourceURL,
 		"default_branch": "main",
 	}
 	var created map[string]any
 	if err := c.doJSON(ctx, "POST", "/api/source-repositories", createPayload, &created); err != nil {
-		if !isFailedPrecondition(err) {
-			return "", err
-		}
-		items, listErr := c.list(ctx, "GET", "/api/projects/"+projectID+"/source-repositories?page=1&page_size=100")
-		if listErr != nil {
-			return "", listErr
-		}
-		if id := findIDByName(items, "log-receiver"); id != "" {
-			return id, nil
-		}
-		return c.createRepositoryMigration(ctx, projectID, actor, sourceURL)
+		return "", err
 	}
 	id, _ := created["id"].(string)
 	if strings.TrimSpace(id) == "" {
 		return "", fmt.Errorf("POST /api/source-repositories response missing id")
-	}
-	return id, nil
-}
-
-func (c seedClient) createRepositoryMigration(ctx context.Context, projectID string, actor map[string]string, sourceURL string) (string, error) {
-	payload := map[string]any{
-		"actor":          actor,
-		"project_id":     projectID,
-		"name":           "log-receiver",
-		"display_name":   "log-receiver",
-		"description":    "日志接收服务源码仓库",
-		"source_url":     sourceURL,
-		"default_branch": "main",
-	}
-	var migration map[string]any
-	if err := c.doJSON(ctx, "POST", "/api/repository-migrations", payload, &migration); err != nil {
-		return "", err
-	}
-	id := asString(migration["source_repository_id"])
-	if id == "" {
-		return "", fmt.Errorf("POST /api/repository-migrations response missing source_repository_id")
 	}
 	return id, nil
 }
@@ -328,47 +276,6 @@ func (c seedClient) doJSON(ctx context.Context, method, path string, body any, o
 		return fmt.Errorf("decode %s %s response: %w", method, path, err)
 	}
 	return nil
-}
-
-func (mysqlSourceRepositoryPatcher) PatchSourceRepository(ctx context.Context, repositoryID, httpURL, sshURL string) error {
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true&loc=Local&interpolateParams=true",
-		os.Getenv("MYSQL_USER"),
-		os.Getenv("MYSQL_PASSWORD"),
-		firstNonEmpty(os.Getenv("MYSQL_HOST"), "127.0.0.1"),
-		firstNonEmpty(os.Getenv("MYSQL_PORT"), "3306"),
-		os.Getenv("MYSQL_DATABASE"),
-	)
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	result, err := db.ExecContext(ctx, "UPDATE source_repositories SET http_url = ?, ssh_url = ?, status = 'ready', updated_at = NOW(6) WHERE id = ?", httpURL, sshURL, repositoryID)
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected == 0 {
-		return fmt.Errorf("source repository %s not found", repositoryID)
-	}
-	return nil
-}
-
-func isFailedPrecondition(err error) bool {
-	var statusErr httpStatusError
-	if !errors.As(err, &statusErr) {
-		return false
-	}
-	if statusErr.StatusCode != http.StatusPreconditionFailed {
-		return false
-	}
-	if statusErr.Body == "" {
-		return true
-	}
-	return strings.Contains(statusErr.Body, `"failed_precondition"`) || strings.Contains(statusErr.Body, "failed_precondition")
 }
 
 func findIDByName(items []map[string]any, name string) string {
