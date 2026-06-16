@@ -96,7 +96,8 @@ const users: User[] = [
   { id: 'usr_admin', username: 'admin', displayName: '平台管理员', email: 'admin@example.com', disabled: false },
   { id: 'usr_lilei', username: 'lilei', displayName: '李雷', email: 'lilei@example.com', disabled: false },
   { id: 'usr_hanmeimei', username: 'hanmeimei', displayName: '韩梅梅', email: 'hanmeimei@example.com', disabled: false },
-  { id: 'usr_wangfang', username: 'wangfang', displayName: '王芳', email: 'wangfang@example.com', disabled: false }
+  { id: 'usr_wangfang', username: 'wangfang', displayName: '王芳', email: 'wangfang@example.com', disabled: false },
+  { id: 'usr_zhaoliu', username: 'zhaoliu', displayName: '赵六', email: 'zhaoliu@example.com', disabled: true }
 ];
 const roles: Role[] = [
   { id: 'platform_admin', name: '平台管理员', permissions: ['*:*'], suggestedScopes: ['platform'] },

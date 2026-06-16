@@ -13,6 +13,7 @@ type Service struct {
 	repo       Repository
 	permission PermissionChecker
 	roles      RoleBindingManager
+	subjects   SubjectQuery
 	deletion   ProjectDeletionGuard
 	audit      AuditLogger
 	events     EventPublisher
@@ -24,6 +25,7 @@ type Options struct {
 	Repository        Repository
 	PermissionChecker PermissionChecker
 	RoleBindings      RoleBindingManager
+	SubjectQuery      SubjectQuery
 	ProjectDeletion   ProjectDeletionGuard
 	Audit             AuditLogger
 	EventPublisher    EventPublisher
@@ -52,6 +54,7 @@ func NewService(opts Options) *Service {
 		repo:       opts.Repository,
 		permission: opts.PermissionChecker,
 		roles:      opts.RoleBindings,
+		subjects:   opts.SubjectQuery,
 		deletion:   opts.ProjectDeletion,
 		audit:      audit,
 		events:     events,
@@ -244,6 +247,15 @@ func (s *Service) UpsertProjectMember(ctx context.Context, input UpsertProjectMe
 	if err := s.check(ctx, input.Actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeProject, TenantID: project.TenantID, ProjectID: project.ID}, "project:update"); err != nil {
 		return ProjectMember{}, err
 	}
+	if !isProjectMemberRole(input.RoleID) {
+		return ProjectMember{}, shared.NewError(shared.CodeInvalidArgument, "role is not supported for project members")
+	}
+	if s.subjects == nil {
+		return ProjectMember{}, shared.NewError(shared.CodeFailedPrecondition, "subject query is required")
+	}
+	if _, err := s.subjects.GetUser(ctx, input.UserID); err != nil {
+		return ProjectMember{}, err
+	}
 	if s.roles == nil {
 		return ProjectMember{}, shared.NewError(shared.CodeFailedPrecondition, "role binding manager is required")
 	}
@@ -281,6 +293,20 @@ func (s *Service) RemoveProjectMember(ctx context.Context, input RemoveProjectMe
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "project_member.remove", ResourceType: "project", ResourceID: project.ID, Result: "succeeded", Summary: "移除项目成员", OccurredAt: s.clock.Now()})
 	return nil
+}
+
+func isProjectMemberRole(roleID identityaccess.RoleID) bool {
+	switch roleID {
+	case identityaccess.RoleProjectAdmin,
+		identityaccess.RoleDeveloper,
+		identityaccess.RoleViewer,
+		identityaccess.RoleOperator,
+		identityaccess.RoleProdApprover,
+		identityaccess.RoleSecurityAuditor:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) CreateProject(ctx context.Context, input CreateProjectInput) (Project, error) {

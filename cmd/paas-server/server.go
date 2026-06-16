@@ -131,7 +131,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	tenantRepo := repos.tenant
 	sourceRepo := repos.source
 	appRepo := repos.app
-	tenantSvc := tenantproject.NewService(tenantproject.Options{Repository: tenantRepo, PermissionChecker: identitySvc, RoleBindings: identitySvc, Audit: audit.TenantProjectLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	tenantSvc := tenantproject.NewService(tenantproject.Options{Repository: tenantRepo, PermissionChecker: identitySvc, RoleBindings: identitySvc, SubjectQuery: identitySvc, Audit: audit.TenantProjectLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
 
 	gitAdapter, webhookURL := sourceGitAdapterFromEnv()
 	sourceSvc := sourcerepository.NewService(sourcerepository.Options{Repository: sourceRepo, Git: gitAdapter, ProjectQuery: tenantSvc, MembershipQuery: tenantSvc, Audit: audit.SourceRepositoryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock, WebhookCallbackURL: webhookURL})

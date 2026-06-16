@@ -39,7 +39,7 @@ export function MemberManagement({ scopeKind, scopeId, title = '成员管理' }:
       ? upsertTenantMember(scopeId, { userId: values.userId, roleId: values.roleId })
       : upsertProjectMember(scopeId, { userId: values.userId, roleId: values.roleId }),
     onSuccess: async () => {
-      message.success(scopeKind === 'tenant' ? '租户成员已保存' : '项目成员已保存，可在源码仓库详情页同步 GitLab 权限');
+      message.success(scopeKind === 'tenant' ? '租户成员已保存' : '项目成员已保存；源码仓库权限需在源码仓库详情页手动同步');
       closeDialog();
       await queryClient.invalidateQueries({ queryKey: membersQueryKey });
     }
@@ -48,7 +48,7 @@ export function MemberManagement({ scopeKind, scopeId, title = '成员管理' }:
   const removeMutation = useMutation({
     mutationFn: (userId: string) => scopeKind === 'tenant' ? removeTenantMember(scopeId, userId) : removeProjectMember(scopeId, userId),
     onSuccess: async () => {
-      message.success(scopeKind === 'tenant' ? '租户成员已移除' : '项目成员已移除，可在源码仓库详情页同步 GitLab 权限');
+      message.success(scopeKind === 'tenant' ? '租户成员已移除' : '项目成员已移除；源码仓库权限需在源码仓库详情页手动同步');
       await queryClient.invalidateQueries({ queryKey: membersQueryKey });
     }
   });

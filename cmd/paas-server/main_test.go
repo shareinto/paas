@@ -343,6 +343,16 @@ func TestMemberManagementRoutes(t *testing.T) {
 	if addProjectMember.Code != http.StatusOK {
 		t.Fatalf("add project member status = %d body = %s", addProjectMember.Code, addProjectMember.Body.String())
 	}
+	addTenantRoleAsProjectMember := httptest.NewRecorder()
+	app.handler.ServeHTTP(addTenantRoleAsProjectMember, httptest.NewRequest(http.MethodPut, "/api/projects/"+fixture.project.ID.String()+"/members/"+user.ID, bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"role_id":"tenant_admin"}`)))
+	if addTenantRoleAsProjectMember.Code != http.StatusBadRequest {
+		t.Fatalf("tenant role as project member status = %d body = %s", addTenantRoleAsProjectMember.Code, addTenantRoleAsProjectMember.Body.String())
+	}
+	addMissingProjectMember := httptest.NewRecorder()
+	app.handler.ServeHTTP(addMissingProjectMember, httptest.NewRequest(http.MethodPut, "/api/projects/"+fixture.project.ID.String()+"/members/usr_missing", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"role_id":"developer"}`)))
+	if addMissingProjectMember.Code != http.StatusNotFound {
+		t.Fatalf("missing project member user status = %d body = %s", addMissingProjectMember.Code, addMissingProjectMember.Body.String())
+	}
 	listProjectMembers := httptest.NewRecorder()
 	app.handler.ServeHTTP(listProjectMembers, httptest.NewRequest(http.MethodGet, "/api/projects/"+fixture.project.ID.String()+"/members", nil))
 	if listProjectMembers.Code != http.StatusOK || !bytes.Contains(listProjectMembers.Body.Bytes(), []byte("开发成员")) || !bytes.Contains(listProjectMembers.Body.Bytes(), []byte("project_admin")) {

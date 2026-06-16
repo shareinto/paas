@@ -118,6 +118,33 @@ func (r *recordingRoleBindings) ListRoleBindingsByScope(_ context.Context, scope
 	return result, nil
 }
 
+type recordingSubjects struct {
+	users map[shared.ID]identityaccess.User
+	err   error
+}
+
+func (s recordingSubjects) GetUser(_ context.Context, id shared.ID) (identityaccess.User, error) {
+	if s.err != nil {
+		return identityaccess.User{}, s.err
+	}
+	user, ok := s.users[id]
+	if !ok {
+		return identityaccess.User{}, shared.NewError(shared.CodeNotFound, "user not found")
+	}
+	return user, nil
+}
+
+func (s recordingSubjects) ListUsers(_ context.Context, page shared.PageRequest) (shared.PageResult[identityaccess.UserDTO], error) {
+	if s.err != nil {
+		return shared.PageResult[identityaccess.UserDTO]{}, s.err
+	}
+	items := make([]identityaccess.UserDTO, 0, len(s.users))
+	for _, user := range s.users {
+		items = append(items, identityaccess.ToUserDTO(user))
+	}
+	return shared.NewPageResult(items, int64(len(items)), page), nil
+}
+
 func newTestRepository(t *testing.T) Repository {
 	t.Helper()
 	repo, err := NewMySQLRepository(context.Background(), testsupport.MySQLDB(t, Migrations...))
@@ -136,10 +163,14 @@ func newTestService(t *testing.T) (*Service, Repository, *recordingPermission, *
 	svc := NewService(Options{
 		Repository:        repo,
 		PermissionChecker: permission,
-		Audit:             audit,
-		EventPublisher:    events,
-		IDGenerator:       testutil.NewFakeIDGenerator(1),
-		Clock:             testutil.NewFakeClock(time.Date(2026, 5, 30, 2, 0, 0, 0, time.UTC)),
+		SubjectQuery: recordingSubjects{users: map[shared.ID]identityaccess.User{
+			"usr_admin": {ID: "usr_admin", Username: "admin", DisplayName: "平台管理员"},
+			"usr_dev":   {ID: "usr_dev", Username: "dev", DisplayName: "开发成员"},
+		}},
+		Audit:          audit,
+		EventPublisher: events,
+		IDGenerator:    testutil.NewFakeIDGenerator(1),
+		Clock:          testutil.NewFakeClock(time.Date(2026, 5, 30, 2, 0, 0, 0, time.UTC)),
 	})
 	return svc, repo, permission, audit, events
 }
@@ -297,6 +328,7 @@ func TestProjectMemberUsesProjectScopedRoleBindingAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertProjectMember replace error = %v", err)
 	}
+	roles.bindings = append(roles.bindings, identityaccess.RoleBinding{SubjectType: identityaccess.SubjectGroup, SubjectID: "group_ops", RoleID: identityaccess.RoleOperator, ScopeKind: identityaccess.ScopeProject, ScopeID: project.ID})
 	members, err := svc.ListProjectMembers(ctx, project.ID)
 	if err != nil {
 		t.Fatalf("ListProjectMembers() error = %v", err)
@@ -348,6 +380,12 @@ func TestProjectMemberValidationPermissionAndMissingRoleManager(t *testing.T) {
 		t.Fatalf("permission denied should fail, got %v", err)
 	}
 	permission.err = nil
+	if _, err := svc.UpsertProjectMember(ctx, UpsertProjectMemberInput{Actor: testActor(), ProjectID: project.ID, UserID: "usr_dev", RoleID: identityaccess.RoleTenantAdmin}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("tenant role should not be accepted as project member role, got %v", err)
+	}
+	if _, err := svc.UpsertProjectMember(ctx, UpsertProjectMemberInput{Actor: testActor(), ProjectID: project.ID, UserID: "usr_missing", RoleID: identityaccess.RoleDeveloper}); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("missing project member user should fail, got %v", err)
+	}
 	if _, err := svc.UpsertProjectMember(ctx, UpsertProjectMemberInput{Actor: testActor(), ProjectID: project.ID, UserID: "usr_dev", RoleID: identityaccess.RoleDeveloper}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing role binding manager should fail, got %v", err)
 	}
