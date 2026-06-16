@@ -25,6 +25,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           colorBgLayout: '#f5f7fa',
           colorBgContainer: '#ffffff',
           borderRadius: 6,
+          fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", "Segoe UI", Arial, sans-serif',
           fontSize: 13,
           controlHeight: 36,
           wireframe: false
