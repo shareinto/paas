@@ -14,7 +14,7 @@ Usage:
 Options:
   --recreate-db        启动前删除并重建 MYSQL_DATABASE，然后执行全量 migration 建表；默认注入开发测试数据。
   --no-recreate-db     不重建数据库，按当前 PAAS_AUTO_MIGRATE 设置启动。
-  --seed-dev-data      后端 ready 后注入 SBG/MACC 开发测试数据。
+  --seed-dev-data      后端 ready 后通过 MySQL 客户端注入 SBG/MACC 开发测试数据。
   --no-seed-dev-data   跳过开发测试数据注入。
   -h, --help           显示帮助。
 
@@ -149,6 +149,10 @@ export DOCKERFILE_REPOSITORY_CREDENTIALS_ID="${DOCKERFILE_REPOSITORY_CREDENTIALS
 
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-5173}"
+DEV_SEED_SOURCE_URL="${PAAS_DEV_SEED_SOURCE_URL:-http://192.168.100.80/paas/sbg/macc/log-receiver.git}"
+DEV_SEED_SOURCE_SSH_URL="${PAAS_DEV_SEED_SOURCE_SSH_URL:-ssh://git@192.168.100.80:2422/paas/sbg/macc/log-receiver.git}"
+DEV_SEED_ARTIFACT_COPY_COMMAND='cp log-receiver/build/libs/log-receiver.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"'
+MYSQL_CLIENT_IMAGE="${PAAS_MYSQL_CLIENT_IMAGE:-m.daocloud.io/docker.io/library/mysql:8.0}"
 
 paas_http_port() {
   local addr="$1"
@@ -172,16 +176,68 @@ pids=()
 cleanup() {
   local code=$?
   trap - EXIT INT TERM
-  for pid in "${pids[@]}"; do
-    if kill -0 "$pid" >/dev/null 2>&1; then
-      kill "$pid" >/dev/null 2>&1 || true
-    fi
-  done
+  if ((${#pids[@]} > 0)); then
+    for pid in "${pids[@]}"; do
+      if kill -0 "$pid" >/dev/null 2>&1; then
+        kill "$pid" >/dev/null 2>&1 || true
+      fi
+    done
+  fi
   wait >/dev/null 2>&1 || true
   exit "$code"
 }
 
 trap cleanup EXIT INT TERM
+
+mysql_client() {
+  local database="${1:-}"
+  local args=(
+    --protocol=tcp
+    -h "$MYSQL_HOST"
+    -P "$MYSQL_PORT"
+    -u "$MYSQL_USER"
+    --default-character-set=utf8mb4
+    --binary-mode
+    --connect-timeout=5
+  )
+  if [[ -n "$database" ]]; then
+    args+=("$database")
+  fi
+  if command -v mysql >/dev/null 2>&1; then
+    MYSQL_PWD="$MYSQL_PASSWORD" mysql "${args[@]}"
+    return
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    local docker_host="$MYSQL_HOST"
+    local docker_args=(run --rm -i -e MYSQL_PWD)
+    if [[ "$docker_host" == "127.0.0.1" || "$docker_host" == "localhost" || "$docker_host" == "::1" ]]; then
+      if [[ "$(uname -s)" == "Linux" ]]; then
+        docker_args+=(--network host)
+      else
+        docker_host="host.docker.internal"
+      fi
+    fi
+    args[2]="$docker_host"
+    echo "未找到本机 mysql 客户端，改用 Docker 镜像 ${MYSQL_CLIENT_IMAGE} 执行 mysql 客户端。" >&2
+    MYSQL_PWD="$MYSQL_PASSWORD" docker "${docker_args[@]}" "$MYSQL_CLIENT_IMAGE" mysql "${args[@]}"
+    return
+  fi
+  echo "未找到 mysql 客户端，也未找到 docker，无法执行开发库重建或数据注入。" >&2
+  return 127
+}
+
+mysql_quote_identifier() {
+  local value="$1"
+  value="${value//\`/\`\`}"
+  printf '`%s`' "$value"
+}
+
+mysql_escape_literal() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\'/\'\'}"
+  printf '%s' "$value"
+}
 
 recreate_database() {
   case "$MYSQL_DATABASE" in
@@ -194,53 +250,13 @@ recreate_database() {
   echo "即将重建开发数据库: $MYSQL_DATABASE@$MYSQL_HOST:$MYSQL_PORT"
   echo "该操作会删除该库中的应用、构建、Freight、Stage、审计等数据。"
 
-  local tmp
-  tmp="$(mktemp /tmp/paas-recreate-db-XXXX.go)"
-  cat > "$tmp" <<'EOF'
-package main
-
-import (
-	"database/sql"
-	"fmt"
-	"os"
-	"strings"
-
-	_ "github.com/go-sql-driver/mysql"
-)
-
-func main() {
-	host := os.Getenv("MYSQL_HOST")
-	port := os.Getenv("MYSQL_PORT")
-	user := os.Getenv("MYSQL_USER")
-	password := os.Getenv("MYSQL_PASSWORD")
-	database := os.Getenv("MYSQL_DATABASE")
-	if strings.TrimSpace(database) == "" {
-		panic("MYSQL_DATABASE is required")
-	}
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/?charset=utf8mb4&collation=utf8mb4_unicode_ci&parseTime=true&loc=Local&interpolateParams=true", user, password, host, port)
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		panic(err)
-	}
-	defer db.Close()
-	if err := db.Ping(); err != nil {
-		panic(err)
-	}
-	quoted := "`" + strings.ReplaceAll(database, "`", "``") + "`"
-	if _, err := db.Exec("DROP DATABASE IF EXISTS " + quoted); err != nil {
-		panic(err)
-	}
-	if _, err := db.Exec("CREATE DATABASE " + quoted + " CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); err != nil {
-		panic(err)
-	}
-	fmt.Printf("已重建开发数据库: %s\n", database)
-}
-EOF
-  if ! (cd "$ROOT_DIR" && go run "$tmp"); then
-    rm -f "$tmp"
-    return 1
-  fi
-  rm -f "$tmp"
+  local quoted_database
+  quoted_database="$(mysql_quote_identifier "$MYSQL_DATABASE")"
+  mysql_client <<SQL
+DROP DATABASE IF EXISTS ${quoted_database};
+CREATE DATABASE ${quoted_database} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+SQL
+  echo "已重建开发数据库: $MYSQL_DATABASE"
 }
 
 wait_for_backend_ready() {
@@ -259,6 +275,266 @@ wait_for_backend_ready() {
   return 1
 }
 
+backend_ready() {
+  curl -fsS "${BACKEND_LOCAL_BASE_URL}/readyz" >/dev/null 2>&1
+}
+
+ensure_backend_stopped_for_recreate() {
+  if backend_ready; then
+    echo "检测到后端已在运行，拒绝重建数据库: $BACKEND_LOCAL_BASE_URL" >&2
+    echo "请先停止旧的 paas-server 或 dev-up 进程，再重新执行 --recreate-db。" >&2
+    return 1
+  fi
+}
+
+seed_dev_data_with_mysql_client() {
+  local source_url source_ssh_url artifact_copy_command
+  source_url="$(mysql_escape_literal "$DEV_SEED_SOURCE_URL")"
+  source_ssh_url="$(mysql_escape_literal "$DEV_SEED_SOURCE_SSH_URL")"
+  artifact_copy_command="$(mysql_escape_literal "$DEV_SEED_ARTIFACT_COPY_COMMAND")"
+
+  echo "通过 MySQL 客户端注入 SBG/MACC 开发测试数据"
+  mysql_client "$MYSQL_DATABASE" <<SQL
+SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
+SET @now := UTC_TIMESTAMP(6);
+SET @tenant_id := 'tenant_sbg';
+SET @project_id := 'project_macc';
+SET @repository_id := 'source_repo_log_receiver';
+SET @application_id := 'app_log_receiver';
+SET @application_source_id := 'app_source_log_receiver_main';
+SET @workload_id := 'workload_log_receiver';
+SET @pipeline_id := 'build_pipeline_log_receiver_main';
+SET @pipeline_source_id := 'build_pipeline_source_log_receiver_main';
+SET @source_url := '${source_url}';
+SET @source_ssh_url := '${source_ssh_url}';
+SET @artifact_copy_command := '${artifact_copy_command}';
+SET @build_command := 'gradle --no-daemon --parallel --max-workers=12 :log-receiver:bootJar -x test';
+
+SELECT id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, COALESCE(selector_labels_json, JSON_OBJECT())
+INTO @runtime_environment_id, @runtime_environment_name, @runtime_base_image, @artifact_deploy_path, @dockerfile_path, @runtime_selector_labels_json
+FROM runtime_environments
+WHERE status = 'enabled'
+ORDER BY (id = 'runtime_env_java17') DESC, is_default DESC, created_at ASC, id ASC
+LIMIT 1;
+
+SELECT id
+INTO @build_environment_id
+FROM build_environments
+WHERE status = 'enabled'
+ORDER BY (id = 'build_env_gradle7_jdk11') DESC, is_default DESC, created_at ASC, id ASC
+LIMIT 1;
+
+START TRANSACTION;
+
+INSERT INTO tenants (id, name, display_name, description, created_at, updated_at)
+VALUES (@tenant_id, 'sbg', 'sbg', 'SBG 测试租户', @now, @now)
+ON DUPLICATE KEY UPDATE
+  display_name = VALUES(display_name),
+  description = VALUES(description),
+  updated_at = VALUES(updated_at);
+SELECT @tenant_id := id FROM tenants WHERE name = 'sbg' LIMIT 1;
+
+INSERT INTO tenant_members (tenant_id, user_id, role_id, created_at, updated_at)
+VALUES (@tenant_id, 'usr_admin', 'tenant_owner', @now, @now)
+ON DUPLICATE KEY UPDATE
+  role_id = VALUES(role_id),
+  updated_at = VALUES(updated_at);
+
+INSERT INTO projects (id, tenant_id, name, display_name, description, created_at, updated_at)
+VALUES (@project_id, @tenant_id, 'macc', 'macc', 'MACC 测试项目', @now, @now)
+ON DUPLICATE KEY UPDATE
+  display_name = VALUES(display_name),
+  description = VALUES(description),
+  updated_at = VALUES(updated_at);
+SELECT @project_id := id FROM projects WHERE tenant_id = @tenant_id AND name = 'macc' LIMIT 1;
+
+INSERT INTO source_repositories (
+  id, tenant_id, project_id, name, display_name, description, git_provider,
+  git_project_id, http_url, ssh_url, default_branch, status, created_at, updated_at
+) VALUES (
+  @repository_id, @tenant_id, @project_id, 'log-receiver', 'log-receiver', '日志接收服务源码仓库',
+  'gitlab', '', @source_url, @source_ssh_url, 'main', 'ready', @now, @now
+)
+ON DUPLICATE KEY UPDATE
+  display_name = VALUES(display_name),
+  description = VALUES(description),
+  git_provider = VALUES(git_provider),
+  http_url = VALUES(http_url),
+  ssh_url = VALUES(ssh_url),
+  default_branch = VALUES(default_branch),
+  status = VALUES(status),
+  updated_at = VALUES(updated_at);
+SELECT @repository_id := id FROM source_repositories WHERE project_id = @project_id AND name = 'log-receiver' LIMIT 1;
+
+INSERT INTO applications (
+  id, tenant_id, project_id, name, display_name, description, runtime_environment_id, status, created_at, updated_at
+) VALUES (
+  @application_id, @tenant_id, @project_id, 'log-receiver', 'log-receiver', '日志接收应用',
+  COALESCE(@runtime_environment_id, ''), 'active', @now, @now
+)
+ON DUPLICATE KEY UPDATE
+  display_name = VALUES(display_name),
+  description = VALUES(description),
+  runtime_environment_id = VALUES(runtime_environment_id),
+  status = VALUES(status),
+  updated_at = VALUES(updated_at);
+SELECT @application_id := id FROM applications WHERE project_id = @project_id AND name = 'log-receiver' LIMIT 1;
+
+SET @application_source_id := COALESCE((
+  SELECT id FROM application_sources WHERE application_id = @application_id AND source_key = 'main' LIMIT 1
+), @application_source_id);
+
+INSERT INTO application_sources (
+  id, tenant_id, project_id, application_id, source_key, display_name, source_repository_id,
+  jenkins_template_id, build_environment_id, source_path, build_command, artifact_copy_command,
+  runtime_base_image, artifact_deploy_path, default_ref, is_primary, created_at, updated_at
+) VALUES (
+  @application_source_id, @tenant_id, @project_id, @application_id, 'main', '主代码源', @repository_id,
+  '', COALESCE(@build_environment_id, ''), '.', @build_command, @artifact_copy_command,
+  '', '', 'main', 1, @now, @now
+)
+ON DUPLICATE KEY UPDATE
+  display_name = VALUES(display_name),
+  source_repository_id = VALUES(source_repository_id),
+  build_environment_id = VALUES(build_environment_id),
+  source_path = VALUES(source_path),
+  build_command = VALUES(build_command),
+  artifact_copy_command = VALUES(artifact_copy_command),
+  runtime_base_image = VALUES(runtime_base_image),
+  artifact_deploy_path = VALUES(artifact_deploy_path),
+  default_ref = VALUES(default_ref),
+  is_primary = VALUES(is_primary),
+  updated_at = VALUES(updated_at);
+
+INSERT INTO application_runtime_environments (
+  application_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path,
+  dockerfile_path, selector_labels_json, position
+)
+SELECT @application_id, @runtime_environment_id, @runtime_environment_name, @runtime_base_image,
+       @artifact_deploy_path, @dockerfile_path, @runtime_selector_labels_json, 0
+WHERE @runtime_environment_id IS NOT NULL
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  runtime_base_image = VALUES(runtime_base_image),
+  artifact_deploy_path = VALUES(artifact_deploy_path),
+  dockerfile_path = VALUES(dockerfile_path),
+  selector_labels_json = VALUES(selector_labels_json),
+  position = VALUES(position);
+
+INSERT INTO source_repository_associations (
+  source_repository_id, application_id, application_name, application_display_name
+) VALUES (
+  @repository_id, @application_id, 'log-receiver', 'log-receiver'
+)
+ON DUPLICATE KEY UPDATE
+  application_name = VALUES(application_name),
+  application_display_name = VALUES(application_display_name);
+
+SET @pipeline_id := COALESCE((
+  SELECT id FROM build_pipelines
+  WHERE application_id = @application_id AND name = 'main' AND status = 'active'
+  ORDER BY created_at ASC, id ASC
+  LIMIT 1
+), @pipeline_id);
+
+SET @workload_id := COALESCE((
+  SELECT id FROM workloads
+  WHERE application_id = @application_id AND name = 'log-receiver' AND status <> 'deleted'
+  ORDER BY created_at ASC, id ASC
+  LIMIT 1
+), @workload_id);
+
+INSERT INTO workloads (
+  id, tenant_id, project_id, application_id, name, display_name, workload_type, description,
+  status, image_source_mode, pipeline_id, created_by, created_at, updated_at
+) VALUES (
+  @workload_id, @tenant_id, @project_id, @application_id, 'log-receiver', 'log-receiver',
+  'Deployment', '日志接收服务工作负载', 'enabled', 'pipeline_artifact', @pipeline_id,
+  'usr_admin', @now, @now
+)
+ON DUPLICATE KEY UPDATE
+  display_name = VALUES(display_name),
+  workload_type = VALUES(workload_type),
+  description = VALUES(description),
+  status = VALUES(status),
+  image_source_mode = VALUES(image_source_mode),
+  pipeline_id = VALUES(pipeline_id),
+  updated_at = VALUES(updated_at);
+
+INSERT INTO build_pipelines (
+  id, tenant_id, project_id, application_id, name, display_name, description, provider,
+  external_job_name, template_id, config_hash, status, managed_by_platform, created_at, updated_at
+) VALUES (
+  @pipeline_id, @tenant_id, @project_id, @application_id, 'main', 'main', '默认构建流水线',
+  'jenkins', 'paas/sbg/macc/log-receiver/main', 'global-build-template', '',
+  'active', 1, @now, @now
+)
+ON DUPLICATE KEY UPDATE
+  display_name = VALUES(display_name),
+  description = VALUES(description),
+  provider = VALUES(provider),
+  external_job_name = VALUES(external_job_name),
+  template_id = VALUES(template_id),
+  config_hash = VALUES(config_hash),
+  status = VALUES(status),
+  managed_by_platform = VALUES(managed_by_platform),
+  updated_at = VALUES(updated_at);
+
+SET @pipeline_source_id := COALESCE((
+  SELECT id FROM build_pipeline_sources WHERE pipeline_id = @pipeline_id AND source_key = 'main' LIMIT 1
+), @pipeline_source_id);
+
+INSERT INTO build_pipeline_sources (
+  id, tenant_id, project_id, application_id, pipeline_id, source_key, display_name,
+  source_repository_id, build_environment_id, source_path, build_spec, is_primary, created_at, updated_at
+) VALUES (
+  @pipeline_source_id, @tenant_id, @project_id, @application_id, @pipeline_id, 'main', '主代码源',
+  @repository_id, COALESCE(@build_environment_id, ''), '.',
+  JSON_OBJECT(
+    'source_path', '.',
+    'default_ref', 'main',
+    'build_command', @build_command,
+    'artifact_copy_command', @artifact_copy_command,
+    'runtime_base_image', '',
+    'artifact_deploy_path', ''
+  ),
+  1, @now, @now
+)
+ON DUPLICATE KEY UPDATE
+  display_name = VALUES(display_name),
+  source_repository_id = VALUES(source_repository_id),
+  build_environment_id = VALUES(build_environment_id),
+  source_path = VALUES(source_path),
+  build_spec = VALUES(build_spec),
+  is_primary = VALUES(is_primary),
+  updated_at = VALUES(updated_at);
+
+INSERT INTO build_pipeline_runtime_environments (
+  pipeline_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path,
+  dockerfile_path, selector_labels_json, position
+)
+SELECT @pipeline_id, @runtime_environment_id, @runtime_environment_name, @runtime_base_image,
+       @artifact_deploy_path, @dockerfile_path, @runtime_selector_labels_json, 0
+WHERE @runtime_environment_id IS NOT NULL
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  runtime_base_image = VALUES(runtime_base_image),
+  artifact_deploy_path = VALUES(artifact_deploy_path),
+  dockerfile_path = VALUES(dockerfile_path),
+  selector_labels_json = VALUES(selector_labels_json),
+  position = VALUES(position);
+
+COMMIT;
+
+SELECT CONCAT(
+  '已注入开发测试数据: tenant=sbg project=macc application=log-receiver pipeline=main runtime=',
+  COALESCE(@runtime_environment_id, '<none>'),
+  ' build=',
+  COALESCE(@build_environment_id, '<none>')
+) AS seed_result;
+SQL
+}
+
 wait_for_any_process_exit() {
   local pid running
   while :; do
@@ -275,6 +551,7 @@ wait_for_any_process_exit() {
 
 if [[ "$RECREATE_DB" == "true" ]]; then
   export PAAS_AUTO_MIGRATE=true
+  ensure_backend_stopped_for_recreate
   recreate_database
 fi
 
@@ -306,7 +583,7 @@ else
   echo "  Jenkins:  fake adapter"
 fi
 
-if curl -fsS "${BACKEND_LOCAL_BASE_URL}/readyz" >/dev/null 2>&1; then
+if backend_ready; then
   echo "后端已在运行，跳过启动: $BACKEND_LOCAL_BASE_URL"
 else
   (
@@ -318,7 +595,7 @@ fi
 
 if [[ "$SEED_DEV_DATA" == "true" ]]; then
   wait_for_backend_ready
-  "$ROOT_DIR/scripts/dev-seed.sh" --api-base "$VITE_API_BASE_URL"
+  seed_dev_data_with_mysql_client
 fi
 
 (

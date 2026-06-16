@@ -92,7 +92,11 @@ go run ./cmd/paas-server
 ./scripts/dev-up.sh --recreate-db
 ```
 
-该命令会读取 `deploy/config/paas-dev.env`，删除并重建 `MYSQL_DATABASE`，强制设置 `PAAS_AUTO_MIGRATE=true`，启动 `paas-server`，等待 `/readyz`，注入 SBG/MACC 开发测试数据，再启动 Web Console。
+该命令会读取 `deploy/config/paas-dev.env`，通过 `mysql` 客户端删除并重建 `MYSQL_DATABASE`，强制设置 `PAAS_AUTO_MIGRATE=true`，启动 `paas-server`，等待 `/readyz`，再通过 `mysql` 客户端直连数据库注入 SBG/MACC 开发测试数据，最后启动 Web Console。
+
+执行 `--recreate-db` 前脚本会检查后端是否已在运行；如果当前 `PAAS_HTTP_ADDR` 对应的 `/readyz` 已可用，脚本会拒绝重建并退出。此时应先停止旧的 `paas-server` 或上一轮 `dev-up` 进程，再重新执行重建命令，避免旧进程占用端口导致新后端无法启动。
+
+如果本机未安装 `mysql` 命令，脚本会自动使用 Docker 镜像 `m.daocloud.io/docker.io/library/mysql:8.0` 作为一次性 MySQL 客户端；可通过 `PAAS_MYSQL_CLIENT_IMAGE` 覆盖该镜像。
 
 重建但跳过开发测试数据：
 

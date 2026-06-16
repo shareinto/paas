@@ -9,3 +9,4 @@ web/console/node_modules/
 web/console/dist/
 web/console/coverage/
 .worktrees/
+.worktree/
