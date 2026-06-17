@@ -220,14 +220,15 @@ test('运行时资源真实 API 使用计划接口并过滤非展示资源', asy
     if (url.endsWith('/api/apps/app_1/stages/dev/runtime/resources?actor_id=usr_admin')) {
       return new Response(JSON.stringify({ items: [
         { id: 'deploy_1', kind: 'Deployment', namespace: 'order-dev', name: 'order-api' },
-        { id: 'rs_1', kind: 'ReplicaSet', namespace: 'order-dev', name: 'order-api-7d9' },
+        { id: 'rs_1', kind: 'ReplicaSet', namespace: 'order-dev', name: 'order-api-7d9', parent_kind: 'Deployment', parent_name: 'order-api' },
+        { id: 'pod_1', kind: 'Pod', namespace: 'order-dev', name: 'order-api-7d9-abc', parent_kind: 'ReplicaSet', parent_name: 'order-api-7d9' },
         { id: 'event_1', kind: 'Event', namespace: 'order-dev', name: 'pull-failed' }
       ] }), { status: 200 });
     }
     if (url.endsWith('/api/apps/app_1/stages/dev/runtime/resources/stream?actor_id=usr_admin')) {
       return new Response(new ReadableStream({
         start(controller) {
-          controller.enqueue(encoder.encode('event: snapshot\ndata: {"items":[{"id":"pod_1","kind":"Pod","namespace":"order-dev","name":"order-api-7d9"},{"id":"event_1","kind":"Event","namespace":"order-dev","name":"pull-failed"}]}\n\n'));
+          controller.enqueue(encoder.encode('event: snapshot\ndata: {"items":[{"id":"deploy_1","kind":"Deployment","namespace":"order-dev","name":"order-api"},{"id":"rs_1","kind":"ReplicaSet","namespace":"order-dev","name":"order-api-7d9","parent_kind":"Deployment","parent_name":"order-api"},{"id":"pod_1","kind":"Pod","namespace":"order-dev","name":"order-api-7d9-abc","parent_kind":"ReplicaSet","parent_name":"order-api-7d9"},{"id":"event_1","kind":"Event","namespace":"order-dev","name":"pull-failed"}]}\n\n'));
           controller.enqueue(encoder.encode('event: status\ndata: connected\n\n'));
           controller.close();
         }
@@ -244,12 +245,18 @@ test('运行时资源真实 API 使用计划接口并过滤非展示资源', asy
   vi.stubGlobal('fetch', fetchMock);
 
   const api = await import('./index');
-  await expect(api.listRuntimeResources('app_1', 'dev')).resolves.toMatchObject([{ id: 'deploy_1', kind: 'Deployment' }]);
+  await expect(api.listRuntimeResources('app_1', 'dev')).resolves.toMatchObject([
+    { id: 'deploy_1', kind: 'Deployment' },
+    { id: 'pod_1', kind: 'Pod', parentKind: 'Deployment', parentName: 'order-api' }
+  ]);
   const snapshots: any[] = [];
   const statuses: string[] = [];
   api.streamRuntimeResources('app_1', 'dev', (items) => snapshots.push(items), (status) => statuses.push(status));
   await vi.waitFor(() => expect(statuses).toContain('connected'));
-  expect(snapshots[0]).toMatchObject([{ id: 'pod_1', kind: 'Pod' }]);
+  expect(snapshots[0]).toMatchObject([
+    { id: 'deploy_1', kind: 'Deployment' },
+    { id: 'pod_1', kind: 'Pod', parentKind: 'Deployment', parentName: 'order-api' }
+  ]);
   const logs: string[] = [];
   api.streamRuntimePodLogs('app_1', 'dev', 'order-dev', 'order-api-7d9', 'app', (text) => logs.push(text));
   await vi.waitFor(() => expect(logs).toEqual(['pod 日志']));

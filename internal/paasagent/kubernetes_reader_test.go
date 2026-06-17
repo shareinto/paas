@@ -128,6 +128,33 @@ func TestKubernetesReaderSnapshotCollectsRuntimeResources(t *testing.T) {
 	}
 }
 
+func TestKubernetesReaderListRuntimeResourcesPromotesPodParentThroughReplicaSet(t *testing.T) {
+	replicas := int32(1)
+	ownerController := true
+	client := k8sfake.NewSimpleClientset(
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "order-api", Namespace: "apps", Labels: workloadLabels()}, Spec: appsv1.DeploymentSpec{Replicas: &replicas}, Status: appsv1.DeploymentStatus{ReadyReplicas: 1}},
+		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "order-api-7d9", Namespace: "apps", Labels: workloadLabels(), OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "order-api", Controller: &ownerController}}}, Spec: appsv1.ReplicaSetSpec{Replicas: &replicas}, Status: appsv1.ReplicaSetStatus{ReadyReplicas: 1}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "order-api-7d9-abc", Namespace: "apps", Labels: workloadLabels(), OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "order-api-7d9", Controller: &ownerController}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}},
+	)
+	dynamicClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{argoApplicationGVR: "ApplicationList"})
+	reader := NewKubernetesClientReaderFromClients(client, dynamicClient, "argocd")
+	resources, err := reader.ListRuntimeResources(context.Background(), []string{"apps"}, "app_1", "dev")
+	if err != nil {
+		t.Fatalf("ListRuntimeResources() error = %v", err)
+	}
+	byKind := map[string]RuntimeResource{}
+	for _, resource := range resources {
+		byKind[resource.Kind] = resource
+	}
+	if _, ok := byKind["ReplicaSet"]; ok {
+		t.Fatalf("replicaset should not be returned as visible resource: %+v", resources)
+	}
+	pod := byKind["Pod"]
+	if pod.ParentKind != "Deployment" || pod.ParentNamespace != "apps" || pod.ParentName != "order-api" {
+		t.Fatalf("pod parent should be promoted to deployment, got %+v", pod)
+	}
+}
+
 func TestPodRuntimeResourceMarksDeletingPodTerminating(t *testing.T) {
 	deletingAt := metav1.NewTime(time.Date(2026, 6, 16, 16, 58, 0, 0, time.UTC))
 	resource := podRuntimeResource(corev1.Pod{

@@ -100,25 +100,90 @@ test('Stage 卡片显示 Argo CD 运行状态和失败原因', async () => {
   expect(within(devCard).getByText('Pod order-api-7d9 ImagePullBackOff')).toBeInTheDocument();
 });
 
-test('点击 Stage 卡片打开运行资源详情并展示操作入口', async () => {
+test('点击 Stage 卡片打开运行资源拓扑并按控制器分组展示', async () => {
   renderPromotionPage();
 
   const devCard = await screen.findByLabelText('dev Stage');
   await userEvent.click(devCard);
 
   const drawer = await screen.findByRole('dialog', { name: 'dev 运行资源' });
+  // 头部与汇总统计区
   expect(within(drawer).getByText('K8s 资源')).toBeInTheDocument();
+  expect(within(drawer).getByText('控制器')).toBeInTheDocument();
+  expect(within(drawer).getByText('运行中 Pod')).toBeInTheDocument();
+
+  // 三个控制器各渲染为一张卡片（kind 标签 + 名称）
   expect(await within(drawer).findByText('Deployment')).toBeInTheDocument();
-  expect(within(drawer).getAllByText('order-api').length).toBeGreaterThan(0);
-  expect(within(drawer).getByText('Pod')).toBeInTheDocument();
-  expect(within(drawer).getAllByText('order-api-7d9').length).toBeGreaterThan(0);
   expect(within(drawer).getByText('StatefulSet')).toBeInTheDocument();
   expect(within(drawer).getByText('DaemonSet')).toBeInTheDocument();
+  expect(within(drawer).getAllByText('order-api').length).toBeGreaterThan(0);
+  expect(within(drawer).getByText('order-mysql')).toBeInTheDocument();
+  expect(within(drawer).getByText('log-agent')).toBeInTheDocument();
+
+  // 非控制器、非 Pod 的资源类型不渲染为控制器卡片
   expect(within(drawer).queryByText('ReplicaSet')).not.toBeInTheDocument();
   expect(within(drawer).queryByText('Event')).not.toBeInTheDocument();
-  expect(within(drawer).getAllByRole('button', { name: '重启' }).length).toBeGreaterThan(0);
-  expect(within(drawer).getByRole('button', { name: '日志' })).toBeInTheDocument();
-  expect(within(drawer).getByRole('button', { name: '终端' })).toBeEnabled();
+
+  // 每个控制器都提供「重启」「设置」入口
+  expect(within(drawer).getAllByRole('button', { name: '重启' }).length).toBeGreaterThanOrEqual(3);
+  expect(within(drawer).getAllByRole('button', { name: '设置' }).length).toBeGreaterThanOrEqual(3);
+
+  // 初始折叠：Pod 行隐藏
+  const apiCard = await controllerCardByName(drawer, 'order-api');
+  const toggle = within(apiCard).getByRole('button', { name: '展开' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(within(drawer).queryByText('order-api-7d9')).not.toBeInTheDocument();
+  expect(within(drawer).queryByText('order-api-66c')).not.toBeInTheDocument();
+
+  // 展开 order-api 控制器后显示其下属 Pod 行
+  await userEvent.click(toggle);
+  expect(within(apiCard).getByRole('button', { name: '折叠' })).toHaveAttribute('aria-expanded', 'true');
+  expect(within(apiCard).getByText('order-api-7d9')).toBeInTheDocument();
+  expect(within(apiCard).getByText('order-api-66c')).toBeInTheDocument();
+
+  // Pod 行提供「日志」「终端」操作入口
+  expect(within(apiCard).getAllByRole('button', { name: '日志' }).length).toBeGreaterThanOrEqual(2);
+  expect(within(apiCard).getAllByRole('button', { name: '终端' }).length).toBeGreaterThanOrEqual(2);
+
+  // 五态状态图标可区分：Running 与 Pending 使用不同的图标标识
+  const runningRow = podRowByName(apiCard, 'order-api-66c');
+  const pendingRow = podRowByName(apiCard, 'order-api-7d9');
+  expect(within(runningRow).getByLabelText('运行中')).toBeInTheDocument();
+  expect(within(pendingRow).getByLabelText('启动中')).toBeInTheDocument();
+
+  // 非 Running 的 Pod「日志」「终端」禁用；Running 的 Pod 可点击
+  expect(within(pendingRow).getByRole('button', { name: '日志' })).toBeDisabled();
+  expect(within(pendingRow).getByRole('button', { name: '终端' })).toBeDisabled();
+  expect(within(runningRow).getByRole('button', { name: '日志' })).toBeEnabled();
+  expect(within(runningRow).getByRole('button', { name: '终端' })).toBeEnabled();
+});
+
+test('折叠状态下隐藏 Pod 行，再次点击切换控件可折叠回去', async () => {
+  renderPromotionPage();
+
+  await userEvent.click(await screen.findByLabelText('dev Stage'));
+  const drawer = await screen.findByRole('dialog', { name: 'dev 运行资源' });
+  const apiCard = await controllerCardByName(drawer, 'order-api');
+
+  await userEvent.click(within(apiCard).getByRole('button', { name: '展开' }));
+  expect(within(apiCard).getByText('order-api-66c')).toBeInTheDocument();
+
+  await userEvent.click(within(apiCard).getByRole('button', { name: '折叠' }));
+  expect(within(apiCard).queryByText('order-api-66c')).not.toBeInTheDocument();
+  expect(within(apiCard).getByRole('button', { name: '展开' })).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('控制器卡片「设置」打开编辑 Stage 配置弹窗', async () => {
+  renderPromotionPage();
+
+  await userEvent.click(await screen.findByLabelText('dev Stage'));
+  const drawer = await screen.findByRole('dialog', { name: 'dev 运行资源' });
+  const apiCard = await controllerCardByName(drawer, 'order-api');
+  await userEvent.click(within(apiCard).getByRole('button', { name: '设置' }));
+
+  // 运行资源抽屉与配置弹窗同时打开，按标题文案定位配置弹窗内容
+  const dialog = (await screen.findByText('编辑 Stage 配置')).closest('.ant-modal-content') as HTMLElement;
+  expect(within(dialog).getByLabelText('选择工作负载')).toBeInTheDocument();
 });
 
 test('Pod 日志按钮打开中文日志面板并流式追加日志', async () => {
@@ -126,10 +191,13 @@ test('Pod 日志按钮打开中文日志面板并流式追加日志', async () =
 
   await userEvent.click(await screen.findByLabelText('dev Stage'));
   const drawer = await screen.findByRole('dialog', { name: 'dev 运行资源' });
-  await userEvent.click(await within(drawer).findByRole('button', { name: '日志' }));
+  const apiCard = await controllerCardByName(drawer, 'order-api');
+  await userEvent.click(within(apiCard).getByRole('button', { name: '展开' }));
+  const runningRow = podRowByName(apiCard, 'order-api-66c');
+  await userEvent.click(within(runningRow).getByRole('button', { name: '日志' }));
 
-  expect(await screen.findByText('order-api-7d9 日志')).toBeInTheDocument();
-  const logDrawer = screen.getByText('order-api-7d9 日志').closest('.ant-drawer-content') as HTMLElement;
+  expect(await screen.findByText('order-api-66c 日志')).toBeInTheDocument();
+  const logDrawer = screen.getByText('order-api-66c 日志').closest('.ant-drawer-content') as HTMLElement;
   expect(within(logDrawer).getByText('连接状态')).toBeInTheDocument();
   expect(await within(logDrawer).findByText(/应用启动参数已加载/)).toBeInTheDocument();
 });
@@ -139,10 +207,13 @@ test('Pod 终端按钮打开中文终端面板并支持输入发送', async () =
 
   await userEvent.click(await screen.findByLabelText('dev Stage'));
   const drawer = await screen.findByRole('dialog', { name: 'dev 运行资源' });
-  await userEvent.click(await within(drawer).findByRole('button', { name: '终端' }));
+  const apiCard = await controllerCardByName(drawer, 'order-api');
+  await userEvent.click(within(apiCard).getByRole('button', { name: '展开' }));
+  const runningRow = podRowByName(apiCard, 'order-api-66c');
+  await userEvent.click(within(runningRow).getByRole('button', { name: '终端' }));
 
-  expect(await screen.findByText('order-api-7d9 终端')).toBeInTheDocument();
-  const terminalDrawer = screen.getByText('order-api-7d9 终端').closest('.ant-drawer-content') as HTMLElement;
+  expect(await screen.findByText('order-api-66c 终端')).toBeInTheDocument();
+  const terminalDrawer = screen.getByText('order-api-66c 终端').closest('.ant-drawer-content') as HTMLElement;
   expect(await within(terminalDrawer).findByText('已连接')).toBeInTheDocument();
   await userEvent.type(within(terminalDrawer).getByLabelText('终端输入'), 'pwd');
   await userEvent.click(within(terminalDrawer).getByRole('button', { name: '发送' }));
@@ -372,6 +443,16 @@ test('创建 Freight 支持从历史 Freight 复制和自定义镜像 tag 风险
 async function freightCardByName(name: string) {
   const timeline = await screen.findByLabelText('Freight 时间轴');
   return within(timeline).getAllByTestId('freight-card').find((card) => within(card).queryByText(name)) as HTMLElement;
+}
+
+async function controllerCardByName(drawer: HTMLElement, name: string) {
+  const matches = await within(drawer).findAllByText(name);
+  const nameEl = matches.find((el) => el.closest('.runtime-controller-card'));
+  return nameEl?.closest('.runtime-controller-card') as HTMLElement;
+}
+
+function podRowByName(scope: HTMLElement, name: string) {
+  return within(scope).getByText(name).closest('.runtime-pod-row') as HTMLElement;
 }
 
 function dragFreightToStage(freightCard: HTMLElement, stageCard: HTMLElement) {

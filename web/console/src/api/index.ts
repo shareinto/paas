@@ -540,7 +540,7 @@ export async function listAppStages(applicationId: string) {
 export async function listRuntimeResources(applicationId: string, stageKey: string) {
   if (!hasAPIBaseURL()) return mock.listRuntimeResources(applicationId, stageKey);
   const data = await request<{ items: any[] }>(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/runtime/resources?actor_id=usr_admin`);
-  return data.items.map(mapRuntimeResource).filter(isVisibleRuntimeResource);
+  return mapRuntimeResourceSnapshot(data.items || []);
 }
 
 export function streamRuntimeResources(applicationId: string, stageKey: string, onSnapshot: (items: mock.RuntimeResource[]) => void, onStatus?: (status: string) => void) {
@@ -549,7 +549,7 @@ export function streamRuntimeResources(applicationId: string, stageKey: string, 
     if (event.event === 'snapshot') {
       try {
         const data = JSON.parse(event.data);
-        onSnapshot((data.items || []).map(mapRuntimeResource).filter(isVisibleRuntimeResource));
+        onSnapshot(mapRuntimeResourceSnapshot(data.items || []));
       } catch {
         onStatus?.('error');
       }
@@ -1305,6 +1305,56 @@ function mapRuntimeResource(item: any): mock.RuntimeResource {
 
 function isVisibleRuntimeResource(resource: mock.RuntimeResource) {
   return ['Pod', 'Deployment', 'StatefulSet', 'DaemonSet'].includes(resource.kind);
+}
+
+function isRuntimeOwnerResource(resource: mock.RuntimeResource) {
+  return ['Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet'].includes(resource.kind);
+}
+
+function runtimeOwnerKey(kind: string, namespace: string | undefined, name: string) {
+  return `${kind}\u0000${namespace || ''}\u0000${name}`;
+}
+
+function mapRuntimeResourceSnapshot(items: any[]) {
+  const resources = items.map(mapRuntimeResource);
+  const owners = new Map<string, mock.RuntimeResource>();
+  resources.forEach((resource) => {
+    if (!isRuntimeOwnerResource(resource)) return;
+    const key = runtimeOwnerKey(resource.kind, resource.namespace, resource.name);
+    if (!owners.has(key)) owners.set(key, resource);
+  });
+  return resources.map((resource) => normalizeRuntimeResourceParent(resource, owners)).filter(isVisibleRuntimeResource);
+}
+
+function normalizeRuntimeResourceParent(resource: mock.RuntimeResource, owners: Map<string, mock.RuntimeResource>) {
+  if (resource.kind !== 'Pod') return resource;
+  const visibleParent = resolveVisibleRuntimeParent(resource, owners);
+  if (!visibleParent) return resource;
+  return {
+    ...resource,
+    parentKind: visibleParent.kind,
+    parentNamespace: visibleParent.namespace,
+    parentName: visibleParent.name
+  };
+}
+
+function resolveVisibleRuntimeParent(resource: mock.RuntimeResource, owners: Map<string, mock.RuntimeResource>) {
+  const seen = new Set<string>();
+  let parentKind = resource.parentKind || '';
+  let parentNamespace = resource.parentNamespace || resource.namespace;
+  let parentName = resource.parentName || '';
+  while (parentKind && parentName) {
+    const key = runtimeOwnerKey(parentKind, parentNamespace, parentName);
+    if (seen.has(key)) return undefined;
+    seen.add(key);
+    const parent = owners.get(key);
+    if (!parent) return undefined;
+    if (isVisibleRuntimeResource(parent)) return parent;
+    parentKind = parent.parentKind || '';
+    parentNamespace = parent.parentNamespace || parent.namespace;
+    parentName = parent.parentName || '';
+  }
+  return undefined;
 }
 
 function mapAppStage(item: any): mock.AppStage {

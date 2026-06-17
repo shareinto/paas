@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
-import { CheckCircleOutlined, DeleteOutlined, EditOutlined, InboxOutlined, PlusOutlined } from '@ant-design/icons';
+import { CheckCircleFilled, CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined, DeleteOutlined, DownOutlined, EditOutlined, InboxOutlined, PlusOutlined, QuestionCircleOutlined, ReloadOutlined, RightOutlined, SettingOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Badge, Button, Card, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Popconfirm, Select, Space, Spin, Statistic, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useParams } from 'react-router-dom';
 import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, deleteFreight, getApplication, getFreight, getFreightCreationContext, listAppStages, listEligibleFreights, listFreights, listWorkloadStageConfigs, listWorkloads, openRuntimePodTerminal, restartRuntimeResource, saveWorkloadStageConfig, streamRuntimePodLogs, streamRuntimeResources, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type RuntimeResource, type Workload, type WorkloadStageConfig } from '../api';
 import { ConfigValueLists, WorkloadRuntimeFields, workloadConfigFormValues, workloadConfigPayload } from './workloadConfigForm';
+import { buildRuntimeTopology, computeRuntimeSummary, formatControllerReplicas, formatPodReady, normalizePodPhase, sumRestartCount, truncateMessage, uncategorizedStatusText, type ControllerGroup, type PodPhase, type RuntimeSummary, type RuntimeTopology } from './runtimeTopology';
 
 const DEFAULT_APPLICATION_ID = 'app_1';
 const COLUMN_WIDTH = 340;
@@ -82,6 +83,8 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const [runtimeResources, setRuntimeResources] = useState<RuntimeResource[]>([]);
   const [runtimeLoading, setRuntimeLoading] = useState(false);
   const [runtimeStreamStatus, setRuntimeStreamStatus] = useState('');
+  const [runtimeError, setRuntimeError] = useState('');
+  const [expandedControllers, setExpandedControllers] = useState<Record<string, boolean>>({});
   const [logPanel, setLogPanel] = useState<RuntimePanel | null>(null);
   const [runtimeLogs, setRuntimeLogs] = useState('');
   const [logStreamStatus, setLogStreamStatus] = useState('');
@@ -290,18 +293,26 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     })));
   };
 
-  function handleOpenStageConfig(stage: StageView) {
+  function handleOpenStageConfig(stage: StageView, preferredWorkloadName?: string) {
     queryClient.invalidateQueries({ queryKey: ['workloads', applicationId, 'stage-config'] });
     setConfigStage(stage);
-    setSelectedConfigWorkloadId(configWorkloads[0]?.id || '');
+    const matched = preferredWorkloadName
+      ? configWorkloads.find((workload) => workload.name === preferredWorkloadName || workload.displayName === preferredWorkloadName)
+      : undefined;
+    setSelectedConfigWorkloadId(matched?.id || configWorkloads[0]?.id || '');
     configForm.setFieldsValue(workloadConfigFormValues());
   }
+
+  const runtimeTopology: RuntimeTopology = useMemo(() => buildRuntimeTopology(runtimeResources), [runtimeResources]);
+  const runtimeSummary: RuntimeSummary = useMemo(() => computeRuntimeSummary(runtimeResources), [runtimeResources]);
 
   function handleCloseRuntimeDrawer() {
     setRuntimeStage(null);
     setRuntimeResources([]);
     setRuntimeLoading(false);
     setRuntimeStreamStatus('');
+    setRuntimeError('');
+    setExpandedControllers({});
     setLogPanel(null);
     setTerminalPanel(null);
   }
@@ -323,18 +334,28 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     if (!runtimeStage) {
       setRuntimeResources([]);
       setRuntimeStreamStatus('');
+      setRuntimeError('');
       return;
     }
     let closed = false;
     setRuntimeResources([]);
     setRuntimeLoading(true);
     setRuntimeStreamStatus('连接中');
+    setRuntimeError('');
     const close = streamRuntimeResources(applicationId, runtimeStage.stageKey, (items) => {
       if (closed) return;
       setRuntimeResources(items);
       setRuntimeLoading(false);
+      setRuntimeError('');
     }, (status) => {
-      if (!closed) setRuntimeStreamStatus(runtimeStreamStatusText(status));
+      if (closed) return;
+      setRuntimeStreamStatus(runtimeStreamStatusText(status));
+      if (status === 'error' || status === 'closed' || status === 'agent_offline') {
+        setRuntimeLoading(false);
+        setRuntimeError('运行资源数据加载失败，请稍后重试');
+      } else {
+        setRuntimeError('');
+      }
     });
     return () => {
       closed = true;
@@ -537,7 +558,174 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     </>
   );
 
-  const runtimeEmptyText = <Empty description={runtimeLoading ? '暂无运行资源，等待快照更新' : '暂无运行资源'} />;
+  const podStatusIcon = (phase: PodPhase) => {
+    switch (phase) {
+      case 'Running':
+        return <CheckCircleOutlined className="runtime-pod-status-icon runtime-pod-status-running" style={{ color: '#52c41a' }} aria-label="运行中" />;
+      case 'Pending':
+        return <ClockCircleOutlined className="runtime-pod-status-icon runtime-pod-status-pending" style={{ color: '#1677ff' }} aria-label="启动中" />;
+      case 'Succeeded':
+        return <CheckCircleFilled className="runtime-pod-status-icon runtime-pod-status-succeeded" style={{ color: '#52c41a' }} aria-label="已完成" />;
+      case 'Failed':
+        return <CloseCircleOutlined className="runtime-pod-status-icon runtime-pod-status-failed" style={{ color: '#ff4d4f' }} aria-label="失败" />;
+      default:
+        return <QuestionCircleOutlined className="runtime-pod-status-icon runtime-pod-status-unknown" style={{ color: '#8c8c8c' }} aria-label="未知" />;
+    }
+  };
+
+  const renderPodRow = (pod: RuntimeResource) => {
+    const phase = normalizePodPhase(pod.status);
+    const isRunning = phase === 'Running';
+    const ready = formatPodReady(pod);
+    const restarts = sumRestartCount(pod);
+    const { text: messageText, truncated } = truncateMessage(pod.message);
+    const disabledTip = 'Pod 当前未处于运行中状态，暂不可执行该操作';
+    const logButton = (
+      <Button size="small" aria-label="日志" disabled={!isRunning} onClick={() => openRuntimeLogPanel(pod)}>日志</Button>
+    );
+    const terminalButton = (
+      <Button size="small" aria-label="终端" disabled={!isRunning} onClick={() => openRuntimeTerminalPanel(pod)}>终端</Button>
+    );
+    return (
+      <div className="runtime-pod-row" key={pod.id}>
+        <div className="runtime-pod-row-main">
+          {podStatusIcon(phase)}
+          <Typography.Text strong className="runtime-pod-name">{pod.name && pod.name.trim() ? pod.name : '-'}</Typography.Text>
+          <Typography.Text type="secondary">就绪 {ready ?? '-'}</Typography.Text>
+          <Typography.Text type="secondary">重启 {restarts}</Typography.Text>
+        </div>
+        {messageText && (
+          <Typography.Text type="secondary" className="runtime-pod-message">
+            {truncated ? <Tooltip title={pod.message}>{messageText}…（已截断）</Tooltip> : messageText}
+          </Typography.Text>
+        )}
+        <Space size={6} className="runtime-pod-actions">
+          {isRunning ? logButton : <Tooltip title={disabledTip}><span>{logButton}</span></Tooltip>}
+          {isRunning ? terminalButton : <Tooltip title={disabledTip}><span>{terminalButton}</span></Tooltip>}
+        </Space>
+      </div>
+    );
+  };
+
+  const renderControllerCard = (group: ControllerGroup) => {
+    const controller = group.controller;
+    const expanded = !!expandedControllers[controller.id];
+    const images = (controller.containers || [])
+      .map((container) => container.image)
+      .filter((image): image is string => !!image && image.trim() !== '');
+    const healthValue = controller.healthStatus || controller.status || '';
+    const healthColor = runtimeTagColor(healthValue);
+    const badgeColor = !healthColor || healthColor === 'default' ? '#bfbfbf' : healthColor;
+    const messageTrim = (controller.message || '').trim();
+    const kindText = controller.kind && controller.kind.trim() ? controller.kind : '—';
+    const nameText = controller.name && controller.name.trim() ? controller.name : '—';
+    const toggle = () => setExpandedControllers((current) => ({ ...current, [controller.id]: !current[controller.id] }));
+    return (
+      <Card key={controller.id} size="small" className="runtime-controller-card">
+        <div className="runtime-controller-head">
+          <Space size={8} align="center" wrap>
+            <Button
+              type="text"
+              size="small"
+              aria-label={expanded ? '折叠' : '展开'}
+              aria-expanded={expanded}
+              icon={expanded ? <DownOutlined /> : <RightOutlined />}
+              onClick={toggle}
+            />
+            <Tag color={runtimeKindColor(controller.kind)}>{kindText}</Tag>
+            <Typography.Text strong>{nameText}</Typography.Text>
+            <Badge color={badgeColor} text={healthValue || '未知'} />
+            <Typography.Text type="secondary">副本 {formatControllerReplicas(controller)}</Typography.Text>
+          </Space>
+          <Space size={6}>
+            <Button
+              size="small"
+              aria-label="重启"
+              icon={<ReloadOutlined />}
+              loading={restartRuntimeMutation.isPending}
+              disabled={restartRuntimeMutation.isPending}
+              onClick={() => restartRuntimeMutation.mutate(controller)}
+            >重启</Button>
+            <Button
+              size="small"
+              aria-label="设置"
+              icon={<SettingOutlined />}
+              onClick={() => runtimeStage && handleOpenStageConfig(runtimeStage, controller.name)}
+            >设置</Button>
+          </Space>
+        </div>
+        <div className="runtime-controller-meta">
+          <div className="runtime-controller-images">
+            {images.length
+              ? images.map((image, index) => <Typography.Text key={`${controller.id}-image-${index}`} type="secondary" className="runtime-controller-image">{image}</Typography.Text>)
+              : <Typography.Text type="secondary">—</Typography.Text>}
+          </div>
+          {messageTrim && <Typography.Text type="secondary" className="runtime-controller-message">{messageTrim}</Typography.Text>}
+        </div>
+        {expanded && (
+          <div className="runtime-controller-pods">
+            {group.pods.length
+              ? group.pods.map(renderPodRow)
+              : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无关联 Pod" />}
+          </div>
+        )}
+      </Card>
+    );
+  };
+
+  const renderTopologyContent = () => (
+    <div className="runtime-topology">
+      {runtimeTopology.controllers.map(renderControllerCard)}
+      {runtimeTopology.uncategorized.length > 0 && (
+        <div className="runtime-uncategorized-group">
+          <Typography.Text strong className="runtime-uncategorized-title">未归类资源</Typography.Text>
+          {runtimeTopology.uncategorized.map((resource) => (
+            <div className="runtime-uncategorized-row" key={resource.id}>
+              <Tag color={runtimeKindColor(resource.kind)}>{resource.kind && resource.kind.trim() ? resource.kind : '—'}</Tag>
+              <Typography.Text className="runtime-uncategorized-name">{resource.name && resource.name.trim() ? resource.name : '-'}</Typography.Text>
+              <Tag color={runtimeTagColor(resource.status)}>{uncategorizedStatusText(resource)}</Tag>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderSummaryStatValue = (value: number) => {
+    if (runtimeLoading && runtimeResources.length === 0) return <Spin size="small" />;
+    if (runtimeError && runtimeResources.length === 0) return <Typography.Text type="secondary">数据不可用</Typography.Text>;
+    return <Statistic value={value} />;
+  };
+
+  const runtimeSummaryStats = (
+    <div className="runtime-summary-cards">
+      <Card size="small" className="runtime-summary-card">
+        <div className="runtime-summary-card-title">控制器</div>
+        {renderSummaryStatValue(runtimeSummary.controllerTotal)}
+      </Card>
+      <Card size="small" className="runtime-summary-card">
+        <div className="runtime-summary-card-title">运行中 Pod</div>
+        {renderSummaryStatValue(runtimeSummary.runningPodCount)}
+      </Card>
+    </div>
+  );
+
+  const runtimeHasTopology = runtimeTopology.controllers.length > 0 || runtimeTopology.uncategorized.length > 0;
+  let runtimeTopologyBody: ReactNode;
+  if (runtimeLoading && !runtimeError) {
+    runtimeTopologyBody = <div className="runtime-topology-loading"><Spin /></div>;
+  } else if (runtimeError) {
+    runtimeTopologyBody = (
+      <Space direction="vertical" size={12} className="full-width">
+        <Alert type="error" showIcon message={runtimeError} />
+        {runtimeHasTopology && renderTopologyContent()}
+      </Space>
+    );
+  } else if (!runtimeHasTopology) {
+    runtimeTopologyBody = <Empty description="暂无运行资源" />;
+  } else {
+    runtimeTopologyBody = renderTopologyContent();
+  }
 
   return (
     <div data-testid={showHeader ? undefined : 'promotion-confirm-panel'}>
@@ -613,14 +801,8 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
             <Typography.Text strong>K8s 资源</Typography.Text>
             {runtimeStreamStatus && <Tag color={runtimeStreamStatusColor(runtimeStreamStatus)}>{runtimeStreamStatus}</Tag>}
           </Space>
-          <Table
-            rowKey="id"
-            size="small"
-            dataSource={runtimeResources}
-            pagination={false}
-            locale={{ emptyText: runtimeEmptyText }}
-            columns={runtimeResourceColumns(restartRuntimeMutation.mutate, openRuntimeLogPanel, openRuntimeTerminalPanel, restartRuntimeMutation.isPending)}
-          />
+          {runtimeSummaryStats}
+          {runtimeTopologyBody}
         </Space>
       </Drawer>
 
@@ -783,35 +965,6 @@ function DeployStageNode({ data }: NodeProps<Node<StageNodeData>>) {
       <Handle type="source" position={Position.Right} />
     </div>
   );
-}
-
-function runtimeResourceColumns(
-  restart: (resource: RuntimeResource) => void,
-  openLogs: (resource: RuntimeResource) => void,
-  openTerminal: (resource: RuntimeResource) => void,
-  loading: boolean
-) {
-  return [
-    { title: '类型', dataIndex: 'kind', width: 120, render: (kind: string) => <Tag color={runtimeKindColor(kind)}>{kind}</Tag> },
-    { title: '名称', dataIndex: 'name', render: (_: string, resource: RuntimeResource) => (
-      <Space direction="vertical" size={0}>
-        <Typography.Text strong>{resource.name}</Typography.Text>
-        <Typography.Text type="secondary">{resource.namespace || '-'}</Typography.Text>
-      </Space>
-    ) },
-    { title: '状态', key: 'status', width: 140, render: (_: unknown, resource: RuntimeResource) => <Tag color={runtimeTagColor(resource.healthStatus || resource.status)}>{resource.healthStatus || resource.status || '未知'}</Tag> },
-    { title: '副本', key: 'replicas', width: 92, render: (_: unknown, resource: RuntimeResource) => typeof resource.ready === 'number' || typeof resource.desired === 'number' ? `${resource.ready || 0}/${resource.desired || 0}` : '-' },
-    { title: '容器', key: 'containers', render: (_: unknown, resource: RuntimeResource) => resource.containers?.length ? (
-      <Space direction="vertical" size={0}>{resource.containers.map((container) => <Typography.Text key={container.name} type={container.ready ? undefined : 'danger'}>{container.name} · {container.state || (container.ready ? 'ready' : 'not ready')}{container.message ? ` · ${container.message}` : ''}</Typography.Text>)}</Space>
-    ) : <Typography.Text type="secondary">{resource.message || resource.parentName || '-'}</Typography.Text> },
-    { title: '操作', key: 'actions', width: 180, render: (_: unknown, resource: RuntimeResource) => (
-      <Space size={6}>
-        {isRestartableRuntimeKind(resource.kind) && <Button size="small" aria-label="重启" loading={loading} onClick={() => restart(resource)}>重启</Button>}
-        {resource.kind === 'Pod' && <Button size="small" aria-label="日志" onClick={() => openLogs(resource)}>日志</Button>}
-        {resource.kind === 'Pod' && <Button size="small" aria-label="终端" onClick={() => openTerminal(resource)}>终端</Button>}
-      </Space>
-    ) }
-  ];
 }
 
 function freightDraftColumns(workloads: Workload[], draftItems: Record<string, FreightDraftItem>, releases: Record<string, any>, updateDraftItem: (workloadId: string, patch: Partial<FreightDraftItem>) => void) {

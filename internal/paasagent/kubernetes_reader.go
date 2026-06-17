@@ -164,9 +164,10 @@ func (r *KubernetesClientReader) ListRuntimeResources(ctx context.Context, names
 		r.storeRuntimeSnapshot(snapshot)
 	}
 	out := make([]RuntimeResource, 0, len(snapshot.RuntimeResources))
+	owners := runtimeOwnerResourceIndex(snapshot.RuntimeResources)
 	for _, resource := range snapshot.RuntimeResources {
 		if resource.ApplicationID == applicationID && resource.StageKey == strings.TrimSpace(stageKey) && userVisibleRuntimeKind(resource.Kind) {
-			out = append(out, resource)
+			out = append(out, normalizeVisibleRuntimeResourceParent(resource, owners))
 		}
 	}
 	return out, nil
@@ -508,6 +509,74 @@ func userVisibleRuntimeKind(kind string) bool {
 	default:
 		return false
 	}
+}
+
+func runtimeOwnerResourceIndex(resources []RuntimeResource) map[string]RuntimeResource {
+	out := map[string]RuntimeResource{}
+	for _, resource := range resources {
+		if !runtimeOwnerKind(resource.Kind) {
+			continue
+		}
+		key := runtimeResourceLookupKey(resource.Kind, resource.Namespace, resource.Name)
+		if _, exists := out[key]; !exists {
+			out[key] = resource
+		}
+	}
+	return out
+}
+
+func runtimeOwnerKind(kind string) bool {
+	switch kind {
+	case "Deployment", "StatefulSet", "DaemonSet", "ReplicaSet":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeVisibleRuntimeResourceParent(resource RuntimeResource, owners map[string]RuntimeResource) RuntimeResource {
+	if resource.Kind != "Pod" {
+		return resource
+	}
+	parent, ok := resolveVisibleRuntimeParent(resource, owners)
+	if !ok {
+		return resource
+	}
+	resource.ParentKind = parent.Kind
+	resource.ParentNamespace = parent.Namespace
+	resource.ParentName = parent.Name
+	return resource
+}
+
+func resolveVisibleRuntimeParent(resource RuntimeResource, owners map[string]RuntimeResource) (RuntimeResource, bool) {
+	seen := map[string]struct{}{}
+	parentKind := resource.ParentKind
+	parentNamespace := resource.ParentNamespace
+	if parentNamespace == "" {
+		parentNamespace = resource.Namespace
+	}
+	parentName := resource.ParentName
+	for parentKind != "" && parentName != "" {
+		key := runtimeResourceLookupKey(parentKind, parentNamespace, parentName)
+		if _, ok := seen[key]; ok {
+			return RuntimeResource{}, false
+		}
+		seen[key] = struct{}{}
+		parent, ok := owners[key]
+		if !ok {
+			return RuntimeResource{}, false
+		}
+		if userVisibleRuntimeKind(parent.Kind) {
+			return parent, true
+		}
+		parentKind = parent.ParentKind
+		parentNamespace = parent.ParentNamespace
+		if parentNamespace == "" {
+			parentNamespace = parent.Namespace
+		}
+		parentName = parent.ParentName
+	}
+	return RuntimeResource{}, false
 }
 
 func replicaSetStatus(item appsv1.ReplicaSet) Workload {

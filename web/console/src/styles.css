@@ -251,6 +251,29 @@ button, input, textarea, select { font-family: inherit; }
 .runtime-stream-panel { min-height: calc(100vh - 130px); }
 .runtime-log-output, .runtime-terminal-output { min-height: 360px; border-radius: var(--radius); }
 .runtime-terminal-output { min-height: 300px; }
+.runtime-topology { display: flex; flex-direction: column; gap: 12px; }
+.runtime-topology-loading { display: flex; align-items: center; justify-content: center; min-height: 160px; }
+.runtime-summary-cards { display: flex; gap: 12px; }
+.runtime-summary-card { flex: 1; min-width: 0; border-radius: var(--radius); }
+.runtime-summary-card .runtime-summary-card-title { font-size: 13px; color: #64748b; margin-bottom: 4px; }
+.runtime-summary-card .ant-statistic-content { font-size: 24px; font-weight: 700; color: #0f172a; }
+.runtime-controller-card { border-radius: var(--radius); border: 1px solid #e2e8f0; box-shadow: 0 4px 12px rgba(15, 23, 42, .04); }
+.runtime-controller-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.runtime-controller-meta { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.runtime-controller-images { display: flex; flex-direction: column; gap: 2px; }
+.runtime-controller-image { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; word-break: break-all; }
+.runtime-controller-message { font-size: 12px; color: #b45309; }
+.runtime-controller-pods { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; padding-left: 12px; border-left: 2px solid #e2e8f0; }
+.runtime-pod-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 6px 10px; border-radius: 6px; background: #f8fafc; }
+.runtime-pod-row-main { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.runtime-pod-name { word-break: break-all; }
+.runtime-pod-status-icon { font-size: 15px; }
+.runtime-pod-message { font-size: 12px; flex-basis: 100%; word-break: break-all; }
+.runtime-pod-actions { flex: 0 0 auto; }
+.runtime-uncategorized-group { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px dashed #cbd5f5; }
+.runtime-uncategorized-title { color: #475569; }
+.runtime-uncategorized-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 10px; border-radius: 6px; background: #f8fafc; }
+.runtime-uncategorized-name { word-break: break-all; }
 .log-color-red { color: #ff8a8a; }
 .log-color-yellow { color: #ffd166; }
 .log-color-green { color: #74e39a; }
