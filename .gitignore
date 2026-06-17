@@ -10,3 +10,4 @@ web/console/dist/
 web/console/coverage/
 .worktrees/
 .worktree/
+.kiro/
