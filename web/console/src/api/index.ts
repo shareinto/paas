@@ -1,7 +1,7 @@
 import * as mock from './mock';
 import { APIError, hasAPIBaseURL, openWebSocket, request, requestText, streamSSE, type PageResult, type WebSocketConnection } from './client';
 
-export type { Tenant, Project, User, Role, Member, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadStageConfig, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, AppStage, RuntimeResource, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
+export type { Tenant, Project, User, Role, Member, StringMap, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadStageConfig, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, Cluster, AppStage, RuntimeResource, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
@@ -498,6 +498,21 @@ export async function listClusterOptions(tenantId?: string) {
   const tenantQuery = tenantId ? `tenant_id=${encodeURIComponent(tenantId)}&` : '';
   const data = await request<PageResult<any>>(`/api/clusters?${tenantQuery}page=1&page_size=100&actor_id=usr_admin`);
   return data.items.map(mapClusterOption);
+}
+
+export async function listClusters(tenantId: string) {
+  if (!hasAPIBaseURL()) return mock.listClusters(tenantId);
+  const data = await request<PageResult<any>>(`/api/clusters?tenant_id=${encodeURIComponent(tenantId)}&page=1&page_size=100&actor_id=usr_admin`);
+  return data.items.map(mapCluster);
+}
+
+export async function updateCluster(id: string, input: { name: string; region: string; labels?: mock.StringMap }) {
+  if (!hasAPIBaseURL()) return mock.updateCluster(id, input);
+  const item = await request<any>(`/api/clusters/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ actor: { type: 'user', id: 'usr_admin' }, name: input.name, region: input.region, labels: input.labels || {} })
+  });
+  return mapCluster(item);
 }
 
 export async function replaceStageClusterBindings(tenantId: string, stageKey: string, clusterIds: string[]) {
@@ -1551,6 +1566,16 @@ function mapClusterOption(item: any): mock.ClusterOption {
     region: item.region || '',
     status: item.status || 'ready',
     labels: cleanStringRecord(item.labels || item.labels_json || item.Labels)
+  };
+}
+
+function mapCluster(item: any): mock.Cluster {
+  const option = mapClusterOption(item);
+  return {
+    ...option,
+    tenantId: item.tenant_id || item.tenantId || '',
+    lastHeartbeatAt: formatTime(item.last_heartbeat_at || item.lastHeartbeatAt),
+    updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
   };
 }
 
