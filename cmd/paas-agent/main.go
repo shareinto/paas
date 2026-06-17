@@ -74,14 +74,29 @@ func runAgent(ctx context.Context, agent runtimeAgent, heartbeatInterval time.Du
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
-	if err := agent.SendHeartbeat(ctx); err != nil {
-		return fmt.Errorf("发送心跳失败: %w", err)
+	// 启动阶段允许重试，避免控制面短暂不可达时直接退出
+	const startupRetries = 5
+	const startupRetryDelay = 3 * time.Second
+	for i := 0; i < startupRetries; i++ {
+		if err := agent.SendHeartbeat(ctx); err != nil {
+			logger.Printf("paas-agent 启动心跳失败 (%d/%d): %v", i+1, startupRetries, err)
+			if i == startupRetries-1 {
+				return fmt.Errorf("发送心跳失败: %w", err)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(startupRetryDelay):
+			}
+			continue
+		}
+		break
 	}
 	if _, err := agent.ReportSnapshot(ctx); err != nil {
-		return fmt.Errorf("上报状态快照失败: %w", err)
+		logger.Printf("paas-agent 启动快照上报失败，跳过: %v", err)
 	}
 	if err := agent.RunTaskOnce(ctx); err != nil {
-		return fmt.Errorf("执行受控任务失败: %w", err)
+		logger.Printf("paas-agent 启动受控任务失败，跳过: %v", err)
 	}
 	childCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

@@ -1,6 +1,6 @@
 import { ConfigProvider } from 'antd';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, test, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -92,6 +92,97 @@ test('真实 API 列表无 items 时点击 Freight 会加载详情并展示 Work
 	  expect(within(confirm).getByText('registry.local/order-api:20260612.1')).toBeInTheDocument();
 	  expect(fetchMock).toHaveBeenCalledWith('https://paas.example/api/freights/freight_1', expect.any(Object));
 	});
+
+test('运行资源抽屉打开后才订阅 stream，关闭抽屉时断开并按快照更新', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  const encoder = new TextEncoder();
+  let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let streamSignal: AbortSignal | undefined;
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/apps/app_1/freights?page=1&page_size=50')) {
+      return new Response(JSON.stringify({ items: [], total: 0, page: 1, page_size: 50 }), { status: 200 });
+    }
+    if (url.endsWith('/api/applications/app_1')) {
+      return new Response(JSON.stringify({ id: 'app_1', name: 'order-service', display_name: '订单服务', project_id: 'project_1', project: '订单平台' }), { status: 200 });
+    }
+    if (url.endsWith('/api/applications/app_1/workloads')) {
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_1/stages')) {
+      return new Response(JSON.stringify({ items: [{
+        tenant_id: 'tenant_1',
+        project_id: 'project_1',
+        application_id: 'app_1',
+        delivery_stage_id: 'stage_dev',
+        stage_key: 'dev',
+        display_name: '开发',
+        color: '#ED204E',
+        order: 1,
+        layout_column: 0,
+        layout_row: 0,
+        status: 'enabled',
+        cluster_pool_size: 1,
+        bound_cluster_id: 'cluster_shanghai',
+        bound_cluster_name: '上海集群',
+        sync_status: 'Synced',
+        health_status: 'Healthy',
+        upstream_stage_keys: [],
+        downstream_stage_keys: []
+      }] }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_1/freights/creation-context')) {
+      return new Response(JSON.stringify({
+        enabled_workloads: [],
+        latest_releases_by_workload: {},
+        latest_artifacts_by_workload: {},
+        stage_eligibility: { stage_dev: [] }
+      }), { status: 200 });
+    }
+    if (url.endsWith('/api/apps/app_1/stages/dev/runtime/resources/stream?actor_id=usr_admin')) {
+      streamSignal = init?.signal as AbortSignal | undefined;
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+          streamSignal?.addEventListener('abort', () => controller.close(), { once: true });
+        }
+      }), { status: 200 });
+    }
+    return new Response('', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  const { PromotionPage } = await import('./PromotionPage');
+  render(
+    <ConfigProvider>
+      <QueryClientProvider client={new QueryClient()}>
+        <MemoryRouter initialEntries={['/promotions']}>
+          <PromotionPage />
+        </MemoryRouter>
+      </QueryClientProvider>
+    </ConfigProvider>
+  );
+
+  const devCard = await screen.findByLabelText('dev Stage');
+  expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/runtime/resources/stream'))).toBe(false);
+
+  await userEvent.click(devCard);
+  const drawer = await screen.findByRole('dialog', { name: 'dev 运行资源' });
+  expect(within(drawer).getByText('暂无运行资源，等待快照更新')).toBeInTheDocument();
+  await waitFor(() => expect(streamController).not.toBeNull());
+  expect(streamSignal?.aborted).toBe(false);
+
+  await act(async () => {
+    streamController?.enqueue(encoder.encode('event: snapshot\ndata: {"items":[{"id":"pod_live","application_id":"app_1","stage_key":"dev","kind":"Pod","namespace":"order-dev","name":"order-api-live","status":"Running","health_status":"Healthy","containers":[{"name":"app","ready":true,"state":"running"}]}]}\n\n'));
+  });
+
+  expect(await within(drawer).findByText('order-api-live')).toBeInTheDocument();
+  expect(within(drawer).queryByText('暂无运行资源，等待快照更新')).not.toBeInTheDocument();
+
+  const closeButton = drawer.querySelector('.ant-drawer-close') as HTMLElement;
+  await userEvent.click(closeButton);
+
+  await waitFor(() => expect(streamSignal?.aborted).toBe(true));
+});
 
 test('真实 API 使用当前路由应用 ID 和后端返回的真实 Stage ID', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');

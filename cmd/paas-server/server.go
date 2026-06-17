@@ -1138,6 +1138,9 @@ func (u stageUpdater) UpdateFromAgent(ctx context.Context, report clusteragent.S
 			reportedAt = time.Now()
 		}
 		if _, err := u.service.UpdateApplicationStageState(ctx, appenv.UpdateApplicationStageStateInput{ApplicationID: appStatus.ApplicationID, StageKey: appStatus.StageKey, Status: status, Message: appStatus.Message, ReportedAt: &reportedAt}); err != nil {
+			if shared.CodeOf(err) == shared.CodeNotFound {
+				continue
+			}
 			return err
 		}
 	}

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -123,7 +125,8 @@ func (c *HTTPControlPlaneClient) do(req *http.Request, target any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return shared.NewError(shared.CodeUnavailable, "control plane request failed")
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return shared.NewError(shared.CodeUnavailable, fmt.Sprintf("control plane request failed: %s %s status=%d body=%s", req.Method, req.URL.Path, resp.StatusCode, string(body)))
 	}
 	if target == nil {
 		return nil

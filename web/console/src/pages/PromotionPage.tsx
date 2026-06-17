@@ -297,6 +297,15 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     configForm.setFieldsValue(workloadConfigFormValues());
   }
 
+  function handleCloseRuntimeDrawer() {
+    setRuntimeStage(null);
+    setRuntimeResources([]);
+    setRuntimeLoading(false);
+    setRuntimeStreamStatus('');
+    setLogPanel(null);
+    setTerminalPanel(null);
+  }
+
   useEffect(() => {
     if (!configStage) return;
     if (!configWorkloads.some((workload) => workload.id === selectedConfigWorkloadId)) {
@@ -317,6 +326,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
       return;
     }
     let closed = false;
+    setRuntimeResources([]);
     setRuntimeLoading(true);
     setRuntimeStreamStatus('连接中');
     const close = streamRuntimeResources(applicationId, runtimeStage.stageKey, (items) => {
@@ -527,6 +537,8 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     </>
   );
 
+  const runtimeEmptyText = <Empty description={runtimeLoading ? '暂无运行资源，等待快照更新' : '暂无运行资源'} />;
+
   return (
     <div data-testid={showHeader ? undefined : 'promotion-confirm-panel'}>
       {workspaceContent}
@@ -589,7 +601,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
         )}
       </Modal>
 
-      <Drawer title={`${runtimeStage?.stageKey || ''} 运行资源`} open={!!runtimeStage} width={980} onClose={() => setRuntimeStage(null)}>
+      <Drawer title={`${runtimeStage?.stageKey || ''} 运行资源`} open={!!runtimeStage} width={980} onClose={handleCloseRuntimeDrawer}>
         <Space direction="vertical" size={16} className="full-width">
           <Descriptions size="small" column={2} items={[
             { key: 'stage', label: 'Stage', children: runtimeStage?.displayName || runtimeStage?.stageKey || '-' },
@@ -604,9 +616,9 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
           <Table
             rowKey="id"
             size="small"
-            loading={runtimeLoading}
             dataSource={runtimeResources}
             pagination={false}
+            locale={{ emptyText: runtimeEmptyText }}
             columns={runtimeResourceColumns(restartRuntimeMutation.mutate, openRuntimeLogPanel, openRuntimeTerminalPanel, restartRuntimeMutation.isPending)}
           />
         </Space>

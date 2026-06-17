@@ -68,6 +68,9 @@ type Task struct {
 func ToStatusReport(clusterID shared.ID, snapshot Snapshot, reportedAt time.Time) clusteragent.StatusReport {
 	report := clusteragent.StatusReport{ClusterID: clusterID, ReportedAt: reportedAt}
 	for _, app := range snapshot.Applications {
+		if app.ApplicationID.IsZero() || strings.TrimSpace(app.StageKey) == "" {
+			continue
+		}
 		report.Applications = append(report.Applications, clusteragent.ApplicationStatus{
 			ApplicationID: app.ApplicationID, StageKey: app.StageKey, DeploymentID: app.DeploymentID,
 			ArgoApplicationName: app.Name, SyncStatus: app.SyncStatus, HealthStatus: app.HealthStatus, OperationState: mapOperation(app.OperationPhase), Message: app.Message,
