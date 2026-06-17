@@ -18,6 +18,7 @@ import { DeliveryFlowTemplatePage } from '../pages/DeliveryFlowTemplatePage';
 import { JenkinsTemplatesPage } from '../pages/JenkinsTemplatesPage';
 import { TenantsPage } from '../pages/TenantsPage';
 import { RolesPage } from '../pages/RolesPage';
+import { ClustersPage } from '../pages/ClustersPage';
 
 function Guard({ children }: { children: JSX.Element }) {
   const token = useSession((state) => state.token);
@@ -50,6 +51,7 @@ export function App() {
         <Route path="delivery-flow-template" element={<DeliveryFlowTemplatePage />} />
         <Route path="tenants" element={<TenantsPage />} />
         <Route path="roles" element={<RolesPage />} />
+        <Route path="clusters" element={<ClustersPage />} />
         <Route path="jenkins-templates" element={<JenkinsTemplatesPage />} />
       </Route>
     </Routes>

@@ -66,6 +66,13 @@ type RegisterClusterInput struct {
 	Labels   map[string]string      `json:"labels"`
 }
 
+type UpdateClusterInput struct {
+	Actor  identityaccess.Subject `json:"actor"`
+	Name   string                 `json:"name"`
+	Region string                 `json:"region"`
+	Labels map[string]string      `json:"labels"`
+}
+
 type RegisterClusterResult struct {
 	Cluster    Cluster `json:"cluster"`
 	AgentToken string  `json:"agent_token"`
@@ -155,6 +162,29 @@ func (s *Service) RotateAgentToken(ctx context.Context, actor identityaccess.Sub
 	cluster.AgentTokenHash = string(hash)
 	cluster.UpdatedAt = s.clock.Now()
 	return token, s.repo.UpdateCluster(ctx, cluster)
+}
+
+func (s *Service) UpdateCluster(ctx context.Context, id shared.ID, input UpdateClusterInput) (Cluster, error) {
+	cluster, err := s.repo.GetCluster(ctx, id)
+	if err != nil {
+		return Cluster{}, err
+	}
+	if err := s.check(ctx, input.Actor, cluster.TenantID, "cluster:manage"); err != nil {
+		return Cluster{}, err
+	}
+	cluster.Name = input.Name
+	cluster.Region = input.Region
+	cluster.Labels = input.Labels
+	cluster.UpdatedAt = s.clock.Now()
+	cluster, err = normalizeCluster(cluster)
+	if err != nil {
+		return Cluster{}, err
+	}
+	if err := s.repo.UpdateCluster(ctx, cluster); err != nil {
+		return Cluster{}, err
+	}
+	cluster.AgentTokenHash = ""
+	return cluster, nil
 }
 
 func (s *Service) Authenticate(ctx context.Context, clusterID shared.ID, token string) (Cluster, error) {

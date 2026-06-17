@@ -38,6 +38,7 @@ test('显示中文控制台导航', async () => {
   expect(within(sider).queryByText('部署')).not.toBeInTheDocument();
   expect(within(sider).queryByText('配置')).not.toBeInTheDocument();
   expect(within(sider).queryByText('版本')).not.toBeInTheDocument();
+  expect(within(sider).getByText('集群管理')).toBeInTheDocument();
   expect(within(sider).getByText('构建管理')).toBeInTheDocument();
   expect(within(sider).getByText('审计日志')).toBeInTheDocument();
   expect(within(sider).queryByText('源码仓库')).not.toBeInTheDocument();
@@ -46,6 +47,15 @@ test('显示中文控制台导航', async () => {
   expect(within(sider).queryByText('部署模板')).not.toBeInTheDocument();
   expect(screen.queryByPlaceholderText('搜索应用、资源、文档')).not.toBeInTheDocument();
   expect(document.querySelector('.console-header')).not.toBeInTheDocument();
+});
+
+test('集群管理路由展示集群管理页面', async () => {
+  renderApp('/clusters');
+
+  expect(await screen.findByRole('heading', { name: '集群管理' })).toBeInTheDocument();
+  const sider = document.querySelector('.ant-layout-sider') as HTMLElement;
+  expect(within(sider).getByText('集群管理')).toBeInTheDocument();
+  expect(await screen.findByText('上海集群')).toBeInTheDocument();
 });
 
 test('应用导航不再展示二级菜单且导航文字更醒目', async () => {

@@ -19,6 +19,7 @@ func NewHandler(service *Service) *Handler { return &Handler{service: service} }
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/clusters", h.handleRegisterCluster)
 	mux.HandleFunc("GET /api/clusters", h.handleListClusters)
+	mux.HandleFunc("PATCH /api/clusters/{clusterId}", h.handleUpdateCluster)
 	mux.HandleFunc("POST /api/clusters/{clusterId}/disable", h.handleDisableCluster)
 	mux.HandleFunc("POST /api/clusters/{clusterId}/drain", h.handleDrainCluster)
 	mux.HandleFunc("POST /api/clusters/{clusterId}/rotate-token", h.handleRotateAgentToken)
@@ -59,6 +60,19 @@ func (h *Handler) handleListClusters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleUpdateCluster(w http.ResponseWriter, r *http.Request) {
+	var req UpdateClusterInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	cluster, err := h.service.UpdateCluster(r.Context(), shared.ID(r.PathValue("clusterId")), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cluster)
 }
 
 func (h *Handler) handleDisableCluster(w http.ResponseWriter, r *http.Request) {

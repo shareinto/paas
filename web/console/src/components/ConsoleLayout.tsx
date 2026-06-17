@@ -1,4 +1,4 @@
-import { AppstoreOutlined, BuildOutlined, DeploymentUnitOutlined, FileSearchOutlined, FolderOpenOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, BuildOutlined, ClusterOutlined, DeploymentUnitOutlined, FileSearchOutlined, FolderOpenOutlined, LogoutOutlined, MenuOutlined, SafetyCertificateOutlined, SettingOutlined, TeamOutlined } from '@ant-design/icons';
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { Button, Layout, Menu, Tabs } from 'antd';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -29,6 +29,7 @@ const platformItems = [
 const adminItems = [
   { key: '/tenants', icon: <TeamOutlined />, label: '租户管理' },
   { key: '/roles', icon: <SafetyCertificateOutlined />, label: '角色权限' },
+  { key: '/clusters', icon: <ClusterOutlined />, label: '集群管理' },
   { key: '/delivery-flow-template', icon: <DeploymentUnitOutlined />, label: '交付流模板' },
   { key: '/jenkins-templates', icon: <BuildOutlined />, label: '构建管理' },
   { key: '/audit', icon: <FileSearchOutlined />, label: '审计日志' },
@@ -126,6 +127,7 @@ function selectedKey(pathname: string) {
   if (pathname.startsWith('/audit')) return '/audit';
   if (pathname.startsWith('/tenants')) return '/tenants';
   if (pathname.startsWith('/roles')) return '/roles';
+  if (pathname.startsWith('/clusters')) return '/clusters';
   if (pathname.startsWith('/delivery-flow-template')) return '/delivery-flow-template';
   if (pathname.startsWith('/jenkins-templates')) return '/jenkins-templates';
   if (pathname.startsWith('/settings')) return '/settings';

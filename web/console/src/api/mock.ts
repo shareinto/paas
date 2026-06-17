@@ -63,6 +63,7 @@ export type DeliveryFlowTemplateEdge = { id: string; tenantId: string; templateI
 export type DeliveryFlowTemplate = { id: string; tenantId: string; name: string; stages: DeliveryFlowTemplateStage[]; edges: DeliveryFlowTemplateEdge[]; createdAt?: string; updatedAt?: string };
 export type StageClusterBinding = { id: string; tenantId: string; stageKey: string; clusterId: string; clusterName: string; status: 'active' | 'disabled' };
 export type ClusterOption = { id: string; name: string; region: string; status: string; labels?: StringMap };
+export type Cluster = ClusterOption & { tenantId: string; lastHeartbeatAt?: string; updatedAt: string };
 export type AppStage = { tenantId: string; projectId: string; applicationId: string; deliveryStageId?: string; stageKey: string; displayName: string; color: string; order: number; layoutColumn: number; layoutRow: number; status: DeliveryFlowTemplateStageStatus; requiresApproval: boolean; requiresVerification: boolean; approveRoles: string[]; verifyRoles: string[]; clusterPoolSize: number; boundClusterId?: string; boundClusterName?: string; currentFreightId?: string; currentFreightVersion?: string; syncStatus?: string; healthStatus?: string; operationState?: string; runtimeMessage?: string; upstreamStageKeys?: string[]; downstreamStageKeys?: string[] };
 export type RuntimeContainerStatus = { name: string; image?: string; ready: boolean; restartCount: number; state?: string; message?: string };
 export type RuntimeResourceEvent = { type: string; reason?: string; message: string; count?: number; occurredAt?: string };
@@ -187,10 +188,10 @@ let deliveryFlowTemplate: DeliveryFlowTemplate = {
   createdAt: '2026-06-12 09:00',
   updatedAt: '2026-06-12 09:00'
 };
-const clusterOptions: ClusterOption[] = [
-  { id: 'cluster_shanghai', name: '上海集群', region: 'cn-shanghai', status: 'ready', labels: { cloud: 'aliyun' } },
-  { id: 'cluster_beijing', name: '北京集群', region: 'cn-beijing', status: 'ready', labels: { cloud: 'aws' } },
-  { id: 'cluster_hangzhou', name: '杭州集群', region: 'cn-hangzhou', status: 'ready', labels: { cloud: 'aliyun' } }
+let clusters: Cluster[] = [
+  { id: 'cluster_shanghai', tenantId: 'tenant_1', name: '上海集群', region: 'cn-shanghai', status: 'ready', labels: { cloud: 'aliyun' }, lastHeartbeatAt: '2026-06-15 10:00', updatedAt: '2026-06-15 10:01' },
+  { id: 'cluster_beijing', tenantId: 'tenant_1', name: '北京集群', region: 'cn-beijing', status: 'ready', labels: { cloud: 'aws' }, lastHeartbeatAt: '2026-06-15 09:58', updatedAt: '2026-06-15 09:59' },
+  { id: 'cluster_hangzhou', tenantId: 'tenant_1', name: '杭州集群', region: 'cn-hangzhou', status: 'degraded', labels: { cloud: 'aliyun', zone: 'hangzhou' }, lastHeartbeatAt: '2026-06-15 09:50', updatedAt: '2026-06-15 09:55' }
 ];
 let stageClusterBindings: StageClusterBinding[] = [
   { id: 'stage_binding_dev_shanghai', tenantId: 'tenant_1', stageKey: 'dev', clusterId: 'cluster_shanghai', clusterName: '上海集群', status: 'active' },
@@ -861,7 +862,29 @@ export async function deleteDeliveryFlowTemplateStage(tenantId: string, stageKey
 
 export async function listClusterOptions(_tenantId?: string): Promise<ClusterOption[]> {
   await wait();
-  return clusterOptions.map((item) => ({ ...item }));
+  return clusters
+    .filter((item) => !_tenantId || item.tenantId === _tenantId)
+    .map(({ id, name, region, status, labels }) => ({ id, name, region, status, labels: cloneLabels(labels) }));
+}
+
+export async function listClusters(tenantId: string): Promise<Cluster[]> {
+  await wait();
+  return clusters.filter((item) => item.tenantId === tenantId).map(cloneCluster);
+}
+
+export async function updateCluster(id: string, input: { name: string; region: string; labels?: StringMap }): Promise<Cluster> {
+  await wait();
+  const index = clusters.findIndex((item) => item.id === id);
+  if (index < 0) throw new Error('集群不存在');
+  const next = {
+    ...clusters[index],
+    name: input.name.trim(),
+    region: input.region.trim(),
+    labels: cloneLabels(input.labels) || {},
+    updatedAt: '刚刚'
+  };
+  clusters = clusters.map((item) => item.id === id ? next : item);
+  return cloneCluster(next);
 }
 
 export async function replaceStageClusterBindings(tenantId: string, stageKey: string, clusterIds: string[]) {
@@ -869,7 +892,7 @@ export async function replaceStageClusterBindings(tenantId: string, stageKey: st
   if (clusterIds.length > 1) throw new Error('一个 Stage 只能绑定一个集群');
   stageClusterBindings = stageClusterBindings.filter((item) => !(item.tenantId === tenantId && item.stageKey === stageKey));
   const next = clusterIds.map((clusterId) => {
-    const cluster = clusterOptions.find((item) => item.id === clusterId);
+    const cluster = clusters.find((item) => item.id === clusterId);
     if (!cluster) throw new Error('集群不存在');
     return { id: `stage_binding_${stageKey}_${clusterId}`, tenantId, stageKey, clusterId, clusterName: cluster.name, status: 'active' as const };
   });
@@ -980,6 +1003,18 @@ function cloneDeliveryFlowTemplate(): DeliveryFlowTemplate {
 		stages: deliveryFlowTemplate.stages.map((stage) => ({ ...stage, approveRoles: [...stage.approveRoles], verifyRoles: [...stage.verifyRoles] })),
 		edges: deliveryFlowTemplate.edges.map((edge) => ({ ...edge }))
 	};
+}
+
+function cloneCluster(cluster: Cluster): Cluster {
+  return { ...cluster, labels: cloneLabels(cluster.labels) };
+}
+
+function cloneLabels(labels?: StringMap): StringMap | undefined {
+  if (!labels) return undefined;
+  const entries = Object.entries(labels)
+    .map(([key, value]) => [key.trim(), String(value).trim()] as const)
+    .filter(([key, value]) => key && value);
+  return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
 export async function completeFreightApproval(freightId: string, input: FreightApprovalInput) {

@@ -567,6 +567,14 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 	if !bytes.Contains(list.Body.Bytes(), []byte(`"cloud":"aliyun"`)) {
 		t.Fatalf("list should include cluster labels, body=%s", list.Body.String())
 	}
+	update := httptest.NewRecorder()
+	mux.ServeHTTP(update, httptest.NewRequest(http.MethodPatch, "/api/clusters/cluster_1", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"},"name":"生产集群-上海","region":"cn-shanghai","labels":{"cloud":"aliyun","zone":"shanghai","empty":" "}}`)))
+	if update.Code != http.StatusOK || bytes.Contains(update.Body.Bytes(), []byte("AgentTokenHash")) || bytes.Contains(update.Body.Bytes(), []byte("agent_token")) {
+		t.Fatalf("update status=%d body=%s", update.Code, update.Body.String())
+	}
+	if !bytes.Contains(update.Body.Bytes(), []byte(`"name":"生产集群-上海"`)) || !bytes.Contains(update.Body.Bytes(), []byte(`"zone":"shanghai"`)) || bytes.Contains(update.Body.Bytes(), []byte(`"empty"`)) {
+		t.Fatalf("update should return normalized cluster, body=%s", update.Body.String())
+	}
 	drain := httptest.NewRecorder()
 	mux.ServeHTTP(drain, httptest.NewRequest(http.MethodPost, "/api/clusters/cluster_1/drain", bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_cluster_admin"}}`)))
 	if drain.Code != http.StatusOK {
@@ -581,6 +589,82 @@ func TestClusterAgentHTTPHandlerCoversControlAndAgentAPIs(t *testing.T) {
 	mux.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/api/clusters", bytes.NewBufferString(`{bad`)))
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("invalid json status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func TestUpdateClusterEditsLabelsAndPreservesSystemFields(t *testing.T) {
+	repo := newTestRepository(t)
+	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
+	ids := &staticIDs{ids: []shared.ID{"cluster_1", "heartbeat_1"}}
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), IDGenerator: ids, Clock: clock})
+	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群", Region: "cn", Labels: map[string]string{"cloud": "aliyun"}})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := svc.Heartbeat(context.Background(), registered.Cluster.ID, registered.AgentToken, ClusterHeartbeat{AgentVersion: "v1"}); err != nil {
+		t.Fatalf("heartbeat: %v", err)
+	}
+	before, err := repo.GetCluster(context.Background(), registered.Cluster.ID)
+	if err != nil {
+		t.Fatalf("get before: %v", err)
+	}
+	heartbeatAt := before.LastHeartbeatAt
+	tokenHash := before.AgentTokenHash
+	clock.now = clock.now.Add(time.Hour)
+
+	updated, err := svc.UpdateCluster(context.Background(), registered.Cluster.ID, UpdateClusterInput{
+		Actor:  clusterActor(),
+		Name:   "开发集群-上海",
+		Region: " cn-shanghai ",
+		Labels: map[string]string{" cloud ": " aliyun ", "zone": " shanghai ", "empty": " "},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Name != "开发集群-上海" || updated.Region != "cn-shanghai" || updated.Labels["cloud"] != "aliyun" || updated.Labels["zone"] != "shanghai" || updated.Labels["empty"] != "" {
+		t.Fatalf("unexpected updated cluster: %#v", updated)
+	}
+	if updated.TenantID != registered.Cluster.TenantID || updated.Status != registered.Cluster.Status || updated.AgentTokenHash != "" {
+		t.Fatalf("update should preserve tenant/status and hide hash: %#v", updated)
+	}
+	stored, err := repo.GetCluster(context.Background(), registered.Cluster.ID)
+	if err != nil {
+		t.Fatalf("get stored: %v", err)
+	}
+	if stored.AgentTokenHash != tokenHash || stored.ServerVersion != before.ServerVersion || stored.LastHeartbeatAt == nil || heartbeatAt == nil || !stored.LastHeartbeatAt.Equal(*heartbeatAt) {
+		t.Fatalf("system fields should be preserved: before=%#v stored=%#v", before, stored)
+	}
+	if _, err := svc.Authenticate(context.Background(), registered.Cluster.ID, registered.AgentToken); err != nil {
+		t.Fatalf("token should remain valid: %v", err)
+	}
+}
+
+func TestUpdateClusterValidationAndPermission(t *testing.T) {
+	repo := newTestRepository(t)
+	clock := &mutableClock{now: time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)}
+	permission := &recordingClusterPermission{}
+	svc := NewService(Options{Repository: repo, TenantQuery: tenantQuery("tenant_1"), PermissionChecker: permission, IDGenerator: &staticIDs{ids: []shared.ID{"cluster_1"}}, Clock: clock})
+	registered, err := svc.RegisterCluster(context.Background(), RegisterClusterInput{Actor: clusterActor(), TenantID: "tenant_1", Name: "开发集群"})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	if _, err := svc.UpdateCluster(context.Background(), "missing", UpdateClusterInput{Actor: clusterActor(), Name: "开发集群"}); shared.CodeOf(err) != shared.CodeNotFound {
+		t.Fatalf("missing cluster should fail, got %v", err)
+	}
+	if _, err := svc.UpdateCluster(context.Background(), registered.Cluster.ID, UpdateClusterInput{Name: "开发集群"}); shared.CodeOf(err) != shared.CodeUnauthenticated {
+		t.Fatalf("missing actor should fail, got %v", err)
+	}
+	if _, err := svc.UpdateCluster(context.Background(), registered.Cluster.ID, UpdateClusterInput{Actor: clusterActor(), Name: " "}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("blank name should fail, got %v", err)
+	}
+	permission.err = shared.NewError(shared.CodePermissionDenied, "permission denied")
+	if _, err := svc.UpdateCluster(context.Background(), registered.Cluster.ID, UpdateClusterInput{Actor: clusterActor(), Name: "开发集群"}); shared.CodeOf(err) != shared.CodePermissionDenied {
+		t.Fatalf("permission denial should fail, got %v", err)
+	}
+	last := permission.calls[len(permission.calls)-1]
+	if last.resource.Kind != identityaccess.ScopeTenant || last.resource.TenantID != "tenant_1" || last.action != "cluster:manage" {
+		t.Fatalf("unexpected permission call: %+v", last)
 	}
 }
 
