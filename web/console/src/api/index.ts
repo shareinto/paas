@@ -862,12 +862,17 @@ function runtimeEnvironmentPayload(input: Partial<mock.RuntimeEnvironment>, incl
     actor: { type: 'user', id: 'usr_admin' },
 	    ...(includeName ? { name: input.name } : {}),
 	    description: input.description || '',
-	    runtime_base_image: input.runtimeBaseImage,
-	    artifact_deploy_path: input.artifactDeployPath,
-    dockerfile_path: input.dockerfilePath,
-    selector_labels: cleanStringRecord(input.selectorLabels),
-    status: input.status,
-    is_default: !!input.isDefault
+    images: normalizeRuntimeEnvironmentImages(input).map((image) => ({
+      id: image.id,
+      name: image.name,
+      display_name: image.displayName,
+      runtime_base_image: image.runtimeBaseImage,
+      artifact_deploy_path: image.artifactDeployPath || '',
+      dockerfile_path: image.dockerfilePath || '',
+      selector_labels: cleanStringRecord(image.selectorLabels),
+      status: image.status || 'enabled'
+    })),
+    status: input.status
   };
 }
 
@@ -1174,8 +1179,7 @@ function mapApplication(item: any): mock.Application {
 	      name: runtime.name,
 	      runtimeBaseImage: runtime.runtime_base_image || runtime.runtimeBaseImage || '',
 	      artifactDeployPath: runtime.artifact_deploy_path || runtime.artifactDeployPath || '',
-      dockerfilePath: runtime.dockerfile_path || runtime.dockerfilePath || '',
-      selectorLabels: cleanStringRecord(runtime.selector_labels || runtime.selectorLabels)
+      dockerfilePath: runtime.dockerfile_path || runtime.dockerfilePath || ''
     })),
     status: item.status || 'active',
     type: item.type || '-',
@@ -1524,22 +1528,15 @@ function mapBuildPipeline(item: any): mock.BuildPipeline {
 }
 
 function mapRuntimeEnvironmentSnapshot(runtime: any): mock.RuntimeEnvironment {
+  const mapped = mapRuntimeEnvironment(runtime);
   return {
-    id: runtime.id || runtime.runtime_environment_id || runtime.runtimeEnvironmentId || runtime.ID || '',
-    name: runtime.name || runtime.Name || '',
-    description: runtime.description || '',
-    runtimeBaseImage: runtime.runtime_base_image || runtime.runtimeBaseImage || runtime.RuntimeBaseImage || '',
-    artifactDeployPath: runtime.artifact_deploy_path || runtime.artifactDeployPath || runtime.ArtifactDeployPath || '',
-    dockerfilePath: runtime.dockerfile_path || runtime.dockerfilePath || runtime.DockerfilePath || '',
-    selectorLabels: cleanStringRecord(runtime.selector_labels || runtime.selectorLabels || runtime.SelectorLabels),
-    status: runtime.status || 'enabled',
-    isDefault: !!(runtime.is_default || runtime.isDefault),
-    updatedAt: runtime.updatedAt || formatTime(runtime.updated_at || runtime.updatedAt)
+    ...mapped,
+    id: mapped.id || runtime.runtime_environment_id || runtime.runtimeEnvironmentId || runtime.ID || ''
   };
 }
 
 function cleanRuntimeEnvironmentIds(ids?: string[]) {
-  return (ids || []).map((id) => id.trim()).filter(Boolean);
+  return (ids || []).map((id) => id.trim()).filter(Boolean).slice(0, 1);
 }
 
 function mapBuildPipelineSource(item: any): mock.BuildPipelineSource {
@@ -1595,18 +1592,62 @@ function mapBuildEnvironment(item: any): mock.BuildEnvironment {
 }
 
 function mapRuntimeEnvironment(item: any): mock.RuntimeEnvironment {
+  const images = mapRuntimeEnvironmentImages(item.images || item.Images || []);
+  const legacyImage = mapRuntimeEnvironmentImage({
+    id: item.id,
+    name: item.name,
+    display_name: item.name,
+    runtime_base_image: item.runtime_base_image || item.runtimeBaseImage || '',
+    artifact_deploy_path: item.artifact_deploy_path || item.artifactDeployPath || '',
+    dockerfile_path: item.dockerfile_path || item.dockerfilePath || '',
+    selector_labels: item.selector_labels || item.selectorLabels,
+    status: item.status || 'enabled'
+  });
+  const normalizedImages = images.length > 0 ? images : (legacyImage.runtimeBaseImage ? [legacyImage] : []);
+  const firstImage = normalizedImages[0];
   return {
     id: item.id,
 	    name: item.name,
 	    description: item.description || '',
-	    runtimeBaseImage: item.runtime_base_image || item.runtimeBaseImage || '',
-	    artifactDeployPath: item.artifact_deploy_path || item.artifactDeployPath || '',
-    dockerfilePath: item.dockerfile_path || item.dockerfilePath || '',
-    selectorLabels: cleanStringRecord(item.selector_labels || item.selectorLabels),
+    runtimeBaseImage: firstImage?.runtimeBaseImage || item.runtime_base_image || item.runtimeBaseImage || '',
+    artifactDeployPath: firstImage?.artifactDeployPath || item.artifact_deploy_path || item.artifactDeployPath || '',
+    dockerfilePath: firstImage?.dockerfilePath || item.dockerfile_path || item.dockerfilePath || '',
+    selectorLabels: firstImage?.selectorLabels || cleanStringRecord(item.selector_labels || item.selectorLabels),
+    images: normalizedImages,
     status: item.status || 'enabled',
-    isDefault: !!(item.is_default || item.isDefault),
     updatedAt: item.updatedAt || formatTime(item.updated_at || item.updatedAt)
   };
+}
+
+function mapRuntimeEnvironmentImages(items: any[]): mock.RuntimeEnvironmentImage[] {
+  return (Array.isArray(items) ? items : []).map(mapRuntimeEnvironmentImage).filter((item) => item.name || item.runtimeBaseImage);
+}
+
+function mapRuntimeEnvironmentImage(item: any): mock.RuntimeEnvironmentImage {
+  return {
+    id: item.id || item.ID || '',
+    name: item.name || item.Name || '',
+    displayName: item.display_name || item.displayName || item.DisplayName || item.name || '',
+    runtimeBaseImage: item.runtime_base_image || item.runtimeBaseImage || item.RuntimeBaseImage || '',
+    artifactDeployPath: item.artifact_deploy_path || item.artifactDeployPath || item.ArtifactDeployPath || '',
+    dockerfilePath: item.dockerfile_path || item.dockerfilePath || item.DockerfilePath || '',
+    selectorLabels: cleanStringRecord(item.selector_labels || item.selectorLabels || item.SelectorLabels),
+    status: item.status || item.Status || 'enabled'
+  };
+}
+
+function normalizeRuntimeEnvironmentImages(input: Partial<mock.RuntimeEnvironment>): mock.RuntimeEnvironmentImage[] {
+  if (input.images && input.images.length > 0) return input.images;
+  if (!input.runtimeBaseImage) return [];
+  return [{
+    name: input.name || 'default',
+    displayName: input.name || '默认镜像',
+    runtimeBaseImage: input.runtimeBaseImage,
+    artifactDeployPath: input.artifactDeployPath,
+    dockerfilePath: input.dockerfilePath,
+    selectorLabels: input.selectorLabels,
+    status: input.status || 'enabled'
+  }];
 }
 
 function mapClusterOption(item: any): mock.ClusterOption {
@@ -1637,9 +1678,7 @@ function mapImageBundleImages(items: any[]): mock.ImageBundleImage[] {
     runtimeEnvironmentId: item.runtimeEnvironmentId || item.runtime_environment_id || '',
     runtimeEnvironmentName: item.runtimeEnvironmentName || item.runtime_environment_name || '',
     image: item.image || item.uri || item.image_uri || [item.image_repository, item.image_tag].filter(Boolean).join(':') || '-',
-    digest: item.digest || item.image_digest || '',
-    selectorLabels: cleanStringRecord(item.selectorLabels || item.selector_labels),
-    isPrimary: !!(item.isPrimary || item.is_primary)
+    digest: item.digest || item.image_digest || ''
   }));
 }
 

@@ -287,10 +287,32 @@ func seedRuntimeEnvironments(t *testing.T, env buildTestEnv) {
 			ArtifactDeployPath: "/app/",
 			DockerfilePath:     "java/jar/Dockerfile",
 			SelectorLabels:     map[string]string{"cloud": "aliyun"},
-			Status:             RuntimeEnvironmentEnabled,
-			CreatedBy:          "usr_admin",
-			CreatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
-			UpdatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
+			Images: []RuntimeEnvironmentImage{
+				{
+					ID:                 "runtime_image_java17_aliyun",
+					Name:               "aliyun",
+					DisplayName:        "阿里云 JDK 17",
+					RuntimeBaseImage:   "registry.example/runtime/java17:1.0",
+					ArtifactDeployPath: "/app/",
+					DockerfilePath:     "java/jar/Dockerfile",
+					SelectorLabels:     map[string]string{"cloud": "aliyun"},
+					Status:             string(RuntimeEnvironmentEnabled),
+				},
+				{
+					ID:                 "runtime_image_java17_aws",
+					Name:               "aws",
+					DisplayName:        "AWS JDK 17",
+					RuntimeBaseImage:   "registry.example/runtime/java17-aws:1.0",
+					ArtifactDeployPath: "/app/",
+					DockerfilePath:     "java/jar/Dockerfile",
+					SelectorLabels:     map[string]string{"cloud": "aws"},
+					Status:             string(RuntimeEnvironmentEnabled),
+				},
+			},
+			Status:    RuntimeEnvironmentEnabled,
+			CreatedBy: "usr_admin",
+			CreatedAt: time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
+			UpdatedAt: time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
 		},
 		{
 			ID:                 "runtime_env_java21",
@@ -309,6 +331,7 @@ func seedRuntimeEnvironments(t *testing.T, env buildTestEnv) {
 			RuntimeBaseImage:   "registry.example/runtime/tomcat8:1.0",
 			ArtifactDeployPath: "/usr/local/tomcat/webapps/",
 			DockerfilePath:     "java/tomcat/Dockerfile",
+			SelectorLabels:     map[string]string{"cloud": "aliyun"},
 			Status:             RuntimeEnvironmentEnabled,
 			CreatedBy:          "usr_admin",
 			CreatedAt:          time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC),
@@ -378,7 +401,7 @@ func TestCreateBuildPipelineRequiresRuntimeEnvironments(t *testing.T) {
 			IsPrimary:          true,
 		}},
 	})
-	if shared.CodeOf(err) != shared.CodeInvalidArgument || !strings.Contains(err.Error(), "runtime_environment_ids is required") {
+	if shared.CodeOf(err) != shared.CodeInvalidArgument || !strings.Contains(err.Error(), "请选择一个运行时环境") {
 		t.Fatalf("expected missing runtime environment ids error, got %v", err)
 	}
 }
@@ -393,7 +416,7 @@ func TestCreateBuildPipelinePersistsRuntimeSnapshots(t *testing.T) {
 		ApplicationID:         "app_user",
 		Name:                  "main",
 		DisplayName:           "主流水线",
-		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17", "runtime_env_java21"},
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
 			Key:                "main",
 			SourceRepositoryID: "repo_user",
@@ -404,7 +427,7 @@ func TestCreateBuildPipelinePersistsRuntimeSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateBuildPipeline() error = %v", err)
 	}
-	if len(pipeline.RuntimeEnvironments) != 2 || pipeline.RuntimeEnvironments[0].ID != "runtime_env_java17" || pipeline.RuntimeEnvironments[1].ID != "runtime_env_java21" {
+	if len(pipeline.RuntimeEnvironments) != 1 || pipeline.RuntimeEnvironments[0].ID != "runtime_env_java17" || len(pipeline.RuntimeEnvironments[0].Images) != 2 {
 		t.Fatalf("runtime snapshots should be persisted on pipeline, got %+v", pipeline.RuntimeEnvironments)
 	}
 	sources, err := env.svc.ListBuildPipelineSources(ctx, pipeline.ID)
@@ -413,6 +436,29 @@ func TestCreateBuildPipelinePersistsRuntimeSnapshots(t *testing.T) {
 	}
 	if sources[0].BuildSpec.RuntimeBaseImage != "registry.example/runtime/java17:1.0" || sources[0].BuildSpec.ArtifactDeployPath != "/app/" {
 		t.Fatalf("primary runtime should keep BuildSpec compatibility fields, got %+v", sources[0].BuildSpec)
+	}
+}
+
+func TestCreateBuildPipelineRejectsMultipleRuntimeEnvironments(t *testing.T) {
+	env := newBuildTestEnv(t)
+	seedRuntimeEnvironments(t, env)
+	ctx := context.Background()
+
+	_, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "main",
+		DisplayName:           "主流水线",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17", "runtime_env_java21"},
+		Sources: []BuildPipelineSourceInput{{
+			Key:                "main",
+			SourceRepositoryID: "repo_user",
+			BuildSpec:          validBuildSpec(),
+			IsPrimary:          true,
+		}},
+	})
+	if shared.CodeOf(err) != shared.CodeInvalidArgument || !strings.Contains(err.Error(), "请选择一个运行时环境") {
+		t.Fatalf("expected single runtime environment error, got %v", err)
 	}
 }
 
@@ -484,7 +530,7 @@ func TestEnsureDefaultBuildConfigurationDoesNotRecreateDeletedEnvironments(t *te
 			t.Fatalf("DeleteBuildEnvironment(%s) error = %v", id, err)
 		}
 	}
-	for _, id := range []shared.ID{"runtime_env_springboot_jdk11_aliyun", "runtime_env_tomcat_jdk11_aliyun", "runtime_env_tomcat_jdk11_aws", "runtime_env_springboot_jdk11_aws", "runtime_env_nginx1221"} {
+	for _, id := range []shared.ID{"runtime_env_springboot_jdk11", "runtime_env_tomcat_jdk11", "runtime_env_nginx1221"} {
 		if err := env.svc.DeleteRuntimeEnvironment(ctx, actor, id); err != nil {
 			t.Fatalf("DeleteRuntimeEnvironment(%s) error = %v", id, err)
 		}
@@ -543,22 +589,21 @@ func TestEnsureDefaultBuildConfigurationSeedsRequestedPresets(t *testing.T) {
 		runtimes[environment.Name] = environment
 	}
 	wantRuntimeImages := map[string]struct {
-		image      string
+		images     int
+		firstImage string
 		dockerfile string
 	}{
-		"springboot-jdk11-aliyun": {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis", "java/jar/Dockerfile"},
-		"tomcat-jdk11-aliyun":     {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis", "java/tomcat/Dockerfile"},
-		"tomcat-jdk11-aws":        {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023", "java/tomcat/Dockerfile"},
-		"springboot-jdk11-aws":    {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023", "java/jar/Dockerfile"},
-		"nginx1221":               {"cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1", "nginx/Dockerfile"},
+		"springboot-jdk11": {2, "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis", "java/jar/Dockerfile"},
+		"tomcat-jdk11":     {2, "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis", "java/tomcat/Dockerfile"},
+		"nginx1221":        {2, "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1", "nginx/Dockerfile"},
 	}
 	for name, want := range wantRuntimeImages {
 		got, ok := runtimes[name]
 		if !ok {
 			t.Fatalf("runtime environment %s missing; all=%#v", name, runtimes)
 		}
-		if got.RuntimeBaseImage != want.image || got.DockerfilePath != want.dockerfile {
-			t.Fatalf("runtime environment %s = image %q dockerfile %q, want %q %q", name, got.RuntimeBaseImage, got.DockerfilePath, want.image, want.dockerfile)
+		if len(got.Images) != want.images || got.RuntimeBaseImage != want.firstImage || got.DockerfilePath != want.dockerfile {
+			t.Fatalf("runtime environment %s = images %d image %q dockerfile %q, want %d %q %q", name, len(got.Images), got.RuntimeBaseImage, got.DockerfilePath, want.images, want.firstImage, want.dockerfile)
 		}
 	}
 }
@@ -598,24 +643,29 @@ func TestUpdateBuildAndRuntimeEnvironmentsEditFields(t *testing.T) {
 		RuntimeBaseImage:   "registry.example/runtime/java17:1.0",
 		ArtifactDeployPath: "/app/",
 		DockerfilePath:     "java/jar/Dockerfile",
+		SelectorLabels:     map[string]string{"cloud": "aliyun"},
 	})
 	if err != nil {
 		t.Fatalf("CreateRuntimeEnvironment() error = %v", err)
 	}
 	updatedRuntimeEnv, err := env.svc.UpdateRuntimeEnvironment(ctx, UpdateRuntimeEnvironmentInput{
-		Actor:              actor,
-		EnvironmentID:      runtimeEnv.ID,
-		Description:        "new runtime",
-		RuntimeBaseImage:   "registry.example/runtime/java17:2.0",
-		ArtifactDeployPath: "",
-		DockerfilePath:     "java/custom/Dockerfile",
-		Status:             RuntimeEnvironmentDisabled,
-		IsDefault:          true,
+		Actor:         actor,
+		EnvironmentID: runtimeEnv.ID,
+		Description:   "new runtime",
+		Images: []RuntimeEnvironmentImage{{
+			Name:             "aliyun",
+			DisplayName:      "阿里云 JDK 17",
+			RuntimeBaseImage: "registry.example/runtime/java17:2.0",
+			DockerfilePath:   "java/custom/Dockerfile",
+			SelectorLabels:   map[string]string{"cloud": "aliyun"},
+			Status:           string(RuntimeEnvironmentEnabled),
+		}},
+		Status: RuntimeEnvironmentDisabled,
 	})
 	if err != nil {
 		t.Fatalf("UpdateRuntimeEnvironment() error = %v", err)
 	}
-	if updatedRuntimeEnv.Name != runtimeEnv.Name || updatedRuntimeEnv.RuntimeBaseImage != "registry.example/runtime/java17:2.0" || updatedRuntimeEnv.ArtifactDeployPath != "" || updatedRuntimeEnv.DockerfilePath != "java/custom/Dockerfile" || updatedRuntimeEnv.Status != RuntimeEnvironmentDisabled || !updatedRuntimeEnv.IsDefault {
+	if updatedRuntimeEnv.Name != runtimeEnv.Name || updatedRuntimeEnv.RuntimeBaseImage != "registry.example/runtime/java17:2.0" || updatedRuntimeEnv.ArtifactDeployPath != "" || updatedRuntimeEnv.DockerfilePath != "java/custom/Dockerfile" || updatedRuntimeEnv.Status != RuntimeEnvironmentDisabled || len(updatedRuntimeEnv.Images) != 1 {
 		t.Fatalf("unexpected updated runtime environment: %+v", updatedRuntimeEnv)
 	}
 	if len(env.syncer.calls) != 1 || env.syncer.calls[0].ID != runtimeEnv.ID || env.syncer.calls[0].RuntimeBaseImage != "registry.example/runtime/java17:2.0" || env.syncer.calls[0].DockerfilePath != "java/custom/Dockerfile" {
@@ -1049,7 +1099,7 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 		"repo_frontmacc5":      {ID: "repo_frontmacc5", SSHURL: "git@gitlab.example:macc/macc-cloud.git"},
 	}}
 
-	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "frontend", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17", "runtime_env_java21"}, Sources: frontSources})
+	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "frontend", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: frontSources})
 	if err != nil {
 		t.Fatalf("CreateBuildPipeline() error = %v", err)
 	}
@@ -1069,8 +1119,8 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 		"collect frontcomponents",
 		"collect frontmacc5",
 		"cp -ar dist/. &#34;$PAAS_ARTIFACT_OUTPUT/&#34;",
-		"cp -ar artifact/. &#34;image-context/java17/&#34;",
-		"cp -ar artifact/. &#34;image-context/java21/&#34;",
+		"cp -ar artifact/. &#34;image-context/java17-aliyun/&#34;",
+		"cp -ar artifact/. &#34;image-context/java17-aws/&#34;",
 		"PAAS_ARTIFACT_OUTPUT",
 		"docker buildx build",
 		"java/jar/Dockerfile",
@@ -1188,7 +1238,7 @@ func TestTriggerBuildUpdatesPipelineBeforeBuildWhenPreviousRunIsActive(t *testin
 	}
 }
 
-func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
+func TestTriggerBuildExpandsRuntimeEnvironmentImages(t *testing.T) {
 	env := newBuildTestEnv(t)
 	seedRuntimeEnvironments(t, env)
 	ctx := context.Background()
@@ -1210,8 +1260,8 @@ func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
 		Actor:                 buildActor(),
 		ApplicationID:         "app_user",
 		Name:                  "multi-runtime",
-		DisplayName:           "多运行时流水线",
-		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17", "runtime_env_java21"},
+		DisplayName:           "多镜像流水线",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
 			Key:                "main",
 			DisplayName:        "主代码源",
@@ -1232,7 +1282,7 @@ func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
 	if len(params) != 0 {
 		t.Fatalf("Jenkins trigger should not pass parameters, got %+v", params)
 	}
-	if !strings.Contains(env.runner.jobs[0].TemplateXML, "java17") || !strings.Contains(env.runner.jobs[0].TemplateXML, "java21") || !strings.Contains(env.runner.jobs[0].TemplateXML, "java/jar/Dockerfile") {
+	if !strings.Contains(env.runner.jobs[0].TemplateXML, "java17-aliyun") || !strings.Contains(env.runner.jobs[0].TemplateXML, "java17-aws") || !strings.Contains(env.runner.jobs[0].TemplateXML, "java/jar/Dockerfile") {
 		t.Fatalf("runtime snapshot should be rendered into Jenkinsfile, got %s", env.runner.jobs[0].TemplateXML)
 	}
 	if strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_RUNTIME") {
@@ -1247,7 +1297,7 @@ func TestTriggerBuildSupportsMultipleRuntimeEnvironments(t *testing.T) {
 	if err != nil || len(artifacts) != 2 {
 		t.Fatalf("expected two runtime image artifacts, got %+v, %v", artifacts, err)
 	}
-	if artifacts[0].URI != "registry.example/paas/user-api-java17:abc123" || artifacts[1].URI != "registry.example/paas/user-api-java21:abc123" {
+	if artifacts[0].URI != "registry.example/paas/user-api:20260530-abc123-java17-aliyun" || artifacts[1].URI != "registry.example/paas/user-api:20260530-abc123-java17-aws" {
 		t.Fatalf("unexpected runtime image URIs: %+v", artifacts)
 	}
 	if !artifacts[0].IsPrimary || artifacts[1].IsPrimary {
@@ -1569,7 +1619,7 @@ func TestCallbackFailureAndPreconditions(t *testing.T) {
 		t.Fatalf("succeeded callback without image should synthesize artifact, got %+v, %v", succeeded, err)
 	}
 	artifact, _ := env.repo.GetArtifact(ctx, succeeded.PrimaryArtifactID)
-	if artifact.URI != "registry.example/paas/user-api-main:main" {
+	if artifact.URI != "registry.example/paas/user-api:20260530-main-java17-aliyun" {
 		t.Fatalf("unexpected synthesized image URI: %+v", artifact)
 	}
 	run, _ = env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})

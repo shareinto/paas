@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -202,26 +203,26 @@ type UpdateBuildEnvironmentInput struct {
 }
 
 type CreateRuntimeEnvironmentInput struct {
-	Actor              identityaccess.Subject `json:"actor"`
-	Name               string                 `json:"name"`
-	Description        string                 `json:"description"`
-	RuntimeBaseImage   string                 `json:"runtime_base_image"`
-	ArtifactDeployPath string                 `json:"artifact_deploy_path"`
-	DockerfilePath     string                 `json:"dockerfile_path"`
-	SelectorLabels     map[string]string      `json:"selector_labels"`
-	IsDefault          bool                   `json:"is_default"`
+	Actor              identityaccess.Subject    `json:"actor"`
+	Name               string                    `json:"name"`
+	Description        string                    `json:"description"`
+	RuntimeBaseImage   string                    `json:"runtime_base_image"`
+	ArtifactDeployPath string                    `json:"artifact_deploy_path"`
+	DockerfilePath     string                    `json:"dockerfile_path"`
+	SelectorLabels     map[string]string         `json:"selector_labels"`
+	Images             []RuntimeEnvironmentImage `json:"images"`
 }
 
 type UpdateRuntimeEnvironmentInput struct {
-	Actor              identityaccess.Subject   `json:"actor"`
-	EnvironmentID      shared.ID                `json:"environment_id"`
-	Description        string                   `json:"description"`
-	RuntimeBaseImage   string                   `json:"runtime_base_image"`
-	ArtifactDeployPath string                   `json:"artifact_deploy_path"`
-	DockerfilePath     string                   `json:"dockerfile_path"`
-	SelectorLabels     map[string]string        `json:"selector_labels"`
-	Status             RuntimeEnvironmentStatus `json:"status"`
-	IsDefault          bool                     `json:"is_default"`
+	Actor              identityaccess.Subject    `json:"actor"`
+	EnvironmentID      shared.ID                 `json:"environment_id"`
+	Description        string                    `json:"description"`
+	RuntimeBaseImage   string                    `json:"runtime_base_image"`
+	ArtifactDeployPath string                    `json:"artifact_deploy_path"`
+	DockerfilePath     string                    `json:"dockerfile_path"`
+	SelectorLabels     map[string]string         `json:"selector_labels"`
+	Images             []RuntimeEnvironmentImage `json:"images"`
+	Status             RuntimeEnvironmentStatus  `json:"status"`
 }
 
 type SaveBuildTemplateInput struct {
@@ -516,9 +517,8 @@ const defaultBuildTemplateContent = `pipeline {
     success {
       script {
         if ((env.PAAS_CALLBACK_URL ?: '').trim() && fileExists('report/primary-image.txt')) {
-          def image = readFile('report/primary-image.txt').trim()
           def commit = fileExists('report/source-{{ .PrimarySourceKey }}-commit.txt') ? readFile('report/source-{{ .PrimarySourceKey }}-commit.txt').trim() : ''
-          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', image_uri: image, commit_sha: commit])
+          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', commit_sha: commit])
           sh 'curl -fsS -X POST "$PAAS_CALLBACK_URL" -H "Content-Type: application/json" --data-binary @report/callback-success.json'
         }
       }
@@ -707,7 +707,7 @@ func (s *Service) CreateRuntimeEnvironment(ctx context.Context, input CreateRunt
 	if err := s.checkPlatformAdmin(ctx, input.Actor, "runtime_environment:manage"); err != nil {
 		return RuntimeEnvironment{}, err
 	}
-	environment, err := s.newRuntimeEnvironment(input.Actor.ID, input.Name, input.Description, input.RuntimeBaseImage, input.ArtifactDeployPath, input.DockerfilePath, input.SelectorLabels, input.IsDefault)
+	environment, err := s.newRuntimeEnvironment(input.Actor.ID, input.Name, input.Description, input.RuntimeBaseImage, input.ArtifactDeployPath, input.DockerfilePath, input.SelectorLabels, input.Images)
 	if err != nil {
 		return RuntimeEnvironment{}, err
 	}
@@ -738,11 +738,12 @@ func (s *Service) UpdateRuntimeEnvironment(ctx context.Context, input UpdateRunt
 		}
 	}
 	environment.Description = strings.TrimSpace(input.Description)
-	environment.RuntimeBaseImage = firstNonEmpty(input.RuntimeBaseImage, environment.RuntimeBaseImage)
-	environment.ArtifactDeployPath = strings.TrimSpace(input.ArtifactDeployPath)
-	environment.DockerfilePath = normalizeDockerfilePath(input.DockerfilePath)
-	environment.SelectorLabels = normalizeSelectorLabels(input.SelectorLabels)
-	environment.IsDefault = input.IsDefault
+	if input.Images != nil {
+		environment.Images = normalizeRuntimeEnvironmentImages(input.Images)
+	} else if strings.TrimSpace(input.RuntimeBaseImage) != "" {
+		environment.Images = runtimeEnvironmentImagesOrLegacy(nil, environment.ID, environment.Name, input.RuntimeBaseImage, input.ArtifactDeployPath, input.DockerfilePath, input.SelectorLabels)
+	}
+	applyRuntimeEnvironmentFirstImage(&environment)
 	environment.UpdatedAt = s.clock.Now()
 	if err := validateRuntimeEnvironment(environment); err != nil {
 		return RuntimeEnvironment{}, err
@@ -1675,32 +1676,37 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, runtimes []Runti
 		}}
 	}
 	targets := make([]buildTemplateImageTargetView, 0, len(runtimes))
-	for i, runtime := range runtimes {
-		name := runtimeArtifactName(runtime)
-		key := shellToken(name)
-		if key == "" {
-			key = fmt.Sprintf("runtime%d", i+1)
+	targetIndex := 0
+	for _, runtime := range runtimes {
+		images := runtimeEnvironmentImagesOrLegacy(runtime.Images, runtime.ID, runtime.Name, runtime.RuntimeBaseImage, runtime.ArtifactDeployPath, runtime.DockerfilePath, runtime.SelectorLabels)
+		for _, image := range images {
+			name := firstNonEmpty(image.DisplayName, image.Name, runtime.Name)
+			key := shellToken(firstNonEmpty(runtime.Name+"-"+image.Name, image.Name, runtime.Name))
+			if key == "" {
+				key = fmt.Sprintf("runtime%d", targetIndex+1)
+			}
+			platforms := runtimeTargetPlatforms(name)
+			imageURI := buildTargetImageURI(imageRepo, app.Name, baseTag, key)
+			dockerfilePath := "java/jar/Dockerfile"
+			artifactDeployPath := "/app"
+			if runtimeImageLooksLikeTomcat(runtime, image) {
+				dockerfilePath = "java/tomcat/Dockerfile"
+				artifactDeployPath = firstNonEmpty(image.ArtifactDeployPath, runtime.ArtifactDeployPath, primarySource.BuildSpec.ArtifactDeployPath, "/usr/local/tomcat/webapps")
+			}
+			dockerfilePath = firstNonEmpty(image.DockerfilePath, runtime.DockerfilePath, dockerfilePath)
+			targets = append(targets, buildTemplateImageTargetView{
+				Key:                shellToken(key),
+				StageName:          groovyStageName(name),
+				Platforms:          shellSingleQuoted(platforms),
+				RuntimeBaseImage:   shellSingleQuoted(image.RuntimeBaseImage),
+				DockerfilePath:     shellSingleQuoted(dockerfilePath),
+				ArtifactDeployPath: shellSingleQuoted(strings.TrimRight(artifactDeployPath, "/")),
+				ImageURI:           shellSingleQuoted(imageURI),
+				EnvKey:             shellEnvName(key) + "_IMAGE",
+				IsPrimary:          targetIndex == 0,
+			})
+			targetIndex++
 		}
-		platforms := runtimeTargetPlatforms(name)
-		imageURI := fmt.Sprintf("%s/%s:%s-%s", imageRepo, app.Name, baseTag, key)
-		dockerfilePath := "java/jar/Dockerfile"
-		artifactDeployPath := "/app"
-		if runtimeLooksLikeTomcat(runtime) {
-			dockerfilePath = "java/tomcat/Dockerfile"
-			artifactDeployPath = firstNonEmpty(runtime.ArtifactDeployPath, primarySource.BuildSpec.ArtifactDeployPath, "/usr/local/tomcat/webapps")
-		}
-		dockerfilePath = firstNonEmpty(runtime.DockerfilePath, dockerfilePath)
-		targets = append(targets, buildTemplateImageTargetView{
-			Key:                shellToken(key),
-			StageName:          groovyStageName(name),
-			Platforms:          shellSingleQuoted(platforms),
-			RuntimeBaseImage:   shellSingleQuoted(runtime.RuntimeBaseImage),
-			DockerfilePath:     shellSingleQuoted(dockerfilePath),
-			ArtifactDeployPath: shellSingleQuoted(strings.TrimRight(artifactDeployPath, "/")),
-			ImageURI:           shellSingleQuoted(imageURI),
-			EnvKey:             shellEnvName(key) + "_IMAGE",
-			IsPrimary:          i == 0,
-		})
 	}
 	return targets
 }
@@ -1721,6 +1727,15 @@ func primaryBuildSource(sources []ApplicationSourceRef, runSources []BuildRunSou
 func runtimeLooksLikeTomcat(runtime RuntimeEnvironmentRef) bool {
 	text := strings.ToLower(runtime.Name + " " + runtime.RuntimeBaseImage + " " + runtime.DockerfilePath)
 	return strings.Contains(text, "tomcat")
+}
+
+func runtimeImageLooksLikeTomcat(runtime RuntimeEnvironmentRef, image RuntimeEnvironmentImage) bool {
+	text := strings.ToLower(runtime.Name + " " + image.Name + " " + image.DisplayName + " " + image.RuntimeBaseImage + " " + image.DockerfilePath)
+	return strings.Contains(text, "tomcat")
+}
+
+func buildTargetImageURI(imageRepo, appName, baseTag, key string) string {
+	return fmt.Sprintf("%s/%s:%s-%s", imageRepo, appName, baseTag, key)
 }
 
 func runtimeTargetPlatforms(name string) string {
@@ -1898,26 +1913,34 @@ func (s *Service) synthesizedArtifactInputs(ctx context.Context, run BuildRun, r
 		if source.SourceKey == "" {
 			return nil, shared.NewError(shared.CodeInvalidArgument, "artifact source_key is not part of build run")
 		}
-		tag := strings.TrimSpace(source.CommitSHA)
-		if tag == "" {
-			tag = imageTagToken(source.GitRef)
-		}
+		baseTag := buildImageBaseTag(runSources, run)
 		out := make([]BuildCallbackArtifactInput, 0, len(runtimes))
-		for i, runtime := range runtimes {
-			name := runtimeArtifactName(runtime)
-			imageName := fmt.Sprintf("%s/%s-%s:%s", imageRepo, app.Name, name, tag)
-			if len(runtimes) == 1 {
-				imageName = fmt.Sprintf("%s/%s-%s:%s", imageRepo, app.Name, source.SourceKey, tag)
+		targetIndex := 0
+		for _, runtime := range runtimes {
+			images := runtimeEnvironmentImagesOrLegacy(runtime.Images, runtime.ID, runtime.Name, runtime.RuntimeBaseImage, runtime.ArtifactDeployPath, runtime.DockerfilePath, runtime.SelectorLabels)
+			for _, image := range images {
+				name := firstNonEmpty(image.DisplayName, image.Name, runtime.Name)
+				key := shellToken(firstNonEmpty(runtime.Name+"-"+image.Name, image.Name, runtime.Name))
+				if key == "" {
+					key = fmt.Sprintf("runtime%d", targetIndex+1)
+				}
+				out = append(out, BuildCallbackArtifactInput{
+					SourceKey:      source.SourceKey,
+					Type:           BuildArtifactImage,
+					Name:           name,
+					URI:            buildTargetImageURI(imageRepo, app.Name, baseTag, key),
+					IsPrimary:      targetIndex == 0,
+					SelectorLabels: image.SelectorLabels,
+					Metadata: map[string]string{
+						"runtime_environment_id":         runtime.ID.String(),
+						"runtime_environment_name":       runtime.Name,
+						"runtime_environment_image_id":   image.ID.String(),
+						"runtime_environment_image_name": image.Name,
+						"runtime_base_image":             image.RuntimeBaseImage,
+					},
+				})
+				targetIndex++
 			}
-			out = append(out, BuildCallbackArtifactInput{
-				SourceKey:      source.SourceKey,
-				Type:           BuildArtifactImage,
-				Name:           name,
-				URI:            imageName,
-				IsPrimary:      i == 0,
-				SelectorLabels: runtime.SelectorLabels,
-				Metadata:       map[string]string{"runtime_environment_id": runtime.ID.String(), "runtime_environment_name": runtime.Name, "runtime_base_image": runtime.RuntimeBaseImage},
-			})
 		}
 		return out, nil
 	}
@@ -2268,8 +2291,8 @@ func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef
 }
 
 func (s *Service) requireEnabledRuntimeEnvironments(ctx context.Context, ids []shared.ID) ([]RuntimeEnvironmentRef, error) {
-	if len(ids) == 0 {
-		return nil, shared.NewError(shared.CodeInvalidArgument, "runtime_environment_ids is required")
+	if len(ids) != 1 {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "请选择一个运行时环境")
 	}
 	out := make([]RuntimeEnvironmentRef, 0, len(ids))
 	seen := map[shared.ID]struct{}{}
@@ -2288,6 +2311,10 @@ func (s *Service) requireEnabledRuntimeEnvironments(ctx context.Context, ids []s
 		if environment.Status != RuntimeEnvironmentEnabled {
 			return nil, shared.NewError(shared.CodeFailedPrecondition, "runtime environment is disabled")
 		}
+		environment.Images = normalizeRuntimeEnvironmentImages(environment.Images)
+		if err := validateRuntimeEnvironment(environment); err != nil {
+			return nil, err
+		}
 		out = append(out, RuntimeEnvironmentRef{
 			ID:                 environment.ID,
 			Name:               environment.Name,
@@ -2295,6 +2322,7 @@ func (s *Service) requireEnabledRuntimeEnvironments(ctx context.Context, ids []s
 			ArtifactDeployPath: environment.ArtifactDeployPath,
 			DockerfilePath:     environment.DockerfilePath,
 			SelectorLabels:     normalizeSelectorLabels(environment.SelectorLabels),
+			Images:             environment.Images,
 		})
 	}
 	return out, nil
@@ -2579,26 +2607,26 @@ func defaultBuildImage() string {
 	return "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/gradle:7-jdk11"
 }
 
-func (s *Service) newRuntimeEnvironment(actorID shared.ID, name, description, runtimeBaseImage, artifactDeployPath, dockerfilePath string, selectorLabels map[string]string, isDefault bool) (RuntimeEnvironment, error) {
+func (s *Service) newRuntimeEnvironment(actorID shared.ID, name, description, runtimeBaseImage, artifactDeployPath, dockerfilePath string, selectorLabels map[string]string, images []RuntimeEnvironmentImage) (RuntimeEnvironment, error) {
 	id, err := s.ids.NewID("runtime_env")
 	if err != nil {
 		return RuntimeEnvironment{}, err
 	}
 	now := s.clock.Now()
 	environment := RuntimeEnvironment{
-		ID:                 id,
-		Name:               normalizeTemplateName(name),
-		Description:        strings.TrimSpace(description),
-		RuntimeBaseImage:   strings.TrimSpace(runtimeBaseImage),
-		ArtifactDeployPath: strings.TrimSpace(artifactDeployPath),
-		DockerfilePath:     normalizeDockerfilePath(dockerfilePath),
-		SelectorLabels:     normalizeSelectorLabels(selectorLabels),
-		Status:             RuntimeEnvironmentEnabled,
-		IsDefault:          isDefault,
-		CreatedBy:          actorID,
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		ID:          id,
+		Name:        normalizeTemplateName(name),
+		Description: strings.TrimSpace(description),
+		Images:      normalizeRuntimeEnvironmentImages(images),
+		Status:      RuntimeEnvironmentEnabled,
+		CreatedBy:   actorID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
+	if len(environment.Images) == 0 {
+		environment.Images = runtimeEnvironmentImagesOrLegacy(nil, environment.ID, environment.Name, runtimeBaseImage, artifactDeployPath, dockerfilePath, selectorLabels)
+	}
+	applyRuntimeEnvironmentFirstImage(&environment)
 	if err := validateRuntimeEnvironment(environment); err != nil {
 		return RuntimeEnvironment{}, err
 	}
@@ -2609,20 +2637,97 @@ func validateRuntimeEnvironment(environment RuntimeEnvironment) error {
 	if strings.TrimSpace(environment.Name) == "" {
 		return shared.NewError(shared.CodeInvalidArgument, "runtime environment name is required")
 	}
-	if strings.TrimSpace(environment.RuntimeBaseImage) == "" {
-		return shared.NewError(shared.CodeInvalidArgument, "runtime_base_image is required")
+	if len(environment.Images) == 0 {
+		return shared.NewError(shared.CodeInvalidArgument, "请至少配置一个运行时镜像")
 	}
-	deployPath := strings.TrimSpace(environment.ArtifactDeployPath)
-	if deployPath != "" && (!strings.HasPrefix(deployPath, "/") || strings.Contains(deployPath, "..")) {
-		return shared.NewError(shared.CodeInvalidArgument, "artifact_deploy_path must be absolute and stay under runtime root")
-	}
-	dockerfilePath := strings.TrimSpace(environment.DockerfilePath)
-	if dockerfilePath != "" {
-		if _, err := normalizeRelativePath(dockerfilePath); err != nil {
-			return shared.NewError(shared.CodeInvalidArgument, "dockerfile_path must be relative and stay under Dockerfile repository root")
+	seenNames := map[string]struct{}{}
+	seenLabels := map[string]struct{}{}
+	for _, image := range environment.Images {
+		if strings.TrimSpace(image.Name) == "" {
+			return shared.NewError(shared.CodeInvalidArgument, "运行时镜像名称不能为空")
+		}
+		if _, ok := seenNames[image.Name]; ok {
+			return shared.NewError(shared.CodeConflict, "运行时镜像名称重复")
+		}
+		seenNames[image.Name] = struct{}{}
+		if strings.TrimSpace(image.RuntimeBaseImage) == "" {
+			return shared.NewError(shared.CodeInvalidArgument, "runtime_base_image is required")
+		}
+		if len(image.SelectorLabels) == 0 {
+			return shared.NewError(shared.CodeInvalidArgument, "运行时镜像匹配标签不能为空")
+		}
+		labelKey := selectorLabelKey(image.SelectorLabels)
+		if _, ok := seenLabels[labelKey]; ok {
+			return shared.NewError(shared.CodeConflict, "运行时镜像匹配标签重复")
+		}
+		seenLabels[labelKey] = struct{}{}
+		deployPath := strings.TrimSpace(image.ArtifactDeployPath)
+		if deployPath != "" && (!strings.HasPrefix(deployPath, "/") || strings.Contains(deployPath, "..")) {
+			return shared.NewError(shared.CodeInvalidArgument, "artifact_deploy_path must be absolute and stay under runtime root")
+		}
+		dockerfilePath := strings.TrimSpace(image.DockerfilePath)
+		if dockerfilePath != "" {
+			if _, err := normalizeRelativePath(dockerfilePath); err != nil {
+				return shared.NewError(shared.CodeInvalidArgument, "dockerfile_path must be relative and stay under Dockerfile repository root")
+			}
 		}
 	}
 	return nil
+}
+
+func normalizeRuntimeEnvironmentImages(images []RuntimeEnvironmentImage) []RuntimeEnvironmentImage {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]RuntimeEnvironmentImage, 0, len(images))
+	for _, image := range images {
+		name := normalizeTemplateName(image.Name)
+		if name == "" {
+			name = normalizeTemplateName(image.DisplayName)
+		}
+		if name == "" && !image.ID.IsZero() {
+			name = image.ID.String()
+		}
+		status := strings.TrimSpace(image.Status)
+		if status == "" {
+			status = string(RuntimeEnvironmentEnabled)
+		}
+		out = append(out, RuntimeEnvironmentImage{
+			ID:                 image.ID,
+			Name:               name,
+			DisplayName:        normalizeDisplayName(image.DisplayName, name),
+			RuntimeBaseImage:   strings.TrimSpace(image.RuntimeBaseImage),
+			ArtifactDeployPath: strings.TrimSpace(image.ArtifactDeployPath),
+			DockerfilePath:     normalizeDockerfilePath(image.DockerfilePath),
+			SelectorLabels:     normalizeSelectorLabels(image.SelectorLabels),
+			Status:             status,
+		})
+	}
+	return out
+}
+
+func applyRuntimeEnvironmentFirstImage(environment *RuntimeEnvironment) {
+	environment.Images = normalizeRuntimeEnvironmentImages(environment.Images)
+	if len(environment.Images) == 0 {
+		return
+	}
+	first := environment.Images[0]
+	environment.RuntimeBaseImage = first.RuntimeBaseImage
+	environment.ArtifactDeployPath = first.ArtifactDeployPath
+	environment.DockerfilePath = first.DockerfilePath
+	environment.SelectorLabels = normalizeSelectorLabels(first.SelectorLabels)
+}
+
+func selectorLabelKey(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(labels))
+	for key, value := range labels {
+		parts = append(parts, strings.TrimSpace(key)+"="+strings.TrimSpace(value))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
 }
 
 func normalizeSelectorLabels(labels map[string]string) map[string]string {
@@ -2749,11 +2854,18 @@ func (s *Service) ensureDefaultRuntimeEnvironments(ctx context.Context, actorID 
 	seedMissingDefaults := existingPage.Total == 0
 	now := s.clock.Now()
 	defaults := []RuntimeEnvironment{
-		{ID: "runtime_env_springboot_jdk11_aliyun", Name: "springboot-jdk11-aliyun", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis", DockerfilePath: "java/jar/Dockerfile", Status: RuntimeEnvironmentEnabled, IsDefault: true, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
-		{ID: "runtime_env_tomcat_jdk11_aliyun", Name: "tomcat-jdk11-aliyun", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis", DockerfilePath: "java/tomcat/Dockerfile", Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
-		{ID: "runtime_env_tomcat_jdk11_aws", Name: "tomcat-jdk11-aws", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023", DockerfilePath: "java/tomcat/Dockerfile", Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
-		{ID: "runtime_env_springboot_jdk11_aws", Name: "springboot-jdk11-aws", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023", DockerfilePath: "java/jar/Dockerfile", Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
-		{ID: "runtime_env_nginx1221", Name: "nginx1221", RuntimeBaseImage: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1", DockerfilePath: "nginx/Dockerfile", Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now},
+		runtimeEnvironmentDefault("runtime_env_springboot_jdk11", "springboot-jdk11", actorID, now, []RuntimeEnvironmentImage{
+			runtimeEnvironmentImageDefault("runtime_image_springboot_jdk11_aliyun", "aliyun", "阿里云 Dragonwell", "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis", "java/jar/Dockerfile", map[string]string{"cloud": "aliyun"}),
+			runtimeEnvironmentImageDefault("runtime_image_springboot_jdk11_aws", "aws", "AWS Corretto", "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023", "java/jar/Dockerfile", map[string]string{"cloud": "aws"}),
+		}),
+		runtimeEnvironmentDefault("runtime_env_tomcat_jdk11", "tomcat-jdk11", actorID, now, []RuntimeEnvironmentImage{
+			runtimeEnvironmentImageDefault("runtime_image_tomcat_jdk11_aliyun", "aliyun", "阿里云 Tomcat", "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis", "java/tomcat/Dockerfile", map[string]string{"cloud": "aliyun"}),
+			runtimeEnvironmentImageDefault("runtime_image_tomcat_jdk11_aws", "aws", "AWS Tomcat", "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023", "java/tomcat/Dockerfile", map[string]string{"cloud": "aws"}),
+		}),
+		runtimeEnvironmentDefault("runtime_env_nginx1221", "nginx1221", actorID, now, []RuntimeEnvironmentImage{
+			runtimeEnvironmentImageDefault("runtime_image_nginx1221_aliyun", "aliyun", "阿里云 Nginx", "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1", "nginx/Dockerfile", map[string]string{"cloud": "aliyun"}),
+			runtimeEnvironmentImageDefault("runtime_image_nginx1221_aws", "aws", "AWS Nginx", "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1", "nginx/Dockerfile", map[string]string{"cloud": "aws"}),
+		}),
 	}
 	for _, environment := range defaults {
 		existing, err := s.repo.GetRuntimeEnvironment(ctx, environment.ID)
@@ -2761,8 +2873,9 @@ func (s *Service) ensureDefaultRuntimeEnvironments(ctx context.Context, actorID 
 			if existing.Status == RuntimeEnvironmentDeleted {
 				continue
 			}
-			if strings.TrimSpace(existing.DockerfilePath) == "" && strings.TrimSpace(environment.DockerfilePath) != "" {
-				existing.DockerfilePath = environment.DockerfilePath
+			if len(existing.Images) == 0 {
+				existing.Images = environment.Images
+				applyRuntimeEnvironmentFirstImage(&existing)
 				existing.UpdatedAt = now
 				if err := s.repo.UpdateRuntimeEnvironment(ctx, existing); err != nil {
 					return err
@@ -2788,6 +2901,24 @@ func repoCreateRuntimeEnvironment(ctx context.Context, repo Repository, environm
 		return err
 	}
 	return nil
+}
+
+func runtimeEnvironmentDefault(id, name string, actorID shared.ID, now time.Time, images []RuntimeEnvironmentImage) RuntimeEnvironment {
+	environment := RuntimeEnvironment{ID: shared.ID(id), Name: name, Images: normalizeRuntimeEnvironmentImages(images), Status: RuntimeEnvironmentEnabled, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now}
+	applyRuntimeEnvironmentFirstImage(&environment)
+	return environment
+}
+
+func runtimeEnvironmentImageDefault(id, name, displayName, baseImage, dockerfilePath string, labels map[string]string) RuntimeEnvironmentImage {
+	return RuntimeEnvironmentImage{
+		ID:               shared.ID(id),
+		Name:             name,
+		DisplayName:      displayName,
+		RuntimeBaseImage: baseImage,
+		DockerfilePath:   dockerfilePath,
+		SelectorLabels:   labels,
+		Status:           string(RuntimeEnvironmentEnabled),
+	}
 }
 
 func normalizeSensitiveValues(values []string) []string {

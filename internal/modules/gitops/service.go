@@ -476,7 +476,7 @@ func resolvePromotionArtifactsForBinding(artifacts []delivery.GitOpsArtifactSpec
 			}
 		}
 		if len(matches) != 1 {
-			return nil, shared.NewError(shared.CodeFailedPrecondition, fmt.Sprintf("image bundle for workload %s does not match target cluster %s uniquely", artifact.WorkloadID, binding.ClusterID))
+			return nil, shared.NewError(shared.CodeFailedPrecondition, "当前版本不适用于目标环境，请联系平台管理员检查运行时镜像配置")
 		}
 		match := matches[0]
 		artifact.URI = match.URI

@@ -5,13 +5,13 @@ export type Role = { id: string; name: string; permissions: string[]; suggestedS
 export type Member = { userId: string; username: string; displayName: string; email?: string; disabled: boolean; roleId: string; createdAt: string; updatedAt: string };
 export type StringMap = Record<string, string>;
 export type Application = { id: string; name: string; displayName: string; project: string; projectId?: string; description?: string; runtimeEnvironmentId?: string; runtimeEnvironments?: ApplicationRuntimeEnvironment[]; status?: string; type: string; stageStatus: string; build: string; release: string; owner: string; updatedAt: string };
-export type ApplicationRuntimeEnvironment = { id: string; name: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string; selectorLabels?: StringMap };
+export type ApplicationRuntimeEnvironment = { id: string; name: string; runtimeBaseImage?: string; artifactDeployPath?: string; dockerfilePath?: string };
 export type ApplicationSource = { id?: string; key: string; displayName: string; sourceRepositoryId: string; jenkinsTemplateId?: string; buildEnvironmentId?: string; sourcePath: string; defaultRef: string; isPrimary: boolean; buildSpec: { sourcePath: string; buildCommand: string; artifactCopyCommand: string; runtimeBaseImage?: string; artifactDeployPath?: string; defaultRef: string } };
 export type BuildPipelineSource = ApplicationSource & { pipelineId?: string };
 export type BuildPipeline = { id: string; applicationId: string; name: string; displayName: string; description?: string; status: string; externalJobName?: string; runtimeEnvironments?: RuntimeEnvironment[]; sources?: BuildPipelineSource[]; updatedAt: string };
 export type BuildRun = { id: string; application: string; pipeline?: string; pipelineId?: string; status: string; ref: string; commit: string; startedAt: string; duration: string };
 export type AuditLog = { id: string; actor: string; action: string; resource: string; result: string; summary: string; time: string };
-export type ImageBundleImage = { id: string; imageBundleId: string; buildArtifactId?: string; runtimeEnvironmentId?: string; runtimeEnvironmentName?: string; image: string; digest?: string; selectorLabels?: StringMap; isPrimary?: boolean };
+export type ImageBundleImage = { id: string; imageBundleId: string; buildArtifactId?: string; runtimeEnvironmentId?: string; runtimeEnvironmentName?: string; image: string; digest?: string };
 export type FreightItem = { id: string; workloadId: string; workloadName: string; workloadDisplayName: string; sourceType: 'pipeline_artifact' | 'custom_image'; releaseId?: string; buildArtifactId?: string; imageBundleId?: string; bundleImages?: ImageBundleImage[]; image: string; digest?: string; commit?: string };
 export type Freight = { id: string; version: string; image: string; digest: string; commit: string; createdAt: string; status?: 'available' | 'archived'; items?: FreightItem[] };
 export type WorkloadType = 'deployment' | 'statefulset';
@@ -80,7 +80,8 @@ export type BuildSpecSuggestion = { sourcePath: string; buildCommand: string; ar
 export type JenkinsJobTemplate = { id: string; name: string; version: number; status: string; isDefault: boolean; jenkinsfileContent?: string; xmlContent?: string; updatedAt: string };
 export type BuildType = JenkinsJobTemplate;
 export type BuildEnvironment = { id: string; name: string; description?: string; buildImage?: string; status: string; isDefault: boolean; updatedAt: string };
-export type RuntimeEnvironment = { id: string; name: string; description?: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string; selectorLabels?: StringMap; status: string; isDefault: boolean; updatedAt: string };
+export type RuntimeEnvironmentImage = { id?: string; name: string; displayName?: string; runtimeBaseImage: string; artifactDeployPath?: string; dockerfilePath?: string; selectorLabels?: StringMap; status?: string };
+export type RuntimeEnvironment = { id: string; name: string; description?: string; runtimeBaseImage?: string; artifactDeployPath?: string; dockerfilePath?: string; selectorLabels?: StringMap; images?: RuntimeEnvironmentImage[]; status: string; updatedAt: string };
 export type BuildTemplate = { id: string; name: string; version: number; content: string; updatedAt: string };
 
 const DELIVERY_FLOW_COLUMN_COLORS = ['#ED204E', '#FD5352', '#FE7537', '#e78a00', '#DFC546', '#9bce22', '#84DF75', '#1CAC77', '#1bc1a7', '#1DCECA', '#0DAFD3', '#3882EA', '#2D5EDC', '#6380E1', '#7851AA', '#A9499D', '#D0469D', '#E573A2', '#f1619b', '#FE43A3', '#6a7382'];
@@ -135,11 +136,18 @@ const buildEnvironments: BuildEnvironment[] = [
   { id: 'build_env_node22', name: 'node22', buildImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/node:22.14.0-bookworm', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' }
 ];
 const runtimeEnvironments: RuntimeEnvironment[] = [
-  { id: 'runtime_env_springboot_jdk11_aliyun', name: 'springboot-jdk11-aliyun', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', artifactDeployPath: '', dockerfilePath: 'java/jar/Dockerfile', selectorLabels: { cloud: 'aliyun' }, status: 'enabled', isDefault: true, updatedAt: '2026-05-31 10:00' },
-  { id: 'runtime_env_tomcat_jdk11_aliyun', name: 'tomcat-jdk11-aliyun', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis', artifactDeployPath: '', dockerfilePath: 'java/tomcat/Dockerfile', selectorLabels: { cloud: 'aliyun' }, status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
-  { id: 'runtime_env_tomcat_jdk11_aws', name: 'tomcat-jdk11-aws', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023', artifactDeployPath: '', dockerfilePath: 'java/tomcat/Dockerfile', selectorLabels: { cloud: 'aws' }, status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
-  { id: 'runtime_env_springboot_jdk11_aws', name: 'springboot-jdk11-aws', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023', artifactDeployPath: '', dockerfilePath: 'java/jar/Dockerfile', selectorLabels: { cloud: 'aws' }, status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' },
-  { id: 'runtime_env_nginx1221', name: 'nginx1221', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1', artifactDeployPath: '', dockerfilePath: 'nginx/Dockerfile', status: 'enabled', isDefault: false, updatedAt: '2026-05-31 10:00' }
+  { id: 'runtime_env_springboot_jdk11', name: 'springboot-jdk11', description: 'Spring Boot JDK 11', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', dockerfilePath: 'java/jar/Dockerfile', selectorLabels: { cloud: 'aliyun' }, images: [
+    { id: 'runtime_image_springboot_jdk11_aliyun', name: 'aliyun', displayName: '阿里云 Dragonwell', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', dockerfilePath: 'java/jar/Dockerfile', selectorLabels: { cloud: 'aliyun' }, status: 'enabled' },
+    { id: 'runtime_image_springboot_jdk11_aws', name: 'aws', displayName: 'AWS Corretto', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023', dockerfilePath: 'java/jar/Dockerfile', selectorLabels: { cloud: 'aws' }, status: 'enabled' }
+  ], status: 'enabled', updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_tomcat_jdk11', name: 'tomcat-jdk11', description: 'Tomcat JDK 11', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis', dockerfilePath: 'java/tomcat/Dockerfile', selectorLabels: { cloud: 'aliyun' }, images: [
+    { id: 'runtime_image_tomcat_jdk11_aliyun', name: 'aliyun', displayName: '阿里云 Tomcat', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis', dockerfilePath: 'java/tomcat/Dockerfile', selectorLabels: { cloud: 'aliyun' }, status: 'enabled' },
+    { id: 'runtime_image_tomcat_jdk11_aws', name: 'aws', displayName: 'AWS Tomcat', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023', dockerfilePath: 'java/tomcat/Dockerfile', selectorLabels: { cloud: 'aws' }, status: 'enabled' }
+  ], status: 'enabled', updatedAt: '2026-05-31 10:00' },
+  { id: 'runtime_env_nginx1221', name: 'nginx1221', description: 'Nginx 1.22.1', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1', dockerfilePath: 'nginx/Dockerfile', selectorLabels: { cloud: 'aliyun' }, images: [
+    { id: 'runtime_image_nginx1221_aliyun', name: 'aliyun', displayName: '阿里云 Nginx', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1', dockerfilePath: 'nginx/Dockerfile', selectorLabels: { cloud: 'aliyun' }, status: 'enabled' },
+    { id: 'runtime_image_nginx1221_aws', name: 'aws', displayName: 'AWS Nginx', runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1', dockerfilePath: 'nginx/Dockerfile', selectorLabels: { cloud: 'aws' }, status: 'enabled' }
+  ], status: 'enabled', updatedAt: '2026-05-31 10:00' }
 ];
 let buildTemplate: BuildTemplate = {
   id: 'global-build-template',
@@ -252,13 +260,13 @@ const enabledWorkloads: Workload[] = [
   }
 ];
 const imageBundleImages = (workload: 'frontend' | 'api' | 'worker', version: string, digestPrefix: string): ImageBundleImage[] => [
-  { id: `bundle_image_${workload}_${version}_aliyun`, imageBundleId: `image_bundle_${workload}_${version}`, runtimeEnvironmentId: `runtime_env_${workload}_aliyun`, runtimeEnvironmentName: '阿里云基础镜像', image: `registry.local/order-${workload}:${version}-aliyun`, digest: `sha256:${digestPrefix}aliyun`, selectorLabels: { cloud: 'aliyun' }, isPrimary: true },
-  { id: `bundle_image_${workload}_${version}_aws`, imageBundleId: `image_bundle_${workload}_${version}`, runtimeEnvironmentId: `runtime_env_${workload}_aws`, runtimeEnvironmentName: 'AWS 基础镜像', image: `registry.local/order-${workload}:${version}-aws`, digest: `sha256:${digestPrefix}aws`, selectorLabels: { cloud: 'aws' } }
+  { id: `bundle_image_${workload}_${version}_aliyun`, imageBundleId: `image_bundle_${workload}_${version}`, runtimeEnvironmentId: `runtime_env_${workload}_aliyun`, runtimeEnvironmentName: '适配镜像 A', image: `registry.local/order-${workload}:${version}-a`, digest: `sha256:${digestPrefix}a` },
+  { id: `bundle_image_${workload}_${version}_aws`, imageBundleId: `image_bundle_${workload}_${version}`, runtimeEnvironmentId: `runtime_env_${workload}_aws`, runtimeEnvironmentName: '适配镜像 B', image: `registry.local/order-${workload}:${version}-b`, digest: `sha256:${digestPrefix}b` }
 ];
 const latestReleasesByWorkload: Record<string, ReleaseCandidate> = {
-  workload_frontend: { id: 'release_frontend_20260611', workloadId: 'workload_frontend', version: '20260611.1', image: 'registry.local/order-frontend:20260611.1-aliyun', digest: 'sha256:frontaliyun', commit: 'a11b22c', buildArtifactId: 'artifact_frontend_20260611', imageBundleId: 'image_bundle_frontend_20260611.1', bundleImages: imageBundleImages('frontend', '20260611.1', 'front'), createdAt: '2026-06-11 09:00' },
-  workload_api: { id: 'release_api_20260611', workloadId: 'workload_api', version: '20260611.1', image: 'registry.local/order-api:20260611.1-aliyun', digest: 'sha256:apialiyun', commit: 'd33e44f', buildArtifactId: 'artifact_api_20260611', imageBundleId: 'image_bundle_api_20260611.1', bundleImages: imageBundleImages('api', '20260611.1', 'api'), createdAt: '2026-06-11 09:02' },
-  workload_worker: { id: 'release_worker_20260611', workloadId: 'workload_worker', version: '20260611.1', image: 'registry.local/order-worker:20260611.1-aliyun', digest: 'sha256:workeraliyun', commit: 'g55h66i', buildArtifactId: 'artifact_worker_20260611', imageBundleId: 'image_bundle_worker_20260611.1', bundleImages: imageBundleImages('worker', '20260611.1', 'worker'), createdAt: '2026-06-11 09:04' }
+  workload_frontend: { id: 'release_frontend_20260611', workloadId: 'workload_frontend', version: '20260611.1', image: 'registry.local/order-frontend:20260611.1', digest: 'sha256:front', commit: 'a11b22c', buildArtifactId: 'artifact_frontend_20260611', imageBundleId: 'image_bundle_frontend_20260611.1', bundleImages: imageBundleImages('frontend', '20260611.1', 'front'), createdAt: '2026-06-11 09:00' },
+  workload_api: { id: 'release_api_20260611', workloadId: 'workload_api', version: '20260611.1', image: 'registry.local/order-api:20260611.1', digest: 'sha256:api', commit: 'd33e44f', buildArtifactId: 'artifact_api_20260611', imageBundleId: 'image_bundle_api_20260611.1', bundleImages: imageBundleImages('api', '20260611.1', 'api'), createdAt: '2026-06-11 09:02' },
+  workload_worker: { id: 'release_worker_20260611', workloadId: 'workload_worker', version: '20260611.1', image: 'registry.local/order-worker:20260611.1', digest: 'sha256:worker', commit: 'g55h66i', buildArtifactId: 'artifact_worker_20260611', imageBundleId: 'image_bundle_worker_20260611.1', bundleImages: imageBundleImages('worker', '20260611.1', 'worker'), createdAt: '2026-06-11 09:04' }
 };
 const latestArtifactsByWorkload: Record<string, BuildArtifactCandidate> = {
   workload_frontend: { id: 'artifact_frontend_20260611', workloadId: 'workload_frontend', image: 'registry.local/order-frontend:20260611.1', digest: 'sha256:front111', createdAt: '2026-06-11 09:00' },
@@ -266,9 +274,9 @@ const latestArtifactsByWorkload: Record<string, BuildArtifactCandidate> = {
   workload_worker: { id: 'artifact_worker_20260611', workloadId: 'workload_worker', image: 'registry.local/order-worker:20260611.1', digest: 'sha256:worker111', createdAt: '2026-06-11 09:04' }
 };
 const freightItems = (version: string): FreightItem[] => [
-  { id: `item_frontend_${version}`, workloadId: 'workload_frontend', workloadName: 'frontend', workloadDisplayName: '前端入口', sourceType: 'pipeline_artifact', releaseId: `release_frontend_${version}`, buildArtifactId: `artifact_frontend_${version}`, imageBundleId: `image_bundle_frontend_${version}`, bundleImages: imageBundleImages('frontend', version, `front${version.replace(/\D/g, '').slice(-3)}`), image: `registry.local/order-frontend:${version}-aliyun`, digest: `sha256:front${version.replace(/\D/g, '').slice(-3)}aliyun`, commit: 'a11b22c' },
-  { id: `item_api_${version}`, workloadId: 'workload_api', workloadName: 'api', workloadDisplayName: '订单接口', sourceType: 'pipeline_artifact', releaseId: `release_api_${version}`, buildArtifactId: `artifact_api_${version}`, imageBundleId: `image_bundle_api_${version}`, bundleImages: imageBundleImages('api', version, `api${version.replace(/\D/g, '').slice(-3)}`), image: `registry.local/order-api:${version}-aliyun`, digest: `sha256:api${version.replace(/\D/g, '').slice(-3)}aliyun`, commit: 'd33e44f' },
-  { id: `item_worker_${version}`, workloadId: 'workload_worker', workloadName: 'worker', workloadDisplayName: '异步任务', sourceType: version === '20260610.1' ? 'custom_image' : 'pipeline_artifact', releaseId: `release_worker_${version}`, buildArtifactId: `artifact_worker_${version}`, imageBundleId: version === '20260610.1' ? undefined : `image_bundle_worker_${version}`, bundleImages: version === '20260610.1' ? undefined : imageBundleImages('worker', version, `worker${version.replace(/\D/g, '').slice(-3)}`), image: `registry.local/order-worker:${version}${version === '20260610.1' ? '' : '-aliyun'}`, digest: `sha256:worker${version.replace(/\D/g, '').slice(-3)}${version === '20260610.1' ? '' : 'aliyun'}`, commit: 'g55h66i' }
+  { id: `item_frontend_${version}`, workloadId: 'workload_frontend', workloadName: 'frontend', workloadDisplayName: '前端入口', sourceType: 'pipeline_artifact', releaseId: `release_frontend_${version}`, buildArtifactId: `artifact_frontend_${version}`, imageBundleId: `image_bundle_frontend_${version}`, bundleImages: imageBundleImages('frontend', version, `front${version.replace(/\D/g, '').slice(-3)}`), image: `registry.local/order-frontend:${version}`, digest: `sha256:front${version.replace(/\D/g, '').slice(-3)}`, commit: 'a11b22c' },
+  { id: `item_api_${version}`, workloadId: 'workload_api', workloadName: 'api', workloadDisplayName: '订单接口', sourceType: 'pipeline_artifact', releaseId: `release_api_${version}`, buildArtifactId: `artifact_api_${version}`, imageBundleId: `image_bundle_api_${version}`, bundleImages: imageBundleImages('api', version, `api${version.replace(/\D/g, '').slice(-3)}`), image: `registry.local/order-api:${version}`, digest: `sha256:api${version.replace(/\D/g, '').slice(-3)}`, commit: 'd33e44f' },
+  { id: `item_worker_${version}`, workloadId: 'workload_worker', workloadName: 'worker', workloadDisplayName: '异步任务', sourceType: version === '20260610.1' ? 'custom_image' : 'pipeline_artifact', releaseId: `release_worker_${version}`, buildArtifactId: `artifact_worker_${version}`, imageBundleId: version === '20260610.1' ? undefined : `image_bundle_worker_${version}`, bundleImages: version === '20260610.1' ? undefined : imageBundleImages('worker', version, `worker${version.replace(/\D/g, '').slice(-3)}`), image: `registry.local/order-worker:${version}`, digest: `sha256:worker${version.replace(/\D/g, '').slice(-3)}`, commit: 'g55h66i' }
 ];
 const freights: Freight[] = [
   { id: 'freight_20260611_1', version: '20260611.1', image: '3 个 Workload', digest: '-', commit: 'a11b22c', createdAt: '2026-06-11 09:12', items: freightItems('20260611.1') },
@@ -1147,12 +1155,43 @@ export async function listAdminBuildEnvironments(): Promise<BuildEnvironment[]> 
 
 export async function listRuntimeEnvironments(): Promise<RuntimeEnvironment[]> {
   await wait();
-  return runtimeEnvironments.filter((item) => item.status === 'enabled').map((item) => ({ ...item }));
+  return runtimeEnvironments.filter((item) => item.status === 'enabled').map(publicRuntimeEnvironment);
 }
 
 export async function listAdminRuntimeEnvironments(): Promise<RuntimeEnvironment[]> {
   await wait();
   return runtimeEnvironments.map((item) => ({ ...item }));
+}
+
+function publicRuntimeEnvironment(item: RuntimeEnvironment): RuntimeEnvironment {
+  return {
+    id: item.id,
+    name: item.name,
+    description: item.description,
+    status: item.status,
+    updatedAt: item.updatedAt
+  };
+}
+
+function normalizeRuntimeEnvironmentImages(input: Partial<RuntimeEnvironment>): RuntimeEnvironmentImage[] {
+  const images = input.images && input.images.length > 0 ? input.images : [{
+    name: input.name || 'default',
+    displayName: input.name || '默认镜像',
+    runtimeBaseImage: input.runtimeBaseImage || 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis',
+    artifactDeployPath: input.artifactDeployPath || '',
+    dockerfilePath: input.dockerfilePath || 'java/jar/Dockerfile',
+    selectorLabels: input.selectorLabels || { cloud: 'aliyun' },
+    status: input.status || 'enabled'
+  }];
+  return images.map((image, index) => ({
+    ...image,
+    id: image.id || `runtime_image_${Date.now()}_${index}`,
+    displayName: image.displayName || image.name,
+    artifactDeployPath: image.artifactDeployPath || '',
+    dockerfilePath: image.dockerfilePath || '',
+    selectorLabels: image.selectorLabels || {},
+    status: image.status || 'enabled'
+  }));
 }
 
 export async function createBuildEnvironment(input: Partial<BuildEnvironment>) {
@@ -1181,8 +1220,20 @@ export async function deleteBuildEnvironment(id: string) {
 
 export async function createRuntimeEnvironment(input: Partial<RuntimeEnvironment>) {
   await wait();
-  if (input.isDefault) runtimeEnvironments.forEach((item) => { item.isDefault = false; });
-  const item: RuntimeEnvironment = { id: `runtime_env_${Date.now()}`, name: input.name || 'custom-runtime', runtimeBaseImage: input.runtimeBaseImage || 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', artifactDeployPath: input.artifactDeployPath || '', dockerfilePath: input.dockerfilePath || 'java/jar/Dockerfile', selectorLabels: input.selectorLabels, status: 'enabled', isDefault: !!input.isDefault, updatedAt: '刚刚' };
+  const images = normalizeRuntimeEnvironmentImages(input);
+  const firstImage = images[0];
+  const item: RuntimeEnvironment = {
+    id: `runtime_env_${Date.now()}`,
+    name: input.name || 'custom-runtime',
+    description: input.description || '',
+    runtimeBaseImage: firstImage?.runtimeBaseImage,
+    artifactDeployPath: firstImage?.artifactDeployPath || '',
+    dockerfilePath: firstImage?.dockerfilePath || '',
+    selectorLabels: firstImage?.selectorLabels,
+    images,
+    status: input.status || 'enabled',
+    updatedAt: '刚刚'
+  };
   runtimeEnvironments.unshift(item);
   return { ...item };
 }
@@ -1191,8 +1242,18 @@ export async function updateRuntimeEnvironment(id: string, input: Partial<Runtim
   await wait();
   const index = runtimeEnvironments.findIndex((item) => item.id === id);
   if (index < 0) throw new Error('运行时环境不存在');
-  if (input.isDefault) runtimeEnvironments.forEach((item) => { item.isDefault = false; });
-  runtimeEnvironments[index] = { ...runtimeEnvironments[index], ...input, updatedAt: '刚刚' };
+  const merged = { ...runtimeEnvironments[index], ...input };
+  const images = normalizeRuntimeEnvironmentImages(merged);
+  const firstImage = images[0];
+  runtimeEnvironments[index] = {
+    ...merged,
+    runtimeBaseImage: firstImage?.runtimeBaseImage,
+    artifactDeployPath: firstImage?.artifactDeployPath || '',
+    dockerfilePath: firstImage?.dockerfilePath || '',
+    selectorLabels: firstImage?.selectorLabels,
+    images,
+    updatedAt: '刚刚'
+  };
   return { ...runtimeEnvironments[index] };
 }
 
@@ -1273,7 +1334,7 @@ export async function createApplication(input: any) {
 
 export async function listBuildPipelines(applicationId: string): Promise<BuildPipeline[]> {
   await wait();
-  return (buildPipelines[applicationId] || []).map((pipeline) => ({ ...pipeline, runtimeEnvironments: pipeline.runtimeEnvironments?.map((runtime) => ({ ...runtime })), sources: pipeline.sources?.map((source) => ({ ...source, buildSpec: { ...source.buildSpec } })) }));
+  return (buildPipelines[applicationId] || []).map((pipeline) => ({ ...pipeline, runtimeEnvironments: pipeline.runtimeEnvironments?.map(publicRuntimeEnvironment), sources: pipeline.sources?.map((source) => ({ ...source, buildSpec: { ...source.buildSpec } })) }));
 }
 
 export async function createBuildPipeline(applicationId: string, input: Omit<BuildPipeline, 'id' | 'applicationId' | 'status' | 'updatedAt' | 'runtimeEnvironments'> & { runtimeEnvironmentIds?: string[]; sources: BuildPipelineSource[] }) {
@@ -1289,7 +1350,7 @@ export async function createBuildPipeline(applicationId: string, input: Omit<Bui
     status: 'active',
     externalJobName: '',
     updatedAt: '刚刚',
-    runtimeEnvironments: runtimeSnapshots.map((runtime) => ({ ...runtime })),
+    runtimeEnvironments: runtimeSnapshots.map(publicRuntimeEnvironment),
     sources: input.sources.map((source, index) => ({ ...source, id: `pipeline_source_${Date.now()}_${index}`, pipelineId: id, displayName: source.displayName || source.key, isPrimary: index === 0, buildSpec: { ...source.buildSpec } }))
   };
   buildPipelines[applicationId] = [pipeline, ...(buildPipelines[applicationId] || [])];
@@ -1317,11 +1378,11 @@ export async function updateBuildPipeline(pipelineId: string, input: Partial<Omi
         ...existing,
         displayName: input.displayName || existing.displayName,
         description: input.description || '',
-        runtimeEnvironments: runtimeSnapshots.map((runtime) => ({ ...runtime })),
+        runtimeEnvironments: runtimeSnapshots.map(publicRuntimeEnvironment),
         sources,
         updatedAt: '刚刚'
       };
-      return { ...pipelines[index], runtimeEnvironments: pipelines[index].runtimeEnvironments?.map((runtime) => ({ ...runtime })), sources: pipelines[index].sources?.map((source) => ({ ...source, buildSpec: { ...source.buildSpec } })) };
+      return { ...pipelines[index], runtimeEnvironments: pipelines[index].runtimeEnvironments?.map(publicRuntimeEnvironment), sources: pipelines[index].sources?.map((source) => ({ ...source, buildSpec: { ...source.buildSpec } })) };
     }
   }
   throw new Error('流水线不存在');

@@ -1,5 +1,5 @@
 import Editor, { type BeforeMount } from '@monaco-editor/react';
-import { DeleteOutlined, EditOutlined, SaveOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Card, Form, Input, List, Modal, Popconfirm, Select, Space, Switch, Tabs, Tag, Typography, message } from 'antd';
 import { useEffect, useState } from 'react';
@@ -96,7 +96,7 @@ function RuntimeEnvironmentTab() {
   const deleteMutation = useMutation({ mutationFn: deleteRuntimeEnvironment, onSuccess: () => { message.success('运行时环境已删除'); refresh(); }, onError: showError('运行时环境删除失败') });
 
   useEffect(() => {
-    if (editing) editForm.setFieldsValue({ ...editing, selectorLabelsText: formatLabels(editing.selectorLabels) });
+    if (editing) editForm.setFieldsValue(runtimeEnvironmentFormFields(editing));
   }, [editForm, editing]);
 
   return (
@@ -114,15 +114,13 @@ function RuntimeEnvironmentTab() {
               <Space size={6} wrap>
                 <Typography.Text strong>{item.name}</Typography.Text>
                 <Tag color={item.status === 'enabled' ? 'green' : 'default'}>{item.status === 'enabled' ? '已启用' : '已停用'}</Tag>
-                {item.isDefault && <Tag color="blue">默认</Tag>}
               </Space>
-              <Typography.Text type="secondary">{item.runtimeBaseImage} · {item.artifactDeployPath || '-'} · {item.dockerfilePath || '-'}</Typography.Text>
-              <Space size={[4, 4]} wrap>{labelTags(item.selectorLabels)}</Space>
+              <Typography.Text type="secondary">{runtimeImageSummary(item)}</Typography.Text>
+              <Space size={[4, 4]} wrap>{runtimeImageTags(item)}</Space>
             </div>
             <Space wrap>
               <Button size="small" icon={<EditOutlined />} onClick={() => setEditing(item)}>编辑</Button>
               <Button size="small" onClick={() => updateMutation.mutate({ id: item.id, input: { ...item, status: item.status === 'enabled' ? 'disabled' : 'enabled' } })}>{item.status === 'enabled' ? '停用' : '启用'}</Button>
-              <Button size="small" disabled={item.isDefault} onClick={() => updateMutation.mutate({ id: item.id, input: { ...item, isDefault: true, status: item.status } })}>设为默认</Button>
               <Popconfirm title="确认删除该运行时环境？" okText="删除" cancelText="取消" onConfirm={() => deleteMutation.mutate(item.id)}><Button size="small" danger icon={<DeleteOutlined />}>删除</Button></Popconfirm>
             </Space>
           </List.Item>
@@ -154,12 +152,41 @@ function RuntimeEnvironmentFields({ editing = false }: { editing?: boolean }) {
     <>
       <Form.Item label="名称" name="name" rules={[{ required: true, message: '请输入名称' }]}><Input disabled={editing} /></Form.Item>
       <Form.Item label="描述" name="description"><Input.TextArea rows={2} /></Form.Item>
-      <Form.Item label="运行时镜像" name="runtimeBaseImage" rules={[{ required: true, message: '请输入运行时镜像' }]}><Input /></Form.Item>
-      <Form.Item label="产物放置路径" name="artifactDeployPath"><Input /></Form.Item>
-      <Form.Item label="Dockerfile路径" name="dockerfilePath"><Input placeholder="java/jar/Dockerfile" /></Form.Item>
-      <Form.Item label="选择标签" name="selectorLabelsText"><Input placeholder="cloud=aliyun, os=anolis" /></Form.Item>
+      <Form.List name="images">
+        {(fields, { add, remove }) => (
+          <div className="pipeline-source-list">
+            <Typography.Text strong>镜像配置</Typography.Text>
+            {fields.map((field) => (
+              <div key={field.key} className="pipeline-source-row">
+                <div className="pipeline-source-row-head">
+                  <Typography.Text strong>运行时镜像</Typography.Text>
+                  <Button danger type="text" icon={<DeleteOutlined />} disabled={fields.length <= 1} onClick={() => remove(field.name)}>删除</Button>
+                </div>
+                <Form.Item label="镜像名称" name={[field.name, 'name']} rules={[{ required: true, message: '请输入镜像名称' }]}>
+                  <Input placeholder="aliyun" />
+                </Form.Item>
+                <Form.Item label="显示名称" name={[field.name, 'displayName']}>
+                  <Input placeholder="阿里云 Dragonwell" />
+                </Form.Item>
+                <Form.Item label="基础镜像" name={[field.name, 'runtimeBaseImage']} rules={[{ required: true, message: '请输入基础镜像' }]}>
+                  <Input placeholder="cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis" />
+                </Form.Item>
+                <Form.Item label="产物放置路径" name={[field.name, 'artifactDeployPath']}>
+                  <Input />
+                </Form.Item>
+                <Form.Item label="Dockerfile路径" name={[field.name, 'dockerfilePath']}>
+                  <Input placeholder="java/jar/Dockerfile" />
+                </Form.Item>
+                <Form.Item label="后台匹配标签" name={[field.name, 'selectorLabelsText']} rules={[{ required: true, message: '请输入后台匹配标签' }]}>
+                  <Input placeholder="cloud=aliyun" />
+                </Form.Item>
+              </div>
+            ))}
+            <Button icon={<PlusOutlined />} onClick={() => add(defaultRuntimeEnvironmentImageValues())}>添加镜像</Button>
+          </div>
+        )}
+      </Form.List>
       {editing && <Form.Item label="状态" name="status" rules={[{ required: true, message: '请选择状态' }]}><Select options={STATUS_OPTIONS} /></Form.Item>}
-      <Form.Item label="默认项" name="isDefault" valuePropName="checked"><Switch checkedChildren="是" unCheckedChildren="否" /></Form.Item>
     </>
   );
 }
@@ -331,18 +358,72 @@ function defaultBuildEnvironmentValues() {
 
 function defaultRuntimeEnvironmentValues() {
   return {
-    name: 'springboot-jdk11-aliyun',
-    runtimeBaseImage: 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis',
+    name: 'springboot-jdk11',
+    description: 'Spring Boot JDK 11',
+    images: [
+      defaultRuntimeEnvironmentImageValues('aliyun', '阿里云 Dragonwell', 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', 'java/jar/Dockerfile', 'cloud=aliyun'),
+      defaultRuntimeEnvironmentImageValues('aws', 'AWS Corretto', 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023', 'java/jar/Dockerfile', 'cloud=aws')
+    ]
+  };
+}
+
+function defaultRuntimeEnvironmentImageValues(name = 'aliyun', displayName = '阿里云 Dragonwell', runtimeBaseImage = 'cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis', dockerfilePath = 'java/jar/Dockerfile', selectorLabelsText = 'cloud=aliyun') {
+  return {
+    name,
+    displayName,
+    runtimeBaseImage,
     artifactDeployPath: '',
-    dockerfilePath: 'java/jar/Dockerfile',
-    selectorLabelsText: 'cloud=aliyun',
-    isDefault: false
+    dockerfilePath,
+    selectorLabelsText,
+    status: 'enabled'
+  };
+}
+
+function runtimeEnvironmentFormFields(environment: RuntimeEnvironment) {
+  return {
+    ...environment,
+    images: runtimeEnvironmentImages(environment).map((image) => ({
+      ...image,
+      selectorLabelsText: formatLabels(image.selectorLabels)
+    }))
   };
 }
 
 function runtimeEnvironmentFormValues(values: any): Partial<RuntimeEnvironment> {
-  const { selectorLabelsText, ...rest } = values;
-  return { ...rest, selectorLabels: parseLabels(selectorLabelsText) };
+  const images = (values.images || []).map((image: any) => {
+    const { selectorLabelsText, ...rest } = image;
+    return { ...rest, selectorLabels: parseLabels(selectorLabelsText) };
+  });
+  return { ...values, images };
+}
+
+function runtimeEnvironmentImages(environment: RuntimeEnvironment) {
+  if (environment.images && environment.images.length > 0) return environment.images;
+  if (!environment.runtimeBaseImage) return [];
+  return [{
+    name: environment.name,
+    displayName: environment.name,
+    runtimeBaseImage: environment.runtimeBaseImage,
+    artifactDeployPath: environment.artifactDeployPath,
+    dockerfilePath: environment.dockerfilePath,
+    selectorLabels: environment.selectorLabels,
+    status: environment.status
+  }];
+}
+
+function runtimeImageSummary(environment: RuntimeEnvironment) {
+  const count = runtimeEnvironmentImages(environment).length;
+  return count > 0 ? `${count} 个后台镜像配置` : '未配置后台镜像';
+}
+
+function runtimeImageTags(environment: RuntimeEnvironment) {
+  const images = runtimeEnvironmentImages(environment);
+  if (images.length === 0) return <Tag>无镜像</Tag>;
+  return images.map((image) => (
+    <Tag key={image.id || image.name}>
+      {(image.displayName || image.name)} {image.runtimeBaseImage} {formatLabels(image.selectorLabels)}
+    </Tag>
+  ));
 }
 
 function parseLabels(text?: string): Record<string, string> | undefined {
@@ -358,11 +439,6 @@ function parseLabels(text?: string): Record<string, string> | undefined {
 
 function formatLabels(labels?: Record<string, string>) {
   return Object.entries(labels || {}).map(([key, value]) => `${key}=${value}`).join(', ');
-}
-
-function labelTags(labels?: Record<string, string>) {
-  const entries = Object.entries(labels || {});
-  return entries.length > 0 ? entries.map(([key, value]) => <Tag key={key}>{key}={value}</Tag>) : <Tag>无标签</Tag>;
 }
 
 function showError(fallback: string) {
