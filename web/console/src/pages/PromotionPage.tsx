@@ -712,7 +712,9 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
 
   const runtimeHasTopology = runtimeTopology.controllers.length > 0 || runtimeTopology.uncategorized.length > 0;
   let runtimeTopologyBody: ReactNode;
-  if (runtimeLoading && !runtimeError) {
+  if (runtimeLoading && !runtimeError && runtimeResources.length === 0) {
+    runtimeTopologyBody = <Empty description="暂无运行资源，等待快照更新" />;
+  } else if (runtimeLoading && !runtimeError) {
     runtimeTopologyBody = <div className="runtime-topology-loading"><Spin /></div>;
   } else if (runtimeError) {
     runtimeTopologyBody = (

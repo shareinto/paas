@@ -38,18 +38,38 @@ func (c *FakeControlPlaneClient) ReportTaskResult(_ context.Context, taskID stri
 }
 
 type FakeKubernetesReader struct {
-	SnapshotValue Snapshot
-	Refreshed     []string
-	Synced        []string
-	Restarted     []string
-	Logs          string
-	WatchChanges  int
-	WatchBlock    bool
-	Invalidations []RuntimeInvalidation
+	SnapshotValue        Snapshot
+	ApplicationSnapshots []Snapshot
+	Refreshed            []string
+	Synced               []string
+	Restarted            []string
+	Logs                 string
+	WatchChanges         int
+	WatchBlock           bool
+	Invalidations        []RuntimeInvalidation
 }
 
 func (r *FakeKubernetesReader) Snapshot(context.Context, []string) (Snapshot, error) {
 	return r.SnapshotValue, nil
+}
+func (r *FakeKubernetesReader) ApplicationStatusSnapshot(context.Context) (Snapshot, error) {
+	return applicationsOnlySnapshot(r.SnapshotValue), nil
+}
+func (r *FakeKubernetesReader) RunApplicationStatusCache(ctx context.Context, onChange func(Snapshot)) error {
+	snapshots := r.ApplicationSnapshots
+	if len(snapshots) == 0 {
+		snapshots = []Snapshot{applicationsOnlySnapshot(r.SnapshotValue)}
+	}
+	for _, snapshot := range snapshots {
+		if onChange != nil {
+			onChange(applicationsOnlySnapshot(snapshot))
+		}
+	}
+	if r.WatchBlock {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
 }
 func (r *FakeKubernetesReader) Watch(ctx context.Context, _ []string, onChange func()) error {
 	changes := r.WatchChanges
@@ -140,4 +160,8 @@ func runtimeInvalidationsFromResources(resources []RuntimeResource) []RuntimeInv
 		out = append(out, invalidation)
 	}
 	return out
+}
+
+func applicationsOnlySnapshot(snapshot Snapshot) Snapshot {
+	return Snapshot{Applications: append([]ArgoApplication(nil), snapshot.Applications...)}
 }

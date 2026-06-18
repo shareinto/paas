@@ -532,7 +532,7 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 		Name:          "main",
 		DisplayName:   "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{
-			"runtime_env_springboot_jdk11_aliyun",
+			"runtime_env_springboot_jdk11",
 		},
 		Sources: []build.BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: shared.ID(source.ID), SourcePath: ".", IsPrimary: true, BuildSpec: build.BuildSpec{
 			SourcePath:          ".",
@@ -714,7 +714,7 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 		Name:          "main",
 		DisplayName:   "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{
-			"runtime_env_springboot_jdk11_aliyun",
+			"runtime_env_springboot_jdk11",
 		},
 		Sources: []build.BuildPipelineSourceInput{{Key: "main", DisplayName: "主代码源", SourceRepositoryID: repo.ID, SourcePath: ".", IsPrimary: true, BuildSpec: build.BuildSpec{
 			SourcePath:          ".",

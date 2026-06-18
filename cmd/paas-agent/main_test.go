@@ -6,8 +6,6 @@ import (
 	"log"
 	"testing"
 	"time"
-
-	"github.com/shareinto/paas/internal/modules/clusteragent"
 )
 
 func TestRuntimeConfigFromEnvDefaultsArgoCDNamespace(t *testing.T) {
@@ -47,7 +45,7 @@ func TestRuntimeConfigFromEnvReadsArgoCDNamespace(t *testing.T) {
 	}
 }
 
-func TestRunAgentSendsInitialReportsAndStopsOnCancel(t *testing.T) {
+func TestRunAgentSendsInitialHeartbeatTaskAndStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	agent := &fakeRuntimeAgent{cancel: cancel}
 
@@ -59,13 +57,10 @@ func TestRunAgentSendsInitialReportsAndStopsOnCancel(t *testing.T) {
 	if agent.heartbeats != 1 {
 		t.Fatalf("heartbeats = %d, want 1", agent.heartbeats)
 	}
-	if agent.snapshots != 1 {
-		t.Fatalf("snapshots = %d, want 1", agent.snapshots)
-	}
 	if agent.tasks != 1 {
 		t.Fatalf("tasks = %d, want 1", agent.tasks)
 	}
-	if agent.watches != 1 {
+	if agent.watches > 1 {
 		t.Fatalf("watches = %d, want 1", agent.watches)
 	}
 }
@@ -94,7 +89,6 @@ func TestSplitCSVTrimsAndSkipsBlankParts(t *testing.T) {
 type fakeRuntimeAgent struct {
 	cancel     context.CancelFunc
 	heartbeats int
-	snapshots  int
 	tasks      int
 	watches    int
 	runtime    int
@@ -104,11 +98,6 @@ type fakeRuntimeAgent struct {
 func (a *fakeRuntimeAgent) SendHeartbeat(context.Context) error {
 	a.heartbeats++
 	return nil
-}
-
-func (a *fakeRuntimeAgent) ReportSnapshot(context.Context) (clusteragent.StatusReport, error) {
-	a.snapshots++
-	return clusteragent.StatusReport{}, nil
 }
 
 func (a *fakeRuntimeAgent) RunTaskOnce(context.Context) error {

@@ -55,20 +55,20 @@ func TestWebSocketRuntimeGatewayRefreshesOnlySubscribedStages(t *testing.T) {
 		})
 	}()
 	waitRuntimeSnapshot(t, snapshots)
-	if got := agent.listCalls.Load(); got != 1 {
-		t.Fatalf("first subscriber should trigger one list_resources, got %d", got)
+	if got := agent.watchCalls.Load(); got != 1 {
+		t.Fatalf("first subscriber should trigger one watch_resources, got %d", got)
 	}
 
 	agent.send(t, RuntimeWireMessage{Type: "stage_changed", ApplicationID: "app_2", StageKey: "dev"})
 	time.Sleep(100 * time.Millisecond)
-	if got := agent.listCalls.Load(); got != 1 {
-		t.Fatalf("unsubscribed stage_changed should not list resources, got %d", got)
+	if got := agent.watchCalls.Load(); got != 1 {
+		t.Fatalf("unsubscribed stage_changed should not start another watch, got %d", got)
 	}
 
 	agent.send(t, RuntimeWireMessage{Type: "stage_changed", ApplicationID: "app_1", StageKey: "dev"})
-	waitRuntimeSnapshot(t, snapshots)
-	if got := agent.listCalls.Load(); got != 2 {
-		t.Fatalf("subscribed stage_changed should refresh once, got %d", got)
+	time.Sleep(100 * time.Millisecond)
+	if got := agent.watchCalls.Load(); got != 1 {
+		t.Fatalf("subscribed stage_changed should reuse active watch, got %d", got)
 	}
 	stopWatch()
 	select {
@@ -78,6 +78,15 @@ func TestWebSocketRuntimeGatewayRefreshesOnlySubscribedStages(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatalf("watch did not stop")
+	}
+	for i := 0; i < 20; i++ {
+		if agent.cancelCalls.Load() == 1 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if got := agent.cancelCalls.Load(); got != 1 {
+		t.Fatalf("closing last subscriber should cancel agent watch, got %d", got)
 	}
 }
 
@@ -96,10 +105,12 @@ func waitRuntimeSnapshot(t *testing.T, snapshots <-chan []RuntimeResource) []Run
 }
 
 type runtimeGatewayTestAgent struct {
-	conn      *websocket.Conn
-	resources []RuntimeResourceStatus
-	listCalls atomic.Int64
-	mu        sync.Mutex
+	conn        *websocket.Conn
+	resources   []RuntimeResourceStatus
+	listCalls   atomic.Int64
+	watchCalls  atomic.Int64
+	cancelCalls atomic.Int64
+	mu          sync.Mutex
 }
 
 func (a *runtimeGatewayTestAgent) serve(ctx context.Context) {
@@ -112,11 +123,16 @@ func (a *runtimeGatewayTestAgent) serve(ctx context.Context) {
 		if err := json.Unmarshal(data, &msg); err != nil {
 			continue
 		}
-		if msg.Type != "list_resources" {
-			continue
+		switch msg.Type {
+		case "list_resources":
+			a.listCalls.Add(1)
+			a.sendMessage(ctx, RuntimeWireMessage{ID: msg.ID, Resources: a.resources, Done: true})
+		case "watch_resources":
+			a.watchCalls.Add(1)
+			a.sendMessage(ctx, RuntimeWireMessage{ID: msg.ID, Type: "snapshot", Resources: a.resources})
+		case "cancel_request":
+			a.cancelCalls.Add(1)
 		}
-		a.listCalls.Add(1)
-		a.sendMessage(ctx, RuntimeWireMessage{ID: msg.ID, Resources: a.resources, Done: true})
 	}
 }
 
