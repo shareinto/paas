@@ -22,11 +22,15 @@ node22 cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/node:22.14
 初始化默认运行环境如下：
 
 ```text
-springboot-jdk11-aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis java/jar/Dockerfile
-tomcat-jdk11-aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis java/tomcat/Dockerfile
-tomcat-jdk11-aws cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023 java/tomcat/Dockerfile
-springboot-jdk11-aws cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023 java/jar/Dockerfile
-nginx1221 cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1 nginx/Dockerfile
+springboot-jdk11
+  aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis java/jar/Dockerfile cloud=aliyun
+  aws    cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023 java/jar/Dockerfile cloud=aws
+tomcat-jdk11
+  aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis java/tomcat/Dockerfile cloud=aliyun
+  aws    cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023 java/tomcat/Dockerfile cloud=aws
+nginx1221
+  aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1 nginx/Dockerfile cloud=aliyun
+  aws    cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1 nginx/Dockerfile cloud=aws
 ```
 
 当前测试可用版本暂不支持：
@@ -64,20 +68,20 @@ default_ref
 
 - 每个流水线代码源至少声明一个产物拷贝命令。
 - 一次 Build 可以产生多个 BuildArtifact，产物通过 `source_key` 关联到代码源。
-- 构建成功回调使用 `artifacts` 数组上报多个产物；`is_primary=true` 的产物作为主产物展示。
+- 构建成功回调可以使用 `artifacts` 数组上报多个代码源产物；运行时后台镜像由平台根据流水线选择的逻辑运行时环境合成。
 
 - `artifact_copy_command` 必须把最终要进入镜像上下文的文件写入 `$PAAS_ARTIFACT_OUTPUT`。
 - 收集后平台会校验 `$PAAS_ARTIFACT_OUTPUT` 非空。
 
 ## 4. 创建构建流水线
 
-创建 Application 时只维护应用基础信息，应用下 Stage 来自租户 DeliverFlow 模板的实时投影。创建 BuildPipeline 时，代码源配置块负责让用户为每个代码源选择“构建环境”，流水线级运行时配置负责让用户选择一个或多个“运行时环境”。
+创建 Application 时只维护应用基础信息，应用下 Stage 来自租户 DeliverFlow 模板的实时投影。创建 BuildPipeline 时，代码源配置块负责让用户为每个代码源选择“构建环境”，流水线级运行时配置负责让用户选择一个逻辑“运行时环境”。
 
 用户需要填写：
 
 ```text
 流水线标识：main / release
-运行时环境：springboot-jdk11-aliyun / tomcat-jdk11-aliyun / tomcat-jdk11-aws / springboot-jdk11-aws / nginx1221
+运行时环境：springboot-jdk11 / tomcat-jdk11 / nginx1221
 构建环境：gradle7-jdk11 / node22
 源码子目录：source_path
 构建命令：build_command
@@ -102,7 +106,7 @@ PaaS 校验：
 
 - `source_path` 必须存在或可被 GitLab 仓库 API 验证。
 - 每个代码源必须选择已启用的构建环境，构建环境提供构建镜像。
-- 每条构建流水线必须选择一个或多个已启用的运行时环境；首个运行时环境作为主产物镜像目标。
+- 每条构建流水线必须且只能选择一个已启用的逻辑运行时环境；该运行时环境下的后台镜像目标由平台管理员维护，对用户无感知。
 - `build_command` 不能为空。
 - `runtime_base_image` 来自构建流水线选择的运行时环境；不在创建应用页面填写。
 - `artifact_deploy_path` 填写时必须是绝对路径，且不允许通过 `..` 路径逃逸。
@@ -175,7 +179,7 @@ Spring Boot jar 场景约定 `artifact_copy_command` 把主 jar 写为 `$PAAS_AR
 6. 构建容器挂载 Jenkins 节点持久化缓存目录 `/backup_data/paas-cache/dependencies/{cache_key}/{source_key}`，并设置 Maven、Gradle、npm、Yarn、pnpm 的常用缓存路径。
 7. 对每个 ApplicationSource 渲染独立的“收集产物 {source_key}”阶段，把产物放入平台约定输出目录。
 8. 使用 PaaS 渲染出的运行时和镜像目标准备镜像上下文。
-9. 使用 `docker buildx build --platform` 按镜像目标生成并推送多架构镜像，第一个目标为当前版本主产物。
+9. 使用 `docker buildx build --platform` 按后台镜像目标生成并推送多架构镜像；用户侧仍看到同一个流水线产物。
 10. buildx 本地缓存读取 `/backup_data/buildx-cache/{job_name}/{target_key}`，写入临时目录 `{cache_dir}.next`，构建成功后再替换原缓存目录，避免失败构建破坏可用缓存。
 11. 通过 `curl` 回调 PaaS 控制面。
 ```

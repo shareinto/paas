@@ -1,6 +1,6 @@
 import { BuildOutlined, DeleteOutlined, DeploymentUnitOutlined, EditOutlined, PlusOutlined, PlayCircleOutlined, StopOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import { Button, Card, Checkbox, Empty, Form, Input, Modal, Popconfirm, Select, Segmented, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
+import { Button, Card, Empty, Form, Input, Modal, Popconfirm, Radio, Select, Segmented, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import {
@@ -544,8 +544,9 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
   const { data: pipelines = EMPTY_LIST, isFetched: pipelinesFetched } = useQuery({ queryKey: ['build-pipelines', applicationId], queryFn: () => listBuildPipelines(applicationId), enabled: open && !!applicationId });
   const selectedRepositoryId = Form.useWatch(['sources', 0, 'sourceRepositoryId'], form);
   const selectedRuntimeIds = Form.useWatch('runtimeEnvironmentIds', form) || [];
+  const selectedRuntimeId = selectedRuntimeIds[0] || '';
   const selectedRepository = repositories.find((item: any) => item.id === selectedRepositoryId);
-  const selectedRuntimes = runtimeEnvironments.filter((item: any) => selectedRuntimeIds.includes(item.id));
+  const selectedRuntime = runtimeEnvironments.find((item: any) => item.id === selectedRuntimeId);
 
   useEffect(() => {
     if (!open) {
@@ -559,7 +560,7 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
         name: editingPipeline.name,
         displayName: editingPipeline.displayName || editingPipeline.name,
         description: editingPipeline.description,
-        runtimeEnvironmentIds: editingPipeline.runtimeEnvironments?.map((runtime) => runtime.id) || [],
+        runtimeEnvironmentIds: editingPipeline.runtimeEnvironments?.[0]?.id ? [editingPipeline.runtimeEnvironments[0].id] : [],
         sources: (editingPipeline.sources || []).map((source) => ({
           key: source.key,
           displayName: source.displayName,
@@ -575,7 +576,7 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
       return;
     }
     if (!pipelinesFetched) return;
-    const runtime = runtimeEnvironments.find((item: any) => item.isDefault) || runtimeEnvironments[0];
+    const runtime = runtimeEnvironments[0];
     const buildEnv = buildEnvironments.find((item: any) => item.isDefault) || buildEnvironments[0];
     const repo = repositories.find((item: any) => item.status === 'ready') || repositories[0];
     const defaultPipeline = nextPipelineDefaults(pipelines as BuildPipeline[]);
@@ -600,7 +601,7 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
   const mutation = useMutation({
     mutationFn: async () => {
       const values = await form.validateFields();
-      const runtimeEnvironmentIds = values.runtimeEnvironmentIds || [];
+      const runtimeEnvironmentIds = (values.runtimeEnvironmentIds || []).slice(0, 1);
       const primaryRuntime = runtimeEnvironments.find((item: RuntimeEnvironment) => item.id === runtimeEnvironmentIds[0]);
       const sources = (values.sources || []).map((source: any, index: number) => {
         return {
@@ -670,24 +671,20 @@ function CreatePipelineModal({ applicationId, projectId, open, onClose, editingP
           <Form.Item name="runtimeEnvironmentIds" rules={[{ required: true, message: '请选择运行时环境' }]} className="pipeline-runtime-field">
             <div className="pipeline-runtime-table">
               {(runtimeEnvironments as RuntimeEnvironment[]).map((runtime) => {
-                const checked = selectedRuntimeIds.includes(runtime.id);
-                const nextIds = checked ? selectedRuntimeIds.filter((id: string) => id !== runtime.id) : [...selectedRuntimeIds, runtime.id];
-                const isPrimary = selectedRuntimeIds[0] === runtime.id;
+                const checked = selectedRuntimeId === runtime.id;
                 return (
-                  <button key={runtime.id} type="button" className={checked ? 'pipeline-runtime-row selected' : 'pipeline-runtime-row'} onClick={() => form.setFieldValue('runtimeEnvironmentIds', nextIds)}>
-                    <Checkbox checked={checked} onChange={() => form.setFieldValue('runtimeEnvironmentIds', nextIds)} />
+                  <button key={runtime.id} type="button" className={checked ? 'pipeline-runtime-row selected' : 'pipeline-runtime-row'} onClick={() => form.setFieldValue('runtimeEnvironmentIds', [runtime.id])}>
+                    <Radio checked={checked} onChange={() => form.setFieldValue('runtimeEnvironmentIds', [runtime.id])} />
                     <span className="pipeline-runtime-name">{runtime.name}</span>
-                    <span className="pipeline-runtime-image">{runtime.runtimeBaseImage || '-'}</span>
-                    <span className="pipeline-runtime-state">{isPrimary ? '主产物' : checked ? '附加' : '未选择'}</span>
+                    <span className="pipeline-runtime-image">{runtime.description || '平台维护的运行时环境'}</span>
+                    <span className="pipeline-runtime-state">{checked ? '已选择' : '可选择'}</span>
                   </button>
                 );
               })}
             </div>
           </Form.Item>
           <Space wrap size={[8, 8]}>
-            {selectedRuntimes.length > 0 ? selectedRuntimes.map((runtime: RuntimeEnvironment, index: number) => (
-              <Tag key={runtime.id} color={index === 0 ? 'blue' : 'default'}>{index === 0 ? '主产物' : '附加'} {runtime.name}</Tag>
-            )) : <Typography.Text type="secondary">请选择流水线运行时环境</Typography.Text>}
+            {selectedRuntime ? <Tag color="blue">{selectedRuntime.name}</Tag> : <Typography.Text type="secondary">请选择流水线运行时环境</Typography.Text>}
           </Space>
         </section>
 

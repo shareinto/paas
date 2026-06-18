@@ -132,7 +132,7 @@ func (h *Handler) handleListEnabledRuntimeEnvironments(w http.ResponseWriter, r 
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, mapRuntimeEnvironmentPage(result, false))
 }
 
 func (h *Handler) handleListAdminRuntimeEnvironments(w http.ResponseWriter, r *http.Request) {
@@ -328,7 +328,7 @@ func (h *Handler) handleCreateBuildPipeline(w http.ResponseWriter, r *http.Reque
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, pipeline)
+	writeJSON(w, http.StatusCreated, mapBuildPipeline(pipeline))
 }
 
 func (h *Handler) handleListBuildPipelines(w http.ResponseWriter, r *http.Request) {
@@ -337,7 +337,7 @@ func (h *Handler) handleListBuildPipelines(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, mapBuildPipelinePage(result))
 }
 
 func (h *Handler) handleGetBuildPipeline(w http.ResponseWriter, r *http.Request) {
@@ -346,7 +346,7 @@ func (h *Handler) handleGetBuildPipeline(w http.ResponseWriter, r *http.Request)
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, pipeline)
+	writeJSON(w, http.StatusOK, mapBuildPipeline(pipeline))
 }
 
 func (h *Handler) handleListBuildPipelineSources(w http.ResponseWriter, r *http.Request) {
@@ -369,7 +369,7 @@ func (h *Handler) handleUpdateBuildPipeline(w http.ResponseWriter, r *http.Reque
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, pipeline)
+	writeJSON(w, http.StatusOK, mapBuildPipeline(pipeline))
 }
 
 func (h *Handler) handleDeleteBuildPipeline(w http.ResponseWriter, r *http.Request) {
@@ -597,6 +597,74 @@ func mapJenkinsTemplatePage(result shared.PageResult[JenkinsJobTemplate], includ
 		items = append(items, mapJenkinsTemplate(template, includeXML))
 	}
 	return shared.PageResult[map[string]any]{Items: items, Total: result.Total, Page: result.Page, PageSize: result.PageSize}
+}
+
+func mapRuntimeEnvironmentPage(result shared.PageResult[RuntimeEnvironment], includeImages bool) shared.PageResult[map[string]any] {
+	items := make([]map[string]any, 0, len(result.Items))
+	for _, environment := range result.Items {
+		items = append(items, mapRuntimeEnvironment(environment, includeImages))
+	}
+	return shared.PageResult[map[string]any]{Items: items, Total: result.Total, Page: result.Page, PageSize: result.PageSize}
+}
+
+func mapRuntimeEnvironment(environment RuntimeEnvironment, includeImages bool) map[string]any {
+	out := map[string]any{
+		"id":          environment.ID,
+		"name":        environment.Name,
+		"description": environment.Description,
+		"status":      environment.Status,
+		"created_by":  environment.CreatedBy,
+		"created_at":  environment.CreatedAt,
+		"updated_at":  environment.UpdatedAt,
+	}
+	if includeImages {
+		out["runtime_base_image"] = environment.RuntimeBaseImage
+		out["artifact_deploy_path"] = environment.ArtifactDeployPath
+		out["dockerfile_path"] = environment.DockerfilePath
+		out["selector_labels"] = environment.SelectorLabels
+		out["images"] = environment.Images
+	}
+	return out
+}
+
+func mapBuildPipelinePage(result shared.PageResult[BuildPipeline]) shared.PageResult[map[string]any] {
+	items := make([]map[string]any, 0, len(result.Items))
+	for _, pipeline := range result.Items {
+		items = append(items, mapBuildPipeline(pipeline))
+	}
+	return shared.PageResult[map[string]any]{Items: items, Total: result.Total, Page: result.Page, PageSize: result.PageSize}
+}
+
+func mapBuildPipeline(pipeline BuildPipeline) map[string]any {
+	return map[string]any{
+		"id":                   pipeline.ID,
+		"tenant_id":            pipeline.TenantID,
+		"project_id":           pipeline.ProjectID,
+		"application_id":       pipeline.ApplicationID,
+		"name":                 pipeline.Name,
+		"display_name":         pipeline.DisplayName,
+		"description":          pipeline.Description,
+		"provider":             pipeline.Provider,
+		"external_job_name":    pipeline.ExternalJobName,
+		"template_id":          pipeline.TemplateID,
+		"config_hash":          pipeline.ConfigHash,
+		"status":               pipeline.Status,
+		"managed_by_platform":  pipeline.ManagedByPlatform,
+		"runtime_environments": mapRuntimeEnvironmentRefs(pipeline.RuntimeEnvironments),
+		"created_at":           pipeline.CreatedAt,
+		"updated_at":           pipeline.UpdatedAt,
+	}
+}
+
+func mapRuntimeEnvironmentRefs(runtimes []RuntimeEnvironmentRef) []map[string]any {
+	items := make([]map[string]any, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		items = append(items, map[string]any{
+			"id":   runtime.ID,
+			"name": runtime.Name,
+		})
+	}
+	return items
 }
 
 func mapJenkinsTemplate(template JenkinsJobTemplate, includeXML bool) map[string]any {

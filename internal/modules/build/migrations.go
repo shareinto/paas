@@ -119,7 +119,7 @@ CREATE TABLE build_pipeline_runtime_environments (
   artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
   dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
   selector_labels_json JSON NULL,
-  position INT NOT NULL DEFAULT 0,
+  images_json JSON NULL,
   PRIMARY KEY (pipeline_id, runtime_environment_id),
   KEY idx_build_pipeline_runtime_environments_runtime (runtime_environment_id),
   CONSTRAINT fk_build_pipeline_runtime_environments_pipeline FOREIGN KEY (pipeline_id) REFERENCES build_pipelines(id)
@@ -241,13 +241,13 @@ CREATE TABLE runtime_environments (
   artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
   dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
   selector_labels_json JSON NULL,
+  images_json JSON NULL,
   status VARCHAR(32) NOT NULL,
-  is_default TINYINT(1) NOT NULL DEFAULT 0,
   created_by VARCHAR(64) NOT NULL DEFAULT '',
   created_at DATETIME(6) NOT NULL,
   updated_at DATETIME(6) NOT NULL,
   UNIQUE KEY uk_runtime_environments_name (name),
-  KEY idx_runtime_environments_status_default (status, is_default)
+  KEY idx_runtime_environments_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE build_templates (
@@ -432,27 +432,12 @@ CREATE TABLE IF NOT EXISTS build_pipeline_runtime_environments (
   runtime_base_image VARCHAR(512) NOT NULL DEFAULT '',
   artifact_deploy_path VARCHAR(512) NOT NULL DEFAULT '',
   dockerfile_path VARCHAR(512) NOT NULL DEFAULT '',
-  position INT NOT NULL DEFAULT 0,
+  selector_labels_json JSON NULL,
+  images_json JSON NULL,
   PRIMARY KEY (pipeline_id, runtime_environment_id),
   KEY idx_build_pipeline_runtime_environments_runtime (runtime_environment_id),
   CONSTRAINT fk_build_pipeline_runtime_environments_pipeline FOREIGN KEY (pipeline_id) REFERENCES build_pipelines(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-SET @application_runtime_environments_exists := (
-  SELECT COUNT(*) > 0
-  FROM information_schema.tables
-  WHERE table_schema = DATABASE()
-    AND table_name = 'application_runtime_environments'
-);
-SET @build_pipeline_runtime_backfill_sql := IF(@application_runtime_environments_exists,
-  'INSERT IGNORE INTO build_pipeline_runtime_environments (pipeline_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, position)
-   SELECT p.id, are.runtime_environment_id, are.name, are.runtime_base_image, are.artifact_deploy_path, are.dockerfile_path, are.position
-   FROM build_pipelines p
-   JOIN application_runtime_environments are ON are.application_id = p.application_id',
-  'SELECT 1');
-PREPARE build_pipeline_runtime_backfill_stmt FROM @build_pipeline_runtime_backfill_sql;
-EXECUTE build_pipeline_runtime_backfill_stmt;
-DEALLOCATE PREPARE build_pipeline_runtime_backfill_stmt;
 `,
 		Down: `
 DROP TABLE IF EXISTS build_pipeline_runtime_environments;

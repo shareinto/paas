@@ -951,7 +951,7 @@ function DeployStageNode({ data }: NodeProps<Node<StageNodeData>>) {
                 <div key={item.id} className="stage-drop-item">
                   <span>{item.workloadDisplayName || item.workloadName}</span>
                   <Typography.Text ellipsis>{item.image}</Typography.Text>
-                  {item.bundleImages?.length ? <Tag color="blue">ImageBundle · {item.bundleImages.length}</Tag> : null}
+                  {item.bundleImages?.length ? <Tag color="blue">多集群适配</Tag> : null}
                 </div>
               ))}
             </div>
@@ -1077,7 +1077,7 @@ function withStageDefaults(stage: AppStage, freights: Freight[], current: Record
 }
 
 function bundleSummary(images?: ImageBundleImage[]) {
-  return images?.length ? `ImageBundle · ${images.length} 个镜像` : '流水线产物';
+  return images?.length ? '流水线产物 · 多集群适配' : '流水线产物';
 }
 
 function stageDropState(stage: StageView, freightId: string, stageEligibility?: Record<string, string[]>): 'ready' | 'blocked' {

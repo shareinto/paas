@@ -433,7 +433,7 @@ func failedPreconditionMessage(message string) string {
 		return "GitOps 发布能力未配置，不能执行部署"
 	}
 	if strings.HasPrefix(trimmed, "image bundle for workload ") {
-		return "镜像包与目标集群标签无法唯一匹配，请检查运行时环境和集群标签"
+		return "当前版本不适用于目标环境，请联系平台管理员检查运行时镜像配置"
 	}
 	return "发布前置条件不满足"
 }

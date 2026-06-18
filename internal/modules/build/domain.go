@@ -48,18 +48,29 @@ const (
 )
 
 type RuntimeEnvironment struct {
-	ID                 shared.ID                `json:"id"`
-	Name               string                   `json:"name"`
-	Description        string                   `json:"description"`
-	RuntimeBaseImage   string                   `json:"runtime_base_image"`
-	ArtifactDeployPath string                   `json:"artifact_deploy_path"`
-	DockerfilePath     string                   `json:"dockerfile_path"`
-	SelectorLabels     map[string]string        `json:"selector_labels"`
-	Status             RuntimeEnvironmentStatus `json:"status"`
-	IsDefault          bool                     `json:"is_default"`
-	CreatedBy          shared.ID                `json:"created_by"`
-	CreatedAt          time.Time                `json:"created_at"`
-	UpdatedAt          time.Time                `json:"updated_at"`
+	ID                 shared.ID                 `json:"id"`
+	Name               string                    `json:"name"`
+	Description        string                    `json:"description"`
+	RuntimeBaseImage   string                    `json:"runtime_base_image"`
+	ArtifactDeployPath string                    `json:"artifact_deploy_path"`
+	DockerfilePath     string                    `json:"dockerfile_path"`
+	SelectorLabels     map[string]string         `json:"selector_labels"`
+	Images             []RuntimeEnvironmentImage `json:"images"`
+	Status             RuntimeEnvironmentStatus  `json:"status"`
+	CreatedBy          shared.ID                 `json:"created_by"`
+	CreatedAt          time.Time                 `json:"created_at"`
+	UpdatedAt          time.Time                 `json:"updated_at"`
+}
+
+type RuntimeEnvironmentImage struct {
+	ID                 shared.ID         `json:"id"`
+	Name               string            `json:"name"`
+	DisplayName        string            `json:"display_name"`
+	RuntimeBaseImage   string            `json:"runtime_base_image"`
+	ArtifactDeployPath string            `json:"artifact_deploy_path"`
+	DockerfilePath     string            `json:"dockerfile_path"`
+	SelectorLabels     map[string]string `json:"selector_labels"`
+	Status             string            `json:"status"`
 }
 
 type BuildTemplate struct {
