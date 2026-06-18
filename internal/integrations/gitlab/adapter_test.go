@@ -169,6 +169,38 @@ func TestSourceRepositoryAdapterResolveProjectByHTTPURL(t *testing.T) {
 	}
 }
 
+func TestSourceRepositoryAdapterResolveProjectByHTTPURLAcceptsConfiguredAlias(t *testing.T) {
+	var seenHost, seenPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenHost = r.Host
+		seenPath = r.URL.EscapedPath()
+		if r.Method != http.MethodGet || seenPath != "/api/v4/projects/paas%2Fsbg%2Fmacc%2Flog-receiver" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 31, "http_url_to_repo": "http://192.168.100.80/paas/sbg/macc/log-receiver.git"})
+	}))
+	defer server.Close()
+
+	adapter := NewSourceRepositoryAdapter(NewClient(Config{
+		BaseURL:        server.URL,
+		Token:          "secret",
+		HTTPURLAliases: []string{"http://192.168.100.80"},
+	}))
+	project, err := adapter.ResolveProjectByHTTPURL(context.Background(), "http://192.168.100.80/paas/sbg/macc/log-receiver.git")
+	if err != nil {
+		t.Fatalf("resolve project through alias: %v", err)
+	}
+	if project.ID != "31" || project.HTTPURL == "" {
+		t.Fatalf("unexpected project: %#v", project)
+	}
+	if seenHost == "192.168.100.80" {
+		t.Fatalf("GitLab API request should use configured base URL, got host %q", seenHost)
+	}
+	if seenPath == "" {
+		t.Fatalf("server should be called")
+	}
+}
+
 func TestSourceRepositoryAdapterResolveProjectByHTTPURLRejectsForeignHost(t *testing.T) {
 	adapter := NewSourceRepositoryAdapter(NewClient(Config{BaseURL: "https://gitlab.example", Token: "secret"}))
 	if _, err := adapter.ResolveProjectByHTTPURL(context.Background(), "https://evil.example/rnd/payment/order-api.git"); shared.CodeOf(err) != shared.CodeInvalidArgument {

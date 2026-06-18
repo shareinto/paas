@@ -349,6 +349,7 @@ func sourceGitAdapterFromEnv() (sourcerepository.GitSourceRepositoryPort, string
 		return &gitlab.FakeSourceRepositoryAdapter{Files: []sourcerepository.RepositoryFile{{Path: "pom.xml", Type: "blob"}, {Path: "target/order-api.jar", Type: "blob"}}}, webhookURL
 	}
 	cfg := gitlabConfigFromValues(baseURL, token, os.Getenv("GITLAB_TIMEOUT_SECONDS"), os.Getenv("GITLAB_RETRY_MAX"))
+	cfg.HTTPURLAliases = commaSeparatedValues(os.Getenv("GITLAB_HTTP_URL_ALIASES"))
 	return gitlab.NewSourceRepositoryAdapterWithNamespace(gitlab.NewClient(cfg), os.Getenv("GITLAB_ROOT_GROUP_PATH")), webhookURL
 }
 
@@ -391,6 +392,18 @@ func gitlabConfigFromValues(baseURL string, token string, timeoutValue string, r
 
 func defaultGitLabProjectRepoURL(baseURL string, projectID string) string {
 	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + "/" + strings.TrimSpace(projectID) + ".git"
+}
+
+func commaSeparatedValues(value string) []string {
+	parts := strings.Split(value, ",")
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
 }
 
 func buildRunnerFromEnv() build.BuildRunnerPort {
