@@ -282,10 +282,11 @@ test('项目管理页面支持创建和删除项目', async () => {
   await userEvent.click(within(dialog).getByRole('button', { name: /创\s*建/ }));
 
   expect(await screen.findByText('测试项目')).toBeInTheDocument();
-  const row = screen.getByText('测试项目').closest('tr');
-  expect(row).not.toBeNull();
-  await userEvent.click(within(row as HTMLTableRowElement).getByRole('button', { name: /删\s*除/ }));
-  await userEvent.click(within(screen.getByRole('tooltip')).getByRole('button', { name: /删\s*除/ }));
+  const card = screen.getByText('测试项目').closest('article');
+  expect(card).not.toBeNull();
+  await userEvent.click(within(card as HTMLElement).getByRole('button', { name: /删\s*除/ }));
+  const deleteDialog = screen.getByRole('dialog', { name: '删除项目' });
+  await userEvent.click(within(deleteDialog).getByRole('button', { name: /删\s*除/ }));
   await waitFor(() => expect(screen.queryByText('测试项目')).not.toBeInTheDocument());
 });
 
