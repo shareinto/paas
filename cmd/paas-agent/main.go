@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shareinto/paas/internal/modules/clusteragent"
 	"github.com/shareinto/paas/internal/paasagent"
 	"github.com/shareinto/paas/internal/shared"
 )
@@ -40,7 +39,6 @@ func main() {
 
 type runtimeAgent interface {
 	SendHeartbeat(ctx context.Context) error
-	ReportSnapshot(ctx context.Context) (clusteragent.StatusReport, error)
 	RunTaskOnce(ctx context.Context) error
 	WatchChanges(ctx context.Context) error
 	ConnectRuntime(ctx context.Context) error
@@ -77,9 +75,6 @@ func runAgent(ctx context.Context, agent runtimeAgent, heartbeatInterval time.Du
 	if err := agent.SendHeartbeat(ctx); err != nil {
 		return fmt.Errorf("发送心跳失败: %w", err)
 	}
-	if _, err := agent.ReportSnapshot(ctx); err != nil {
-		return fmt.Errorf("上报状态快照失败: %w", err)
-	}
 	if err := agent.RunTaskOnce(ctx); err != nil {
 		return fmt.Errorf("执行受控任务失败: %w", err)
 	}
@@ -110,8 +105,8 @@ func runAgent(ctx context.Context, agent runtimeAgent, heartbeatInterval time.Du
 	}()
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
-	snapshotTicker := time.NewTicker(snapshotInterval)
-	defer snapshotTicker.Stop()
+	taskTicker := time.NewTicker(snapshotInterval)
+	defer taskTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -126,10 +121,7 @@ func runAgent(ctx context.Context, agent runtimeAgent, heartbeatInterval time.Du
 			if err := agent.SendHeartbeat(ctx); err != nil {
 				logger.Printf("paas-agent 心跳失败: %v", err)
 			}
-		case <-snapshotTicker.C:
-			if _, err := agent.ReportSnapshot(ctx); err != nil {
-				logger.Printf("paas-agent 状态快照上报失败: %v", err)
-			}
+		case <-taskTicker.C:
 			if err := agent.RunTaskOnce(ctx); err != nil {
 				logger.Printf("paas-agent 受控任务执行失败: %v", err)
 			}

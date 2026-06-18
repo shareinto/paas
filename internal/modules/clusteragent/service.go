@@ -278,18 +278,6 @@ func (s *Service) ReportStatus(ctx context.Context, clusterID shared.ID, token s
 	if report.ReportedAt.IsZero() {
 		report.ReportedAt = s.clock.Now()
 	}
-	id, err := s.ids.NewID("snapshot")
-	if err != nil {
-		return err
-	}
-	if err := s.repo.CreateSnapshot(ctx, ClusterResourceSnapshot{ID: id, ClusterID: cluster.ID, TenantID: cluster.TenantID, Payload: report, ReportedAt: report.ReportedAt}); err != nil {
-		return err
-	}
-	if s.runtime == nil {
-		if err := s.repo.ReplaceRuntimeResources(ctx, cluster.ID, cluster.TenantID, report.ReportedAt, report.RuntimeResources); err != nil {
-			return err
-		}
-	}
 	if s.stageUpdater != nil {
 		if err := s.stageUpdater.UpdateFromAgent(ctx, report); err != nil {
 			return err

@@ -14,7 +14,7 @@ type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
 
-func TestHeartbeatSnapshotMappingAndTaskExecution(t *testing.T) {
+func TestHeartbeatApplicationStatusMappingAndTaskExecution(t *testing.T) {
 	control := &FakeControlPlaneClient{Tasks: []Task{{ID: "task_1", Type: "argocd_refresh", TargetRef: "order-dev"}, {ID: "task_2", Type: "argocd_sync", TargetRef: "order-dev"}}}
 	reader := &FakeKubernetesReader{SnapshotValue: Snapshot{
 		Applications: []ArgoApplication{{Name: "order-dev", ApplicationID: "app_1", StageKey: "dev", DeploymentID: "deployment_1", SyncStatus: "Synced", HealthStatus: "Healthy", OperationPhase: "Succeeded"}},
@@ -29,7 +29,7 @@ func TestHeartbeatSnapshotMappingAndTaskExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if report.ClusterID != "cluster_1" || report.Applications[0].OperationState != "succeeded" || len(control.EventReports) != 1 {
+	if report.ClusterID != "cluster_1" || report.Applications[0].OperationState != "succeeded" || len(control.EventReports) != 0 || len(report.Workloads) != 0 || len(report.RuntimeResources) != 0 || len(report.Events) != 0 {
 		t.Fatalf("unexpected report: %#v", report)
 	}
 	if err := agent.RunTaskOnce(context.Background()); err != nil {
@@ -97,7 +97,7 @@ func TestWatchChangesDebouncesSnapshotReports(t *testing.T) {
 
 func TestAgentSendsRuntimeStageChangedInvalidation(t *testing.T) {
 	control := &FakeControlPlaneClient{}
-	reader := &FakeKubernetesReader{SnapshotValue: Snapshot{RuntimeResources: []RuntimeResource{{ApplicationID: "app_1", StageKey: "dev", Kind: "Pod", Namespace: "order-dev", Name: "order-api-abc"}}}, WatchBlock: true}
+	reader := &FakeKubernetesReader{SnapshotValue: Snapshot{Applications: []ArgoApplication{{Name: "order-dev", ApplicationID: "app_1", StageKey: "dev", DeploymentID: "deployment_1", SyncStatus: "Synced", HealthStatus: "Healthy"}}}, WatchBlock: true}
 	agent := New(Config{ClusterID: "cluster_1"}, control, reader, nil)
 	sender := &recordingRuntimeSender{messages: make(chan clusteragent.RuntimeWireMessage, 1)}
 	agent.SetRuntimeSender(sender)
@@ -170,6 +170,10 @@ type failingKubernetesReader struct {
 }
 
 func (r *failingKubernetesReader) Snapshot(context.Context, []string) (Snapshot, error) {
+	return Snapshot{}, r.err
+}
+
+func (r *failingKubernetesReader) ApplicationStatusSnapshot(context.Context) (Snapshot, error) {
 	return Snapshot{}, r.err
 }
 

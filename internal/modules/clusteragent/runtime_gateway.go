@@ -83,12 +83,13 @@ func (g *WebSocketRuntimeGateway) WatchRuntimeResources(ctx context.Context, clu
 	group.add(id, ch)
 	defer func() {
 		group.remove(id)
+		group.stopWatchIfEmpty()
 		g.removeGroupIfEmpty(group)
 	}()
 	if err := group.sendStatus(id, g.connectionStatus(clusterID)); err != nil {
 		return err
 	}
-	g.requestRefresh(key)
+	g.ensureWatch(group)
 	for {
 		select {
 		case <-ctx.Done():
@@ -237,7 +238,14 @@ func (g *WebSocketRuntimeGateway) stream(ctx context.Context, clusterID shared.I
 	req.ID = id
 	ch := make(chan RuntimeWireMessage, 32)
 	agent.addPending(id, ch)
-	defer agent.removePending(id)
+	defer func() {
+		if req.Type == "watch_resources" {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = agent.write(cancelCtx, RuntimeWireMessage{ID: id, Type: "cancel_request"})
+			cancel()
+		}
+		agent.removePending(id)
+	}()
 	if err := agent.write(ctx, req); err != nil {
 		return err
 	}
@@ -370,8 +378,8 @@ type runtimeSubscriptionGroup struct {
 	mu          sync.Mutex
 	subscribers map[string]chan runtimeSubscriptionEvent
 	last        []RuntimeResource
-	refreshing  bool
-	dirty       bool
+	watching    bool
+	watchCancel context.CancelFunc
 }
 
 func (g *WebSocketRuntimeGateway) subscriptionGroup(key runtimeSubscriptionKey) *runtimeSubscriptionGroup {
@@ -397,51 +405,44 @@ func (g *WebSocketRuntimeGateway) groupIfActive(key runtimeSubscriptionKey) *run
 
 func (g *WebSocketRuntimeGateway) invalidateStage(clusterID shared.ID, applicationID shared.ID, stageKey string) {
 	key := runtimeSubscriptionKey{ClusterID: clusterID, ApplicationID: applicationID, StageKey: strings.TrimSpace(stageKey)}
-	if g.groupIfActive(key) == nil {
+	group := g.groupIfActive(key)
+	if group == nil {
 		return
 	}
-	g.requestRefresh(key)
+	g.ensureWatch(group)
 }
 
-func (g *WebSocketRuntimeGateway) requestRefresh(key runtimeSubscriptionKey) {
-	group := g.subscriptionGroup(key)
-	if !group.markRefreshing() {
-		return
-	}
-	go g.refreshGroup(group)
-}
-
-func (g *WebSocketRuntimeGateway) refreshGroup(group *runtimeSubscriptionGroup) {
-	for {
-		if !group.hasSubscribers() {
-			group.finishRefresh(false)
-			return
-		}
-		group.broadcastStatus("refreshing")
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		resources, err := g.ListRuntimeResources(ctx, group.key.ClusterID, group.key.ApplicationID, group.key.StageKey)
+func (g *WebSocketRuntimeGateway) ensureWatch(group *runtimeSubscriptionGroup) {
+	watchCtx, cancel := context.WithCancel(context.Background())
+	if !group.startWatch(cancel) {
 		cancel()
-		if err != nil {
+		return
+	}
+	go func() {
+		defer group.finishWatch()
+		group.broadcastStatus("connected")
+		err := g.stream(watchCtx, group.key.ClusterID, RuntimeWireMessage{Type: "watch_resources", ApplicationID: group.key.ApplicationID, StageKey: group.key.StageKey}, func(msg RuntimeWireMessage) error {
+			if msg.Type == "snapshot" || len(msg.Resources) > 0 {
+				group.broadcastStatus("connected")
+				group.broadcastSnapshot(runtimeResourcesFromStatuses(group.key.ClusterID, msg.Resources))
+			}
+			return nil
+		})
+		if err != nil && group.hasSubscribers() {
 			if shared.CodeOf(err) == shared.CodeUnavailable {
 				group.broadcastStatus("agent_offline")
 			} else {
 				group.broadcastStatus("error")
 			}
-		} else {
-			group.broadcastStatus("connected")
-			group.broadcastSnapshot(resources)
 		}
-		if !group.finishRefresh(true) {
-			return
-		}
-	}
+	}()
 }
 
 func (g *WebSocketRuntimeGateway) refreshClusterSubscriptions(clusterID shared.ID, status string) {
 	for _, group := range g.groupsForCluster(clusterID) {
 		group.broadcastStatus(status)
 		if group.hasSubscribers() {
-			g.requestRefresh(group.key)
+			g.ensureWatch(group)
 		}
 	}
 }
@@ -501,6 +502,37 @@ func (group *runtimeSubscriptionGroup) remove(id string) {
 	}
 }
 
+func (group *runtimeSubscriptionGroup) startWatch(cancel context.CancelFunc) bool {
+	group.mu.Lock()
+	defer group.mu.Unlock()
+	if group.watching {
+		return false
+	}
+	group.watching = true
+	group.watchCancel = cancel
+	return true
+}
+
+func (group *runtimeSubscriptionGroup) finishWatch() {
+	group.mu.Lock()
+	group.watching = false
+	group.watchCancel = nil
+	group.mu.Unlock()
+}
+
+func (group *runtimeSubscriptionGroup) stopWatchIfEmpty() {
+	group.mu.Lock()
+	if len(group.subscribers) > 0 {
+		group.mu.Unlock()
+		return
+	}
+	cancel := group.watchCancel
+	group.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (group *runtimeSubscriptionGroup) hasSubscribers() bool {
 	group.mu.Lock()
 	defer group.mu.Unlock()
@@ -516,29 +548,6 @@ func (group *runtimeSubscriptionGroup) sendStatus(id string, status string) erro
 	}
 	sendLatest(ch, runtimeSubscriptionEvent{kind: "status", status: status})
 	return nil
-}
-
-func (group *runtimeSubscriptionGroup) markRefreshing() bool {
-	group.mu.Lock()
-	defer group.mu.Unlock()
-	if group.refreshing {
-		group.dirty = true
-		return false
-	}
-	group.refreshing = true
-	return true
-}
-
-func (group *runtimeSubscriptionGroup) finishRefresh(consumeDirty bool) bool {
-	group.mu.Lock()
-	defer group.mu.Unlock()
-	if consumeDirty && group.dirty && len(group.subscribers) > 0 {
-		group.dirty = false
-		return true
-	}
-	group.refreshing = false
-	group.dirty = false
-	return false
 }
 
 func (group *runtimeSubscriptionGroup) broadcastStatus(status string) {

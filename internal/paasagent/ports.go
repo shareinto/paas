@@ -20,6 +20,8 @@ type ControlPlaneClient interface {
 type KubernetesReader interface {
 	Snapshot(ctx context.Context, namespaces []string) (Snapshot, error)
 	Watch(ctx context.Context, namespaces []string, onChange func()) error
+	ApplicationStatusSnapshot(ctx context.Context) (Snapshot, error)
+	RunApplicationStatusCache(ctx context.Context, onChange func(Snapshot)) error
 	RunRuntimeCache(ctx context.Context, namespaces []string, onInvalidation func(RuntimeInvalidation)) error
 	ListRuntimeResources(ctx context.Context, namespaces []string, applicationID shared.ID, stageKey string) ([]RuntimeResource, error)
 	WatchRuntimeResources(ctx context.Context, namespaces []string, applicationID shared.ID, stageKey string, onChange func([]RuntimeResource)) error

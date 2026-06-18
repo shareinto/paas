@@ -3,6 +3,7 @@ package paasagent
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,8 @@ type Agent struct {
 	watchDebounce time.Duration
 	termMu        sync.Mutex
 	terms         map[string]chan []byte
+	reqMu         sync.Mutex
+	reqCancels    map[string]context.CancelFunc
 	runtimeMu     sync.Mutex
 	runtimeSender RuntimeMessageSender
 }
@@ -29,7 +32,7 @@ func New(config Config, client ControlPlaneClient, reader KubernetesReader, cloc
 	if clock == nil {
 		clock = shared.SystemClock{}
 	}
-	return &Agent{config: config.Normalize(), client: client, reader: reader, clock: clock, watchDebounce: watchSnapshotDebounce, terms: map[string]chan []byte{}}
+	return &Agent{config: config.Normalize(), client: client, reader: reader, clock: clock, watchDebounce: watchSnapshotDebounce, terms: map[string]chan []byte{}, reqCancels: map[string]context.CancelFunc{}}
 }
 
 func (a *Agent) SendHeartbeat(ctx context.Context) error {
@@ -37,20 +40,11 @@ func (a *Agent) SendHeartbeat(ctx context.Context) error {
 }
 
 func (a *Agent) ReportSnapshot(ctx context.Context) (clusteragent.StatusReport, error) {
-	snapshot, err := a.reader.Snapshot(ctx, a.config.Namespaces)
+	snapshot, err := a.reader.ApplicationStatusSnapshot(ctx)
 	if err != nil {
 		return clusteragent.StatusReport{}, err
 	}
-	report := ToStatusReport(a.config.ClusterID, snapshot, a.clock.Now())
-	if err := a.client.ReportStatus(ctx, report); err != nil {
-		return clusteragent.StatusReport{}, err
-	}
-	if len(report.Events) > 0 {
-		if err := a.client.ReportEvents(ctx, report); err != nil {
-			return clusteragent.StatusReport{}, err
-		}
-	}
-	return report, nil
+	return a.reportApplicationSnapshot(ctx, snapshot)
 }
 
 func (a *Agent) RunTaskOnce(ctx context.Context) error {
@@ -72,65 +66,15 @@ func (a *Agent) RunTaskOnce(ctx context.Context) error {
 }
 
 func (a *Agent) WatchChanges(ctx context.Context) error {
-	changes := make(chan RuntimeInvalidation, 64)
-	watchErr := make(chan error, 1)
-	watchCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	go func() {
-		watchErr <- a.reader.RunRuntimeCache(watchCtx, a.config.Namespaces, func(invalidation RuntimeInvalidation) {
-			select {
-			case changes <- invalidation:
-			default:
-			}
-		})
-	}()
-	pending := map[RuntimeInvalidation]struct{}{}
-	var snapshotTimer *time.Timer
-	var snapshotC <-chan time.Time
-	var invalidationTimer *time.Timer
-	var invalidationC <-chan time.Time
-	stopTimer := func(timer *time.Timer) {
-		if timer != nil {
-			timer.Stop()
+	return a.reader.RunApplicationStatusCache(ctx, func(snapshot Snapshot) {
+		report, err := a.reportApplicationSnapshot(ctx, snapshot)
+		if err != nil {
+			return
 		}
-	}
-	defer func() {
-		stopTimer(snapshotTimer)
-		stopTimer(invalidationTimer)
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			cancel()
-			return ctx.Err()
-		case err := <-watchErr:
-			cancel()
-			return err
-		case invalidation := <-changes:
-			if invalidation.ApplicationID != "" && strings.TrimSpace(invalidation.StageKey) != "" {
-				pending[invalidation] = struct{}{}
-				if invalidationTimer == nil {
-					invalidationTimer = time.NewTimer(500 * time.Millisecond)
-					invalidationC = invalidationTimer.C
-				}
-			}
-			if snapshotTimer == nil {
-				snapshotTimer = time.NewTimer(a.watchDebounce)
-				snapshotC = snapshotTimer.C
-			}
-		case <-invalidationC:
-			for invalidation := range pending {
-				_ = a.sendRuntimeInvalidation(ctx, invalidation)
-				delete(pending, invalidation)
-			}
-			invalidationTimer = nil
-			invalidationC = nil
-		case <-snapshotC:
-			_, _ = a.ReportSnapshot(ctx)
-			snapshotTimer = nil
-			snapshotC = nil
+		for _, app := range report.Applications {
+			_ = a.sendRuntimeInvalidation(ctx, RuntimeInvalidation{ApplicationID: app.ApplicationID, StageKey: app.StageKey})
 		}
-	}
+	})
 }
 
 func (a *Agent) ConnectRuntime(ctx context.Context) error {
@@ -153,15 +97,33 @@ func (a *Agent) sendRuntimeInvalidation(ctx context.Context, invalidation Runtim
 	return sender.SendRuntimeMessage(ctx, clusteragent.RuntimeWireMessage{Type: "stage_changed", ApplicationID: invalidation.ApplicationID, StageKey: invalidation.StageKey})
 }
 
+func (a *Agent) reportApplicationSnapshot(ctx context.Context, snapshot Snapshot) (clusteragent.StatusReport, error) {
+	report := ToStatusReport(a.config.ClusterID, applicationsOnlySnapshot(snapshot), a.clock.Now())
+	if err := a.client.ReportStatus(ctx, report); err != nil {
+		return clusteragent.StatusReport{}, err
+	}
+	return report, nil
+}
+
 func (a *Agent) HandleRuntimeRequest(ctx context.Context, msg clusteragent.RuntimeWireMessage, sender RuntimeMessageSender) error {
 	switch msg.Type {
 	case "list_resources":
 		resources, err := a.reader.ListRuntimeResources(ctx, a.config.Namespaces, msg.ApplicationID, msg.StageKey)
 		return sender.SendRuntimeMessage(ctx, runtimeResponse(msg.ID, resources, err, true))
 	case "watch_resources":
-		return a.reader.WatchRuntimeResources(ctx, a.config.Namespaces, msg.ApplicationID, msg.StageKey, func(resources []RuntimeResource) {
+		reqCtx, cancel := context.WithCancel(ctx)
+		a.addRuntimeRequest(msg.ID, cancel)
+		defer a.removeRuntimeRequest(msg.ID)
+		err := a.reader.WatchRuntimeResources(reqCtx, a.config.Namespaces, msg.ApplicationID, msg.StageKey, func(resources []RuntimeResource) {
 			_ = sender.SendRuntimeMessage(ctx, clusteragent.RuntimeWireMessage{ID: msg.ID, Type: "snapshot", Resources: resources})
 		})
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	case "cancel_request":
+		a.cancelRuntimeRequest(msg.ID)
+		return nil
 	case "restart_resource":
 		err := a.reader.RestartRuntimeResource(ctx, msg.Target.Kind, msg.Target.Namespace, msg.Target.Name)
 		return sender.SendRuntimeMessage(ctx, runtimeResponse(msg.ID, nil, err, true))
@@ -221,6 +183,30 @@ func (a *Agent) removeTerminal(id string) {
 	if ch != nil {
 		close(ch)
 	}
+}
+
+func (a *Agent) addRuntimeRequest(id string, cancel context.CancelFunc) {
+	if strings.TrimSpace(id) == "" || cancel == nil {
+		return
+	}
+	a.reqMu.Lock()
+	defer a.reqMu.Unlock()
+	a.reqCancels[id] = cancel
+}
+
+func (a *Agent) cancelRuntimeRequest(id string) {
+	a.reqMu.Lock()
+	cancel := a.reqCancels[id]
+	a.reqMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (a *Agent) removeRuntimeRequest(id string) {
+	a.reqMu.Lock()
+	delete(a.reqCancels, id)
+	a.reqMu.Unlock()
 }
 
 func (a *Agent) executeTask(ctx context.Context, task Task) error {

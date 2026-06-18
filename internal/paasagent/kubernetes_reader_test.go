@@ -208,6 +208,52 @@ func TestKubernetesReaderRuntimeResourcesInheritArgoApplicationOwnership(t *test
 	}
 }
 
+func TestKubernetesReaderStageRuntimeResourcesUseArgoTreeAndOwnerRefs(t *testing.T) {
+	replicas := int32(1)
+	ownerController := true
+	argo := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1",
+		"kind":       "Application",
+		"metadata": map[string]any{
+			"name":      "order-dev",
+			"namespace": "argocd",
+			"labels": map[string]any{
+				labelApplicationID: "app_1",
+				labelDeploymentID:  "deployment_1",
+				labelStageKey:      "dev",
+			},
+		},
+		"status": map[string]any{
+			"sync":   map[string]any{"status": "Synced"},
+			"health": map[string]any{"status": "Healthy"},
+			"resources": []any{
+				map[string]any{"group": "apps", "kind": "Deployment", "namespace": "apps", "name": "order-api", "status": "Synced", "health": map[string]any{"status": "Healthy"}},
+			},
+		},
+	}}
+	client := k8sfake.NewSimpleClientset(
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "order-api", Namespace: "apps"}, Spec: appsv1.DeploymentSpec{Replicas: &replicas}, Status: appsv1.DeploymentStatus{ReadyReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1}},
+		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: "order-rs", Namespace: "apps", OwnerReferences: []metav1.OwnerReference{{Kind: "Deployment", Name: "order-api", Controller: &ownerController}}}, Spec: appsv1.ReplicaSetSpec{Replicas: &replicas}, Status: appsv1.ReplicaSetStatus{ReadyReplicas: 1, FullyLabeledReplicas: 1, AvailableReplicas: 1}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "order-pod", Namespace: "apps", OwnerReferences: []metav1.OwnerReference{{Kind: "ReplicaSet", Name: "order-rs", Controller: &ownerController}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}}},
+	)
+	dynamicClient := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{argoApplicationGVR: "ApplicationList"}, argo)
+	reader := NewKubernetesClientReaderFromClients(client, dynamicClient, "argocd")
+
+	resources, err := reader.ListRuntimeResources(context.Background(), []string{"apps"}, "app_1", "dev")
+	if err != nil {
+		t.Fatalf("ListRuntimeResources() error = %v", err)
+	}
+	if len(resources) != 2 {
+		t.Fatalf("stage runtime resources should include deployment and pod only, got %+v", resources)
+	}
+	if resources[0].Kind != "Deployment" || resources[0].ApplicationID != "app_1" || resources[0].StageKey != "dev" {
+		t.Fatalf("deployment should inherit argo ownership, got %+v", resources[0])
+	}
+	if resources[1].Kind != "Pod" || resources[1].ApplicationID != "app_1" || resources[1].StageKey != "dev" || resources[1].ParentKind != "ReplicaSet" {
+		t.Fatalf("pod should inherit ownership through ReplicaSet ownerRef, got %+v", resources[1])
+	}
+}
+
 func TestKubernetesReaderConstructors(t *testing.T) {
 	reader, err := NewKubernetesClientReader(&rest.Config{Host: "https://127.0.0.1"}, " argocd ")
 	if err != nil {

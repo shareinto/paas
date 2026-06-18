@@ -4,9 +4,11 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -17,8 +19,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/remotecommand"
 
 	"github.com/shareinto/paas/internal/modules/clusteragent"
@@ -32,6 +37,8 @@ const (
 )
 
 var argoApplicationGVR = schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}
+
+const paasArgoApplicationLabelSelector = labelApplicationID + "," + labelStageKey + "," + labelDeploymentID
 
 type KubernetesClientReader struct {
 	client        kubernetes.Interface
@@ -153,23 +160,185 @@ func (r *KubernetesClientReader) Snapshot(ctx context.Context, namespaces []stri
 	return snapshot, nil
 }
 
+func (r *KubernetesClientReader) ApplicationStatusSnapshot(ctx context.Context) (Snapshot, error) {
+	apps, err := r.listArgoApplications(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{Applications: filterPaaSArgoApplications(apps)}, nil
+}
+
+func (r *KubernetesClientReader) RunApplicationStatusCache(ctx context.Context, onChange func(Snapshot)) error {
+	var synced atomic.Bool
+	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(
+		r.dynamicClient,
+		30*time.Second,
+		r.argoWatchNamespace(),
+		func(options *metav1.ListOptions) {
+			options.LabelSelector = paasArgoApplicationLabelSelector
+		},
+	)
+	informer := factory.ForResource(argoApplicationGVR).Informer()
+	emit := func() {
+		if synced.Load() && onChange != nil {
+			onChange(Snapshot{Applications: applicationsFromStore(informer.GetStore())})
+		}
+	}
+	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(any) { emit() },
+		UpdateFunc: func(any, any) { emit() },
+		DeleteFunc: func(any) { emit() },
+	})
+	if err != nil {
+		return err
+	}
+	factory.Start(ctx.Done())
+	if !cache.WaitForCacheSync(ctx.Done(), informer.HasSynced) {
+		return ctx.Err()
+	}
+	synced.Store(true)
+	emit()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (r *KubernetesClientReader) ListRuntimeResources(ctx context.Context, namespaces []string, applicationID shared.ID, stageKey string) ([]RuntimeResource, error) {
-	snapshot, ok := r.cachedRuntimeSnapshot()
+	snapshot, _, err := r.stageRuntimeSnapshot(ctx, namespaces, applicationID, stageKey)
+	return snapshot.RuntimeResources, err
+}
+
+func (r *KubernetesClientReader) stageRuntimeSnapshot(ctx context.Context, namespaces []string, applicationID shared.ID, stageKey string) (Snapshot, []string, error) {
+	apps, err := r.listArgoApplications(ctx)
+	if err != nil {
+		return Snapshot{}, nil, err
+	}
+	app, ok := findArgoApplication(apps, applicationID, stageKey)
 	if !ok {
-		var err error
-		snapshot, err = r.Snapshot(ctx, namespaces)
+		return Snapshot{}, nil, nil
+	}
+	watchedNamespaces := stageResourceNamespaces(app.Resources, namespaces)
+	snapshot := Snapshot{Applications: []ArgoApplication{app}}
+	if len(watchedNamespaces) == 0 {
+		return snapshot, nil, nil
+	}
+	resourceIndex := map[string]RuntimeResource{}
+	argoResources := argoResourceIndex([]ArgoApplication{app})
+	for _, namespace := range watchedNamespaces {
+		deployments, err := r.client.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
-			return nil, err
+			return Snapshot{}, nil, err
 		}
-		r.storeRuntimeSnapshot(snapshot)
-	}
-	out := make([]RuntimeResource, 0, len(snapshot.RuntimeResources))
-	for _, resource := range snapshot.RuntimeResources {
-		if resource.ApplicationID == applicationID && resource.StageKey == strings.TrimSpace(stageKey) && userVisibleRuntimeKind(resource.Kind) {
-			out = append(out, resource)
+		for _, item := range deployments.Items {
+			resource := applyRuntimeResourceOwnership(deploymentRuntimeResource(item), argoResources, resourceIndex)
+			resourceIndex[runtimeResourceLookupKey(resource.Kind, resource.Namespace, resource.Name)] = resource
+			if resource.ApplicationID == applicationID && resource.StageKey == stageKey {
+				snapshot.RuntimeResources = append(snapshot.RuntimeResources, resource)
+			}
+		}
+		statefulSets, err := r.client.AppsV1().StatefulSets(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return Snapshot{}, nil, err
+		}
+		for _, item := range statefulSets.Items {
+			resource := applyRuntimeResourceOwnership(statefulSetRuntimeResource(item), argoResources, resourceIndex)
+			resourceIndex[runtimeResourceLookupKey(resource.Kind, resource.Namespace, resource.Name)] = resource
+			if resource.ApplicationID == applicationID && resource.StageKey == stageKey {
+				snapshot.RuntimeResources = append(snapshot.RuntimeResources, resource)
+			}
+		}
+		daemonSets, err := r.client.AppsV1().DaemonSets(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return Snapshot{}, nil, err
+		}
+		for _, item := range daemonSets.Items {
+			resource := applyRuntimeResourceOwnership(daemonSetRuntimeResource(item), argoResources, resourceIndex)
+			resourceIndex[runtimeResourceLookupKey(resource.Kind, resource.Namespace, resource.Name)] = resource
+			if resource.ApplicationID == applicationID && resource.StageKey == stageKey {
+				snapshot.RuntimeResources = append(snapshot.RuntimeResources, resource)
+			}
+		}
+		replicaSets, err := r.client.AppsV1().ReplicaSets(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return Snapshot{}, nil, err
+		}
+		for _, item := range replicaSets.Items {
+			resource := applyRuntimeResourceOwnership(replicaSetRuntimeResource(item), argoResources, resourceIndex)
+			resourceIndex[runtimeResourceLookupKey(resource.Kind, resource.Namespace, resource.Name)] = resource
+		}
+		pods, err := r.client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return Snapshot{}, nil, err
+		}
+		for _, item := range pods.Items {
+			resource := applyRuntimeResourceOwnership(podRuntimeResource(item), argoResources, resourceIndex)
+			resourceIndex[runtimeResourceLookupKey(resource.Kind, resource.Namespace, resource.Name)] = resource
+			if resource.ApplicationID == applicationID && resource.StageKey == stageKey {
+				snapshot.RuntimeResources = append(snapshot.RuntimeResources, resource)
+			}
 		}
 	}
-	return out, nil
+	sortRuntimeResources(snapshot.RuntimeResources)
+	return snapshot, watchedNamespaces, nil
+}
+
+func (r *KubernetesClientReader) watchStageRuntimeResources(ctx context.Context, namespaces []string, onChange func()) error {
+	var synced atomic.Bool
+	handler := cache.ResourceEventHandlerFuncs{
+		AddFunc: func(any) {
+			if synced.Load() && onChange != nil {
+				onChange()
+			}
+		},
+		UpdateFunc: func(any, any) {
+			if synced.Load() && onChange != nil {
+				onChange()
+			}
+		},
+		DeleteFunc: func(any) {
+			if synced.Load() && onChange != nil {
+				onChange()
+			}
+		},
+	}
+	argoFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(
+		r.dynamicClient,
+		0,
+		r.argoWatchNamespace(),
+		func(options *metav1.ListOptions) {
+			options.LabelSelector = paasArgoApplicationLabelSelector
+		},
+	)
+	informersToSync := []cache.SharedIndexInformer{argoFactory.ForResource(argoApplicationGVR).Informer()}
+	if _, err := informersToSync[0].AddEventHandler(handler); err != nil {
+		return err
+	}
+	for _, namespace := range namespaces {
+		factory := informers.NewSharedInformerFactoryWithOptions(r.client, 0, informers.WithNamespace(namespace))
+		for _, informer := range []cache.SharedIndexInformer{
+			factory.Apps().V1().Deployments().Informer(),
+			factory.Apps().V1().StatefulSets().Informer(),
+			factory.Apps().V1().DaemonSets().Informer(),
+			factory.Apps().V1().ReplicaSets().Informer(),
+			factory.Core().V1().Pods().Informer(),
+		} {
+			if _, err := informer.AddEventHandler(handler); err != nil {
+				return err
+			}
+			informersToSync = append(informersToSync, informer)
+		}
+		factory.Start(ctx.Done())
+	}
+	argoFactory.Start(ctx.Done())
+	syncFuncs := make([]cache.InformerSynced, 0, len(informersToSync))
+	for _, informer := range informersToSync {
+		syncFuncs = append(syncFuncs, informer.HasSynced)
+	}
+	if !cache.WaitForCacheSync(ctx.Done(), syncFuncs...) {
+		return ctx.Err()
+	}
+	synced.Store(true)
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func (r *KubernetesClientReader) RunRuntimeCache(ctx context.Context, namespaces []string, onInvalidation func(RuntimeInvalidation)) error {
@@ -222,46 +391,38 @@ func (r *KubernetesClientReader) RunRuntimeCache(ctx context.Context, namespaces
 }
 
 func (r *KubernetesClientReader) WatchRuntimeResources(ctx context.Context, namespaces []string, applicationID shared.ID, stageKey string, onChange func([]RuntimeResource)) error {
-	emit := func() {
-		resources, err := r.ListRuntimeResources(ctx, namespaces, applicationID, stageKey)
-		if err == nil && onChange != nil {
-			onChange(resources)
+	stageKey = strings.TrimSpace(stageKey)
+	changes := make(chan struct{}, 1)
+	notify := func() {
+		select {
+		case changes <- struct{}{}:
+		default:
 		}
 	}
-	emit()
-	watchers := make([]interface{ Stop() }, 0)
-	for _, namespace := range normalizeNamespaces(namespaces) {
-		deployments, err := r.client.AppsV1().Deployments(namespace).Watch(ctx, metav1.ListOptions{})
+	for ctx.Err() == nil {
+		snapshot, watchedNamespaces, err := r.stageRuntimeSnapshot(ctx, namespaces, applicationID, stageKey)
 		if err != nil {
-			stopWatchers(watchers)
 			return err
 		}
-		watchers = append(watchers, deployments)
-		go notifyOnWatch(ctx, deployments.ResultChan(), emit)
-		statefulSets, err := r.client.AppsV1().StatefulSets(namespace).Watch(ctx, metav1.ListOptions{})
-		if err != nil {
-			stopWatchers(watchers)
-			return err
+		if onChange != nil {
+			onChange(snapshot.RuntimeResources)
 		}
-		watchers = append(watchers, statefulSets)
-		go notifyOnWatch(ctx, statefulSets.ResultChan(), emit)
-		daemonSets, err := r.client.AppsV1().DaemonSets(namespace).Watch(ctx, metav1.ListOptions{})
-		if err != nil {
-			stopWatchers(watchers)
+		watchCtx, cancel := context.WithCancel(ctx)
+		watchErr := make(chan error, 1)
+		go func() {
+			watchErr <- r.watchStageRuntimeResources(watchCtx, watchedNamespaces, notify)
+		}()
+		select {
+		case <-ctx.Done():
+			cancel()
+			return ctx.Err()
+		case err := <-watchErr:
+			cancel()
 			return err
+		case <-changes:
+			cancel()
 		}
-		watchers = append(watchers, daemonSets)
-		go notifyOnWatch(ctx, daemonSets.ResultChan(), emit)
-		pods, err := r.client.CoreV1().Pods(namespace).Watch(ctx, metav1.ListOptions{})
-		if err != nil {
-			stopWatchers(watchers)
-			return err
-		}
-		watchers = append(watchers, pods)
-		go notifyOnWatch(ctx, pods.ResultChan(), emit)
 	}
-	<-ctx.Done()
-	stopWatchers(watchers)
 	return ctx.Err()
 }
 
@@ -431,33 +592,7 @@ func (r *KubernetesClientReader) listArgoApplications(ctx context.Context) ([]Ar
 	}
 	out := make([]ArgoApplication, 0, len(list.Items))
 	for _, item := range list.Items {
-		labels := item.GetLabels()
-		syncStatus, _, _ := unstructured.NestedString(item.Object, "status", "sync", "status")
-		healthStatus, _, _ := unstructured.NestedString(item.Object, "status", "health", "status")
-		phase, _, _ := unstructured.NestedString(item.Object, "status", "operationState", "phase")
-		message, _, _ := unstructured.NestedString(item.Object, "status", "operationState", "message")
-		app := ArgoApplication{
-			Name: item.GetName(), ApplicationID: sharedID(labels[labelApplicationID]), StageKey: strings.TrimSpace(labels[labelStageKey]), DeploymentID: sharedID(labels[labelDeploymentID]),
-			SyncStatus: syncStatus, HealthStatus: healthStatus, OperationPhase: phase, Message: message,
-		}
-		resources, _, _ := unstructured.NestedSlice(item.Object, "status", "resources")
-		for _, value := range resources {
-			resource, ok := value.(map[string]any)
-			if !ok {
-				continue
-			}
-			app.Resources = append(app.Resources, ArgoApplicationResource{
-				ApplicationID: app.ApplicationID,
-				StageKey:      app.StageKey,
-				Group:         stringValue(resource["group"]),
-				Kind:          stringValue(resource["kind"]),
-				Namespace:     stringValue(resource["namespace"]),
-				Name:          stringValue(resource["name"]),
-				SyncStatus:    stringValue(resource["status"]),
-				HealthStatus:  nestedStringValue(resource["health"], "status"),
-			})
-		}
-		out = append(out, app)
+		out = append(out, argoApplicationFromUnstructured(&item))
 	}
 	return out, nil
 }
@@ -702,6 +837,136 @@ func argoResourceIndex(apps []ArgoApplication) map[string]ArgoApplicationResourc
 		}
 	}
 	return out
+}
+
+func argoApplicationFromUnstructured(item *unstructured.Unstructured) ArgoApplication {
+	labels := item.GetLabels()
+	syncStatus, _, _ := unstructured.NestedString(item.Object, "status", "sync", "status")
+	healthStatus, _, _ := unstructured.NestedString(item.Object, "status", "health", "status")
+	phase, _, _ := unstructured.NestedString(item.Object, "status", "operationState", "phase")
+	message, _, _ := unstructured.NestedString(item.Object, "status", "operationState", "message")
+	app := ArgoApplication{
+		Name: item.GetName(), ApplicationID: sharedID(labels[labelApplicationID]), StageKey: strings.TrimSpace(labels[labelStageKey]), DeploymentID: sharedID(labels[labelDeploymentID]),
+		SyncStatus: syncStatus, HealthStatus: healthStatus, OperationPhase: phase, Message: message,
+	}
+	resources, _, _ := unstructured.NestedSlice(item.Object, "status", "resources")
+	for _, value := range resources {
+		resource, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		app.Resources = append(app.Resources, ArgoApplicationResource{
+			ApplicationID: app.ApplicationID,
+			StageKey:      app.StageKey,
+			Group:         stringValue(resource["group"]),
+			Kind:          stringValue(resource["kind"]),
+			Namespace:     stringValue(resource["namespace"]),
+			Name:          stringValue(resource["name"]),
+			SyncStatus:    stringValue(resource["status"]),
+			HealthStatus:  nestedStringValue(resource["health"], "status"),
+		})
+	}
+	return app
+}
+
+func filterPaaSArgoApplications(apps []ArgoApplication) []ArgoApplication {
+	out := make([]ArgoApplication, 0, len(apps))
+	for _, app := range apps {
+		if isPaaSArgoApplication(app) {
+			out = append(out, app)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func applicationsFromStore(store cache.Store) []ArgoApplication {
+	items := store.List()
+	out := make([]ArgoApplication, 0, len(items))
+	for _, item := range items {
+		app, ok := item.(*unstructured.Unstructured)
+		if !ok {
+			continue
+		}
+		parsed := argoApplicationFromUnstructured(app)
+		if isPaaSArgoApplication(parsed) {
+			out = append(out, parsed)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func isPaaSArgoApplication(app ArgoApplication) bool {
+	return !app.ApplicationID.IsZero() && strings.TrimSpace(app.StageKey) != "" && !app.DeploymentID.IsZero()
+}
+
+func findArgoApplication(apps []ArgoApplication, applicationID shared.ID, stageKey string) (ArgoApplication, bool) {
+	stageKey = strings.TrimSpace(stageKey)
+	for _, app := range apps {
+		if app.ApplicationID == applicationID && app.StageKey == stageKey && isPaaSArgoApplication(app) {
+			return app, true
+		}
+	}
+	return ArgoApplication{}, false
+}
+
+func stageResourceNamespaces(resources []ArgoApplicationResource, configured []string) []string {
+	allowed := map[string]struct{}{}
+	allConfigured := false
+	for _, namespace := range normalizeNamespaces(configured) {
+		if namespace == metav1.NamespaceAll {
+			allConfigured = true
+			continue
+		}
+		allowed[namespace] = struct{}{}
+	}
+	seen := map[string]struct{}{}
+	for _, resource := range resources {
+		namespace := strings.TrimSpace(resource.Namespace)
+		if namespace == "" {
+			continue
+		}
+		if !allConfigured {
+			if _, ok := allowed[namespace]; !ok {
+				continue
+			}
+		}
+		seen[namespace] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for namespace := range seen {
+		out = append(out, namespace)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortRuntimeResources(resources []RuntimeResource) {
+	sort.Slice(resources, func(i, j int) bool {
+		if resources[i].Kind != resources[j].Kind {
+			return runtimeKindOrder(resources[i].Kind) < runtimeKindOrder(resources[j].Kind)
+		}
+		if resources[i].Namespace != resources[j].Namespace {
+			return resources[i].Namespace < resources[j].Namespace
+		}
+		return resources[i].Name < resources[j].Name
+	})
+}
+
+func runtimeKindOrder(kind string) int {
+	switch kind {
+	case "Deployment":
+		return 0
+	case "StatefulSet":
+		return 1
+	case "DaemonSet":
+		return 2
+	case "Pod":
+		return 3
+	default:
+		return 9
+	}
 }
 
 func applyRuntimeResourceOwnership(resource RuntimeResource, argoResources map[string]ArgoApplicationResource, resources map[string]RuntimeResource) RuntimeResource {
