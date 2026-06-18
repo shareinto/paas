@@ -9,17 +9,19 @@ import (
 )
 
 type Config struct {
-	BaseURL  string
-	Token    string
-	Timeout  time.Duration
-	RetryMax int
+	BaseURL        string
+	Token          string
+	HTTPURLAliases []string
+	Timeout        time.Duration
+	RetryMax       int
 }
 
 type Client struct {
-	baseURL  string
-	token    string
-	http     *http.Client
-	retryMax int
+	baseURL        string
+	token          string
+	httpURLAliases []string
+	http           *http.Client
+	retryMax       int
 }
 
 func NewClient(config Config) *Client {
@@ -31,7 +33,14 @@ func NewClient(config Config) *Client {
 	if retryMax == 0 {
 		retryMax = 2
 	}
-	return &Client{baseURL: strings.TrimRight(config.BaseURL, "/"), token: config.Token, http: &http.Client{Timeout: timeout}, retryMax: retryMax}
+	aliases := make([]string, 0, len(config.HTTPURLAliases))
+	for _, alias := range config.HTTPURLAliases {
+		alias = strings.TrimRight(strings.TrimSpace(alias), "/")
+		if alias != "" {
+			aliases = append(aliases, alias)
+		}
+	}
+	return &Client{baseURL: strings.TrimRight(config.BaseURL, "/"), token: config.Token, httpURLAliases: aliases, http: &http.Client{Timeout: timeout}, retryMax: retryMax}
 }
 
 func (c *Client) newRequest(method, path string, body any) (*http.Request, error) {

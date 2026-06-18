@@ -37,43 +37,56 @@ func (a *SourceRepositoryAdapter) projectPathFromHTTPURL(httpURL string) (string
 	if err != nil || repoURL.Scheme == "" || repoURL.Host == "" {
 		return "", sourcerepositoryURLInvalid()
 	}
-	baseURL, err := url.Parse(a.client.baseURL)
-	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
-		return "", sourcerepositoryURLInvalid()
-	}
-	if !strings.EqualFold(repoURL.Scheme, baseURL.Scheme) || !strings.EqualFold(repoURL.Host, baseURL.Host) {
-		return "", sourcerepositoryURLInvalid()
-	}
 	if repoURL.User != nil {
 		return "", sourcerepositoryURLInvalid()
 	}
 	if repoURL.RawQuery != "" || repoURL.Fragment != "" {
 		return "", sourcerepositoryURLInvalid()
 	}
+	for _, base := range append([]string{a.client.baseURL}, a.client.httpURLAliases...) {
+		projectPath, ok := projectPathForBaseURL(repoURL, base)
+		if ok {
+			return projectPath, nil
+		}
+	}
+	return "", sourcerepositoryURLInvalid()
+}
+
+func projectPathForBaseURL(repoURL *url.URL, rawBaseURL string) (string, bool) {
+	baseURL, err := url.Parse(strings.TrimSpace(rawBaseURL))
+	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
+		return "", false
+	}
+	if baseURL.User != nil || baseURL.RawQuery != "" || baseURL.Fragment != "" {
+		return "", false
+	}
+	if !strings.EqualFold(repoURL.Scheme, baseURL.Scheme) || !strings.EqualFold(repoURL.Host, baseURL.Host) {
+		return "", false
+	}
 	basePath := strings.Trim(strings.TrimSuffix(baseURL.Path, "/"), "/")
 	repoPath := strings.Trim(repoURL.EscapedPath(), "/")
 	if repoPath == "" {
-		return "", sourcerepositoryURLInvalid()
+		return "", false
 	}
 	if basePath != "" {
 		if repoPath == basePath {
-			return "", sourcerepositoryURLInvalid()
+			return "", false
 		}
 		prefix := basePath + "/"
 		if !strings.HasPrefix(repoPath, prefix) {
-			return "", sourcerepositoryURLInvalid()
+			return "", false
 		}
 		repoPath = strings.TrimPrefix(repoPath, prefix)
 	}
 	repoPath = strings.TrimSuffix(repoPath, ".git")
 	if repoPath == "" || strings.Contains(repoPath, "..") {
-		return "", sourcerepositoryURLInvalid()
+		return "", false
 	}
 	unescaped, err := url.PathUnescape(repoPath)
-	if err != nil || strings.TrimSpace(unescaped) == "" {
-		return "", sourcerepositoryURLInvalid()
+	if err != nil || strings.TrimSpace(unescaped) == "" || strings.Contains(unescaped, "..") {
+		return "", false
 	}
-	return unescaped, nil
+	return unescaped, true
 }
 
 func sourcerepositoryURLInvalid() error {

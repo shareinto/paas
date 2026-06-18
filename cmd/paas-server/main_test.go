@@ -383,6 +383,13 @@ func TestManifestRepositoriesFromEnvUseRealGitLabWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestCommaSeparatedValuesTrimsEmptyItems(t *testing.T) {
+	values := commaSeparatedValues(" http://192.168.100.80, ,https://gitlab.example/paas ")
+	if len(values) != 2 || values[0] != "http://192.168.100.80" || values[1] != "https://gitlab.example/paas" {
+		t.Fatalf("unexpected values %#v", values)
+	}
+}
+
 func TestManifestRepositoriesFromEnvUseSeparateGitOpsGitLabWhenConfigured(t *testing.T) {
 	t.Setenv("GITLAB_BASE_URL", "https://source-gitlab.example")
 	t.Setenv("GITLAB_TOKEN", "source-secret")
