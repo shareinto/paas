@@ -217,6 +217,12 @@ pipeline {
             sh '''
               set -eu
               . report/build-env.sh
+              primary_commit="$(cat report/source-{{ $.PrimarySourceKey }}-commit.txt 2>/dev/null || true)"
+              image_tag_commit="$(printf '%s' "$primary_commit" | cut -c1-8)"
+              if [ -z "$image_tag_commit" ]; then
+                image_tag_commit='{{ $.ImageTagFallback }}'
+              fi
+              image_uri='{{ .ImageRepository }}:{{ $.ImageTagDate }}-'"${image_tag_commit}"'-{{ .Key }}'
               job_name=$(printf '%s' "${JOB_NAME:-paas}" | tr '/ ' '--')
               cache_dir="/backup_data/buildx-cache/${job_name}/{{ .Key }}"
               cache_next="${cache_dir}.next"
@@ -230,14 +236,15 @@ pipeline {
                 --cache-from type=local,src="$cache_dir" \
                 --cache-to type=local,dest="$cache_next",mode=max \
                 -f image-context/{{ .Key }}/Dockerfile \
-                -t '{{ .ImageURI }}' \
+                -t "$image_uri" \
                 --push image-context/{{ .Key }}
               rm -rf "$cache_dir"
               mv "$cache_next" "$cache_dir"
+              printf '%s\n' "$image_uri" > report/image-uri-{{ .Key }}.txt
 {{ if .IsPrimary }}
-              printf '%s\n' '{{ .ImageURI }}' > report/primary-image.txt
+              printf '%s\n' "$image_uri" > report/primary-image.txt
 {{ end }}
-              printf '{{ .EnvKey }}=%s\n' '{{ .ImageURI }}' > report/image-tag-{{ .Key }}.env
+              printf '{{ .EnvKey }}=%s\n' "$image_uri" > report/image-tag-{{ .Key }}.env
             '''
           }
         }
@@ -250,9 +257,22 @@ pipeline {
     success {
       script {
         if ((env.PAAS_CALLBACK_URL ?: '').trim() && fileExists('report/primary-image.txt')) {
-          def image = readFile('report/primary-image.txt').trim()
           def commit = fileExists('report/source-{{ .PrimarySourceKey }}-commit.txt') ? readFile('report/source-{{ .PrimarySourceKey }}-commit.txt').trim() : ''
-          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', image_uri: image, commit_sha: commit])
+          def artifacts = []
+{{ range .ImageTargets }}
+          if (fileExists('report/image-uri-{{ .Key }}.txt')) {
+            artifacts << [
+              source_key: '{{ .SourceKey }}',
+              type: 'image',
+              name: '{{ .ArtifactName }}',
+              uri: readFile('report/image-uri-{{ .Key }}.txt').trim(),
+              is_primary: {{ .IsPrimary }},
+              selector_labels: new groovy.json.JsonSlurperClassic().parseText('''{{ .SelectorLabelsJSON }}'''),
+              metadata: new groovy.json.JsonSlurperClassic().parseText('''{{ .MetadataJSON }}''')
+            ]
+          }
+{{ end }}
+          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', commit_sha: commit, artifacts: artifacts])
           sh 'curl -fsS -X POST "$PAAS_CALLBACK_URL" -H "Content-Type: application/json" --data-binary @report/callback-success.json'
         }
       }
