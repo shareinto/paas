@@ -484,6 +484,12 @@ const defaultBuildTemplateContent = `pipeline {
             sh '''
               set -eu
               . report/build-env.sh
+              primary_commit="$(cat report/source-{{ $.PrimarySourceKey }}-commit.txt 2>/dev/null || true)"
+              image_tag_commit="$(printf '%s' "$primary_commit" | cut -c1-8)"
+              if [ -z "$image_tag_commit" ]; then
+                image_tag_commit='{{ $.ImageTagFallback }}'
+              fi
+              image_uri='{{ .ImageRepository }}:{{ $.ImageTagDate }}-'"${image_tag_commit}"'-{{ .Key }}'
               job_name=$(printf '%s' "${JOB_NAME:-paas}" | tr '/ ' '--')
               cache_dir="/backup_data/buildx-cache/${job_name}/{{ .Key }}"
               cache_next="${cache_dir}.next"
@@ -497,14 +503,15 @@ const defaultBuildTemplateContent = `pipeline {
                 --cache-from type=local,src="$cache_dir" \
                 --cache-to type=local,dest="$cache_next",mode=max \
                 -f image-context/{{ .Key }}/Dockerfile \
-                -t '{{ .ImageURI }}' \
+                -t "$image_uri" \
                 --push image-context/{{ .Key }}
               rm -rf "$cache_dir"
               mv "$cache_next" "$cache_dir"
+              printf '%s\n' "$image_uri" > report/image-uri-{{ .Key }}.txt
 {{ if .IsPrimary }}
-              printf '%s\n' '{{ .ImageURI }}' > report/primary-image.txt
+              printf '%s\n' "$image_uri" > report/primary-image.txt
 {{ end }}
-              printf '{{ .EnvKey }}=%s\n' '{{ .ImageURI }}' > report/image-tag-{{ .Key }}.env
+              printf '{{ .EnvKey }}=%s\n' "$image_uri" > report/image-tag-{{ .Key }}.env
             '''
           }
         }
@@ -518,7 +525,21 @@ const defaultBuildTemplateContent = `pipeline {
       script {
         if ((env.PAAS_CALLBACK_URL ?: '').trim() && fileExists('report/primary-image.txt')) {
           def commit = fileExists('report/source-{{ .PrimarySourceKey }}-commit.txt') ? readFile('report/source-{{ .PrimarySourceKey }}-commit.txt').trim() : ''
-          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', commit_sha: commit])
+          def artifacts = []
+{{ range .ImageTargets }}
+          if (fileExists('report/image-uri-{{ .Key }}.txt')) {
+            artifacts << [
+              source_key: '{{ .SourceKey }}',
+              type: 'image',
+              name: '{{ .ArtifactName }}',
+              uri: readFile('report/image-uri-{{ .Key }}.txt').trim(),
+              is_primary: {{ .IsPrimary }},
+              selector_labels: new groovy.json.JsonSlurperClassic().parseText('''{{ .SelectorLabelsJSON }}'''),
+              metadata: new groovy.json.JsonSlurperClassic().parseText('''{{ .MetadataJSON }}''')
+            ]
+          }
+{{ end }}
+          writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([status: 'succeeded', commit_sha: commit, artifacts: artifacts])
           sh 'curl -fsS -X POST "$PAAS_CALLBACK_URL" -H "Content-Type: application/json" --data-binary @report/callback-success.json'
         }
       }
@@ -822,13 +843,34 @@ func (s *Service) EnsureDefaultBuildConfiguration(ctx context.Context, actorID s
 	if err := s.ensureDefaultRuntimeEnvironments(ctx, actorID); err != nil {
 		return err
 	}
-	if _, err := s.repo.GetBuildTemplate(ctx); err == nil {
+	if existing, err := s.repo.GetBuildTemplate(ctx); err == nil {
+		if shouldRefreshDefaultBuildTemplate(existing) {
+			now := s.clock.Now()
+			existing.Version = 2
+			existing.Content = defaultBuildTemplateContent
+			existing.UpdatedAt = now
+			if existing.CreatedAt.IsZero() {
+				existing.CreatedAt = now
+			}
+			if existing.CreatedBy.IsZero() {
+				existing.CreatedBy = actorID
+			}
+			return s.repo.SaveBuildTemplate(ctx, existing)
+		}
 		return nil
 	} else if shared.CodeOf(err) != shared.CodeNotFound {
 		return err
 	}
 	now := s.clock.Now()
-	return s.repo.SaveBuildTemplate(ctx, BuildTemplate{ID: "global-build-template", Name: "global-build-template", Version: 1, Content: defaultBuildTemplateContent, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now})
+	return s.repo.SaveBuildTemplate(ctx, BuildTemplate{ID: "global-build-template", Name: "global-build-template", Version: 2, Content: defaultBuildTemplateContent, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now})
+}
+
+func shouldRefreshDefaultBuildTemplate(template BuildTemplate) bool {
+	content := strings.TrimSpace(template.Content)
+	if template.ID != "global-build-template" || template.Version > 1 || content == "" || content == strings.TrimSpace(defaultBuildTemplateContent) {
+		return false
+	}
+	return strings.Contains(content, "{{ .ImageURI }}") && !strings.Contains(content, "artifacts: artifacts")
 }
 
 func (s *Service) EnsureDefaultJenkinsJobTemplate(ctx context.Context, actorID shared.ID) error {
@@ -1535,6 +1577,8 @@ type buildTemplateView struct {
 	RuntimeJSON          string
 	PrimarySourceKey     string
 	ImageTargets         []buildTemplateImageTargetView
+	ImageTagDate         string
+	ImageTagFallback     string
 }
 
 type buildTemplateDockerfileRepositoryView struct {
@@ -1563,8 +1607,12 @@ type buildTemplateImageTargetView struct {
 	RuntimeBaseImage   string
 	DockerfilePath     string
 	ArtifactDeployPath string
-	ImageURI           string
+	ImageRepository    string
 	EnvKey             string
+	SourceKey          string
+	ArtifactName       string
+	SelectorLabelsJSON string
+	MetadataJSON       string
 	IsPrimary          bool
 }
 
@@ -1578,6 +1626,7 @@ func (s *Service) renderBuildTemplate(ctx context.Context, content string, app A
 	}
 	runtimePayload := buildRuntimePayload(pipeline.RuntimeEnvironments, sources)
 	imageTargets := s.buildTemplateImageTargets(app, pipeline.RuntimeEnvironments, sources, runSources, run)
+	imageTagDate, imageTagFallback := buildImageTagParts(runSources, run)
 	view := buildTemplateView{
 		AgentLabel:           "any",
 		Sources:              make([]buildTemplateSourceView, 0, len(sources)),
@@ -1587,6 +1636,8 @@ func (s *Service) renderBuildTemplate(ctx context.Context, content string, app A
 		RuntimeJSON:          groovyTripleSingleQuotedJSON(runtimePayload),
 		PrimarySourceKey:     shellSingleQuoted(primaryBuildSourceKey(sources, runSources)),
 		ImageTargets:         imageTargets,
+		ImageTagDate:         shellSingleQuoted(imageTagDate),
+		ImageTagFallback:     shellSingleQuoted(imageTagFallback),
 	}
 	if len(imageTargets) > 0 {
 		view.DockerfilePath = imageTargets[0].DockerfilePath
@@ -1665,8 +1716,8 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, runtimes []Runti
 	if imageRepo == "" {
 		imageRepo = "registry.local/paas"
 	}
-	baseTag := buildImageBaseTag(runSources, run)
 	primarySource := primaryBuildSource(sources, runSources)
+	sourceKey := primaryBuildSourceKey(sources, runSources)
 	runtimes = nonEmptyRuntimeEnvironments(runtimes)
 	if len(runtimes) == 0 && len(sources) > 0 {
 		runtimes = []RuntimeEnvironmentRef{{
@@ -1686,7 +1737,13 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, runtimes []Runti
 				key = fmt.Sprintf("runtime%d", targetIndex+1)
 			}
 			platforms := runtimeTargetPlatforms(name)
-			imageURI := buildTargetImageURI(imageRepo, app.Name, baseTag, key)
+			metadata := map[string]string{
+				"runtime_environment_id":         runtime.ID.String(),
+				"runtime_environment_name":       runtime.Name,
+				"runtime_environment_image_id":   image.ID.String(),
+				"runtime_environment_image_name": image.Name,
+				"runtime_base_image":             image.RuntimeBaseImage,
+			}
 			dockerfilePath := "java/jar/Dockerfile"
 			artifactDeployPath := "/app"
 			if runtimeImageLooksLikeTomcat(runtime, image) {
@@ -1701,8 +1758,12 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, runtimes []Runti
 				RuntimeBaseImage:   shellSingleQuoted(image.RuntimeBaseImage),
 				DockerfilePath:     shellSingleQuoted(dockerfilePath),
 				ArtifactDeployPath: shellSingleQuoted(strings.TrimRight(artifactDeployPath, "/")),
-				ImageURI:           shellSingleQuoted(imageURI),
+				ImageRepository:    shellSingleQuoted(strings.TrimRight(imageRepo, "/") + "/" + app.Name),
 				EnvKey:             shellEnvName(key) + "_IMAGE",
+				SourceKey:          groovySingleQuoted(sourceKey),
+				ArtifactName:       groovySingleQuoted(name),
+				SelectorLabelsJSON: groovyTripleSingleQuotedJSON(normalizeSelectorLabels(image.SelectorLabels)),
+				MetadataJSON:       groovyTripleSingleQuotedJSON(metadata),
 				IsPrimary:          targetIndex == 0,
 			})
 			targetIndex++
@@ -1750,6 +1811,11 @@ func runtimeTargetPlatforms(name string) string {
 }
 
 func buildImageBaseTag(runSources []BuildRunSource, run BuildRun) string {
+	date, commit := buildImageTagParts(runSources, run)
+	return date + "-" + commit
+}
+
+func buildImageTagParts(runSources []BuildRunSource, run BuildRun) (string, string) {
 	source := primaryRunSource(runSources)
 	commit := strings.TrimSpace(source.CommitSHA)
 	if commit == "" {
@@ -1765,7 +1831,7 @@ func buildImageBaseTag(runSources []BuildRunSource, run BuildRun) string {
 	if date.IsZero() {
 		date = time.Now()
 	}
-	return date.Format("20060102") + "-" + commit
+	return date.Format("20060102"), commit
 }
 
 func imageTagToken(value string) string {

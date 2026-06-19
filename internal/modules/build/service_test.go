@@ -691,6 +691,84 @@ func TestEnsureDefaultBuildConfigurationSeedsRequestedPresets(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultBuildConfigurationRefreshesBuiltinTemplate(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	oldContent := "pipeline { stages { stage('buildx-push') { steps { sh 'docker buildx build -t {{ .ImageURI }}' } } } }"
+	if err := env.repo.SaveBuildTemplate(ctx, BuildTemplate{
+		ID:      "global-build-template",
+		Name:    "global-build-template",
+		Version: 1,
+		Content: oldContent,
+	}); err != nil {
+		t.Fatalf("SaveBuildTemplate() error = %v", err)
+	}
+
+	if err := env.svc.EnsureDefaultBuildConfiguration(ctx, buildActor().ID); err != nil {
+		t.Fatalf("EnsureDefaultBuildConfiguration() error = %v", err)
+	}
+	template, err := env.repo.GetBuildTemplate(ctx)
+	if err != nil {
+		t.Fatalf("GetBuildTemplate() error = %v", err)
+	}
+	if template.Version != 2 || template.Content == oldContent {
+		t.Fatalf("builtin template should refresh to version 2, got version=%d content=%q", template.Version, template.Content)
+	}
+	if !strings.Contains(template.Content, "artifacts: artifacts") || !strings.Contains(template.Content, "report/image-uri-") {
+		t.Fatalf("refreshed template should callback with actual image artifacts, got %s", template.Content)
+	}
+}
+
+func TestEnsureDefaultBuildConfigurationKeepsCustomTemplate(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	customContent := "pipeline { stages { stage('custom') { steps { sh 'echo custom' } } } }"
+	if err := env.repo.SaveBuildTemplate(ctx, BuildTemplate{
+		ID:      "global-build-template",
+		Name:    "global-build-template",
+		Version: 3,
+		Content: customContent,
+	}); err != nil {
+		t.Fatalf("SaveBuildTemplate() error = %v", err)
+	}
+
+	if err := env.svc.EnsureDefaultBuildConfiguration(ctx, buildActor().ID); err != nil {
+		t.Fatalf("EnsureDefaultBuildConfiguration() error = %v", err)
+	}
+	template, err := env.repo.GetBuildTemplate(ctx)
+	if err != nil {
+		t.Fatalf("GetBuildTemplate() error = %v", err)
+	}
+	if template.Version != 3 || template.Content != customContent {
+		t.Fatalf("custom template should be kept, got version=%d content=%q", template.Version, template.Content)
+	}
+}
+
+func TestEnsureDefaultBuildConfigurationKeepsCustomV1Template(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	customContent := "pipeline { stages { stage('custom') { steps { sh 'echo custom' } } } }"
+	if err := env.repo.SaveBuildTemplate(ctx, BuildTemplate{
+		ID:      "global-build-template",
+		Name:    "global-build-template",
+		Version: 1,
+		Content: customContent,
+	}); err != nil {
+		t.Fatalf("SaveBuildTemplate() error = %v", err)
+	}
+
+	if err := env.svc.EnsureDefaultBuildConfiguration(ctx, buildActor().ID); err != nil {
+		t.Fatalf("EnsureDefaultBuildConfiguration() error = %v", err)
+	}
+	template, err := env.repo.GetBuildTemplate(ctx)
+	if err != nil {
+		t.Fatalf("GetBuildTemplate() error = %v", err)
+	}
+	if template.Version != 1 || template.Content != customContent {
+		t.Fatalf("custom v1 template should be kept, got version=%d content=%q", template.Version, template.Content)
+	}
+}
+
 func TestUpdateBuildAndRuntimeEnvironmentsEditFields(t *testing.T) {
 	env := newBuildTestEnv(t)
 	ctx := context.Background()
@@ -789,8 +867,10 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	if strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_BUILD_SOURCES") || strings.Contains(env.runner.jobs[0].TemplateXML, "SOURCE_REFS_JSON") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_RUNTIME") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_PACKAGE_SPEC") {
 		t.Fatalf("rendered Jenkinsfile should not depend on Jenkins parameters, got %s", env.runner.jobs[0].TemplateXML)
 	}
-	if !strings.Contains(env.runner.jobs[0].TemplateXML, "abc123") || !strings.Contains(env.runner.jobs[0].TemplateXML, "/api/builds/"+run.ID.String()+"/callback") || !strings.Contains(env.runner.jobs[0].TemplateXML, "registry.example/paas/user-api:20260530-abc123-java17") {
-		t.Fatalf("rendered Jenkinsfile should contain build-specific commit, callback and image, got %s", env.runner.jobs[0].TemplateXML)
+	for _, want := range []string{"abc123", "/api/builds/" + run.ID.String() + "/callback", "registry.example/paas/user-api:", "20260530-${image_tag_commit}-java17", "artifacts: artifacts", "report/image-uri-java17-aliyun.txt"} {
+		if !strings.Contains(env.runner.jobs[0].TemplateXML, want) {
+			t.Fatalf("rendered Jenkinsfile should contain %q for dynamic image callback, got %s", want, env.runner.jobs[0].TemplateXML)
+		}
 	}
 	if !strings.Contains(env.runner.jobs[0].TemplateXML, "report/source-main-commit.txt") || !strings.Contains(env.runner.jobs[0].TemplateXML, "commit_sha") {
 		t.Fatalf("rendered Jenkinsfile should report resolved source commit in callback, got %s", env.runner.jobs[0].TemplateXML)
@@ -1007,8 +1087,10 @@ func TestTriggerBuildImageTagDoesNotUseBuildRunID(t *testing.T) {
 	if strings.Contains(xml, "registry.example/paas/user-api:20260530-build_run_1-main") {
 		t.Fatalf("rendered image tag must not use build run id: %s", xml)
 	}
-	if !strings.Contains(xml, "registry.example/paas/user-api:20260530-main-java17") {
-		t.Fatalf("rendered image tag should fall back to git ref when commit is empty, got %s", xml)
+	for _, want := range []string{"image_tag_commit='main'", "registry.example/paas/user-api:", "20260530-${image_tag_commit}-java17"} {
+		if !strings.Contains(xml, want) {
+			t.Fatalf("rendered image tag should fall back to git ref when commit is empty, missing %q: %s", want, xml)
+		}
 	}
 }
 
