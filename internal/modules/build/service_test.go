@@ -439,6 +439,62 @@ func TestCreateBuildPipelinePersistsRuntimeSnapshots(t *testing.T) {
 	}
 }
 
+func TestCreateBuildPipelineBackfillsRuntimeSnapshotFromImages(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)
+	if err := env.repo.CreateRuntimeEnvironment(ctx, RuntimeEnvironment{
+		ID:   "runtime_env_images_only",
+		Name: "images-only",
+		Images: []RuntimeEnvironmentImage{{
+			ID:                 "runtime_image_images_only_aliyun",
+			Name:               "aliyun",
+			DisplayName:        "阿里云 JDK 17",
+			RuntimeBaseImage:   "registry.example/runtime/java17:1.0",
+			ArtifactDeployPath: "/app/",
+			DockerfilePath:     "java/jar/Dockerfile",
+			SelectorLabels:     map[string]string{"cloud": "aliyun"},
+			Status:             string(RuntimeEnvironmentEnabled),
+		}},
+		Status:    RuntimeEnvironmentEnabled,
+		CreatedBy: "usr_admin",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateRuntimeEnvironment() error = %v", err)
+	}
+	spec := validBuildSpec()
+	spec.RuntimeBaseImage = ""
+	spec.ArtifactDeployPath = ""
+
+	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "main",
+		DisplayName:           "主流水线",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_images_only"},
+		Sources: []BuildPipelineSourceInput{{
+			Key:                "main",
+			SourceRepositoryID: "repo_user",
+			BuildSpec:          spec,
+			IsPrimary:          true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateBuildPipeline() error = %v", err)
+	}
+	if got := pipeline.RuntimeEnvironments[0].RuntimeBaseImage; got != "registry.example/runtime/java17:1.0" {
+		t.Fatalf("runtime snapshot should be backfilled from first image, got %q", got)
+	}
+	sources, err := env.svc.ListBuildPipelineSources(ctx, pipeline.ID)
+	if err != nil {
+		t.Fatalf("ListBuildPipelineSources() error = %v", err)
+	}
+	if sources[0].BuildSpec.RuntimeBaseImage != "registry.example/runtime/java17:1.0" || sources[0].BuildSpec.ArtifactDeployPath != "/app/" {
+		t.Fatalf("BuildSpec should be backfilled from first runtime image, got %+v", sources[0].BuildSpec)
+	}
+}
+
 func TestCreateBuildPipelineRejectsMultipleRuntimeEnvironments(t *testing.T) {
 	env := newBuildTestEnv(t)
 	seedRuntimeEnvironments(t, env)
@@ -514,6 +570,33 @@ func TestBuildPipelineRuntimeEnvironmentJSONUsesConsoleFieldNames(t *testing.T) 
 	}
 	if strings.Contains(jsonText, `"ID"`) || strings.Contains(jsonText, `"RuntimeBaseImage"`) {
 		t.Fatalf("runtime snapshot JSON should not rely on Go field names: %s", jsonText)
+	}
+}
+
+func TestMapRuntimeEnvironmentPublicIncludesBuildSpecFieldsOnly(t *testing.T) {
+	environment := RuntimeEnvironment{
+		ID:                 "runtime_env_java17",
+		Name:               "java17",
+		RuntimeBaseImage:   "registry.example/runtime/java17:1.0",
+		ArtifactDeployPath: "/app/",
+		DockerfilePath:     "java/jar/Dockerfile",
+		SelectorLabels:     map[string]string{"cloud": "aliyun"},
+		Images: []RuntimeEnvironmentImage{{
+			Name:             "aliyun",
+			RuntimeBaseImage: "registry.example/runtime/java17:1.0",
+			SelectorLabels:   map[string]string{"cloud": "aliyun"},
+		}},
+		Status: RuntimeEnvironmentEnabled,
+	}
+
+	payload := mapRuntimeEnvironment(environment, false)
+	if payload["runtime_base_image"] != "registry.example/runtime/java17:1.0" || payload["artifact_deploy_path"] != "/app/" {
+		t.Fatalf("public runtime environment should include BuildSpec fields, got %+v", payload)
+	}
+	for _, hidden := range []string{"images", "selector_labels", "dockerfile_path"} {
+		if _, ok := payload[hidden]; ok {
+			t.Fatalf("public runtime environment should hide %s: %+v", hidden, payload)
+		}
 	}
 }
 
