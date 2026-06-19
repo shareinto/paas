@@ -189,6 +189,65 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+kill_pids() {
+  local label="$1"
+  shift
+  local pids=("$@")
+  local pid alive=()
+  if ((${#pids[@]} == 0)); then
+    return
+  fi
+
+  echo "清理已存在的${label}进程: ${pids[*]}"
+  for pid in "${pids[@]}"; do
+    if [[ "$pid" != "$$" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+
+  sleep 1
+  for pid in "${pids[@]}"; do
+    if [[ "$pid" != "$$" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      alive+=("$pid")
+    fi
+  done
+  if ((${#alive[@]} > 0)); then
+    echo "强制清理未退出的${label}进程: ${alive[*]}"
+    kill -9 "${alive[@]}" >/dev/null 2>&1 || true
+  fi
+}
+
+kill_processes_on_port() {
+  local label="$1"
+  local port="$2"
+  local raw_pids pids=() pid seen
+  if [[ -z "$port" || "$port" == "0" ]]; then
+    return
+  fi
+  if ! command -v lsof >/dev/null 2>&1; then
+    echo "未找到 lsof，跳过${label}端口 ${port} 的旧进程清理。" >&2
+    return
+  fi
+
+  raw_pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -z "$raw_pids" ]]; then
+    return
+  fi
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    seen=" ${pids[*]} "
+    if [[ "$seen" != *" $pid "* ]]; then
+      pids+=("$pid")
+    fi
+  done <<<"$raw_pids"
+  kill_pids "$label" "${pids[@]}"
+}
+
+kill_existing_dev_processes() {
+  kill_processes_on_port "后端" "$PAAS_HTTP_PORT"
+  kill_processes_on_port "前端" "$WEB_PORT"
+}
+
 mysql_client() {
   local database="${1:-}"
   local args=(
@@ -314,7 +373,7 @@ SELECT id, name, runtime_base_image, artifact_deploy_path, dockerfile_path, COAL
 INTO @runtime_environment_id, @runtime_environment_name, @runtime_base_image, @artifact_deploy_path, @dockerfile_path, @runtime_selector_labels_json
 FROM runtime_environments
 WHERE status = 'enabled'
-ORDER BY (id = 'runtime_env_java17') DESC, is_default DESC, created_at ASC, id ASC
+ORDER BY (id = 'runtime_env_java17') DESC, created_at ASC, id ASC
 LIMIT 1;
 
 SELECT id
@@ -548,6 +607,8 @@ wait_for_any_process_exit() {
     sleep 1
   done
 }
+
+kill_existing_dev_processes
 
 if [[ "$RECREATE_DB" == "true" ]]; then
   export PAAS_AUTO_MIGRATE=true
