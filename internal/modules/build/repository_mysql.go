@@ -796,6 +796,7 @@ func scanRuntimeEnvironment(scanner buildScanner) (RuntimeEnvironment, error) {
 		return RuntimeEnvironment{}, err
 	}
 	environment.Images = runtimeEnvironmentImagesOrLegacy(environment.Images, environment.ID, environment.Name, environment.RuntimeBaseImage, environment.ArtifactDeployPath, environment.DockerfilePath, environment.SelectorLabels)
+	applyRuntimeEnvironmentFirstImage(&environment)
 	return environment, nil
 }
 

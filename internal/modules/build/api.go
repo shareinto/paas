@@ -609,17 +609,17 @@ func mapRuntimeEnvironmentPage(result shared.PageResult[RuntimeEnvironment], inc
 
 func mapRuntimeEnvironment(environment RuntimeEnvironment, includeImages bool) map[string]any {
 	out := map[string]any{
-		"id":          environment.ID,
-		"name":        environment.Name,
-		"description": environment.Description,
-		"status":      environment.Status,
-		"created_by":  environment.CreatedBy,
-		"created_at":  environment.CreatedAt,
-		"updated_at":  environment.UpdatedAt,
+		"id":                   environment.ID,
+		"name":                 environment.Name,
+		"description":          environment.Description,
+		"runtime_base_image":   environment.RuntimeBaseImage,
+		"artifact_deploy_path": environment.ArtifactDeployPath,
+		"status":               environment.Status,
+		"created_by":           environment.CreatedBy,
+		"created_at":           environment.CreatedAt,
+		"updated_at":           environment.UpdatedAt,
 	}
 	if includeImages {
-		out["runtime_base_image"] = environment.RuntimeBaseImage
-		out["artifact_deploy_path"] = environment.ArtifactDeployPath
 		out["dockerfile_path"] = environment.DockerfilePath
 		out["selector_labels"] = environment.SelectorLabels
 		out["images"] = environment.Images
