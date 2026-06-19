@@ -220,7 +220,7 @@ kill_pids() {
 kill_processes_on_port() {
   local label="$1"
   local port="$2"
-  local raw_pids pids=() pid seen
+  local raw_pids pids=() pid existing found
   if [[ -z "$port" || "$port" == "0" ]]; then
     return
   fi
@@ -235,12 +235,22 @@ kill_processes_on_port() {
   fi
   while IFS= read -r pid; do
     [[ -z "$pid" ]] && continue
-    seen=" ${pids[*]} "
-    if [[ "$seen" != *" $pid "* ]]; then
+    found=false
+    if ((${#pids[@]} > 0)); then
+      for existing in "${pids[@]}"; do
+        if [[ "$existing" == "$pid" ]]; then
+          found=true
+          break
+        fi
+      done
+    fi
+    if [[ "$found" == "false" ]]; then
       pids+=("$pid")
     fi
   done <<<"$raw_pids"
-  kill_pids "$label" "${pids[@]}"
+  if ((${#pids[@]} > 0)); then
+    kill_pids "$label" "${pids[@]}"
+  fi
 }
 
 kill_existing_dev_processes() {
