@@ -580,18 +580,17 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO build_pipeline_runtime_environments (
   pipeline_id, runtime_environment_id, name, runtime_base_image, artifact_deploy_path,
-  dockerfile_path, selector_labels_json, position
+  dockerfile_path, selector_labels_json
 )
 SELECT @pipeline_id, @runtime_environment_id, @runtime_environment_name, @runtime_base_image,
-       @artifact_deploy_path, @dockerfile_path, @runtime_selector_labels_json, 0
+       @artifact_deploy_path, @dockerfile_path, @runtime_selector_labels_json
 WHERE @runtime_environment_id IS NOT NULL
 ON DUPLICATE KEY UPDATE
   name = VALUES(name),
   runtime_base_image = VALUES(runtime_base_image),
   artifact_deploy_path = VALUES(artifact_deploy_path),
   dockerfile_path = VALUES(dockerfile_path),
-  selector_labels_json = VALUES(selector_labels_json),
-  position = VALUES(position);
+  selector_labels_json = VALUES(selector_labels_json);
 
 COMMIT;
 
