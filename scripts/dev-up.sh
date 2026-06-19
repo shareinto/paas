@@ -258,6 +258,46 @@ kill_existing_dev_processes() {
   kill_processes_on_port "前端" "$WEB_PORT"
 }
 
+ensure_frontend_dependencies() {
+  local web_dir="$ROOT_DIR/web/console"
+  if [[ -x "$web_dir/node_modules/.bin/vite" ]]; then
+    return
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "未找到 npm，无法启动前端开发服务器。请先安装 Node.js 和 npm。" >&2
+    return 127
+  fi
+  echo "前端依赖缺失，正在安装 web/console 依赖..."
+  (
+    cd "$web_dir"
+    npm install --no-audit --no-fund
+  )
+}
+
+mysql_tcp_ready() {
+  (exec 3<>"/dev/tcp/${MYSQL_HOST}/${MYSQL_PORT}") >/dev/null 2>&1
+}
+
+ensure_mysql_reachable() {
+  local attempts="${PAAS_DEV_MYSQL_RETRIES:-5}"
+  local interval="${PAAS_DEV_MYSQL_INTERVAL_SECONDS:-1}"
+  local i
+  echo "检查 MySQL 连接: $MYSQL_HOST:$MYSQL_PORT"
+  for ((i = 1; i <= attempts; i++)); do
+    if mysql_tcp_ready; then
+      return
+    fi
+    sleep "$interval"
+  done
+  cat >&2 <<EOF
+无法连接 MySQL: $MYSQL_HOST:$MYSQL_PORT
+请先启动 MySQL 8.0，或修改 $ENV_FILE 中的 MYSQL_HOST/MYSQL_PORT。
+如果需要按当前 migration 重建开发库，可在 MySQL 可连接后执行:
+  ./scripts/dev-up.sh --recreate-db
+EOF
+  return 2
+}
+
 mysql_client() {
   local database="${1:-}"
   local args=(
@@ -618,6 +658,7 @@ wait_for_any_process_exit() {
 }
 
 kill_existing_dev_processes
+ensure_mysql_reachable
 
 if [[ "$RECREATE_DB" == "true" ]]; then
   export PAAS_AUTO_MIGRATE=true
@@ -668,6 +709,7 @@ if [[ "$SEED_DEV_DATA" == "true" ]]; then
   seed_dev_data_with_mysql_client
 fi
 
+ensure_frontend_dependencies
 (
   cd "$ROOT_DIR/web/console"
   npm run dev -- --host "$WEB_HOST" --port "$WEB_PORT"
