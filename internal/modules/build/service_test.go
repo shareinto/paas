@@ -711,11 +711,39 @@ func TestEnsureDefaultBuildConfigurationRefreshesBuiltinTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBuildTemplate() error = %v", err)
 	}
-	if template.Version != 2 || template.Content == oldContent {
-		t.Fatalf("builtin template should refresh to version 2, got version=%d content=%q", template.Version, template.Content)
+	if template.Version != 3 || template.Content == oldContent {
+		t.Fatalf("builtin template should refresh to version 3, got version=%d content=%q", template.Version, template.Content)
 	}
 	if !strings.Contains(template.Content, "artifacts: artifacts") || !strings.Contains(template.Content, "report/image-uri-") {
 		t.Fatalf("refreshed template should callback with actual image artifacts, got %s", template.Content)
+	}
+	if strings.Contains(template.Content, "JsonSlurperClassic") {
+		t.Fatalf("refreshed template should avoid Jenkins sandbox JsonSlurper constructor, got %s", template.Content)
+	}
+}
+
+func TestEnsureDefaultBuildConfigurationRefreshesSandboxBlockedTemplate(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	oldContent := "pipeline { post { success { script { def artifacts = []; artifacts << [selector_labels: new groovy.json.JsonSlurperClassic().parseText('{}')]; writeFile file: 'report/callback-success.json', text: groovy.json.JsonOutput.toJson([artifacts: artifacts]) } } } }"
+	if err := env.repo.SaveBuildTemplate(ctx, BuildTemplate{
+		ID:      "global-build-template",
+		Name:    "global-build-template",
+		Version: 2,
+		Content: oldContent,
+	}); err != nil {
+		t.Fatalf("SaveBuildTemplate() error = %v", err)
+	}
+
+	if err := env.svc.EnsureDefaultBuildConfiguration(ctx, buildActor().ID); err != nil {
+		t.Fatalf("EnsureDefaultBuildConfiguration() error = %v", err)
+	}
+	template, err := env.repo.GetBuildTemplate(ctx)
+	if err != nil {
+		t.Fatalf("GetBuildTemplate() error = %v", err)
+	}
+	if template.Version != 3 || template.Content == oldContent || strings.Contains(template.Content, "JsonSlurperClassic") {
+		t.Fatalf("sandbox-blocked builtin template should refresh to version 3 without JsonSlurperClassic, got version=%d content=%q", template.Version, template.Content)
 	}
 }
 
@@ -867,7 +895,7 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	if strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_BUILD_SOURCES") || strings.Contains(env.runner.jobs[0].TemplateXML, "SOURCE_REFS_JSON") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_RUNTIME") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_PACKAGE_SPEC") {
 		t.Fatalf("rendered Jenkinsfile should not depend on Jenkins parameters, got %s", env.runner.jobs[0].TemplateXML)
 	}
-	for _, want := range []string{"abc123", "/api/builds/" + run.ID.String() + "/callback", "registry.example/paas/user-api:", "20260530-${image_tag_commit}-java17", "artifacts: artifacts", "report/image-uri-java17-aliyun.txt"} {
+	for _, want := range []string{"abc123", "/api/builds/" + run.ID.String() + "/callback", "registry.example/paas/user-api:", "image_tag_commit", "java17-aliyun", "artifacts: artifacts", "report/image-uri-java17-aliyun.txt"} {
 		if !strings.Contains(env.runner.jobs[0].TemplateXML, want) {
 			t.Fatalf("rendered Jenkinsfile should contain %q for dynamic image callback, got %s", want, env.runner.jobs[0].TemplateXML)
 		}
@@ -1065,9 +1093,16 @@ func TestTriggerBuildRendersAcceleratedDefaultJenkinsfile(t *testing.T) {
 		".DependencyCacheDir",
 		"git -C &#34;$checkout_dir&#34; rev-parse --verify --quiet &#34;$ref^{commit}&#34;",
 		"if git rev-parse --verify --quiet &#34;$ref^{commit}&#34;",
+		"JsonSlurperClassic",
+		"parseText",
 	} {
 		if strings.Contains(xml, forbidden) {
 			t.Fatalf("accelerated Jenkinsfile should not contain %q: %s", forbidden, xml)
+		}
+	}
+	for _, want := range []string{"selector_labels: [", "metadata: [", "runtime_environment_name"} {
+		if !strings.Contains(xml, want) {
+			t.Fatalf("accelerated Jenkinsfile should render sandbox-safe artifact maps, missing %q: %s", want, xml)
 		}
 	}
 }
@@ -1087,7 +1122,7 @@ func TestTriggerBuildImageTagDoesNotUseBuildRunID(t *testing.T) {
 	if strings.Contains(xml, "registry.example/paas/user-api:20260530-build_run_1-main") {
 		t.Fatalf("rendered image tag must not use build run id: %s", xml)
 	}
-	for _, want := range []string{"image_tag_commit='main'", "registry.example/paas/user-api:", "20260530-${image_tag_commit}-java17"} {
+	for _, want := range []string{"image_tag_commit=&#39;main&#39;", "registry.example/paas/user-api:", "java17-aliyun"} {
 		if !strings.Contains(xml, want) {
 			t.Fatalf("rendered image tag should fall back to git ref when commit is empty, missing %q: %s", want, xml)
 		}

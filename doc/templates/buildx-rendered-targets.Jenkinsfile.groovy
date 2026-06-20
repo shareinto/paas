@@ -267,8 +267,8 @@ pipeline {
               name: '{{ .ArtifactName }}',
               uri: readFile('report/image-uri-{{ .Key }}.txt').trim(),
               is_primary: {{ .IsPrimary }},
-              selector_labels: new groovy.json.JsonSlurperClassic().parseText('''{{ .SelectorLabelsJSON }}'''),
-              metadata: new groovy.json.JsonSlurperClassic().parseText('''{{ .MetadataJSON }}''')
+              selector_labels: {{ .SelectorLabels }},
+              metadata: {{ .Metadata }}
             ]
           }
 {{ end }}

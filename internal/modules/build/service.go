@@ -534,8 +534,8 @@ const defaultBuildTemplateContent = `pipeline {
               name: '{{ .ArtifactName }}',
               uri: readFile('report/image-uri-{{ .Key }}.txt').trim(),
               is_primary: {{ .IsPrimary }},
-              selector_labels: new groovy.json.JsonSlurperClassic().parseText('''{{ .SelectorLabelsJSON }}'''),
-              metadata: new groovy.json.JsonSlurperClassic().parseText('''{{ .MetadataJSON }}''')
+              selector_labels: {{ .SelectorLabels }},
+              metadata: {{ .Metadata }}
             ]
           }
 {{ end }}
@@ -846,7 +846,7 @@ func (s *Service) EnsureDefaultBuildConfiguration(ctx context.Context, actorID s
 	if existing, err := s.repo.GetBuildTemplate(ctx); err == nil {
 		if shouldRefreshDefaultBuildTemplate(existing) {
 			now := s.clock.Now()
-			existing.Version = 2
+			existing.Version = 3
 			existing.Content = defaultBuildTemplateContent
 			existing.UpdatedAt = now
 			if existing.CreatedAt.IsZero() {
@@ -862,15 +862,18 @@ func (s *Service) EnsureDefaultBuildConfiguration(ctx context.Context, actorID s
 		return err
 	}
 	now := s.clock.Now()
-	return s.repo.SaveBuildTemplate(ctx, BuildTemplate{ID: "global-build-template", Name: "global-build-template", Version: 2, Content: defaultBuildTemplateContent, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now})
+	return s.repo.SaveBuildTemplate(ctx, BuildTemplate{ID: "global-build-template", Name: "global-build-template", Version: 3, Content: defaultBuildTemplateContent, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now})
 }
 
 func shouldRefreshDefaultBuildTemplate(template BuildTemplate) bool {
 	content := strings.TrimSpace(template.Content)
-	if template.ID != "global-build-template" || template.Version > 1 || content == "" || content == strings.TrimSpace(defaultBuildTemplateContent) {
+	if template.ID != "global-build-template" || template.Version > 2 || content == "" || content == strings.TrimSpace(defaultBuildTemplateContent) {
 		return false
 	}
-	return strings.Contains(content, "{{ .ImageURI }}") && !strings.Contains(content, "artifacts: artifacts")
+	if template.Version <= 1 && strings.Contains(content, "{{ .ImageURI }}") && !strings.Contains(content, "artifacts: artifacts") {
+		return true
+	}
+	return template.Version <= 2 && strings.Contains(content, "artifacts: artifacts") && strings.Contains(content, "JsonSlurperClassic")
 }
 
 func (s *Service) EnsureDefaultJenkinsJobTemplate(ctx context.Context, actorID shared.ID) error {
@@ -1611,8 +1614,8 @@ type buildTemplateImageTargetView struct {
 	EnvKey             string
 	SourceKey          string
 	ArtifactName       string
-	SelectorLabelsJSON string
-	MetadataJSON       string
+	SelectorLabels     string
+	Metadata           string
 	IsPrimary          bool
 }
 
@@ -1762,8 +1765,8 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, runtimes []Runti
 				EnvKey:             shellEnvName(key) + "_IMAGE",
 				SourceKey:          groovySingleQuoted(sourceKey),
 				ArtifactName:       groovySingleQuoted(name),
-				SelectorLabelsJSON: groovyTripleSingleQuotedJSON(normalizeSelectorLabels(image.SelectorLabels)),
-				MetadataJSON:       groovyTripleSingleQuotedJSON(metadata),
+				SelectorLabels:     groovyStringMapLiteral(normalizeSelectorLabels(image.SelectorLabels)),
+				Metadata:           groovyStringMapLiteral(metadata),
 				IsPrimary:          targetIndex == 0,
 			})
 			targetIndex++
@@ -1870,6 +1873,30 @@ func primaryBuildSourceKey(sources []ApplicationSourceRef, runSources []BuildRun
 func groovyTripleSingleQuotedJSON(value any) string {
 	encoded, _ := json.MarshalIndent(value, "", "  ")
 	return strings.ReplaceAll(string(encoded), "'''", "'''\"'\"'''")
+}
+
+func groovyStringMapLiteral(values map[string]string) string {
+	if len(values) == 0 {
+		return "[:]"
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("'%s': '%s'", groovyMapString(key), groovyMapString(values[key])))
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+func groovyMapString(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "'", "\\'")
+	value = strings.ReplaceAll(value, "\r", "\\r")
+	value = strings.ReplaceAll(value, "\n", "\\n")
+	return value
 }
 
 func (s *Service) pipelineJobName(app ApplicationRef, pipelineName string) string {
