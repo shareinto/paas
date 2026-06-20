@@ -172,6 +172,7 @@ BACKEND_LOCAL_BASE_URL="${PAAS_DEV_BACKEND_LOCAL_BASE_URL:-http://127.0.0.1:${PA
 export VITE_API_BASE_URL="${VITE_API_BASE_URL:-$BACKEND_LOCAL_BASE_URL}"
 
 pids=()
+pid_labels=()
 
 cleanup() {
   local code=$?
@@ -188,6 +189,13 @@ cleanup() {
 }
 
 trap cleanup EXIT INT TERM
+
+track_pid() {
+  local label="$1"
+  local pid="$2"
+  pids+=("$pid")
+  pid_labels+=("$label")
+}
 
 kill_pids() {
   local label="$1"
@@ -368,15 +376,25 @@ SQL
   echo "已重建开发数据库: $MYSQL_DATABASE"
 }
 
-wait_for_backend_ready() {
+wait_for_started_backend_ready() {
+  local pid="$1"
   local ready_url="${BACKEND_LOCAL_BASE_URL}/readyz"
   local attempts="${PAAS_DEV_READY_RETRIES:-60}"
   local interval="${PAAS_DEV_READY_INTERVAL_SECONDS:-1}"
+  local i code
   echo "等待后端 ready: $ready_url"
   for ((i = 1; i <= attempts; i++)); do
-    if curl -fsS "$ready_url" >/dev/null 2>&1; then
+    if backend_ready; then
       echo "后端已 ready"
       return 0
+    fi
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      set +e
+      wait "$pid"
+      code=$?
+      set -e
+      echo "后端进程已退出: pid=$pid exit_code=$code" >&2
+      return "$code"
     fi
     sleep "$interval"
   done
@@ -644,13 +662,19 @@ SQL
 }
 
 wait_for_any_process_exit() {
-  local pid running
+  local i pid label running code
   while :; do
     running="$(jobs -pr)"
-    for pid in "${pids[@]}"; do
+    for i in "${!pids[@]}"; do
+      pid="${pids[$i]}"
+      label="${pid_labels[$i]}"
       if ! printf '%s\n' "$running" | grep -qx "$pid"; then
+        set +e
         wait "$pid"
-        return $?
+        code=$?
+        set -e
+        echo "${label}进程已退出: pid=$pid exit_code=$code" >&2
+        return "$code"
       fi
     done
     sleep 1
@@ -701,11 +725,11 @@ else
     cd "$ROOT_DIR"
     go run ./cmd/paas-server
   ) &
-  pids+=("$!")
+  track_pid "后端" "$!"
+  wait_for_started_backend_ready "$!"
 fi
 
 if [[ "$SEED_DEV_DATA" == "true" ]]; then
-  wait_for_backend_ready
   seed_dev_data_with_mysql_client
 fi
 
@@ -714,7 +738,7 @@ ensure_frontend_dependencies
   cd "$ROOT_DIR/web/console"
   npm run dev -- --host "$WEB_HOST" --port "$WEB_PORT"
 ) &
-pids+=("$!")
+track_pid "前端" "$!"
 
 wait_for_any_process_exit
 cleanup
