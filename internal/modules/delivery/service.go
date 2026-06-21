@@ -915,7 +915,19 @@ func (s *Service) CompleteStageVerification(ctx context.Context, input StageVeri
 	if err := s.requireDeploymentRecordForVerification(ctx, app.ID, stageKey, input.FreightID); err != nil {
 		return StageVerification{}, err
 	}
+	now := s.clock.Now()
 	if existing, err := s.repo.FindStageVerification(ctx, app.ID, stageKey, input.FreightID); err == nil {
+		existing.VerifierID = input.Actor.ID
+		existing.Status = input.Status
+		existing.Comment = strings.TrimSpace(input.Comment)
+		existing.SyncStatus = strings.TrimSpace(input.SyncStatus)
+		existing.HealthStatus = strings.TrimSpace(input.HealthStatus)
+		existing.AgentStatus = strings.TrimSpace(input.AgentStatus)
+		existing.UpdatedAt = now
+		if err := s.repo.UpdateStageVerification(ctx, existing); err != nil {
+			return StageVerification{}, err
+		}
+		_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "stage.verify", ResourceType: "stage_verification", ResourceID: existing.ID, Result: "succeeded", Summary: "更新人工验证", OccurredAt: now})
 		return existing, nil
 	} else if shared.CodeOf(err) != shared.CodeNotFound {
 		return StageVerification{}, err
@@ -924,7 +936,6 @@ func (s *Service) CompleteStageVerification(ctx context.Context, input StageVeri
 	if err != nil {
 		return StageVerification{}, err
 	}
-	now := s.clock.Now()
 	verification := StageVerification{ID: id, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, StageKey: stageKey, FreightID: input.FreightID, VerifierID: input.Actor.ID, Status: input.Status, Comment: strings.TrimSpace(input.Comment), SyncStatus: strings.TrimSpace(input.SyncStatus), HealthStatus: strings.TrimSpace(input.HealthStatus), AgentStatus: strings.TrimSpace(input.AgentStatus), CreatedAt: now, UpdatedAt: now}
 	if err := s.repo.CreateStageVerification(ctx, verification); err != nil {
 		return StageVerification{}, err

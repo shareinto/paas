@@ -435,8 +435,34 @@ func failedPreconditionMessage(message string) string {
 	if strings.HasPrefix(trimmed, "image bundle for workload ") {
 		return "当前版本不适用于目标环境，请联系平台管理员检查运行时镜像配置"
 	}
+	if safeChinesePreconditionMessage(trimmed) {
+		return trimmed
+	}
 	return "发布前置条件不满足"
 }
+
+func safeChinesePreconditionMessage(message string) bool {
+	if message == "" || !containsCJK(message) {
+		return false
+	}
+	lower := strings.ToLower(message)
+	for _, sensitive := range []string{"token", "secret", "password", "passwd", "credential", "kubeconfig", "client_secret", "access_key", "private_key"} {
+		if strings.Contains(lower, sensitive) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsCJK(message string) bool {
+	for _, r := range message {
+		if r >= '\u4e00' && r <= '\u9fff' {
+			return true
+		}
+	}
+	return false
+}
+
 func pageFromQuery(r *http.Request) shared.PageRequest {
 	q := r.URL.Query()
 	return shared.PageRequest{Page: parsePositiveInt(q.Get("page")), PageSize: parsePositiveInt(q.Get("page_size"))}

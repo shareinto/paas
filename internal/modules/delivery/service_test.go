@@ -834,6 +834,23 @@ func TestFreightApprovalAndStageVerification(t *testing.T) {
 	if verification.Status != StageVerificationFailed || verification.HealthStatus != "Degraded" || verification.VerifierID != "usr_ops" {
 		t.Fatalf("verification should persist evidence even when failed: %+v", verification)
 	}
+	verification, err = env.svc.CompleteStageVerification(ctx, StageVerificationInput{
+		Actor:         actor("usr_ops"),
+		ApplicationID: "app_user",
+		StageKey:      "dev",
+		FreightID:     freight.ID,
+		Status:        StageVerificationPassed,
+		Comment:       "复测通过",
+		SyncStatus:    "Synced",
+		HealthStatus:  "Healthy",
+		AgentStatus:   "ready",
+	})
+	if err != nil {
+		t.Fatalf("CompleteStageVerification(update) error = %v", err)
+	}
+	if verification.Status != StageVerificationPassed || verification.HealthStatus != "Healthy" || verification.Comment != "复测通过" {
+		t.Fatalf("verification should be updatable after a failed result: %+v", verification)
+	}
 }
 
 func TestManualFreightValidatesWorkloadCoverageSourcesAndCustomImageRisk(t *testing.T) {
@@ -1442,6 +1459,15 @@ func TestHandlerWritesReadablePromotionPreconditionError(t *testing.T) {
 	}
 	if out.Error.Code != shared.CodeFailedPrecondition || out.Error.Message != "该 Stage 未绑定集群，请先在交付流模板中绑定集群" {
 		t.Fatalf("unexpected error response: %+v", out.Error)
+	}
+}
+
+func TestFailedPreconditionMessagePreservesSafeChineseReason(t *testing.T) {
+	if got := failedPreconditionMessage("当前版本不适用于目标环境，请联系平台管理员检查运行时镜像配置"); got != "当前版本不适用于目标环境，请联系平台管理员检查运行时镜像配置" {
+		t.Fatalf("safe Chinese reason should be preserved, got %q", got)
+	}
+	if got := failedPreconditionMessage("当前 token 配置无效"); got != "发布前置条件不满足" {
+		t.Fatalf("sensitive Chinese reason should be hidden, got %q", got)
 	}
 }
 

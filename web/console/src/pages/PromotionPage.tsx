@@ -5,7 +5,7 @@ import { Alert, Badge, Button, Card, Descriptions, Drawer, Empty, Form, Input, I
 import { Background, Controls, Handle, MarkerType, Position, ReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useParams } from 'react-router-dom';
-import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, deleteFreight, getApplication, getFreight, getFreightCreationContext, listAppStages, listEligibleFreights, listFreights, listWorkloadStageConfigs, listWorkloads, openRuntimePodTerminal, restartRuntimeResource, saveWorkloadStageConfig, streamRuntimePodLogs, streamRuntimeResources, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type RuntimeResource, type Workload, type WorkloadStageConfig } from '../api';
+import { completeFreightApproval, completeStageVerification, createFreight, createPromotion, deleteFreight, getFreight, getFreightCreationContext, listAppStages, listEligibleFreights, listFreights, listWorkloadStageConfigs, listWorkloads, openRuntimePodTerminal, restartRuntimeResource, saveWorkloadStageConfig, streamRuntimePodLogs, streamRuntimeResources, type AppStage, type CreateFreightInput, type Freight, type FreightItem, type ImageBundleImage, type RuntimeResource, type Workload, type WorkloadStageConfig } from '../api';
 import { ConfigValueLists, WorkloadRuntimeFields, workloadConfigFormValues, workloadConfigPayload } from './workloadConfigForm';
 import { buildRuntimeTopology, computeRuntimeSummary, formatControllerReplicas, formatPodReady, normalizePodPhase, sumRestartCount, truncateMessage, uncategorizedStatusText, type ControllerGroup, type PodPhase, type RuntimeSummary, type RuntimeTopology } from './runtimeTopology';
 
@@ -103,7 +103,6 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const [draggingFreightId, setDraggingFreightId] = useState('');
 
   const freightsQuery = useQuery({ queryKey: ['freights', applicationId], queryFn: () => listFreights(applicationId) });
-  const applicationQuery = useQuery({ queryKey: ['application', applicationId], queryFn: () => getApplication(applicationId) });
   const contextQuery = useQuery({ queryKey: ['freight-creation-context', applicationId], queryFn: () => getFreightCreationContext(applicationId) });
   const appStagesQuery = useQuery({ queryKey: ['app-stages', applicationId], queryFn: () => listAppStages(applicationId) });
   const workloadsQuery = useQuery({ queryKey: ['workloads', applicationId, 'stage-config'], queryFn: () => listWorkloads(applicationId), enabled: !!applicationId });
@@ -117,12 +116,10 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
     mutationFn: (input: PendingPromotion) => createPromotion(
       {
         freightId: input.freight.id,
-        targetStageKey: input.stage.stageKey,
-        targetClusterIds: input.stage.boundClusterId ? [input.stage.boundClusterId] : [],
-        namespaceOverride: defaultNamespace
+        targetStageKey: input.stage.stageKey
       },
       applicationId,
-      input.stage.deliveryStageId || input.stage.id
+      input.stage.stageKey
     ),
     onSuccess: (_, input) => {
       setStageFreights((current) => ({ ...current, [input.stage.stageKey]: input.freight.version }));
@@ -202,7 +199,6 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
   const configWorkloads = (workloadsQuery.data || enabledWorkloads).filter((workload) => workload.status !== 'deleted');
   const workloadNameById = useMemo(() => Object.fromEntries(enabledWorkloads.map((workload) => [workload.id, workload.displayName || workload.name])), [enabledWorkloads]);
   const stages = useMemo(() => (appStagesQuery.data || []).map((stage) => withStageDefaults(stage, sortedFreights, stageFreights)), [appStagesQuery.data, sortedFreights, stageFreights]);
-  const defaultNamespace = applicationQuery.data?.project || applicationQuery.data?.projectId || 'default';
   const selectedCount = enabledWorkloads.filter((workload) => draftItemComplete(draftItems[workload.id])).length;
   const submitDisabled = enabledWorkloads.length === 0 || selectedCount < enabledWorkloads.length;
 
@@ -250,7 +246,7 @@ export function PromotionContent({ applicationId = DEFAULT_APPLICATION_ID, showH
       return;
     }
     try {
-      const eligible = await eligibleMutation.mutateAsync(stage.deliveryStageId || stage.id);
+      const eligible = await eligibleMutation.mutateAsync(stage.stageKey);
       if (!eligible.some((item) => item.id === freight.id)) {
         message.warning('该 Freight 当前不能发布到目标 Stage');
         return;
@@ -1085,7 +1081,7 @@ function bundleSummary(images?: ImageBundleImage[]) {
 function stageDropState(stage: StageView, freightId: string, stageEligibility?: Record<string, string[]>): 'ready' | 'blocked' {
   if (stage.status === 'disabled' || !stage.boundClusterId) return 'blocked';
   if (!stageEligibility) return 'ready';
-  const keys = [stage.deliveryStageId, stage.id, stage.stageKey].filter(Boolean) as string[];
+  const keys = [stage.stageKey, stage.deliveryStageId, stage.id].filter(Boolean) as string[];
   const eligibleIds = new Set(keys.flatMap((key) => stageEligibility[key] || []));
   return eligibleIds.has(freightId) ? 'ready' : 'blocked';
 }

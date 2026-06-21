@@ -473,6 +473,22 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return database.ConflictOrUnavailable(err, "stage verification already exists", "create stage verification failed")
 }
 
+func (r *MySQLRepository) UpdateStageVerification(ctx context.Context, verification StageVerification) error {
+	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+UPDATE stage_verifications
+SET verifier_id = ?, status = ?, comment = ?, sync_status = ?, health_status = ?, agent_status = ?, updated_at = ?
+WHERE id = ?`,
+		verification.VerifierID, verification.Status, verification.Comment, verification.SyncStatus, verification.HealthStatus,
+		verification.AgentStatus, verification.UpdatedAt, verification.ID)
+	if err != nil {
+		return database.WrapUnavailable(err, "update stage verification failed")
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return shared.NewError(shared.CodeNotFound, "stage verification not found")
+	}
+	return nil
+}
+
 func (r *MySQLRepository) FindStageVerification(ctx context.Context, applicationID shared.ID, stageKey string, freightID shared.ID) (StageVerification, error) {
 	verification, err := scanStageVerification(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, stageVerificationSelect()+" WHERE application_id = ? AND stage_key = ? AND freight_id = ?", applicationID, stageKey, freightID))
 	if err != nil {

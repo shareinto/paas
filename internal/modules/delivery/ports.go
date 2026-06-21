@@ -48,6 +48,7 @@ type Repository interface {
 	CreateFreightApproval(ctx context.Context, approval FreightApproval) error
 	FindFreightApproval(ctx context.Context, freightID shared.ID, targetStageKey string) (FreightApproval, error)
 	CreateStageVerification(ctx context.Context, verification StageVerification) error
+	UpdateStageVerification(ctx context.Context, verification StageVerification) error
 	FindStageVerification(ctx context.Context, applicationID shared.ID, stageKey string, freightID shared.ID) (StageVerification, error)
 
 	CreatePromotion(ctx context.Context, promotion Promotion) error
