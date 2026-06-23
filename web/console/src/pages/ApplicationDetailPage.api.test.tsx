@@ -33,6 +33,7 @@ test('真实 API 创建流水线后即使列表接口暂未返回也立即显示
   useSession.setState({ token: 'test', userName: '测试用户' });
 
   let pipelineListCalls = 0;
+  let comboBody: Record<string, any> = {};
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method || 'GET';
     if (method === 'GET' && url.endsWith('/api/applications/app_1')) {
@@ -94,6 +95,9 @@ test('真实 API 构建历史按开始时间倒序编号', async () => {
     const method = init?.method || 'GET';
     if (method === 'GET' && url.endsWith('/api/applications/app_1')) {
       return jsonResponse({ id: 'app_1', name: 'order-api', display_name: '订单服务', project_id: 'project_1', status: 'active' });
+    }
+    if (method === 'GET' && url.endsWith('/api/projects?page=1&page_size=50')) {
+      return jsonResponse({ items: [{ id: 'project_1', display_name: '订单平台' }], total: 1, page: 1, page_size: 50 });
     }
     if (method === 'GET' && url.endsWith('/api/applications/app_1/workloads')) {
       return jsonResponse({ items: [] });
@@ -285,13 +289,18 @@ test('真实 API 创建 Workload 后使用服务端名称展示简化卡片', as
   const { App } = await import('../app/App');
   useSession.setState({ token: 'test', userName: '测试用户' });
 
+  let comboBody: Record<string, any> = {};
+  let workloadItems: any[] = [];
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method || 'GET';
     if (method === 'GET' && url.endsWith('/api/applications/app_1')) {
       return jsonResponse({ id: 'app_1', name: 'order-api', display_name: '订单服务', project_id: 'project_1', status: 'active' });
     }
+    if (method === 'GET' && url.endsWith('/api/projects?page=1&page_size=50')) {
+      return jsonResponse({ items: [{ id: 'project_1', display_name: '订单平台' }], total: 1, page: 1, page_size: 50 });
+    }
     if (method === 'GET' && url.endsWith('/api/applications/app_1/workloads')) {
-      return jsonResponse({ items: [] });
+      return jsonResponse({ items: workloadItems });
     }
     if (method === 'GET' && url.endsWith('/api/apps/app_1/build-pipelines?page=1&page_size=50')) {
       return jsonResponse({ items: [{ id: 'pipeline_1', application_id: 'app_1', name: 'main', display_name: '主流水线', status: 'active' }], total: 1, page: 1, page_size: 50 });
@@ -299,23 +308,42 @@ test('真实 API 创建 Workload 后使用服务端名称展示简化卡片', as
     if (method === 'GET' && url.endsWith('/api/build-pipelines/pipeline_1/sources')) {
       return jsonResponse({ items: [] });
     }
-    if (method === 'POST' && url.endsWith('/api/applications/app_1/workloads')) {
-      const body = JSON.parse(String(init?.body || '{}'));
-      expect(body.pipeline_id).toBe('pipeline_1');
-      return jsonResponse({
+    if (method === 'GET' && url.endsWith('/api/projects/project_1/source-repositories?page=1&page_size=100')) {
+      return jsonResponse({ items: [{ id: 'repo_1', name: 'order-api', display_name: '订单服务仓库', default_branch: 'main', status: 'ready' }], total: 1, page: 1, page_size: 100 });
+    }
+    if (method === 'GET' && url.endsWith('/api/build-environments?page=1&page_size=100')) {
+      return jsonResponse({ items: [{ id: 'build_env_java', name: 'java-springboot', status: 'enabled', is_default: true }], total: 1, page: 1, page_size: 100 });
+    }
+    if (method === 'GET' && url.endsWith('/api/runtime-environments?page=1&page_size=100')) {
+      return jsonResponse({ items: [{ id: 'runtime_env_java17', name: 'java17', runtime_base_image: 'registry.example/runtime/java17:1.0', artifact_deploy_path: '/app/', status: 'enabled', is_default: true }], total: 1, page: 1, page_size: 100 });
+    }
+    if (method === 'POST' && url.endsWith('/api/applications/app_1/workloads:create-with-pipeline')) {
+      comboBody = JSON.parse(String(init?.body || '{}'));
+      workloadItems = [{
         id: 'workload_worker',
         application_id: 'app_1',
         name: 'order-worker',
         display_name: '订单任务',
         workload_type: 'statefulset',
         image_source_mode: 'pipeline_artifact',
-        pipeline_id: 'pipeline_1',
-        image_source_name: '主流水线',
+        pipeline_id: 'pipeline_worker',
+        image_source_name: '流水线 2',
         status: 'enabled'
+      }];
+      return jsonResponse({
+        workload: workloadItems[0],
+        pipeline: {
+          id: 'pipeline_worker',
+          application_id: 'app_1',
+          name: 'pipeline-2',
+          display_name: '流水线 2',
+          status: 'active'
+        },
+        default_config: {
+          id: 'workload_default_config_worker',
+          workload_id: 'workload_worker'
+        }
       }, 201);
-    }
-    if (method === 'PUT' && url.endsWith('/api/applications/app_1/workloads/workload_worker/default-config')) {
-      return jsonResponse({ id: 'workload_default_config_worker', workload_id: 'workload_worker' });
     }
     return jsonResponse({ error: { code: 'not_found', message: `未处理请求 ${method} ${url}` } }, 404);
   });
@@ -329,11 +357,24 @@ test('真实 API 创建 Workload 后使用服务端名称展示简化卡片', as
   await userEvent.type(within(dialog).getByLabelText('工作负载标识'), 'order-worker');
   await userEvent.type(within(dialog).getByLabelText('显示名称'), '订单任务');
   await userEvent.click(within(dialog).getByText('有状态'));
-  expect(await within(dialog).findByText('关联流水线')).toBeInTheDocument();
-  expect(await within(dialog).findByText('主流水线 (main)')).toBeInTheDocument();
+  expect(await within(dialog).findByText('流水线信息')).toBeInTheDocument();
+  expect(within(dialog).queryByText('关联流水线')).not.toBeInTheDocument();
   await userEvent.click(within(dialog).getByRole('button', { name: '创建' }));
 
   const card = (await screen.findByText('订单任务')).closest('.resource-card') as HTMLElement;
+  expect(comboBody).toMatchObject({
+    workload: {
+      name: 'order-worker',
+      image_source_mode: 'pipeline_artifact'
+    },
+    pipeline: {
+      name: expect.any(String),
+      runtime_environment_ids: ['runtime_env_java17']
+    },
+    default_config: {
+      service_ports: [{ name: 'http', port: 80, target_port: 8080, protocol: 'TCP' }]
+    }
+  });
   expect(within(card).getByRole('button', { name: '编辑' })).toHaveTextContent('');
   expect(within(card).getByRole('button', { name: '删除' })).toHaveTextContent('');
   expect(within(card).queryByText('流水线产物')).not.toBeInTheDocument();

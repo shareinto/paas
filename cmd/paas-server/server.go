@@ -149,6 +149,7 @@ func newApplication(ctx context.Context) (*application, error) {
 		BuildEnvironmentQuery:    buildEnvironmentForAppEnv{repo: buildRepo},
 		RuntimeEnvironmentQuery:  runtimeEnvironmentForAppEnv{repo: buildRepo},
 		BuildPipelineProvisioner: buildSvc,
+		BuildPipelineCommand:     buildPipelineCommandForAppEnv{service: buildSvc},
 		BuildPipelineQuery:       buildPipelineForAppEnv{service: buildSvc},
 		Audit:                    audit.ApplicationEnvironmentLogger{Logger: auditSvc},
 		IDGenerator:              ids,
@@ -825,6 +826,45 @@ func (q buildPipelineForAppEnv) GetBuildPipeline(ctx context.Context, id shared.
 		return appenv.BuildPipelineRef{}, err
 	}
 	return appenv.BuildPipelineRef{ID: pipeline.ID, ApplicationID: pipeline.ApplicationID, Name: pipeline.Name, DisplayName: pipeline.DisplayName, Status: string(pipeline.Status)}, nil
+}
+
+type buildPipelineCommandForAppEnv struct{ service *build.Service }
+
+func (c buildPipelineCommandForAppEnv) CreateBuildPipeline(ctx context.Context, input appenv.CreateBuildPipelineInput) (appenv.BuildPipelineRef, error) {
+	pipeline, err := c.service.CreateBuildPipeline(ctx, build.CreateBuildPipelineInput{
+		Actor:                 input.Actor,
+		ApplicationID:         input.ApplicationID,
+		Name:                  input.Name,
+		DisplayName:           input.DisplayName,
+		Description:           input.Description,
+		RuntimeEnvironmentIDs: input.RuntimeEnvironmentIDs,
+		Sources:               toBuildPipelineSourceInputs(input.Sources),
+	})
+	if err != nil {
+		return appenv.BuildPipelineRef{}, err
+	}
+	return appenv.BuildPipelineRef{ID: pipeline.ID, ApplicationID: pipeline.ApplicationID, Name: pipeline.Name, DisplayName: pipeline.DisplayName, Status: string(pipeline.Status)}, nil
+}
+
+func (c buildPipelineCommandForAppEnv) DeleteBuildPipeline(ctx context.Context, actor identityaccess.Subject, pipelineID shared.ID) error {
+	return c.service.DeleteNamedBuildPipeline(ctx, actor, pipelineID)
+}
+
+func toBuildPipelineSourceInputs(inputs []appenv.BuildPipelineSourceInput) []build.BuildPipelineSourceInput {
+	out := make([]build.BuildPipelineSourceInput, 0, len(inputs))
+	for _, input := range inputs {
+		out = append(out, build.BuildPipelineSourceInput{
+			Key:                input.Key,
+			DisplayName:        input.DisplayName,
+			SourceRepositoryID: input.SourceRepositoryID,
+			BuildEnvironmentID: input.BuildEnvironmentID,
+			SourcePath:         input.SourcePath,
+			BuildSpec:          toBuildSpec(input.BuildSpec),
+			DefaultRef:         input.DefaultRef,
+			IsPrimary:          input.IsPrimary,
+		})
+	}
+	return out
 }
 
 type workloadForDelivery struct{ service *appenv.Service }

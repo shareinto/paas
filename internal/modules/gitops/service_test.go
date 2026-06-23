@@ -323,6 +323,87 @@ func TestApplyPromotionWritesVersionedChartAndMultiSourceArgoApplication(t *test
 	}
 }
 
+func TestApplyPromotionWritesNginxSidecarValuesAndPlatformChartSupport(t *testing.T) {
+	chartRepo := NewFakeManifestRepository()
+	svc, manifest, _ := newTestService(t, []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform",
+		"deployment_template_app", "deployment_template_revision_app",
+		"deployment_1", "manifest_revision_1", "deployment_event_1",
+	})
+	svc.chart = chartRepo
+	svc.chartName = "paas-app"
+	svc.chartVersion = "0.1.0"
+	svc.workloads = workloadQuery{
+		workloads: map[shared.ID]WorkloadRef{
+			"workload_api": {ID: "workload_api", ApplicationID: "app_1", Name: "user-api", WorkloadType: "Deployment"},
+		},
+		configs: map[string]WorkloadStageConfigRef{
+			"workload_api|dev": {
+				ServicePorts: []WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
+				ValuesOverride: map[string]any{
+					"nginxSidecar": map[string]any{
+						"enabled":               true,
+						"image":                 "nginx:1.26.2",
+						"port":                  8081,
+						"routeServiceToSidecar": true,
+						"nginxConf":             "events {}\nhttp { include /etc/nginx/conf.d/*.conf; }",
+						"confD": []map[string]any{{
+							"fileName": "default.conf",
+							"content":  "server { listen 8081; location / { proxy_pass http://127.0.0.1:8080; } }",
+						}},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"),
+		Artifacts: []delivery.GitOpsArtifactSpec{{WorkloadID: "workload_api", URI: "registry/user-api:v2", Repository: "registry/user-api", Tag: "v2", Digest: "sha256:api", IsPrimary: true}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPromotion() error = %v", err)
+	}
+
+	values := manifest.Files["apps/order-api/dev/values.yaml"]
+	for _, want := range []string{
+		"nginxSidecar:",
+		"enabled: true",
+		"image: nginx:1.26.2",
+		"port: 8081",
+		"routeServiceToSidecar: true",
+		"nginxConf: |",
+		"confD:",
+		"fileName: default.conf",
+		"events {}",
+	} {
+		if !strings.Contains(values, want) {
+			t.Fatalf("values missing %q:\n%s", want, values)
+		}
+	}
+
+	template := chartRepo.Files["charts/paas-app/templates/workloads.yaml"]
+	for _, want := range []string{
+		"kind: ConfigMap",
+		"$nginxSidecarEnabled := default false $nginxSidecar.enabled",
+		"nginx.conf: |",
+		"$nginxSidecar.nginxConf",
+		"{{ $conf.fileName }}: |",
+		"- name: {{ default \"nginx\" $nginxSidecar.name | quote }}",
+		"mountPath: {{ default \"/etc/nginx/nginx.conf\" $nginxSidecar.configMountPath | quote }}",
+		"mountPath: {{ default \"/etc/nginx/conf.d\" $nginxSidecar.confDMountPath | quote }}",
+		"configMap:",
+		"name: {{ $nginxConfigName | quote }}",
+		"path: {{ $conf.fileName | quote }}",
+		"$serviceTargetPort = $nginxSidecarPort",
+		"targetPort: {{ $serviceTargetPort }}",
+	} {
+		if !strings.Contains(template, want) {
+			t.Fatalf("platform chart template missing %q:\n%s", want, template)
+		}
+	}
+}
+
 func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t *testing.T) {
 	ids := []shared.ID{
 		"deployment_template_platform", "deployment_template_revision_platform", "deployment_template_app", "deployment_template_revision_app",

@@ -862,6 +862,61 @@ paas.shareinto.com/deployment-id: {{ .Values.deploymentID | quote }}
 func platformChartWorkloadsTemplate(chartName string) string {
 	return fmt.Sprintf(`{{- range $name, $workload := .Values.workloads }}
 {{- $resourceName := printf "%%s-%%s" $name $.Values.stage | trunc 63 | trimSuffix "-" }}
+{{- $nginxSidecar := default dict $workload.nginxSidecar }}
+{{- $nginxSidecarEnabled := default false $nginxSidecar.enabled }}
+{{- $nginxSidecarPort := default 8080 $nginxSidecar.port }}
+{{- $nginxSidecarPortName := default "nginx" $nginxSidecar.portName }}
+{{- $nginxConfigName := printf "%%s-nginx" $resourceName | trunc 63 | trimSuffix "-" }}
+{{- $nginxConfigVolumeName := printf "%%s-nginx-config" $resourceName | trunc 63 | trimSuffix "-" }}
+{{- $nginxConfDVolumeName := printf "%%s-nginx-conf-d" $resourceName | trunc 63 | trimSuffix "-" }}
+{{- $appPort := 8080 }}
+{{- range $index, $port := $workload.servicePorts }}
+{{- if eq $index 0 }}
+{{- $appPort = default $port.port $port.targetPort }}
+{{- end }}
+{{- end }}
+{{- $nginxUpstreamPort := default $appPort $nginxSidecar.upstreamPort }}
+{{- if $nginxSidecarEnabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $nginxConfigName | quote }}
+  namespace: {{ $.Values.namespace | quote }}
+  labels:
+    app.kubernetes.io/name: {{ $name | quote }}
+    app.kubernetes.io/instance: {{ $resourceName | quote }}
+{{ include "%s.labels" $ | indent 4 }}
+data:
+  nginx.conf: |
+    {{- if $nginxSidecar.nginxConf }}
+{{ $nginxSidecar.nginxConf | indent 4 }}
+    {{- else }}
+    worker_processes auto;
+    events {
+      worker_connections 1024;
+    }
+    http {
+      include /etc/nginx/mime.types;
+      default_type application/octet-stream;
+      include /etc/nginx/conf.d/*.conf;
+    }
+    {{- end }}
+  {{- if $nginxSidecar.confD }}
+  {{- range $conf := $nginxSidecar.confD }}
+  {{ $conf.fileName }}: |
+{{ $conf.content | indent 4 }}
+  {{- end }}
+  {{- else }}
+  default.conf: |
+    server {
+      listen {{ $nginxSidecarPort }};
+      location / {
+        proxy_pass http://127.0.0.1:{{ $nginxUpstreamPort }};
+      }
+    }
+  {{- end }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: {{ default "Deployment" $workload.kind }}
@@ -948,9 +1003,57 @@ spec:
           securityContext:
 {{ toYaml . | indent 12 }}
           {{- end }}
-      {{- with $workload.volumes }}
+        {{- if $nginxSidecarEnabled }}
+        - name: {{ default "nginx" $nginxSidecar.name | quote }}
+          image: {{ default "nginx:1.25-alpine" $nginxSidecar.image | quote }}
+          imagePullPolicy: {{ default "IfNotPresent" $nginxSidecar.imagePullPolicy | quote }}
+          ports:
+            - name: {{ $nginxSidecarPortName | quote }}
+              containerPort: {{ $nginxSidecarPort }}
+              protocol: TCP
+          volumeMounts:
+            - name: {{ $nginxConfigVolumeName | quote }}
+              mountPath: {{ default "/etc/nginx/nginx.conf" $nginxSidecar.configMountPath | quote }}
+              subPath: nginx.conf
+              readOnly: true
+            - name: {{ $nginxConfDVolumeName | quote }}
+              mountPath: {{ default "/etc/nginx/conf.d" $nginxSidecar.confDMountPath | quote }}
+              readOnly: true
+          {{- with $nginxSidecar.resources }}
+          resources:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          {{- with $nginxSidecar.securityContext }}
+          securityContext:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+        {{- end }}
+      {{- if or $workload.volumes $nginxSidecarEnabled }}
       volumes:
+      {{- with $workload.volumes }}
 {{ toYaml . | indent 8 }}
+      {{- end }}
+      {{- if $nginxSidecarEnabled }}
+        - name: {{ $nginxConfigVolumeName | quote }}
+          configMap:
+            name: {{ $nginxConfigName | quote }}
+            items:
+              - key: nginx.conf
+                path: nginx.conf
+        - name: {{ $nginxConfDVolumeName | quote }}
+          configMap:
+            name: {{ $nginxConfigName | quote }}
+            items:
+            {{- if $nginxSidecar.confD }}
+            {{- range $conf := $nginxSidecar.confD }}
+              - key: {{ $conf.fileName | quote }}
+                path: {{ $conf.fileName | quote }}
+            {{- end }}
+            {{- else }}
+              - key: default.conf
+                path: default.conf
+            {{- end }}
+      {{- end }}
       {{- end }}
 {{- with $workload.servicePorts }}
 ---
@@ -969,9 +1072,13 @@ spec:
     app.kubernetes.io/instance: {{ $resourceName | quote }}
   ports:
   {{- range . }}
+    {{- $serviceTargetPort := default .port .targetPort }}
+    {{- if and $nginxSidecarEnabled (default false $nginxSidecar.routeServiceToSidecar) }}
+    {{- $serviceTargetPort = $nginxSidecarPort }}
+    {{- end }}
     - name: {{ .name | quote }}
       port: {{ .port }}
-      targetPort: {{ default .port .targetPort }}
+      targetPort: {{ $serviceTargetPort }}
       protocol: {{ default "TCP" .protocol | quote }}
   {{- end }}
 {{- end }}
@@ -998,7 +1105,7 @@ spec:
   {{- end }}
 {{- end }}
 {{- end }}
-`, chartName, chartName, chartName)
+`, chartName, chartName, chartName, chartName)
 }
 
 func renderArgoApplication(app ApplicationRef, stageKey string, binding ClusterBindingRef, deploymentID shared.ID, opts argoApplicationRenderOptions) string {

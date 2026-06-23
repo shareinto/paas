@@ -3,6 +3,28 @@ import { APIError, hasAPIBaseURL, openWebSocket, request, requestText, streamSSE
 
 export type { Tenant, Project, User, Role, Member, StringMap, Application, ApplicationSource, BuildPipeline, BuildPipelineSource, BuildRun, AuditLog, Freight, FreightItem, ImageBundleImage, Workload, WorkloadType, WorkloadImageSourceMode, WorkloadStageConfig, ReleaseCandidate, BuildArtifactCandidate, StageDefinition, DeliveryFlowTemplate, DeliveryFlowTemplateStage, DeliveryFlowTemplateEdge, StageClusterBinding, ClusterOption, Cluster, AppStage, RuntimeResource, FreightCreationContext, CreateFreightInput, CreatePromotionInput, FreightApprovalInput, StageVerificationInput, SourceRepository, RepositoryBranch, RepositoryTreeItem, BuildSpecSuggestion, JenkinsJobTemplate, BuildType, BuildEnvironment, RuntimeEnvironment, BuildTemplate } from './mock';
 
+export type CreateWorkloadWithPipelineInput = {
+  workload: { name: string; displayName: string; description?: string; workloadType: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode; customImage?: string };
+  pipeline?: { name: string; displayName: string; description?: string; runtimeEnvironmentIds: string[]; sources: Array<{
+    key: string;
+    displayName: string;
+    sourceRepositoryId: string;
+    buildEnvironmentId?: string;
+    sourcePath: string;
+    defaultRef: string;
+    isPrimary?: boolean;
+    buildSpec: {
+      sourcePath: string;
+      buildCommand: string;
+      artifactCopyCommand: string;
+      runtimeBaseImage?: string;
+      artifactDeployPath?: string;
+      defaultRef?: string;
+    };
+  }> };
+  defaultConfig?: Partial<mock.WorkloadStageConfig>;
+};
+
 const DEFAULT_APP_ID = 'app_1';
 const DEFAULT_BUILD_RUN_ID = 'build_128';
 const SOURCE_REPOSITORY_PAGE_SIZE = 100;
@@ -420,6 +442,24 @@ export async function createWorkload(applicationId: string, input: { name: strin
     })
   });
   return mapWorkload(item);
+}
+
+export async function createWorkloadWithPipeline(applicationId: string, input: CreateWorkloadWithPipelineInput) {
+  if (!hasAPIBaseURL()) return mock.createWorkloadWithPipeline(applicationId, input);
+  const item = await request<any>(`/api/applications/${encodeURIComponent(applicationId)}/workloads:create-with-pipeline`, {
+    method: 'POST',
+    body: JSON.stringify({
+      actor: { type: 'user', id: 'usr_admin' },
+      workload: workloadPayload(input.workload),
+      pipeline: input.pipeline ? buildPipelinePayload(input.pipeline) : undefined,
+      default_config: input.defaultConfig ? workloadStageConfigPayload(input.defaultConfig) : undefined
+    })
+  });
+  return {
+    workload: mapWorkload(item.workload || item),
+    pipeline: item.pipeline ? mapBuildPipeline(item.pipeline) : undefined,
+    defaultConfig: item.default_config || item.defaultConfig ? mapWorkloadStageConfig(item.default_config || item.defaultConfig) : undefined
+  };
 }
 
 export async function updateWorkload(applicationId: string, workloadId: string, input: { name?: string; displayName: string; description?: string; workloadType?: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode; pipelineId?: string }) {
@@ -988,6 +1028,19 @@ function applicationPayload(input: { displayName: string; description?: string; 
   };
 }
 
+function workloadPayload(input: { name: string; displayName: string; description?: string; workloadType?: mock.WorkloadType; imageSourceMode?: mock.WorkloadImageSourceMode; pipelineId?: string; customImage?: string }) {
+  return {
+    actor: { type: 'user', id: 'usr_admin' },
+    name: input.name,
+    display_name: input.displayName,
+    description: input.description || '',
+    workload_type: input.workloadType || 'deployment',
+    image_source_mode: input.imageSourceMode || 'pipeline_artifact',
+    pipeline_id: input.pipelineId || '',
+    custom_image: input.customImage || ''
+  };
+}
+
 function promotionPayload(input: mock.CreatePromotionInput) {
   return {
     actor: { type: 'user', id: 'usr_admin' },
@@ -1429,17 +1482,30 @@ function mapWorkloadStageConfig(item: any): mock.WorkloadStageConfig {
       type: probe.type || 'HTTP',
       path: probe.path || '',
       port: probe.port ? Number(probe.port) : undefined,
-      initialDelaySeconds: probe.initial_delay_seconds || probe.initialDelaySeconds
+      initialDelaySeconds: probe.initial_delay_seconds || probe.initialDelaySeconds,
+      periodSeconds: probe.period_seconds || probe.periodSeconds,
+      timeoutSeconds: probe.timeout_seconds || probe.timeoutSeconds,
+      failureThreshold: probe.failure_threshold || probe.failureThreshold,
+      successThreshold: probe.success_threshold || probe.successThreshold
     })),
     ingressHosts: (item.ingress_hosts || item.ingressHosts || []).map((host: any) => ({
       host: host.host || '',
       path: host.path || '/',
       servicePort: host.service_port || host.servicePort || '',
-      tls: !!host.tls
+      tls: !!host.tls,
+      className: host.class_name || host.className || '',
+      pathType: host.path_type || host.pathType || '',
+      secretName: host.secret_name || host.secretName || '',
+      clusterIssuer: host.cluster_issuer || host.clusterIssuer || '',
+      annotations: host.annotations || {}
     })),
     envVars: (item.env_vars || item.envVars || []).map((env: any) => ({ name: env.name || env.key || '', value: env.value || '' })),
+    secretRefs: (item.secret_refs || item.secretRefs || []).map((secret: any) => ({ name: secret.name || '', secretRef: secret.secret_ref || secret.secretRef || '' })),
     configFiles: (item.config_files || item.configFiles || []).map((file: any) => ({ mountPath: file.mount_path || file.mountPath || '', content: file.content || '', base64Encoded: !!(file.base64_encoded || file.base64Encoded) })),
-    writableDirs: (item.writable_dirs || item.writableDirs || []).map((dir: any) => ({ mountPath: dir.mount_path || dir.mountPath || '', sizeLimit: dir.size_limit || dir.sizeLimit || '', ownerGroup: dir.owner_group || dir.ownerGroup || '', mode: dir.mode || '' }))
+    writableDirs: (item.writable_dirs || item.writableDirs || []).map((dir: any) => ({ mountPath: dir.mount_path || dir.mountPath || '', sizeLimit: dir.size_limit || dir.sizeLimit || '', ownerGroup: dir.owner_group || dir.ownerGroup || '', mode: dir.mode || '' })),
+    volumeMounts: (item.volume_mounts || item.volumeMounts || []).map((mount: any) => ({ name: mount.name || '', mountPath: mount.mount_path || mount.mountPath || '', readOnly: !!(mount.read_only || mount.readOnly) })),
+    initContainers: (item.init_containers || item.initContainers || []).map((container: any) => ({ name: container.name || '', image: container.image || '', command: container.command || [], args: container.args || [] })),
+    valuesOverride: item.values_override || item.valuesOverride || {}
   };
 }
 
@@ -1464,17 +1530,30 @@ function workloadStageConfigPayload(input: Partial<mock.WorkloadStageConfig>) {
       type: probe.type,
       path: probe.path || '',
       port: probe.port || 0,
-      initial_delay_seconds: probe.initialDelaySeconds || 0
+      initial_delay_seconds: probe.initialDelaySeconds || 0,
+      period_seconds: probe.periodSeconds || 0,
+      timeout_seconds: probe.timeoutSeconds || 0,
+      failure_threshold: probe.failureThreshold || 0,
+      success_threshold: probe.successThreshold || 0
     })),
     ingress_hosts: (input.ingressHosts || []).map((host) => ({
       host: host.host,
       path: host.path || '/',
       service_port: host.servicePort || '',
-      tls: !!host.tls
+      tls: !!host.tls,
+      class_name: host.className || '',
+      path_type: host.pathType || 'Prefix',
+      secret_name: host.secretName || '',
+      cluster_issuer: host.clusterIssuer || '',
+      annotations: host.annotations || {}
     })),
     env_vars: (input.envVars || []).map((env) => ({ name: env.name, value: env.value })),
+    secret_refs: (input.secretRefs || []).map((secret) => ({ name: secret.name, secret_ref: secret.secretRef })),
     config_files: (input.configFiles || []).map((file) => ({ mount_path: file.mountPath, content: file.content, base64_encoded: !!file.base64Encoded })),
-    writable_dirs: (input.writableDirs || []).map((dir) => ({ mount_path: dir.mountPath, size_limit: dir.sizeLimit || '', owner_group: dir.ownerGroup || '', mode: dir.mode || '' }))
+    writable_dirs: (input.writableDirs || []).map((dir) => ({ mount_path: dir.mountPath, size_limit: dir.sizeLimit || '', owner_group: dir.ownerGroup || '', mode: dir.mode || '' })),
+    volume_mounts: (input.volumeMounts || []).map((mount) => ({ name: mount.name, mount_path: mount.mountPath, read_only: !!mount.readOnly })),
+    init_containers: (input.initContainers || []).map((container) => ({ name: container.name, image: container.image, command: container.command || [], args: container.args || [] })),
+    values_override: input.valuesOverride || {}
   };
 }
 
@@ -1537,6 +1616,16 @@ function mapRuntimeEnvironmentSnapshot(runtime: any): mock.RuntimeEnvironment {
 
 function cleanRuntimeEnvironmentIds(ids?: string[]) {
   return (ids || []).map((id) => id.trim()).filter(Boolean).slice(0, 1);
+}
+
+function buildPipelinePayload(input: NonNullable<CreateWorkloadWithPipelineInput['pipeline']>) {
+  return {
+    name: input.name,
+    display_name: input.displayName,
+    description: input.description || '',
+    runtime_environment_ids: cleanRuntimeEnvironmentIds(input.runtimeEnvironmentIds),
+    sources: input.sources.map((source) => pipelineSourcePayload(source as mock.BuildPipelineSource))
+  };
 }
 
 function mapBuildPipelineSource(item: any): mock.BuildPipelineSource {

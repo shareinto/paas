@@ -116,6 +116,20 @@ type recordingBuildPipelineProvisioner struct {
 	err            error
 }
 
+type recordingBuildPipelineCommand struct {
+	createInputs []CreateBuildPipelineInput
+	deleteCalls  []deletePipelineCall
+	createErr    error
+	deleteErr    error
+	pipelineID   shared.ID
+	pipelines    map[shared.ID]BuildPipelineRef
+}
+
+type deletePipelineCall struct {
+	actor      identityaccess.Subject
+	pipelineID shared.ID
+}
+
 type recordingManifestCleaner struct {
 	applicationIDs []shared.ID
 	err            error
@@ -138,6 +152,27 @@ func (q fakeBuildPipelineQuery) GetBuildPipeline(_ context.Context, id shared.ID
 	return pipeline, nil
 }
 
+func (c *recordingBuildPipelineCommand) CreateBuildPipeline(_ context.Context, input CreateBuildPipelineInput) (BuildPipelineRef, error) {
+	c.createInputs = append(c.createInputs, input)
+	if c.createErr != nil {
+		return BuildPipelineRef{}, c.createErr
+	}
+	id := c.pipelineID
+	if id.IsZero() {
+		id = "pipeline_created"
+	}
+	pipeline := BuildPipelineRef{ID: id, ApplicationID: input.ApplicationID, Name: input.Name, DisplayName: input.DisplayName, Status: "active"}
+	if c.pipelines != nil {
+		c.pipelines[pipeline.ID] = pipeline
+	}
+	return pipeline, nil
+}
+
+func (c *recordingBuildPipelineCommand) DeleteBuildPipeline(_ context.Context, actor identityaccess.Subject, pipelineID shared.ID) error {
+	c.deleteCalls = append(c.deleteCalls, deletePipelineCall{actor: actor, pipelineID: pipelineID})
+	return c.deleteErr
+}
+
 func (p *recordingBuildPipelineProvisioner) EnsureBuildPipeline(_ context.Context, applicationID shared.ID) error {
 	p.applicationIDs = append(p.applicationIDs, applicationID)
 	return p.err
@@ -149,13 +184,14 @@ func (p *recordingBuildPipelineProvisioner) DeleteBuildPipeline(_ context.Contex
 }
 
 type appenvTestEnv struct {
-	svc        *Service
-	repo       Repository
-	permission *recordingPermission
-	pipelines  *recordingBuildPipelineProvisioner
-	cleaner    *recordingManifestCleaner
-	audit      *recordingAudit
-	events     *recordingPublisher
+	svc         *Service
+	repo        Repository
+	permission  *recordingPermission
+	pipelines   *recordingBuildPipelineProvisioner
+	pipelineCmd *recordingBuildPipelineCommand
+	cleaner     *recordingManifestCleaner
+	audit       *recordingAudit
+	events      *recordingPublisher
 }
 
 type failingIDGenerator struct{}
@@ -179,10 +215,12 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 	permission := &recordingPermission{}
 	_ = clusterAvailable
 	pipelines := &recordingBuildPipelineProvisioner{}
-	pipelineQuery := fakeBuildPipelineQuery{pipelines: map[shared.ID]BuildPipelineRef{
+	pipelineRefs := map[shared.ID]BuildPipelineRef{
 		"pipeline_main":  {ID: "pipeline_main", ApplicationID: "app_1", Name: "main", DisplayName: "主流水线", Status: "active"},
 		"pipeline_other": {ID: "pipeline_other", ApplicationID: "other_app", Name: "other", DisplayName: "其他流水线", Status: "active"},
-	}}
+	}
+	pipelineQuery := fakeBuildPipelineQuery{pipelines: pipelineRefs}
+	pipelineCmd := &recordingBuildPipelineCommand{pipelineID: "pipeline_created", pipelines: pipelineRefs}
 	audit := &recordingAudit{}
 	events := &recordingPublisher{}
 	cleaner := &recordingManifestCleaner{}
@@ -197,6 +235,7 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 			"repo_busy":  {ID: "repo_busy", TenantID: "tenant_a", ProjectID: "project_payment", DefaultBranch: "main", Status: "migrating"},
 		}},
 		BuildPipelineProvisioner: pipelines,
+		BuildPipelineCommand:     pipelineCmd,
 		BuildPipelineQuery:       pipelineQuery,
 		ManifestCleaner:          cleaner,
 		PermissionChecker:        permission,
@@ -205,7 +244,7 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 		IDGenerator:              testutil.NewFakeIDGenerator(1),
 		Clock:                    testutil.NewFakeClock(time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)),
 	})
-	return appenvTestEnv{svc: svc, repo: repo, permission: permission, pipelines: pipelines, cleaner: cleaner, audit: audit, events: events}
+	return appenvTestEnv{svc: svc, repo: repo, permission: permission, pipelines: pipelines, pipelineCmd: pipelineCmd, cleaner: cleaner, audit: audit, events: events}
 }
 
 func TestNoopAuditAndEventPublisher(t *testing.T) {
@@ -233,6 +272,20 @@ func validBuildSpec() BuildSpec {
 
 func validSourceInput(repoID shared.ID, spec BuildSpec) CreateApplicationSourceInput {
 	return CreateApplicationSourceInput{Key: "main", SourceRepositoryID: repoID, BuildSpec: spec, IsPrimary: true}
+}
+
+func validPipelineInput(name string) CreateBuildPipelineInput {
+	return CreateBuildPipelineInput{
+		Name:                  name,
+		DisplayName:           name,
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
+		Sources: []BuildPipelineSourceInput{{
+			Key:                "main",
+			SourceRepositoryID: "repo_user",
+			BuildSpec:          validBuildSpec(),
+			IsPrimary:          true,
+		}},
+	}
 }
 
 func TestCreateApplicationPersistsSourceWithoutApplicationEnvironments(t *testing.T) {
@@ -800,6 +853,98 @@ func TestWorkloadDefaultConfigSaveQueryAndAudit(t *testing.T) {
 	}
 }
 
+func TestCreateWorkloadWithPipelineCreatesPipelineWorkloadAndDefaultConfig(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "combo-api"})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+	result, err := env.svc.CreateWorkloadWithPipeline(ctx, CreateWorkloadWithPipelineInput{
+		Actor:    appenvActor(),
+		Workload: CreateWorkloadInput{Name: "api", DisplayName: "接口服务", WorkloadType: WorkloadTypeDeployment},
+		Pipeline: validPipelineInput("api"),
+		DefaultConfig: SaveWorkloadDefaultConfigInput{
+			Replicas:     2,
+			ServicePorts: []WorkloadServicePort{{Name: "http", Port: 80, TargetPort: 8080}},
+			EnvVars:      []WorkloadEnvVar{{Name: "SPRING_PROFILES_ACTIVE", Value: "default"}},
+		},
+		ApplicationID: app.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkloadWithPipeline() error = %v", err)
+	}
+	if result.Pipeline.ID != "pipeline_created" || result.Pipeline.ApplicationID != app.ID {
+		t.Fatalf("unexpected pipeline result: %+v", result.Pipeline)
+	}
+	if result.Workload.ApplicationID != app.ID || result.Workload.PipelineID != result.Pipeline.ID || result.Workload.ImageSourceMode != "pipeline_artifact" {
+		t.Fatalf("unexpected workload result: %+v", result.Workload)
+	}
+	if result.DefaultConfig.WorkloadID != result.Workload.ID || result.DefaultConfig.Replicas != 2 || result.DefaultConfig.ServicePorts[0].TargetPort != 8080 {
+		t.Fatalf("unexpected default config result: %+v", result.DefaultConfig)
+	}
+	if len(env.pipelineCmd.createInputs) != 1 || env.pipelineCmd.createInputs[0].Actor.ID != appenvActor().ID || env.pipelineCmd.createInputs[0].ApplicationID != app.ID {
+		t.Fatalf("unexpected pipeline create inputs: %+v", env.pipelineCmd.createInputs)
+	}
+	if len(env.pipelineCmd.deleteCalls) != 0 {
+		t.Fatalf("successful combo create should not clean pipeline, got %+v", env.pipelineCmd.deleteCalls)
+	}
+}
+
+func TestCreateWorkloadWithPipelineCleansPipelineWhenWorkloadFails(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "combo-dup"})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+	if _, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeDeployment}); err != nil {
+		t.Fatalf("CreateWorkload(existing) error = %v", err)
+	}
+	_, err = env.svc.CreateWorkloadWithPipeline(ctx, CreateWorkloadWithPipelineInput{
+		Actor:         appenvActor(),
+		ApplicationID: app.ID,
+		Workload:      CreateWorkloadInput{Name: "api", WorkloadType: WorkloadTypeDeployment},
+		Pipeline:      validPipelineInput("api"),
+		DefaultConfig: SaveWorkloadDefaultConfigInput{Replicas: 1},
+	})
+	if shared.CodeOf(err) != shared.CodeConflict {
+		t.Fatalf("duplicate workload should fail with conflict, got %v", err)
+	}
+	if len(env.pipelineCmd.deleteCalls) != 1 || env.pipelineCmd.deleteCalls[0].pipelineID != "pipeline_created" || env.pipelineCmd.deleteCalls[0].actor.ID != appenvActor().ID {
+		t.Fatalf("expected created pipeline cleanup, got %+v", env.pipelineCmd.deleteCalls)
+	}
+}
+
+func TestCreateWorkloadWithPipelineDeletesWorkloadAndPipelineWhenDefaultConfigFails(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "combo-config"})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+	_, err = env.svc.CreateWorkloadWithPipeline(ctx, CreateWorkloadWithPipelineInput{
+		Actor:         appenvActor(),
+		ApplicationID: app.ID,
+		Workload:      CreateWorkloadInput{Name: "api", WorkloadType: WorkloadTypeDeployment},
+		Pipeline:      validPipelineInput("api"),
+		DefaultConfig: SaveWorkloadDefaultConfigInput{Replicas: -1},
+	})
+	if shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("invalid default config should fail, got %v", err)
+	}
+	if len(env.pipelineCmd.deleteCalls) != 1 || env.pipelineCmd.deleteCalls[0].pipelineID != "pipeline_created" {
+		t.Fatalf("expected created pipeline cleanup, got %+v", env.pipelineCmd.deleteCalls)
+	}
+	workloads, err := env.svc.ListWorkloads(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("ListWorkloads() error = %v", err)
+	}
+	if len(workloads) != 0 {
+		t.Fatalf("failed combo create should soft-delete created workload, got %+v", workloads)
+	}
+}
+
 func TestWorkloadStageConfigRequiresApplicationOwnership(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
@@ -1121,6 +1266,25 @@ func TestHandlerApplicationAndWorkloadFlow(t *testing.T) {
 	assertStatus(t, serveJSON(mux, http.MethodPatch, "/api/applications/"+app.ID.String(), patchBody), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/projects/project_payment/applications?page=1&page_size=10", nil), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/applications/"+app.ID.String()+"/source", nil), http.StatusOK)
+
+	comboBody, _ := json.Marshal(CreateWorkloadWithPipelineInput{
+		Actor:    appenvActor(),
+		Workload: CreateWorkloadInput{Name: "worker", DisplayName: "后台任务", WorkloadType: WorkloadTypeDeployment},
+		Pipeline: validPipelineInput("worker"),
+		DefaultConfig: SaveWorkloadDefaultConfigInput{
+			Replicas:     1,
+			ServicePorts: []WorkloadServicePort{{Name: "http", Port: 80, TargetPort: 8080}},
+		},
+	})
+	comboRec := serveJSON(mux, http.MethodPost, "/api/applications/"+app.ID.String()+"/workloads:create-with-pipeline", comboBody)
+	assertStatus(t, comboRec, http.StatusCreated)
+	var comboResult CreateWorkloadWithPipelineResult
+	if err := json.NewDecoder(comboRec.Body).Decode(&comboResult); err != nil {
+		t.Fatalf("decode combo workload: %v", err)
+	}
+	if comboResult.Workload.Name != "worker" || comboResult.Workload.PipelineID != comboResult.Pipeline.ID || comboResult.DefaultConfig.WorkloadID != comboResult.Workload.ID {
+		t.Fatalf("unexpected combo response: %+v", comboResult)
+	}
 
 	actorBody, _ := json.Marshal(struct {
 		Actor identityaccess.Subject `json:"actor"`

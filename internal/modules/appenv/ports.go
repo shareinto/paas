@@ -115,6 +115,32 @@ type BuildPipelineRef struct {
 	Status        string
 }
 
+type BuildPipelineSourceInput struct {
+	Key                string    `json:"key"`
+	DisplayName        string    `json:"display_name"`
+	SourceRepositoryID shared.ID `json:"source_repository_id"`
+	BuildEnvironmentID shared.ID `json:"build_environment_id"`
+	SourcePath         string    `json:"source_path"`
+	BuildSpec          BuildSpec `json:"build_spec"`
+	DefaultRef         string    `json:"default_ref"`
+	IsPrimary          bool      `json:"is_primary"`
+}
+
+type CreateBuildPipelineInput struct {
+	Actor                 identityaccess.Subject     `json:"actor"`
+	ApplicationID         shared.ID                  `json:"application_id"`
+	Name                  string                     `json:"name"`
+	DisplayName           string                     `json:"display_name"`
+	Description           string                     `json:"description"`
+	RuntimeEnvironmentIDs []shared.ID                `json:"runtime_environment_ids"`
+	Sources               []BuildPipelineSourceInput `json:"sources"`
+}
+
+type BuildPipelineCommand interface {
+	CreateBuildPipeline(ctx context.Context, input CreateBuildPipelineInput) (BuildPipelineRef, error)
+	DeleteBuildPipeline(ctx context.Context, actor identityaccess.Subject, pipelineID shared.ID) error
+}
+
 type BuildPipelineQuery interface {
 	GetBuildPipeline(ctx context.Context, id shared.ID) (BuildPipelineRef, error)
 }
@@ -160,6 +186,7 @@ type ApplicationQuery interface {
 
 type WorkloadCommand interface {
 	CreateWorkload(ctx context.Context, input CreateWorkloadInput) (Workload, error)
+	CreateWorkloadWithPipeline(ctx context.Context, input CreateWorkloadWithPipelineInput) (CreateWorkloadWithPipelineResult, error)
 	UpdateWorkload(ctx context.Context, input UpdateWorkloadInput) (Workload, error)
 	EnableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
 	DisableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error)
