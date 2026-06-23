@@ -18,6 +18,7 @@ type Service struct {
 	buildEnvironments   BuildEnvironmentQuery
 	runtimeEnvironments RuntimeEnvironmentQuery
 	buildPipelines      BuildPipelineProvisioner
+	buildPipelineCmd    BuildPipelineCommand
 	buildPipelineQuery  BuildPipelineQuery
 	manifestCleaner     ApplicationManifestCleaner
 	permission          PermissionChecker
@@ -35,6 +36,7 @@ type Options struct {
 	BuildEnvironmentQuery    BuildEnvironmentQuery
 	RuntimeEnvironmentQuery  RuntimeEnvironmentQuery
 	BuildPipelineProvisioner BuildPipelineProvisioner
+	BuildPipelineCommand     BuildPipelineCommand
 	BuildPipelineQuery       BuildPipelineQuery
 	ManifestCleaner          ApplicationManifestCleaner
 	PermissionChecker        PermissionChecker
@@ -69,6 +71,7 @@ func NewService(opts Options) *Service {
 		buildEnvironments:   opts.BuildEnvironmentQuery,
 		runtimeEnvironments: opts.RuntimeEnvironmentQuery,
 		buildPipelines:      opts.BuildPipelineProvisioner,
+		buildPipelineCmd:    opts.BuildPipelineCommand,
 		buildPipelineQuery:  opts.BuildPipelineQuery,
 		manifestCleaner:     opts.ManifestCleaner,
 		permission:          opts.PermissionChecker,
@@ -139,6 +142,20 @@ type CreateWorkloadInput struct {
 	Description     string                 `json:"description"`
 	ImageSourceMode string                 `json:"image_source_mode"`
 	PipelineID      shared.ID              `json:"pipeline_id"`
+}
+
+type CreateWorkloadWithPipelineInput struct {
+	Actor         identityaccess.Subject         `json:"actor"`
+	ApplicationID shared.ID                      `json:"application_id"`
+	Workload      CreateWorkloadInput            `json:"workload"`
+	Pipeline      CreateBuildPipelineInput       `json:"pipeline"`
+	DefaultConfig SaveWorkloadDefaultConfigInput `json:"default_config"`
+}
+
+type CreateWorkloadWithPipelineResult struct {
+	Workload      Workload            `json:"workload"`
+	Pipeline      BuildPipelineRef    `json:"pipeline"`
+	DefaultConfig WorkloadStageConfig `json:"default_config"`
 }
 
 type UpdateWorkloadInput struct {
@@ -592,6 +609,46 @@ func (s *Service) CreateWorkload(ctx context.Context, input CreateWorkloadInput)
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload.create", ResourceType: "workload", ResourceID: workload.ID, Result: "succeeded", Summary: "创建 Workload", OccurredAt: now})
 	return workload, nil
+}
+
+func (s *Service) CreateWorkloadWithPipeline(ctx context.Context, input CreateWorkloadWithPipelineInput) (CreateWorkloadWithPipelineResult, error) {
+	if s.buildPipelineCmd == nil {
+		return CreateWorkloadWithPipelineResult{}, shared.NewError(shared.CodeFailedPrecondition, "build pipeline command port is required")
+	}
+	actor := firstSubject(input.Actor, input.Pipeline.Actor, input.Workload.Actor, input.DefaultConfig.Actor)
+	if actor.ID.IsZero() {
+		return CreateWorkloadWithPipelineResult{}, shared.NewError(shared.CodeUnauthenticated, "actor is required")
+	}
+	pipelineInput := input.Pipeline
+	pipelineInput.Actor = actor
+	pipelineInput.ApplicationID = input.ApplicationID
+	pipeline, err := s.buildPipelineCmd.CreateBuildPipeline(ctx, pipelineInput)
+	if err != nil {
+		return CreateWorkloadWithPipelineResult{}, err
+	}
+	cleanupPipeline := func() {
+		_ = s.buildPipelineCmd.DeleteBuildPipeline(ctx, actor, pipeline.ID)
+	}
+	workloadInput := input.Workload
+	workloadInput.Actor = actor
+	workloadInput.ApplicationID = input.ApplicationID
+	workloadInput.PipelineID = pipeline.ID
+	workload, err := s.CreateWorkload(ctx, workloadInput)
+	if err != nil {
+		cleanupPipeline()
+		return CreateWorkloadWithPipelineResult{}, err
+	}
+	defaultConfigInput := input.DefaultConfig
+	defaultConfigInput.Actor = actor
+	defaultConfigInput.ApplicationID = input.ApplicationID
+	defaultConfigInput.WorkloadID = workload.ID
+	config, err := s.SaveWorkloadDefaultConfig(ctx, defaultConfigInput)
+	if err != nil {
+		_, _ = s.DeleteWorkload(ctx, WorkloadStatusInput{Actor: actor, ApplicationID: input.ApplicationID, WorkloadID: workload.ID})
+		cleanupPipeline()
+		return CreateWorkloadWithPipelineResult{}, err
+	}
+	return CreateWorkloadWithPipelineResult{Workload: workload, Pipeline: pipeline, DefaultConfig: config}, nil
 }
 
 func (s *Service) UpdateWorkload(ctx context.Context, input UpdateWorkloadInput) (Workload, error) {
@@ -1139,6 +1196,15 @@ func (s *Service) check(ctx context.Context, actor identityaccess.Subject, resou
 		return nil
 	}
 	return s.permission.Check(ctx, actor, resource, action)
+}
+
+func firstSubject(subjects ...identityaccess.Subject) identityaccess.Subject {
+	for _, subject := range subjects {
+		if !subject.ID.IsZero() {
+			return subject
+		}
+	}
+	return identityaccess.Subject{}
 }
 
 func normalizeStageKey(stageKey string) (string, error) {

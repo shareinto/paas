@@ -89,6 +89,122 @@ test('真实 API 创建 Workload 使用服务端响应作为缓存数据来源',
   expect(postBody).not.toHaveProperty('customImage');
 });
 
+test('真实 API 组合创建 Workload 和流水线提交默认配置', async () => {
+  vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
+  let postBody: Record<string, any> = {};
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/api/applications/app_1/workloads:create-with-pipeline') && init?.method === 'POST') {
+      postBody = JSON.parse(String(init.body));
+      return jsonResponse({
+        workload: {
+          id: 'workload_search',
+          application_id: 'app_1',
+          name: 'order-search',
+          display_name: '订单搜索',
+          workload_type: 'deployment',
+          image_source_mode: 'pipeline_artifact',
+          pipeline_id: 'pipeline_search',
+          status: 'enabled'
+        },
+        pipeline: {
+          id: 'pipeline_search',
+          application_id: 'app_1',
+          name: 'search',
+          display_name: '搜索流水线',
+          status: 'active'
+        },
+        default_config: {
+          id: 'workload_default_config_search',
+          workload_id: 'workload_search',
+          replicas: 2
+        }
+      }, 201);
+    }
+    return jsonResponse({ error: { code: 'not_found', message: '未处理请求' } }, 404);
+  }));
+
+  const api = await import('./index');
+  await expect(api.createWorkloadWithPipeline('app_1', {
+    workload: {
+      name: 'order-search',
+      displayName: '订单搜索',
+      workloadType: 'deployment',
+      imageSourceMode: 'pipeline_artifact'
+    },
+    pipeline: {
+      name: 'search',
+      displayName: '搜索流水线',
+      runtimeEnvironmentIds: ['runtime_env_java17'],
+      sources: [{
+        key: 'main',
+        displayName: '主代码源',
+        sourceRepositoryId: 'repo_1',
+        buildEnvironmentId: 'build_env_maven',
+        sourcePath: 'services/search',
+        defaultRef: 'main',
+        isPrimary: true,
+        buildSpec: {
+          sourcePath: 'services/search',
+          buildCommand: 'mvn clean package -DskipTests',
+          artifactCopyCommand: 'cp target/*.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"',
+          runtimeBaseImage: 'registry.example/runtime/java17:1.0',
+          artifactDeployPath: '/app/',
+          defaultRef: 'main'
+        }
+      }]
+    },
+    defaultConfig: {
+      replicas: 2,
+      resourceRequests: { cpu: '250m', memory: '256Mi' },
+      probes: [{ name: 'readiness', type: 'HTTP', path: '/healthz', port: 8080, initialDelaySeconds: 10 }],
+      ingressHosts: [{ host: 'search.example.com', path: '/', servicePort: 'http', tls: true }],
+      valuesOverride: {
+        serviceType: 'ClusterIP',
+        nginxSidecar: {
+          enabled: true,
+          image: 'nginx:1.25-alpine',
+          port: 80,
+          nginxConf: 'events {}\nhttp { include /etc/nginx/conf.d/*.conf; }',
+          confD: [{ fileName: 'default.conf', content: 'server { listen 80; }' }],
+          routeServiceToSidecar: true
+        }
+      }
+    }
+  })).resolves.toMatchObject({
+    workload: { id: 'workload_search', pipelineId: 'pipeline_search' },
+    pipeline: { id: 'pipeline_search', displayName: '搜索流水线' },
+    defaultConfig: { replicas: 2 }
+  });
+
+  expect(postBody).toMatchObject({
+    workload: {
+      name: 'order-search',
+      display_name: '订单搜索',
+      image_source_mode: 'pipeline_artifact'
+    },
+    pipeline: {
+      name: 'search',
+      display_name: '搜索流水线',
+      runtime_environment_ids: ['runtime_env_java17'],
+      sources: [expect.objectContaining({ source_repository_id: 'repo_1', source_path: 'services/search' })]
+    },
+    default_config: {
+      replicas: 2,
+      resource_requests: { cpu: '250m', memory: '256Mi' },
+      probes: [expect.objectContaining({ name: 'readiness', path: '/healthz' })],
+      ingress_hosts: [expect.objectContaining({ host: 'search.example.com', tls: true })],
+      values_override: {
+        serviceType: 'ClusterIP',
+        nginxSidecar: expect.objectContaining({
+          enabled: true,
+          image: 'nginx:1.25-alpine',
+          routeServiceToSidecar: true
+        })
+      }
+    }
+  });
+});
+
 test('真实 API 更新 Workload 调用 PUT 并映射 image_source_mode', async () => {
   vi.stubEnv('VITE_API_BASE_URL', 'https://paas.example');
   let putBody: Record<string, unknown> = {};
@@ -142,7 +258,17 @@ test('真实 API 保存和查询工作负载默认配置映射扩展字段', asy
         replicas: 2,
         env_vars: [{ name: 'group', value: 'iot' }],
         config_files: [{ mount_path: '/etc/app/app.yaml', content: 'server.port: 8080', base64_encoded: true }],
-        writable_dirs: [{ mount_path: '/data', owner_group: 'app:app', mode: '0775' }]
+        writable_dirs: [{ mount_path: '/data', owner_group: 'app:app', mode: '0775' }],
+        values_override: {
+          nginxSidecar: {
+            enabled: true,
+            image: 'nginx:1.25-alpine',
+            port: 8081,
+            nginxConf: 'events {}\nhttp { include /etc/nginx/conf.d/*.conf; }',
+            confD: [{ fileName: 'default.conf', content: 'server { listen 8081; }' }],
+            routeServiceToSidecar: true
+          }
+        }
       });
     }
     if (url.endsWith('/api/applications/app_1/workloads/workload_api/default-config') && init?.method !== 'PUT') {
@@ -152,7 +278,17 @@ test('真实 API 保存和查询工作负载默认配置映射扩展字段', asy
         replicas: 2,
         env_vars: [{ name: 'group', value: 'iot' }],
         config_files: [{ mount_path: '/etc/app/app.yaml', content: 'server.port: 8080', base64_encoded: true }],
-        writable_dirs: [{ mount_path: '/data', owner_group: 'app:app', mode: '0775' }]
+        writable_dirs: [{ mount_path: '/data', owner_group: 'app:app', mode: '0775' }],
+        values_override: {
+          nginxSidecar: {
+            enabled: true,
+            image: 'nginx:1.25-alpine',
+            port: 8081,
+            nginxConf: 'events {}\nhttp { include /etc/nginx/conf.d/*.conf; }',
+            confD: [{ fileName: 'default.conf', content: 'server { listen 8081; }' }],
+            routeServiceToSidecar: true
+          }
+        }
       });
     }
     return jsonResponse({ error: { code: 'not_found', message: '未处理请求' } }, 404);
@@ -163,7 +299,17 @@ test('真实 API 保存和查询工作负载默认配置映射扩展字段', asy
     replicas: 2,
     envVars: [{ name: 'group', value: 'iot' }],
     configFiles: [{ mountPath: '/etc/app/app.yaml', content: 'server.port: 8080', base64Encoded: true }],
-    writableDirs: [{ mountPath: '/data', ownerGroup: 'app:app', mode: '0775' }]
+    writableDirs: [{ mountPath: '/data', ownerGroup: 'app:app', mode: '0775' }],
+    valuesOverride: {
+      nginxSidecar: {
+        enabled: true,
+        image: 'nginx:1.25-alpine',
+        port: 8081,
+        nginxConf: 'events {}\nhttp { include /etc/nginx/conf.d/*.conf; }',
+        confD: [{ fileName: 'default.conf', content: 'server { listen 8081; }' }],
+        routeServiceToSidecar: true
+      }
+    }
   };
   await expect(api.saveWorkloadDefaultConfig('app_1', 'workload_api', input)).resolves.toMatchObject(input);
   await expect(api.getWorkloadDefaultConfig('app_1', 'workload_api')).resolves.toMatchObject(input);
@@ -171,7 +317,15 @@ test('真实 API 保存和查询工作负载默认配置映射扩展字段', asy
     replicas: 2,
     env_vars: [{ name: 'group', value: 'iot' }],
     config_files: [{ mount_path: '/etc/app/app.yaml', content: 'server.port: 8080', base64_encoded: true }],
-    writable_dirs: [{ mount_path: '/data', owner_group: 'app:app', mode: '0775' }]
+    writable_dirs: [{ mount_path: '/data', owner_group: 'app:app', mode: '0775' }],
+    values_override: {
+      nginxSidecar: expect.objectContaining({
+        enabled: true,
+        image: 'nginx:1.25-alpine',
+        port: 8081,
+        routeServiceToSidecar: true
+      })
+    }
   });
 });
 

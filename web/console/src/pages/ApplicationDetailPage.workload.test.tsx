@@ -156,22 +156,31 @@ test('流水线构建弹窗按倒序号展示构建并可查看日志', async ()
   expect(await within(dialog).findByText(/\[INFO\] 检出已登记源码仓库/)).toBeInTheDocument();
 });
 
-test('工作负载创建弹层使用滚动大页并最终创建', async () => {
+test('工作负载创建弹层使用单页横向表单并最终创建', async () => {
   renderPage('/apps/app_1');
   await userEvent.click(await screen.findByRole('button', { name: /创建工作负载/ }));
 
   const dialog = await screen.findByRole('dialog', { name: '创建工作负载' });
   expect(within(dialog).queryByText('校验清单')).not.toBeInTheDocument();
+  ['基本信息', '构建来源', '运行配置', '访问配置', '环境变量', 'Nginx Sidecar', '高级配置'].forEach((name) => {
+    expect(within(dialog).getByText(name)).toBeInTheDocument();
+  });
   expect(within(dialog).queryByRole('button', { name: '下一步' })).not.toBeInTheDocument();
   expect(within(dialog).queryByRole('button', { name: '上一步' })).not.toBeInTheDocument();
   expect(within(dialog).queryByText('预览校验')).not.toBeInTheDocument();
-  expect(within(dialog).getByTestId('workload-large-form')).toBeInTheDocument();
+  const form = within(dialog).getByTestId('workload-large-form');
+  expect(form).toHaveClass('ant-form-horizontal');
+  expect(form).not.toHaveClass('ant-form-vertical');
+  expect(within(dialog).getByText('工作负载标识')).toHaveTextContent('工作负载标识 *');
   await userEvent.type(within(dialog).getByLabelText('工作负载标识'), 'order-search');
   await userEvent.type(within(dialog).getByLabelText('显示名称'), '订单搜索');
   await userEvent.click(within(dialog).getByText('有状态'));
   expect(within(dialog).getByText('有状态').closest('.ant-segmented-item')).toHaveClass('ant-segmented-item-selected');
   await userEvent.click(within(dialog).getByText('自定义镜像'));
   expect(within(dialog).getByText('自定义镜像').closest('.ant-segmented-item')).toHaveClass('ant-segmented-item-selected');
+  expect(within(dialog).getByText('自定义镜像会在创建 Freight 时选择具体镜像，不要求关联流水线。')).toBeInTheDocument();
+  expect(within(dialog).getByLabelText('副本数')).toBeInTheDocument();
+  expect(within(dialog).getByLabelText('访问域名')).toBeInTheDocument();
   await userEvent.click(within(dialog).getByRole('button', { name: '添加环境变量' }));
   await userEvent.type(within(dialog).getByLabelText('环境变量键 1'), 'group');
   await userEvent.type(within(dialog).getByLabelText('环境变量值 1'), 'iot');
@@ -182,9 +191,56 @@ test('工作负载创建弹层使用滚动大页并最终创建', async () => {
   await userEvent.type(within(dialog).getByLabelText('可写目录 1'), '/data');
   await userEvent.type(within(dialog).getByLabelText('目录属主 1'), 'app:app');
   await userEvent.type(within(dialog).getByLabelText('目录权限 1'), '0775');
+  expect(within(dialog).getByLabelText('Values 覆盖 JSON')).toBeInTheDocument();
   await userEvent.click(within(dialog).getByRole('button', { name: '创建' }));
 
   expect(await screen.findByText('订单搜索')).toBeInTheDocument();
+});
+
+test('工作负载创建时可配置 Nginx Sidecar 并保存到默认配置', async () => {
+  const api = await import('../api');
+  renderPage('/apps/app_1');
+  await userEvent.click(await screen.findByRole('button', { name: /创建工作负载/ }));
+
+  const dialog = await screen.findByRole('dialog', { name: '创建工作负载' });
+  await userEvent.type(within(dialog).getByLabelText('工作负载标识'), 'order-nginx');
+  await userEvent.type(within(dialog).getByLabelText('显示名称'), '订单网关');
+  await userEvent.click(within(dialog).getByText('自定义镜像'));
+  await userEvent.click(within(dialog).getByRole('switch', { name: '启用 Nginx Sidecar' }));
+
+  expect(await within(dialog).findByLabelText('Nginx 镜像')).toHaveValue('nginx:1.25-alpine');
+  expect(within(dialog).getByLabelText('监听端口')).toHaveValue('80');
+  await userEvent.clear(within(dialog).getByLabelText('监听端口'));
+  await userEvent.type(within(dialog).getByLabelText('监听端口'), '8081');
+  await userEvent.clear(within(dialog).getByLabelText('nginx.conf'));
+  fireEvent.change(within(dialog).getByLabelText('nginx.conf'), { target: { value: 'events {}\nhttp { include /etc/nginx/conf.d/*.conf; }' } });
+  expect(within(dialog).getByLabelText('conf.d 文件名 1')).toHaveValue('default.conf');
+  await userEvent.clear(within(dialog).getByLabelText('conf.d 配置内容 1'));
+  fireEvent.change(within(dialog).getByLabelText('conf.d 配置内容 1'), { target: { value: 'server { listen 8081; }' } });
+  await userEvent.click(within(dialog).getByRole('button', { name: '添加 conf.d 配置' }));
+  await userEvent.clear(within(dialog).getByLabelText('conf.d 文件名 2'));
+  await userEvent.type(within(dialog).getByLabelText('conf.d 文件名 2'), 'api.conf');
+  await userEvent.clear(within(dialog).getByLabelText('conf.d 配置内容 2'));
+  fireEvent.change(within(dialog).getByLabelText('conf.d 配置内容 2'), { target: { value: 'server { listen 8081; location /api { proxy_pass http://127.0.0.1:8080; } }' } });
+  await userEvent.click(within(dialog).getByRole('button', { name: '创建' }));
+
+  const workload = (await api.listWorkloads('app_1')).find((item) => item.name === 'order-nginx');
+  expect(workload).toBeTruthy();
+  await expect(api.getWorkloadDefaultConfig('app_1', workload!.id)).resolves.toMatchObject({
+    valuesOverride: {
+      nginxSidecar: {
+        enabled: true,
+        image: 'nginx:1.25-alpine',
+        port: 8081,
+        routeServiceToSidecar: true,
+        nginxConf: 'events {}\nhttp { include /etc/nginx/conf.d/*.conf; }',
+        confD: [
+          { fileName: 'default.conf', content: 'server { listen 8081; }' },
+          { fileName: 'api.conf', content: 'server { listen 8081; location /api { proxy_pass http://127.0.0.1:8080; } }' }
+        ]
+      }
+    }
+  });
 });
 
 test('工作负载变化同步到 Freight 抽屉和 Stage 配置弹窗', async () => {
@@ -282,13 +338,21 @@ test('工作负载页面标题和按钮不使用英文用户文案', async () =>
 });
 
 test('已被工作负载关联的流水线不允许删除', async () => {
+  const api = await import('../api');
+  await api.createWorkload('app_1', {
+    name: 'delete-lock',
+    displayName: '删除保护',
+    workloadType: 'deployment',
+    imageSourceMode: 'pipeline_artifact',
+    pipelineId: 'pipeline_1'
+  });
   renderPage('/apps/app_1');
 
   const pipelinePanel = await screen.findByTestId('pipeline-panel');
   const pipelineCard = (await within(pipelinePanel).findByText('主流水线')).closest('.resource-card') as HTMLElement;
   const deleteButton = within(pipelineCard).getByRole('button', { name: /删除/ });
 
-  expect(deleteButton).toBeDisabled();
+  await waitFor(() => expect(deleteButton).toBeDisabled());
   await userEvent.hover(deleteButton);
   expect(await screen.findByText('已有工作负载关联，不能删除')).toBeInTheDocument();
 });

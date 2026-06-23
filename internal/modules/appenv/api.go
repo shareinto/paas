@@ -26,6 +26,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{projectId}/applications", h.handleListApplications)
 	mux.HandleFunc("GET /api/applications/{applicationId}/source", h.handleGetApplicationSource)
 	mux.HandleFunc("GET /api/applications/{applicationId}/workloads", h.handleListWorkloads)
+	mux.HandleFunc("POST /api/applications/{applicationId}/workloads:create-with-pipeline", h.handleCreateWorkloadWithPipeline)
 	mux.HandleFunc("POST /api/applications/{applicationId}/workloads", h.handleCreateWorkload)
 	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}", h.handleGetWorkload)
 	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}", h.handleUpdateWorkload)
@@ -117,6 +118,20 @@ func (h *Handler) handleCreateWorkload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, workload)
+}
+
+func (h *Handler) handleCreateWorkloadWithPipeline(w http.ResponseWriter, r *http.Request) {
+	var req CreateWorkloadWithPipelineInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.ApplicationID = shared.ID(r.PathValue("applicationId"))
+	result, err := h.service.CreateWorkloadWithPipeline(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
 }
 
 func (h *Handler) handleUpdateWorkload(w http.ResponseWriter, r *http.Request) {

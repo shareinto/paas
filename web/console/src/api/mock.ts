@@ -34,11 +34,14 @@ export type Workload = {
 };
 export type WorkloadServicePort = { name: string; port: number; targetPort: number; protocol?: string };
 export type WorkloadResourceList = { cpu?: string; memory?: string };
-export type WorkloadProbe = { name: string; type: string; path?: string; port?: number; initialDelaySeconds?: number };
-export type WorkloadIngressHost = { host: string; path: string; servicePort: string; tls: boolean };
+export type WorkloadProbe = { name: string; type: string; path?: string; port?: number; initialDelaySeconds?: number; periodSeconds?: number; timeoutSeconds?: number; failureThreshold?: number; successThreshold?: number };
+export type WorkloadIngressHost = { host: string; path: string; servicePort: string; tls: boolean; className?: string; pathType?: string; secretName?: string; clusterIssuer?: string; annotations?: StringMap };
 export type WorkloadEnvVar = { name: string; value: string };
 export type WorkloadConfigFile = { mountPath: string; content: string; base64Encoded?: boolean };
 export type WorkloadWritableDir = { mountPath: string; sizeLimit?: string; ownerGroup?: string; mode?: string };
+export type WorkloadSecretRef = { name: string; secretRef: string };
+export type WorkloadVolumeMount = { name: string; mountPath: string; readOnly?: boolean };
+export type WorkloadInitContainer = { name: string; image: string; command?: string[]; args?: string[] };
 export type WorkloadStageConfig = {
   id: string;
   workloadId: string;
@@ -51,8 +54,12 @@ export type WorkloadStageConfig = {
   probes: WorkloadProbe[];
   ingressHosts: WorkloadIngressHost[];
   envVars: WorkloadEnvVar[];
+  secretRefs?: WorkloadSecretRef[];
   configFiles: WorkloadConfigFile[];
   writableDirs: WorkloadWritableDir[];
+  volumeMounts?: WorkloadVolumeMount[];
+  initContainers?: WorkloadInitContainer[];
+  valuesOverride?: Record<string, unknown>;
 };
 export type ReleaseCandidate = { id: string; workloadId: string; version: string; image: string; digest: string; commit: string; buildArtifactId?: string; imageBundleId?: string; bundleImages?: ImageBundleImage[]; createdAt: string };
 export type BuildArtifactCandidate = { id: string; workloadId: string; image: string; digest: string; createdAt: string };
@@ -761,6 +768,24 @@ export async function createWorkload(applicationId: string, input: { name: strin
   return cloneWorkload(workload);
 }
 
+export async function createWorkloadWithPipeline(applicationId: string, input: {
+  workload: { name: string; displayName: string; description?: string; workloadType: WorkloadType; imageSourceMode?: WorkloadImageSourceMode; customImage?: string };
+  pipeline?: { name: string; displayName: string; description?: string; runtimeEnvironmentIds?: string[]; sources: any[] };
+  defaultConfig?: Partial<WorkloadStageConfig>;
+}) {
+  let pipeline: BuildPipeline | undefined;
+  if ((input.workload.imageSourceMode || 'pipeline_artifact') === 'pipeline_artifact' && input.pipeline) {
+    pipeline = await createBuildPipeline(applicationId, input.pipeline);
+  }
+  const workload = await createWorkload(applicationId, {
+    ...input.workload,
+    pipelineId: pipeline?.id || '',
+    pipelineName: pipeline?.displayName || pipeline?.name || ''
+  });
+  const defaultConfig = input.defaultConfig ? await saveWorkloadDefaultConfig(applicationId, workload.id, input.defaultConfig) : undefined;
+  return { workload, pipeline, defaultConfig };
+}
+
 export async function updateWorkload(applicationId: string, workloadId: string, input: { name?: string; displayName: string; description?: string; workloadType?: WorkloadType; imageSourceMode?: WorkloadImageSourceMode; pipelineId?: string }) {
   await wait();
   const workload = (workloads[applicationId] || []).find((item) => item.id === workloadId);
@@ -1462,8 +1487,12 @@ function buildWorkloadConfig(workloadId: string, stageKey: string, stageName: st
     probes: (input.probes || []).map((item) => ({ ...item })),
     ingressHosts: (input.ingressHosts || []).map((item) => ({ ...item })),
     envVars: (input.envVars || []).map((item) => ({ ...item })),
+    secretRefs: (input.secretRefs || []).map((item) => ({ ...item })),
     configFiles: (input.configFiles || []).map((item) => ({ ...item })),
-    writableDirs: (input.writableDirs || []).map((item) => ({ ...item }))
+    writableDirs: (input.writableDirs || []).map((item) => ({ ...item })),
+    volumeMounts: (input.volumeMounts || []).map((item) => ({ ...item })),
+    initContainers: (input.initContainers || []).map((item) => ({ ...item, command: [...(item.command || [])], args: [...(item.args || [])] })),
+    valuesOverride: { ...(input.valuesOverride || {}) }
   };
 }
 
@@ -1480,8 +1509,12 @@ function cloneWorkloadStageConfig(config: WorkloadStageConfig): WorkloadStageCon
     probes: config.probes.map((item) => ({ ...item })),
     ingressHosts: config.ingressHosts.map((item) => ({ ...item })),
     envVars: config.envVars.map((item) => ({ ...item })),
+    secretRefs: (config.secretRefs || []).map((item) => ({ ...item })),
     configFiles: config.configFiles.map((item) => ({ ...item })),
-    writableDirs: config.writableDirs.map((item) => ({ ...item }))
+    writableDirs: config.writableDirs.map((item) => ({ ...item })),
+    volumeMounts: (config.volumeMounts || []).map((item) => ({ ...item })),
+    initContainers: (config.initContainers || []).map((item) => ({ ...item, command: [...(item.command || [])], args: [...(item.args || [])] })),
+    valuesOverride: { ...(config.valuesOverride || {}) }
   };
 }
 
