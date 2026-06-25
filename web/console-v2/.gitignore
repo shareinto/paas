@@ -1,7 +1,9 @@
 node_modules/
+.od-skills/
 dist/
 .npm-cache/
 .DS_Store
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+*.artifact.json
