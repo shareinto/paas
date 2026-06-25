@@ -11,3 +11,6 @@ web/console/coverage/
 .worktrees/
 .worktree/
 .kiro/
+.DS_Store
+.od-skills/
+*.artifact.json
