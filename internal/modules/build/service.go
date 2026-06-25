@@ -33,6 +33,7 @@ type Service struct {
 }
 
 const maxProgressiveLogDrainIterations = 50
+const currentDefaultBuildTemplateVersion = 4
 
 type buildLogDrainResult struct {
 	run      BuildRun
@@ -125,6 +126,7 @@ type TriggerBuildInput struct {
 	Sources       []TriggerBuildSourceInput `json:"sources"`
 	GitRef        string                    `json:"git_ref,omitempty"`
 	CommitSHA     string                    `json:"commit_sha,omitempty"`
+	Version       string                    `json:"version,omitempty"`
 }
 
 type TriggerBuildSourceInput struct {
@@ -243,6 +245,7 @@ type BuildCallbackInput struct {
 
 type BuildCallbackArtifactInput struct {
 	SourceKey      string            `json:"source_key"`
+	ContainerName  string            `json:"container_name"`
 	Type           BuildArtifactType `json:"type"`
 	Name           string            `json:"name"`
 	URI            string            `json:"uri"`
@@ -489,7 +492,7 @@ const defaultBuildTemplateContent = `pipeline {
               if [ -z "$image_tag_commit" ]; then
                 image_tag_commit='{{ $.ImageTagFallback }}'
               fi
-              image_uri='{{ .ImageRepository }}:{{ $.ImageTagDate }}-'"${image_tag_commit}"'-{{ .Key }}'
+              image_uri='{{ .ImageRepository }}:{{ $.ImageTagDate }}-'"${image_tag_commit}"'-{{ $.ImageTagVersion }}'
               job_name=$(printf '%s' "${JOB_NAME:-paas}" | tr '/ ' '--')
               cache_dir="/backup_data/buildx-cache/${job_name}/{{ .Key }}"
               cache_next="${cache_dir}.next"
@@ -846,7 +849,7 @@ func (s *Service) EnsureDefaultBuildConfiguration(ctx context.Context, actorID s
 	if existing, err := s.repo.GetBuildTemplate(ctx); err == nil {
 		if shouldRefreshDefaultBuildTemplate(existing) {
 			now := s.clock.Now()
-			existing.Version = 3
+			existing.Version = currentDefaultBuildTemplateVersion
 			existing.Content = defaultBuildTemplateContent
 			existing.UpdatedAt = now
 			if existing.CreatedAt.IsZero() {
@@ -862,18 +865,21 @@ func (s *Service) EnsureDefaultBuildConfiguration(ctx context.Context, actorID s
 		return err
 	}
 	now := s.clock.Now()
-	return s.repo.SaveBuildTemplate(ctx, BuildTemplate{ID: "global-build-template", Name: "global-build-template", Version: 3, Content: defaultBuildTemplateContent, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now})
+	return s.repo.SaveBuildTemplate(ctx, BuildTemplate{ID: "global-build-template", Name: "global-build-template", Version: currentDefaultBuildTemplateVersion, Content: defaultBuildTemplateContent, CreatedBy: actorID, CreatedAt: now, UpdatedAt: now})
 }
 
 func shouldRefreshDefaultBuildTemplate(template BuildTemplate) bool {
 	content := strings.TrimSpace(template.Content)
-	if template.ID != "global-build-template" || template.Version > 2 || content == "" || content == strings.TrimSpace(defaultBuildTemplateContent) {
+	if template.ID != "global-build-template" || template.Version >= currentDefaultBuildTemplateVersion || content == "" || content == strings.TrimSpace(defaultBuildTemplateContent) {
 		return false
 	}
 	if template.Version <= 1 && strings.Contains(content, "{{ .ImageURI }}") && !strings.Contains(content, "artifacts: artifacts") {
 		return true
 	}
-	return template.Version <= 2 && strings.Contains(content, "artifacts: artifacts") && strings.Contains(content, "JsonSlurperClassic")
+	if template.Version <= 2 && strings.Contains(content, "artifacts: artifacts") && strings.Contains(content, "JsonSlurperClassic") {
+		return true
+	}
+	return template.Version <= 3 && strings.Contains(content, "artifacts: artifacts") && strings.Contains(content, "image_tag_commit") && strings.Contains(content, "-{{ .Key }}") && !strings.Contains(content, "ImageTagVersion")
 }
 
 func (s *Service) EnsureDefaultJenkinsJobTemplate(ctx context.Context, actorID shared.ID) error {
@@ -1070,7 +1076,7 @@ func (s *Service) ensurePipelineNotBoundToWorkload(ctx context.Context, pipeline
 		return err
 	}
 	for _, workload := range workloads {
-		if workload.PipelineID == pipeline.ID {
+		if workload.PipelineID == pipeline.ID || strings.TrimSpace(workload.ContainerName) != "" {
 			return shared.NewError(shared.CodeFailedPrecondition, "已有工作负载关联，不能删除")
 		}
 	}
@@ -1112,6 +1118,9 @@ func (s *Service) TriggerBuild(ctx context.Context, input TriggerBuildInput) (Bu
 			return BuildRun{}, err
 		}
 	}
+	if err := validateBuildVersion(input.Version); err != nil {
+		return BuildRun{}, err
+	}
 	runID, err := s.ids.NewID("build_run")
 	if err != nil {
 		return BuildRun{}, err
@@ -1133,6 +1142,7 @@ func (s *Service) TriggerBuild(ctx context.Context, input TriggerBuildInput) (Bu
 		SourceRepositoryID:  primary.SourceRepositoryID,
 		GitRef:              primary.GitRef,
 		CommitSHA:           primary.CommitSHA,
+		Version:             normalizeBuildVersion(input.Version),
 		Status:              BuildRunQueued,
 		RequestedBy:         input.Actor.ID,
 		CreatedAt:           now,
@@ -1318,7 +1328,18 @@ func (s *Service) ListBuildRuns(ctx context.Context, applicationID shared.ID, pa
 	if _, err := s.requireApplication(ctx, applicationID); err != nil {
 		return shared.PageResult[BuildRun]{}, err
 	}
+	s.refreshActiveRunsByApplication(ctx, applicationID)
 	return s.repo.ListRunsByApplication(ctx, applicationID, page)
+}
+
+func (s *Service) refreshActiveRunsByApplication(ctx context.Context, applicationID shared.ID) {
+	pipelines, err := s.repo.ListPipelinesByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 500})
+	if err != nil {
+		return
+	}
+	for _, pipeline := range pipelines.Items {
+		_ = s.refreshActiveRunsByPipeline(ctx, pipeline)
+	}
 }
 
 func (s *Service) ListBuildArtifacts(ctx context.Context, buildRunID shared.ID) ([]BuildArtifact, error) {
@@ -1500,8 +1521,9 @@ func (s *Service) HandleBuildCallback(ctx context.Context, input BuildCallbackIn
 		for _, artifact := range artifacts {
 			artifactIDs = append(artifactIDs, artifact.ID)
 		}
-		workloadIDs, _ := s.pipelineBoundWorkloadIDs(ctx, run.ApplicationID, run.PipelineID)
-		if err := s.publish(ctx, "BuildSucceeded", now, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, WorkloadIDs: workloadIDs, PipelineID: run.PipelineID, PipelineName: run.PipelineName, PipelineDisplayName: run.PipelineDisplayName, BuildArtifactID: run.PrimaryArtifactID, BuildArtifactIDs: artifactIDs, CommitSHA: run.CommitSHA}); err != nil {
+		workloadTargets, _ := s.pipelineBoundWorkloadTargets(ctx, run.ApplicationID, run.PipelineID)
+		workloadIDs := workloadIDsFromTargets(workloadTargets)
+		if err := s.publish(ctx, "BuildSucceeded", now, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, WorkloadIDs: workloadIDs, WorkloadTargets: workloadTargets, PipelineID: run.PipelineID, PipelineName: run.PipelineName, PipelineDisplayName: run.PipelineDisplayName, BuildArtifactID: run.PrimaryArtifactID, BuildArtifactIDs: artifactIDs, CommitSHA: run.CommitSHA}); err != nil {
 			run.ErrorMessage = "BuildSucceeded event publish failed: " + strings.TrimSpace(err.Error())
 			run.UpdatedAt = s.clock.Now()
 			_ = s.repo.UpdateRun(ctx, run)
@@ -1524,6 +1546,14 @@ func (s *Service) RedactLog(text string) string {
 }
 
 func (s *Service) pipelineBoundWorkloadIDs(ctx context.Context, applicationID shared.ID, pipelineID shared.ID) ([]shared.ID, error) {
+	targets, err := s.pipelineBoundWorkloadTargets(ctx, applicationID, pipelineID)
+	if err != nil {
+		return nil, err
+	}
+	return workloadIDsFromTargets(targets), nil
+}
+
+func (s *Service) pipelineBoundWorkloadTargets(ctx context.Context, applicationID shared.ID, pipelineID shared.ID) ([]WorkloadTarget, error) {
 	if s.workloads == nil || pipelineID.IsZero() {
 		return nil, nil
 	}
@@ -1531,13 +1561,29 @@ func (s *Service) pipelineBoundWorkloadIDs(ctx context.Context, applicationID sh
 	if err != nil {
 		return nil, err
 	}
-	out := make([]shared.ID, 0, len(workloads))
+	out := make([]WorkloadTarget, 0, len(workloads))
 	for _, workload := range workloads {
 		if workload.ID != "" {
-			out = append(out, workload.ID)
+			out = append(out, WorkloadTarget{WorkloadID: workload.ID, ContainerName: normalizeContainerName(workload.ContainerName)})
 		}
 	}
 	return out, nil
+}
+
+func workloadIDsFromTargets(targets []WorkloadTarget) []shared.ID {
+	out := make([]shared.ID, 0, len(targets))
+	seen := map[shared.ID]struct{}{}
+	for _, target := range targets {
+		if target.WorkloadID.IsZero() {
+			continue
+		}
+		if _, ok := seen[target.WorkloadID]; ok {
+			continue
+		}
+		seen[target.WorkloadID] = struct{}{}
+		out = append(out, target.WorkloadID)
+	}
+	return out
 }
 
 func (s *Service) ensurePipeline(ctx context.Context, app ApplicationRef, pipeline BuildPipeline, sources []ApplicationSourceRef, repos map[string]SourceRepositoryRef, runSources []BuildRunSource, run BuildRun) (BuildPipeline, error) {
@@ -1582,6 +1628,7 @@ type buildTemplateView struct {
 	ImageTargets         []buildTemplateImageTargetView
 	ImageTagDate         string
 	ImageTagFallback     string
+	ImageTagVersion      string
 }
 
 type buildTemplateDockerfileRepositoryView struct {
@@ -1641,6 +1688,7 @@ func (s *Service) renderBuildTemplate(ctx context.Context, content string, app A
 		ImageTargets:         imageTargets,
 		ImageTagDate:         shellSingleQuoted(imageTagDate),
 		ImageTagFallback:     shellSingleQuoted(imageTagFallback),
+		ImageTagVersion:      shellSingleQuoted(buildVersionTag(run.Version)),
 	}
 	if len(imageTargets) > 0 {
 		view.DockerfilePath = imageTargets[0].DockerfilePath
@@ -1798,8 +1846,8 @@ func runtimeImageLooksLikeTomcat(runtime RuntimeEnvironmentRef, image RuntimeEnv
 	return strings.Contains(text, "tomcat")
 }
 
-func buildTargetImageURI(imageRepo, appName, baseTag, key string) string {
-	return fmt.Sprintf("%s/%s:%s-%s", imageRepo, appName, baseTag, key)
+func buildTargetImageURI(imageRepo, appName, baseTag string) string {
+	return fmt.Sprintf("%s/%s:%s", imageRepo, appName, baseTag)
 }
 
 func runtimeTargetPlatforms(name string) string {
@@ -1815,7 +1863,7 @@ func runtimeTargetPlatforms(name string) string {
 
 func buildImageBaseTag(runSources []BuildRunSource, run BuildRun) string {
 	date, commit := buildImageTagParts(runSources, run)
-	return date + "-" + commit
+	return date + "-" + commit + "-" + buildVersionTag(run.Version)
 }
 
 func buildImageTagParts(runSources []BuildRunSource, run BuildRun) (string, string) {
@@ -1853,6 +1901,59 @@ func imageTagToken(value string) string {
 		return "unknown"
 	}
 	return b.String()
+}
+
+func normalizeBuildVersion(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "v0.0.0"
+	}
+	return value
+}
+
+func buildVersionTag(value string) string {
+	return imageTagToken(firstNonEmpty(normalizeBuildVersion(value), "v0.0.0"))
+}
+
+func validateBuildVersion(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	core := value
+	if strings.HasPrefix(core, "v") || strings.HasPrefix(core, "V") {
+		core = core[1:]
+	}
+	if strings.Contains(core, "+") {
+		return shared.NewError(shared.CodeInvalidArgument, "build version must be semver without build metadata")
+	}
+	parts := strings.SplitN(core, "-", 2)
+	nums := strings.Split(parts[0], ".")
+	if len(nums) != 3 {
+		return shared.NewError(shared.CodeInvalidArgument, "build version must be semver")
+	}
+	for _, num := range nums {
+		if num == "" {
+			return shared.NewError(shared.CodeInvalidArgument, "build version must be semver")
+		}
+		for _, r := range num {
+			if r < '0' || r > '9' {
+				return shared.NewError(shared.CodeInvalidArgument, "build version must be semver")
+			}
+		}
+	}
+	if len(parts) == 2 {
+		if parts[1] == "" {
+			return shared.NewError(shared.CodeInvalidArgument, "build version must be semver")
+		}
+		for _, r := range parts[1] {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' {
+				continue
+			}
+			return shared.NewError(shared.CodeInvalidArgument, "build version must be semver")
+		}
+	}
+	return nil
 }
 
 func primaryBuildSourceKey(sources []ApplicationSourceRef, runSources []BuildRunSource) string {
@@ -1918,7 +2019,7 @@ func (s *Service) createBuildArtifacts(ctx context.Context, run BuildRun, input 
 	}
 	inputs := input.Artifacts
 	if len(inputs) == 0 && strings.TrimSpace(input.ImageURI) != "" {
-		inputs = []BuildCallbackArtifactInput{{SourceKey: firstRunSourceKey(runSources), Type: BuildArtifactImage, Name: "主镜像", URI: input.ImageURI, Digest: input.ImageDigest, IsPrimary: true}}
+		inputs = []BuildCallbackArtifactInput{{SourceKey: firstRunSourceKey(runSources), ContainerName: firstBoundContainerName(ctx, s, run.ApplicationID, run.PipelineID), Type: BuildArtifactImage, Name: "主镜像", URI: input.ImageURI, Digest: input.ImageDigest, IsPrimary: true}}
 	}
 	if len(inputs) == 0 {
 		inputs, err = s.synthesizedArtifactInputs(ctx, run, runSources)
@@ -1967,17 +2068,34 @@ func (s *Service) createBuildArtifacts(ctx context.Context, run BuildRun, input 
 		if name == "" {
 			name = source.SourceKey
 		}
-		metadata := map[string]string{"commit_sha": source.CommitSHA, "git_ref": source.GitRef}
+		containerName := normalizeContainerName(item.ContainerName)
+		metadata := map[string]string{"commit_sha": source.CommitSHA, "git_ref": source.GitRef, "container_name": containerName}
 		for k, v := range item.Metadata {
 			metadata[k] = v
 		}
-		artifact := BuildArtifact{ID: id, TenantID: run.TenantID, ProjectID: run.ProjectID, BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, SourceKey: source.SourceKey, Type: artifactType, Name: name, URI: strings.TrimSpace(item.URI), Digest: strings.TrimSpace(item.Digest), IsPrimary: isPrimary, SelectorLabels: normalizeSelectorLabels(item.SelectorLabels), Metadata: metadata, CreatedAt: s.clock.Now()}
+		artifact := BuildArtifact{ID: id, TenantID: run.TenantID, ProjectID: run.ProjectID, BuildRunID: run.ID, ApplicationID: run.ApplicationID, WorkloadID: run.WorkloadID, ContainerName: containerName, SourceKey: source.SourceKey, Type: artifactType, Name: name, URI: strings.TrimSpace(item.URI), Digest: strings.TrimSpace(item.Digest), IsPrimary: isPrimary, SelectorLabels: normalizeSelectorLabels(item.SelectorLabels), Metadata: metadata, CreatedAt: s.clock.Now()}
 		if err := s.repo.CreateArtifact(ctx, artifact); err != nil {
 			return nil, err
 		}
 		artifacts = append(artifacts, artifact)
 	}
 	return artifacts, nil
+}
+
+func firstBoundContainerName(ctx context.Context, s *Service, applicationID shared.ID, pipelineID shared.ID) string {
+	if s == nil || s.workloads == nil || pipelineID.IsZero() {
+		return "app"
+	}
+	workloads, err := s.workloads.ListEnabledWorkloadsByPipeline(ctx, applicationID, pipelineID)
+	if err != nil {
+		return "app"
+	}
+	for _, workload := range workloads {
+		if name := normalizeContainerName(workload.ContainerName); name != "" {
+			return name
+		}
+	}
+	return "app"
 }
 
 func firstRunSourceKey(sources []BuildRunSource) string {
@@ -2019,9 +2137,10 @@ func (s *Service) synthesizedArtifactInputs(ctx context.Context, run BuildRun, r
 				}
 				out = append(out, BuildCallbackArtifactInput{
 					SourceKey:      source.SourceKey,
+					ContainerName:  firstBoundContainerName(ctx, s, run.ApplicationID, run.PipelineID),
 					Type:           BuildArtifactImage,
 					Name:           name,
-					URI:            buildTargetImageURI(imageRepo, app.Name, baseTag, key),
+					URI:            buildTargetImageURI(imageRepo, app.Name, baseTag),
 					IsPrimary:      targetIndex == 0,
 					SelectorLabels: image.SelectorLabels,
 					Metadata: map[string]string{
@@ -2038,12 +2157,9 @@ func (s *Service) synthesizedArtifactInputs(ctx context.Context, run BuildRun, r
 		return out, nil
 	}
 	out := make([]BuildCallbackArtifactInput, 0, len(runSources))
+	baseTag := buildImageBaseTag(runSources, run)
 	for i, source := range runSources {
-		tag := strings.TrimSpace(source.CommitSHA)
-		if tag == "" {
-			tag = imageTagToken(source.GitRef)
-		}
-		out = append(out, BuildCallbackArtifactInput{SourceKey: source.SourceKey, Type: BuildArtifactImage, Name: source.SourceKey, URI: fmt.Sprintf("%s/%s-%s:%s", imageRepo, app.Name, source.SourceKey, tag), IsPrimary: i == 0})
+		out = append(out, BuildCallbackArtifactInput{SourceKey: source.SourceKey, ContainerName: firstBoundContainerName(ctx, s, run.ApplicationID, run.PipelineID), Type: BuildArtifactImage, Name: source.SourceKey, URI: fmt.Sprintf("%s/%s-%s:%s", imageRepo, app.Name, source.SourceKey, baseTag), IsPrimary: i == 0})
 	}
 	return out, nil
 }

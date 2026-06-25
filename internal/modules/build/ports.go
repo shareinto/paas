@@ -116,6 +116,13 @@ type WorkloadRef struct {
 	Name          string
 	DisplayName   string
 	Status        string
+	ContainerName string
+	Containers    []WorkloadContainerRef
+}
+
+type WorkloadContainerRef struct {
+	Name       string
+	PipelineID shared.ID
 }
 
 type WorkloadQuery interface {

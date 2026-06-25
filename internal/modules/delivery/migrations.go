@@ -12,6 +12,7 @@ CREATE TABLE releases (
   project_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
   workload_id VARCHAR(64) NOT NULL DEFAULT '',
+  container_name VARCHAR(128) NOT NULL DEFAULT 'app',
   pipeline_id VARCHAR(64) NOT NULL DEFAULT '',
   pipeline_name VARCHAR(64) NOT NULL DEFAULT '',
   pipeline_display_name VARCHAR(128) NOT NULL DEFAULT '',
@@ -27,7 +28,7 @@ CREATE TABLE releases (
   source_type VARCHAR(64) NOT NULL DEFAULT 'pipeline_artifact',
   status VARCHAR(64) NOT NULL,
   created_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_releases_build_run_workload (build_run_id, workload_id),
+  UNIQUE KEY uk_releases_build_run_workload (build_run_id, workload_id, container_name),
   KEY idx_releases_application (application_id),
   KEY idx_releases_workload_created (application_id, workload_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -41,6 +42,7 @@ CREATE TABLE freights (
   pipeline_name VARCHAR(64) NOT NULL DEFAULT '',
   pipeline_display_name VARCHAR(128) NOT NULL DEFAULT '',
   name VARCHAR(128) NOT NULL,
+  source_fingerprint VARCHAR(2048) NOT NULL DEFAULT '',
   status VARCHAR(64) NOT NULL,
   created_at DATETIME(6) NOT NULL,
   KEY idx_freights_application_created (application_id, created_at)
@@ -53,6 +55,7 @@ CREATE TABLE freight_items (
   freight_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
   workload_id VARCHAR(64) NOT NULL DEFAULT '',
+  container_name VARCHAR(128) NOT NULL DEFAULT 'app',
   release_id VARCHAR(64) NOT NULL,
   build_artifact_id VARCHAR(64) NOT NULL,
   image_bundle_id VARCHAR(64) NOT NULL DEFAULT '',
@@ -66,7 +69,7 @@ CREATE TABLE freight_items (
   image_tag VARCHAR(255) NOT NULL DEFAULT '',
   digest VARCHAR(255) NOT NULL DEFAULT '',
   created_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_freight_items_workload (freight_id, workload_id),
+  UNIQUE KEY uk_freight_items_workload (freight_id, workload_id, container_name),
   KEY idx_freight_items_freight (freight_id),
   CONSTRAINT fk_freight_items_freight FOREIGN KEY (freight_id) REFERENCES freights(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -108,6 +111,7 @@ CREATE TABLE promotions (
   target_stage_key VARCHAR(64) NOT NULL DEFAULT '',
   namespace_override VARCHAR(255) NOT NULL DEFAULT '',
   status VARCHAR(64) NOT NULL,
+  auto_publish TINYINT(1) NOT NULL DEFAULT 1,
   is_rollback TINYINT(1) NOT NULL DEFAULT 0,
   rollback_from_freight_id VARCHAR(64) NOT NULL DEFAULT '',
   created_by VARCHAR(64) NOT NULL,
@@ -154,11 +158,12 @@ CREATE TABLE IF NOT EXISTS image_bundles (
   project_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
   workload_id VARCHAR(64) NOT NULL,
+  container_name VARCHAR(128) NOT NULL DEFAULT 'app',
   build_run_id VARCHAR(64) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
   created_at DATETIME(6) NOT NULL,
-  UNIQUE KEY uk_image_bundles_build_run_workload (build_run_id, workload_id),
-  KEY idx_image_bundles_workload_created (application_id, workload_id, created_at)
+  UNIQUE KEY uk_image_bundles_build_run_workload (build_run_id, workload_id, container_name),
+  KEY idx_image_bundles_workload_created (application_id, workload_id, container_name, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS image_bundle_images (
@@ -167,6 +172,7 @@ CREATE TABLE IF NOT EXISTS image_bundle_images (
   build_artifact_id VARCHAR(64) NOT NULL,
   runtime_environment_id VARCHAR(64) NOT NULL DEFAULT '',
   runtime_environment_name VARCHAR(128) NOT NULL DEFAULT '',
+  container_name VARCHAR(128) NOT NULL DEFAULT 'app',
   uri VARCHAR(1024) NOT NULL,
   image_repository VARCHAR(1024) NOT NULL DEFAULT '',
   image_tag VARCHAR(255) NOT NULL DEFAULT '',

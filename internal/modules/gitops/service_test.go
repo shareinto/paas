@@ -864,7 +864,7 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
-	if !strings.Contains(deployment.WorkloadSummary, "user-api=registry/user-api:v2@sha256:api") || !strings.Contains(deployment.WorkloadSummary, "order-worker=registry/order-worker:v5@sha256:worker") {
+	if !strings.Contains(deployment.WorkloadSummary, "user-api/app=registry/user-api:v2@sha256:api") || !strings.Contains(deployment.WorkloadSummary, "order-worker/app=registry/order-worker:v5@sha256:worker") {
 		t.Fatalf("deployment summary missing workload images: %#v", deployment)
 	}
 

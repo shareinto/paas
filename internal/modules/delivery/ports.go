@@ -13,6 +13,7 @@ type Repository interface {
 	GetRelease(ctx context.Context, id shared.ID) (Release, error)
 	FindReleaseByBuildRun(ctx context.Context, buildRunID shared.ID) (Release, error)
 	FindReleaseByBuildRunAndWorkload(ctx context.Context, buildRunID shared.ID, workloadID shared.ID) (Release, error)
+	FindReleaseByBuildRunWorkloadAndContainer(ctx context.Context, buildRunID shared.ID, workloadID shared.ID, containerName string) (Release, error)
 	ListReleasesByApplication(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Release], error)
 	CreateImageBundle(ctx context.Context, bundle ImageBundle) error
 	CreateImageBundleImage(ctx context.Context, image ImageBundleImage) error
@@ -85,6 +86,7 @@ type BuildArtifactRef struct {
 	BuildRunID     shared.ID
 	ApplicationID  shared.ID
 	WorkloadID     shared.ID
+	ContainerName  string
 	SourceKey      string
 	URI            string
 	Digest         string
@@ -94,13 +96,20 @@ type BuildArtifactRef struct {
 }
 
 type WorkloadRef struct {
-	ID            shared.ID `json:"id"`
-	TenantID      shared.ID `json:"tenant_id"`
-	ProjectID     shared.ID `json:"project_id"`
-	ApplicationID shared.ID `json:"application_id"`
-	Name          string    `json:"name"`
-	DisplayName   string    `json:"display_name"`
-	Status        string    `json:"status"`
+	ID            shared.ID              `json:"id"`
+	TenantID      shared.ID              `json:"tenant_id"`
+	ProjectID     shared.ID              `json:"project_id"`
+	ApplicationID shared.ID              `json:"application_id"`
+	Name          string                 `json:"name"`
+	DisplayName   string                 `json:"display_name"`
+	Status        string                 `json:"status"`
+	ContainerName string                 `json:"container_name,omitempty"`
+	Containers    []WorkloadContainerRef `json:"containers,omitempty"`
+}
+
+type WorkloadContainerRef struct {
+	Name       string    `json:"name"`
+	PipelineID shared.ID `json:"pipeline_id,omitempty"`
 }
 
 type WorkloadQuery interface {
@@ -175,15 +184,16 @@ type GitOpsPromotionTargetCluster struct {
 }
 
 type GitOpsArtifactSpec struct {
-	WorkloadID shared.ID
-	Name       string
-	SourceKey  string
-	URI        string
-	Repository string
-	Tag        string
-	Digest     string
-	IsPrimary  bool
-	Variants   []GitOpsImageVariant
+	WorkloadID    shared.ID
+	ContainerName string
+	Name          string
+	SourceKey     string
+	URI           string
+	Repository    string
+	Tag           string
+	Digest        string
+	IsPrimary     bool
+	Variants      []GitOpsImageVariant
 }
 
 type GitOpsImageVariant struct {
@@ -237,6 +247,8 @@ type PromotionCommand interface {
 	CreatePromotion(ctx context.Context, input CreatePromotionInput) (Promotion, error)
 	AbortPromotion(ctx context.Context, actor identityaccess.Subject, promotionID shared.ID) (Promotion, error)
 	CreateRollbackPromotion(ctx context.Context, input CreateRollbackPromotionInput) (Promotion, error)
+	PublishPromotion(ctx context.Context, input ApprovalInput) (Promotion, error)
+	RejectPendingPromotion(ctx context.Context, input ApprovalInput) (Promotion, error)
 }
 
 type PromotionQuery interface {
@@ -247,4 +259,6 @@ type PromotionQuery interface {
 type ApprovalCommand interface {
 	ApprovePromotion(ctx context.Context, input ApprovalInput) (Promotion, error)
 	RejectPromotion(ctx context.Context, input ApprovalInput) (Promotion, error)
+	PublishPromotion(ctx context.Context, input ApprovalInput) (Promotion, error)
+	RejectPendingPromotion(ctx context.Context, input ApprovalInput) (Promotion, error)
 }

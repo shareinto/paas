@@ -20,6 +20,7 @@ type Release struct {
 	ProjectID           shared.ID          `json:"project_id"`
 	ApplicationID       shared.ID          `json:"application_id"`
 	WorkloadID          shared.ID          `json:"workload_id"`
+	ContainerName       string             `json:"container_name"`
 	PipelineID          shared.ID          `json:"pipeline_id"`
 	PipelineName        string             `json:"pipeline_name"`
 	PipelineDisplayName string             `json:"pipeline_display_name"`
@@ -44,6 +45,7 @@ type ImageBundle struct {
 	ProjectID     shared.ID `json:"project_id"`
 	ApplicationID shared.ID `json:"application_id"`
 	WorkloadID    shared.ID `json:"workload_id"`
+	ContainerName string    `json:"container_name"`
 	BuildRunID    shared.ID `json:"build_run_id"`
 	CommitSHA     string    `json:"commit_sha"`
 	CreatedAt     time.Time `json:"created_at"`
@@ -55,6 +57,7 @@ type ImageBundleImage struct {
 	BuildArtifactID        shared.ID         `json:"build_artifact_id"`
 	RuntimeEnvironmentID   shared.ID         `json:"runtime_environment_id"`
 	RuntimeEnvironmentName string            `json:"runtime_environment_name"`
+	ContainerName          string            `json:"container_name"`
 	URI                    string            `json:"uri"`
 	ImageRepository        string            `json:"image_repository"`
 	ImageTag               string            `json:"image_tag"`
@@ -80,6 +83,7 @@ type Freight struct {
 	PipelineName        string        `json:"pipeline_name"`
 	PipelineDisplayName string        `json:"pipeline_display_name"`
 	Name                string        `json:"name"`
+	SourceFingerprint   string        `json:"source_fingerprint"`
 	Status              FreightStatus `json:"status"`
 	CreatedAt           time.Time     `json:"created_at"`
 }
@@ -107,6 +111,7 @@ type FreightItem struct {
 	FreightID       shared.ID          `json:"freight_id"`
 	ApplicationID   shared.ID          `json:"application_id"`
 	WorkloadID      shared.ID          `json:"workload_id"`
+	ContainerName   string             `json:"container_name"`
 	ReleaseID       shared.ID          `json:"release_id"`
 	BuildArtifactID shared.ID          `json:"build_artifact_id"`
 	ImageBundleID   shared.ID          `json:"image_bundle_id"`
@@ -323,6 +328,7 @@ type Promotion struct {
 	TargetStageKey        string          `json:"target_stage_key"`
 	NamespaceOverride     string          `json:"namespace_override"`
 	Status                PromotionStatus `json:"status"`
+	AutoPublish           bool            `json:"auto_publish"`
 	IsRollback            bool            `json:"is_rollback"`
 	RollbackFromFreightID shared.ID       `json:"rollback_from_freight_id"`
 	CreatedBy             shared.ID       `json:"created_by"`
@@ -355,18 +361,25 @@ type PromotionApproval struct {
 }
 
 type BuildSucceededPayload struct {
-	BuildRunID          shared.ID   `json:"build_run_id"`
-	ApplicationID       shared.ID   `json:"application_id"`
-	WorkloadID          shared.ID   `json:"workload_id"`
-	WorkloadIDs         []shared.ID `json:"workload_ids"`
-	PipelineID          shared.ID   `json:"pipeline_id"`
-	PipelineName        string      `json:"pipeline_name"`
-	PipelineDisplayName string      `json:"pipeline_display_name"`
-	BuildArtifactIDs    []shared.ID `json:"build_artifact_ids"`
-	CommitSHA           string      `json:"commit_sha"`
-	BuildArtifactID     shared.ID   `json:"build_artifact_id,omitempty"`
-	ImageURI            string      `json:"image_uri,omitempty"`
-	ImageDigest         string      `json:"image_digest,omitempty"`
+	BuildRunID          shared.ID        `json:"build_run_id"`
+	ApplicationID       shared.ID        `json:"application_id"`
+	WorkloadID          shared.ID        `json:"workload_id"`
+	WorkloadIDs         []shared.ID      `json:"workload_ids"`
+	WorkloadTargets     []WorkloadTarget `json:"workload_targets"`
+	ContainerName       string           `json:"container_name"`
+	PipelineID          shared.ID        `json:"pipeline_id"`
+	PipelineName        string           `json:"pipeline_name"`
+	PipelineDisplayName string           `json:"pipeline_display_name"`
+	BuildArtifactIDs    []shared.ID      `json:"build_artifact_ids"`
+	CommitSHA           string           `json:"commit_sha"`
+	BuildArtifactID     shared.ID        `json:"build_artifact_id,omitempty"`
+	ImageURI            string           `json:"image_uri,omitempty"`
+	ImageDigest         string           `json:"image_digest,omitempty"`
+}
+
+type WorkloadTarget struct {
+	WorkloadID    shared.ID `json:"workload_id"`
+	ContainerName string    `json:"container_name"`
 }
 
 const ReleaseSourcePipelineArtifact = "pipeline_artifact"

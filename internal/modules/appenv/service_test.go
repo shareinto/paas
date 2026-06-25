@@ -577,15 +577,15 @@ func TestWorkloadLifecycleValidationEnabledListAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateWorkload() error = %v", err)
 	}
-	if workload.ApplicationID != app.ID || workload.Name != "api" || workload.WorkloadType != WorkloadTypeDeployment || workload.Status != WorkloadStatusEnabled || workload.ImageSourceMode != "custom_image" || workload.PipelineID != "pipeline_main" {
+	if workload.ApplicationID != app.ID || workload.Name != "api" || workload.WorkloadType != WorkloadTypeDeployment || workload.Status != WorkloadStatusEnabled || workload.ImageSourceMode != "custom_image" || !workload.PipelineID.IsZero() {
 		t.Fatalf("unexpected workload: %+v", workload)
 	}
 	persisted, err := env.repo.GetWorkload(ctx, workload.ID)
 	if err != nil {
 		t.Fatalf("GetWorkload() error = %v", err)
 	}
-	if persisted.ImageSourceMode != "custom_image" || persisted.PipelineID != "pipeline_main" {
-		t.Fatalf("image_source_mode and pipeline_id should persist, got %+v", persisted)
+	if persisted.ImageSourceMode != "custom_image" || !persisted.PipelineID.IsZero() {
+		t.Fatalf("custom image workload should not keep pipeline_id, got %+v", persisted)
 	}
 	lowercase, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{
 		Actor:         appenvActor(),
@@ -625,6 +625,13 @@ func TestWorkloadLifecycleValidationEnabledListAndAudit(t *testing.T) {
 	}
 	if _, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", ImageSourceMode: "bad_mode"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
 		t.Fatalf("unsupported update image_source_mode should fail, got %v", err)
+	}
+	customImage, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID, DisplayName: "后台任务", ImageSourceMode: "custom_image"})
+	if err != nil {
+		t.Fatalf("UpdateWorkload(custom_image) error = %v", err)
+	}
+	if customImage.ImageSourceMode != "custom_image" || !customImage.PipelineID.IsZero() {
+		t.Fatalf("custom_image update should clear pipeline_id, got %+v", customImage)
 	}
 	if _, err := env.svc.DisableWorkload(ctx, WorkloadStatusInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: worker.ID}); err != nil {
 		t.Fatalf("DisableWorkload() error = %v", err)
@@ -702,6 +709,32 @@ func TestWorkloadNameCanBeReusedAfterSoftDelete(t *testing.T) {
 	}
 	if _, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "api", WorkloadType: WorkloadTypeStatefulSet}); shared.CodeOf(err) != shared.CodeConflict {
 		t.Fatalf("disabled workload should still reserve name, got %v", err)
+	}
+}
+
+func TestWorkloadNameAllowsDisplayStyleNames(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "relaxed-workload-name", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+	workload, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "订单 API_主服务", WorkloadType: WorkloadTypeDeployment})
+	if err != nil {
+		t.Fatalf("CreateWorkload() should allow display-style workload names: %v", err)
+	}
+	if workload.Name != "订单 API_主服务" {
+		t.Fatalf("workload name should be preserved, got %q", workload.Name)
+	}
+	updated, err := env.svc.UpdateWorkload(ctx, UpdateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, WorkloadID: workload.ID, Name: "Order API_主服务 v2", WorkloadType: WorkloadTypeDeployment})
+	if err != nil {
+		t.Fatalf("UpdateWorkload() should allow display-style workload names: %v", err)
+	}
+	if updated.Name != "Order API_主服务 v2" {
+		t.Fatalf("updated workload name should be preserved, got %q", updated.Name)
+	}
+	if _, err := env.svc.CreateWorkload(ctx, CreateWorkloadInput{Actor: appenvActor(), ApplicationID: app.ID, Name: "   ", WorkloadType: WorkloadTypeDeployment}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("blank workload name should still fail, got %v", err)
 	}
 }
 

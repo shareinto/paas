@@ -39,6 +39,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/apps/{appId}/promotions", h.handleListPromotions)
 	mux.HandleFunc("POST /api/promotions/{promotionId}/approve", h.handleApprove)
 	mux.HandleFunc("POST /api/promotions/{promotionId}/reject", h.handleReject)
+	mux.HandleFunc("POST /api/promotions/{promotionId}/publish", h.handlePublish)
+	mux.HandleFunc("POST /api/promotions/{promotionId}/reject-publish", h.handleRejectPendingPublish)
 	mux.HandleFunc("POST /api/promotions/{promotionId}/abort", h.handleAbort)
 }
 
@@ -303,6 +305,32 @@ func (h *Handler) handleReject(w http.ResponseWriter, r *http.Request) {
 	}
 	req.PromotionID = shared.ID(r.PathValue("promotionId"))
 	promotion, err := h.service.RejectPromotion(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, promotion)
+}
+func (h *Handler) handlePublish(w http.ResponseWriter, r *http.Request) {
+	var req ApprovalInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.PromotionID = shared.ID(r.PathValue("promotionId"))
+	promotion, err := h.service.PublishPromotion(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, promotion)
+}
+func (h *Handler) handleRejectPendingPublish(w http.ResponseWriter, r *http.Request) {
+	var req ApprovalInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.PromotionID = shared.ID(r.PathValue("promotionId"))
+	promotion, err := h.service.RejectPendingPromotion(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
 		return

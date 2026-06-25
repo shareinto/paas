@@ -573,8 +573,13 @@ func (s *Service) renderPromotionValues(ctx context.Context, app ApplicationRef,
 		if name == "" {
 			name = artifact.WorkloadID.String()
 		}
-		workloadValues[name] = renderWorkloadValues(workload, config, repository, tag, artifact.Digest)
-		summary = append(summary, fmt.Sprintf("%s=%s", name, imageSummary(repository, tag, artifact.Digest)))
+		current, ok := workloadValues[name].(map[string]any)
+		if !ok {
+			current = renderWorkloadValues(workload, config, repository, tag, artifact.Digest)
+			workloadValues[name] = current
+		}
+		applyContainerImage(current, artifact.ContainerName, repository, tag, artifact.Digest)
+		summary = append(summary, fmt.Sprintf("%s/%s=%s", name, normalizeContainerName(artifact.ContainerName), imageSummary(repository, tag, artifact.Digest)))
 	}
 	if len(workloadValues) > 0 {
 		values["workloads"] = workloadValues
@@ -609,6 +614,32 @@ func (s *Service) getWorkloadDefaultConfig(ctx context.Context, workloadID share
 
 func imageValues(repository string, tag string, digest string) map[string]any {
 	return map[string]any{"repository": repository, "tag": tag, "digest": strings.TrimSpace(digest)}
+}
+
+func applyContainerImage(values map[string]any, containerName string, repository string, tag string, digest string) {
+	name := normalizeContainerName(containerName)
+	containers, _ := values["containers"].(map[string]any)
+	if containers == nil {
+		containers = map[string]any{}
+	}
+	current, _ := containers[name].(map[string]any)
+	if current == nil {
+		current = map[string]any{}
+	}
+	current["image"] = imageValues(repository, tag, digest)
+	containers[name] = current
+	values["containers"] = containers
+	if name == "app" {
+		values["image"] = imageValues(repository, tag, digest)
+	}
+}
+
+func normalizeContainerName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "app"
+	}
+	return name
 }
 
 func renderWorkloadValues(workload WorkloadRef, config WorkloadStageConfigRef, repository string, tag string, digest string) map[string]any {

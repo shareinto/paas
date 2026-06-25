@@ -87,6 +87,14 @@ func (q fakeWorkloadQuery) ListEnabledWorkloads(_ context.Context, applicationID
 func (q fakeWorkloadQuery) ListEnabledWorkloadsByPipeline(_ context.Context, applicationID shared.ID, pipelineID shared.ID) ([]WorkloadRef, error) {
 	out := []WorkloadRef{}
 	for _, workload := range q.workloads[applicationID] {
+		if len(workload.Containers) > 0 {
+			for _, container := range workload.Containers {
+				if container.PipelineID == pipelineID {
+					out = append(out, WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, PipelineID: pipelineID, Name: workload.Name, DisplayName: workload.DisplayName, Status: workload.Status, ContainerName: container.Name})
+				}
+			}
+			continue
+		}
 		if workload.PipelineID == "" || workload.PipelineID == pipelineID {
 			out = append(out, workload)
 		}
@@ -711,8 +719,8 @@ func TestEnsureDefaultBuildConfigurationRefreshesBuiltinTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBuildTemplate() error = %v", err)
 	}
-	if template.Version != 3 || template.Content == oldContent {
-		t.Fatalf("builtin template should refresh to version 3, got version=%d content=%q", template.Version, template.Content)
+	if template.Version != currentDefaultBuildTemplateVersion || template.Content == oldContent {
+		t.Fatalf("builtin template should refresh to version %d, got version=%d content=%q", currentDefaultBuildTemplateVersion, template.Version, template.Content)
 	}
 	if !strings.Contains(template.Content, "artifacts: artifacts") || !strings.Contains(template.Content, "report/image-uri-") {
 		t.Fatalf("refreshed template should callback with actual image artifacts, got %s", template.Content)
@@ -742,8 +750,8 @@ func TestEnsureDefaultBuildConfigurationRefreshesSandboxBlockedTemplate(t *testi
 	if err != nil {
 		t.Fatalf("GetBuildTemplate() error = %v", err)
 	}
-	if template.Version != 3 || template.Content == oldContent || strings.Contains(template.Content, "JsonSlurperClassic") {
-		t.Fatalf("sandbox-blocked builtin template should refresh to version 3 without JsonSlurperClassic, got version=%d content=%q", template.Version, template.Content)
+	if template.Version != currentDefaultBuildTemplateVersion || template.Content == oldContent || strings.Contains(template.Content, "JsonSlurperClassic") {
+		t.Fatalf("sandbox-blocked builtin template should refresh to version %d without JsonSlurperClassic, got version=%d content=%q", currentDefaultBuildTemplateVersion, template.Version, template.Content)
 	}
 }
 
@@ -870,7 +878,7 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	ctx := context.Background()
 
 	pipeline := createDefaultPipeline(t, env)
-	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID, CommitSHA: "abc123"})
+	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID, CommitSHA: "abc123", Version: "v1.0.1"})
 	if err != nil {
 		t.Fatalf("TriggerBuild() error = %v", err)
 	}
@@ -879,6 +887,9 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	}
 	if run.WorkloadID != "" {
 		t.Fatalf("build run should not bind workload_id directly, got %+v", run)
+	}
+	if run.Version != "v1.0.1" {
+		t.Fatalf("build run should keep semver version, got %+v", run)
 	}
 	if len(env.runner.jobs) != 1 || env.runner.jobs[0].JobName != "paas/rnd/payment/user-api/main" || env.runner.jobs[0].TemplateID != "global-build-template" {
 		t.Fatalf("unexpected jobs: %+v", env.runner.jobs)
@@ -895,7 +906,7 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	if strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_BUILD_SOURCES") || strings.Contains(env.runner.jobs[0].TemplateXML, "SOURCE_REFS_JSON") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_RUNTIME") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_PACKAGE_SPEC") {
 		t.Fatalf("rendered Jenkinsfile should not depend on Jenkins parameters, got %s", env.runner.jobs[0].TemplateXML)
 	}
-	for _, want := range []string{"abc123", "/api/builds/" + run.ID.String() + "/callback", "registry.example/paas/user-api:", "image_tag_commit", "java17-aliyun", "artifacts: artifacts", "report/image-uri-java17-aliyun.txt"} {
+	for _, want := range []string{"abc123", "/api/builds/" + run.ID.String() + "/callback", "registry.example/paas/user-api:", "image_tag_commit", "v1.0.1", "java17-aliyun", "artifacts: artifacts", "report/image-uri-java17-aliyun.txt"} {
 		if !strings.Contains(env.runner.jobs[0].TemplateXML, want) {
 			t.Fatalf("rendered Jenkinsfile should contain %q for dynamic image callback, got %s", want, env.runner.jobs[0].TemplateXML)
 		}
@@ -1497,7 +1508,7 @@ func TestTriggerBuildExpandsRuntimeEnvironmentImages(t *testing.T) {
 	if err != nil || len(artifacts) != 2 {
 		t.Fatalf("expected two runtime image artifacts, got %+v, %v", artifacts, err)
 	}
-	if artifacts[0].URI != "registry.example/paas/user-api:20260530-abc123-java17-aliyun" || artifacts[1].URI != "registry.example/paas/user-api:20260530-abc123-java17-aws" {
+	if artifacts[0].URI != "registry.example/paas/user-api:20260530-abc123-v0.0.0" || artifacts[1].URI != "registry.example/paas/user-api:20260530-abc123-v0.0.0" {
 		t.Fatalf("unexpected runtime image URIs: %+v", artifacts)
 	}
 	if !artifacts[0].IsPrimary || artifacts[1].IsPrimary {
@@ -1639,7 +1650,7 @@ func TestQueueSyncLogsCancelAndCallback(t *testing.T) {
 	if err := json.Unmarshal(env.events.events[len(env.events.events)-1].Payload, &payload); err != nil {
 		t.Fatalf("decode BuildSucceeded payload: %v", err)
 	}
-	if payload.ApplicationID != "app_user" || payload.WorkloadID != "" || len(payload.WorkloadIDs) != 1 || payload.WorkloadIDs[0] != "workload_api" || payload.BuildRunID != run.ID || payload.BuildArtifactID != artifacts[0].ID {
+	if payload.ApplicationID != "app_user" || payload.WorkloadID != "" || len(payload.WorkloadIDs) != 1 || payload.WorkloadIDs[0] != "workload_api" || len(payload.WorkloadTargets) != 1 || payload.WorkloadTargets[0].WorkloadID != "workload_api" || payload.WorkloadTargets[0].ContainerName != "app" || payload.BuildRunID != run.ID || payload.BuildArtifactID != artifacts[0].ID {
 		t.Fatalf("BuildSucceeded payload should include app/workload fan-out/run/artifact ids, got %+v", payload)
 	}
 	again, err := env.svc.HandleBuildCallback(ctx, BuildCallbackInput{BuildRunID: run.ID, Status: BuildRunFailed, ErrorMessage: "late failure"})
@@ -1654,6 +1665,31 @@ func TestQueueSyncLogsCancelAndCallback(t *testing.T) {
 	cancelRun, err = env.svc.CancelBuild(ctx, buildActor(), cancelRun.ID)
 	if err != nil || cancelRun.Status != BuildRunAborted || len(env.runner.cancelCalls) != 1 || env.runner.cancelCalls[0] != 22 {
 		t.Fatalf("cancel failed: %+v, calls=%+v, err=%v", cancelRun, env.runner.cancelCalls, err)
+	}
+}
+
+func TestListBuildRunsRefreshesQueuedRunToRunning(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	pipeline := createDefaultPipeline(t, env)
+	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})
+	if err != nil {
+		t.Fatalf("TriggerBuild() error = %v", err)
+	}
+	if run.Status != BuildRunQueued {
+		t.Fatalf("build should start queued, got %+v", run)
+	}
+	env.runner.queueItems["queue-1"] = BuildQueueItem{QueueID: "queue-1", BuildNumber: 19, Started: true}
+
+	runs, err := env.svc.ListBuildRuns(ctx, pipeline.ApplicationID, shared.PageRequest{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("ListBuildRuns() error = %v", err)
+	}
+	if len(runs.Items) == 0 {
+		t.Fatalf("expected build run in list")
+	}
+	if runs.Items[0].ID != run.ID || runs.Items[0].Status != BuildRunRunning || runs.Items[0].JenkinsBuildNumber != 19 {
+		t.Fatalf("list should refresh queued run to running, got %+v", runs.Items[0])
 	}
 }
 
@@ -1819,7 +1855,7 @@ func TestCallbackFailureAndPreconditions(t *testing.T) {
 		t.Fatalf("succeeded callback without image should synthesize artifact, got %+v, %v", succeeded, err)
 	}
 	artifact, _ := env.repo.GetArtifact(ctx, succeeded.PrimaryArtifactID)
-	if artifact.URI != "registry.example/paas/user-api:20260530-main-java17-aliyun" {
+	if artifact.URI != "registry.example/paas/user-api:20260530-main-v0.0.0" {
 		t.Fatalf("unexpected synthesized image URI: %+v", artifact)
 	}
 	run, _ = env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})

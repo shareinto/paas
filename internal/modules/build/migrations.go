@@ -77,6 +77,7 @@ CREATE TABLE build_runs (
   source_repository_id VARCHAR(64) NOT NULL,
   git_ref VARCHAR(128) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
+  version VARCHAR(64) NOT NULL DEFAULT '',
   status VARCHAR(64) NOT NULL,
   jenkins_queue_id VARCHAR(128) NOT NULL DEFAULT '',
   jenkins_build_number BIGINT NOT NULL DEFAULT 0,
@@ -152,6 +153,7 @@ CREATE TABLE build_artifacts (
   build_run_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
   workload_id VARCHAR(64) NOT NULL DEFAULT '',
+  container_name VARCHAR(128) NOT NULL DEFAULT 'app',
   source_key VARCHAR(64) NOT NULL DEFAULT '',
   type VARCHAR(32) NOT NULL,
   name VARCHAR(128) NOT NULL,
@@ -163,7 +165,7 @@ CREATE TABLE build_artifacts (
   created_at DATETIME(6) NOT NULL,
   KEY idx_build_artifacts_run (build_run_id),
   KEY idx_build_artifacts_application (application_id),
-  KEY idx_build_artifacts_workload_created (application_id, workload_id, created_at),
+  KEY idx_build_artifacts_workload_created (application_id, workload_id, container_name, created_at),
   CONSTRAINT fk_build_artifacts_run FOREIGN KEY (build_run_id) REFERENCES build_runs(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `,

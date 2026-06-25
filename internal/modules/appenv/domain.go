@@ -11,7 +11,6 @@ import (
 
 var applicationNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{1,62}$`)
 var sourceKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
-var workloadNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
 type ApplicationStatus string
 
@@ -262,12 +261,15 @@ func validateApplicationName(name string) error {
 }
 
 func normalizeWorkloadName(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
+	return strings.TrimSpace(name)
 }
 
 func validateWorkloadName(name string) error {
-	if !workloadNamePattern.MatchString(name) {
-		return shared.NewError(shared.CodeInvalidArgument, "workload name must start with a lowercase letter and contain lowercase letters, numbers or hyphens")
+	if strings.TrimSpace(name) == "" {
+		return shared.NewError(shared.CodeInvalidArgument, "workload name is required")
+	}
+	if len([]rune(name)) > 64 {
+		return shared.NewError(shared.CodeInvalidArgument, "workload name must be 64 characters or fewer")
 	}
 	return nil
 }

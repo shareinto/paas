@@ -257,6 +257,42 @@ func TestBuildSucceededFansOutToPipelineBoundWorkloads(t *testing.T) {
 	}
 }
 
+func TestBuildSucceededFansOutToPipelineBoundWorkloadContainers(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	env.svc.workloads = fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {
+		{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"},
+	}}}
+	payload := BuildSucceededPayload{
+		BuildRunID:    "build_1",
+		ApplicationID: "app_user",
+		WorkloadTargets: []WorkloadTarget{
+			{WorkloadID: "workload_api", ContainerName: "app"},
+			{WorkloadID: "workload_api", ContainerName: "container-2"},
+		},
+		BuildArtifactID: "artifact_1",
+	}
+
+	release, err := env.svc.HandleBuildSucceeded(ctx, payload)
+	if err != nil {
+		t.Fatalf("HandleBuildSucceeded() error = %v", err)
+	}
+	if release.ContainerName != "app" {
+		t.Fatalf("first release should use first target container, got %+v", release)
+	}
+	appRelease, err := env.repo.FindReleaseByBuildRunWorkloadAndContainer(ctx, "build_1", "workload_api", "app")
+	if err != nil {
+		t.Fatalf("app container release missing: %v", err)
+	}
+	sidecarRelease, err := env.repo.FindReleaseByBuildRunWorkloadAndContainer(ctx, "build_1", "workload_api", "container-2")
+	if err != nil {
+		t.Fatalf("container-2 release missing: %v", err)
+	}
+	if appRelease.ID == sidecarRelease.ID || appRelease.ImageBundleID == sidecarRelease.ImageBundleID {
+		t.Fatalf("container releases should be distinct, app=%+v container-2=%+v", appRelease, sidecarRelease)
+	}
+}
+
 func TestBuildSucceededCreatesReleaseWithoutDigestOrCommit(t *testing.T) {
 	env := newDeliveryEnv(t)
 	ctx := context.Background()
@@ -285,9 +321,10 @@ func seedFreight(t *testing.T, env deliveryEnv) Freight {
 		t.Fatalf("HandleBuildSucceeded() error = %v", err)
 	}
 	freight, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{
-		Actor:         actor("usr_dev"),
-		ApplicationID: "app_user",
-		Name:          "freight-main",
+		Actor:             actor("usr_dev"),
+		ApplicationID:     "app_user",
+		Name:              "freight-main",
+		SourceFingerprint: "workload_api/app:pipeline:main:v1.0.1",
 		Items: []CreateFreightItemInput{{
 			WorkloadID: "workload_api",
 			SourceType: FreightItemPipelineArtifact,
@@ -297,7 +334,36 @@ func seedFreight(t *testing.T, env deliveryEnv) Freight {
 	if err != nil {
 		t.Fatalf("CreateFreight() error = %v", err)
 	}
+	if freight.SourceFingerprint != "workload_api/app:pipeline:main:v1.0.1" {
+		t.Fatalf("freight source fingerprint should be saved, got %q", freight.SourceFingerprint)
+	}
 	return freight
+}
+
+func TestCreateFreightDefaultsNameToTimestamp(t *testing.T) {
+	env := newDeliveryEnv(t)
+	release, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"})
+	if err != nil {
+		t.Fatalf("HandleBuildSucceeded() error = %v", err)
+	}
+	freight, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{
+		Actor:         actor("usr_dev"),
+		ApplicationID: "app_user",
+		Items: []CreateFreightItemInput{{
+			WorkloadID: "workload_api",
+			SourceType: FreightItemPipelineArtifact,
+			ReleaseID:  release.ID,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateFreight() error = %v", err)
+	}
+	if freight.Name != "20260530-070000" {
+		t.Fatalf("freight name should default to timestamp, got %q", freight.Name)
+	}
+	if freight.Name == freight.ID.String() {
+		t.Fatalf("freight display name should not reuse primary key %q", freight.ID)
+	}
 }
 
 func promoteFreightThrough(t *testing.T, env deliveryEnv, freight Freight, stageKeys ...string) {
@@ -435,8 +501,8 @@ func TestTenantDeliveryFlowTemplateStageLifecycleAndBindings(t *testing.T) {
 	if updated.StageKey != "test" || updated.DisplayName != "集成测试" || !updated.RequiresApproval || !updated.RequiresVerification {
 		t.Fatalf("stage update should keep key and update editable fields: %+v", updated)
 	}
-	if updated.Color != "#FD5352" || updated.LayoutColumn != 1 || updated.LayoutRow != -1 {
-		t.Fatalf("stage color should be derived from layout column, got %+v", updated)
+	if updated.Color != "#13c2c2" || updated.LayoutColumn != 1 || updated.LayoutRow != -1 {
+		t.Fatalf("stage color should persist explicit input color, got %+v", updated)
 	}
 	if len(updated.ApproveRoles) != 2 || updated.ApproveRoles[0] != "tenant_admin" || len(updated.VerifyRoles) != 2 {
 		t.Fatalf("roles should be persisted: %+v", updated)
@@ -563,10 +629,10 @@ func TestReplaceDeliveryFlowTemplateGraphValidatesDAGAndSyncsStages(t *testing.T
 		Actor:    actor("usr_admin"),
 		TenantID: "tenant_a",
 		Stages: []SaveDeliveryFlowTemplateStageInput{
-			{StageKey: "dev", DisplayName: "开发", Color: "#ffffff", Order: 1, LayoutColumn: 0, LayoutRow: 0, Status: DeliveryFlowTemplateStageEnabled},
-			{StageKey: "test", DisplayName: "测试", Color: "#ffffff", Order: 2, LayoutColumn: 1, LayoutRow: -1, Status: DeliveryFlowTemplateStageEnabled, RequiresVerification: true, VerifyRoles: []string{"operator"}},
-			{StageKey: "qa", DisplayName: "验收", Color: "#ffffff", Order: 3, LayoutColumn: 1, LayoutRow: 1, Status: DeliveryFlowTemplateStageEnabled, RequiresApproval: true, ApproveRoles: []string{"operator"}},
-			{StageKey: "prod", DisplayName: "生产", Color: "#ffffff", Order: 4, LayoutColumn: 2, LayoutRow: 0, Status: DeliveryFlowTemplateStageEnabled, RequiresApproval: true, ApproveRoles: []string{"prod_approver"}},
+			{StageKey: "dev", DisplayName: "开发", Color: "#0072B2", Order: 1, LayoutColumn: 0, LayoutRow: 0, Status: DeliveryFlowTemplateStageEnabled},
+			{StageKey: "test", DisplayName: "测试", Color: "#009E73", Order: 2, LayoutColumn: 1, LayoutRow: -1, Status: DeliveryFlowTemplateStageEnabled, RequiresVerification: true, VerifyRoles: []string{"operator"}},
+			{StageKey: "qa", DisplayName: "验收", Color: "#CC79A7", Order: 3, LayoutColumn: 1, LayoutRow: 1, Status: DeliveryFlowTemplateStageEnabled, RequiresApproval: true, ApproveRoles: []string{"operator"}},
+			{StageKey: "prod", DisplayName: "生产", Color: "#882255", Order: 4, LayoutColumn: 2, LayoutRow: 0, Status: DeliveryFlowTemplateStageEnabled, RequiresApproval: true, ApproveRoles: []string{"prod_approver"}},
 		},
 		DeletedStageKeys: []string{"staging"},
 		Edges: []DeliveryFlowTemplateEdgeInput{
@@ -582,8 +648,8 @@ func TestReplaceDeliveryFlowTemplateGraphValidatesDAGAndSyncsStages(t *testing.T
 	if got := edgePairs(template.Edges); strings.Join(got, ",") != "dev->qa,dev->test,qa->prod,test->prod" {
 		t.Fatalf("unexpected graph edges: %+v", got)
 	}
-	if template.Stages[1].Color != "#FD5352" || template.Stages[2].Color != "#FD5352" || template.Stages[3].Color != "#FE7537" || template.Stages[1].LayoutRow != -1 || template.Stages[2].LayoutRow != 1 {
-		t.Fatalf("graph save should persist slots and derive column colors, got %+v", template.Stages)
+	if template.Stages[1].Color != "#009E73" || template.Stages[2].Color != "#CC79A7" || template.Stages[3].Color != "#882255" || template.Stages[1].LayoutRow != -1 || template.Stages[2].LayoutRow != 1 {
+		t.Fatalf("graph save should persist slots and explicit colors, got %+v", template.Stages)
 	}
 	if _, err := env.repo.FindDeliveryFlowTemplateStage(ctx, "tenant_a", "staging"); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("graph save should delete explicitly deleted stages, got %v", err)
@@ -777,6 +843,49 @@ func TestCreatePromotionUsesTemplateApprovalRuleForAnyStage(t *testing.T) {
 	}
 	if len(env.gitops.specs) != 0 {
 		t.Fatalf("pending approval promotion should not apply gitops yet, got %+v", env.gitops.specs)
+	}
+}
+
+func TestCreatePromotionReusesPendingPromotionForSameFreightAndStage(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	freight := seedFreight(t, env)
+	if _, err := env.svc.SaveDeliveryFlowTemplateStage(ctx, SaveDeliveryFlowTemplateStageInput{
+		Actor:            actor("usr_admin"),
+		TenantID:         "tenant_a",
+		StageKey:         "dev",
+		DisplayName:      "开发",
+		Order:            1,
+		Status:           DeliveryFlowTemplateStageEnabled,
+		RequiresApproval: true,
+		ApproveRoles:     []string{"operator"},
+	}); err != nil {
+		t.Fatalf("SaveDeliveryFlowTemplateStage() error = %v", err)
+	}
+
+	first, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"})
+	if err != nil {
+		t.Fatalf("CreatePromotion(first) error = %v", err)
+	}
+	second, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev"})
+	if err != nil {
+		t.Fatalf("CreatePromotion(second) error = %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("duplicate pending promotion should be reused, got %s want %s", second.ID, first.ID)
+	}
+	out, err := env.svc.ListPromotions(ctx, freight.ApplicationID, shared.PageRequest{Page: 1, PageSize: 100})
+	if err != nil {
+		t.Fatalf("ListPromotions() error = %v", err)
+	}
+	count := 0
+	for _, promotion := range out.Items {
+		if promotion.FreightID == freight.ID && promotion.TargetStageKey == "dev" && pendingPromotion(promotion.Status) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("pending promotion count = %d, want 1", count)
 	}
 }
 
@@ -1163,6 +1272,41 @@ func TestEligibleFreightsUseDAGParentsAndRequiredVerification(t *testing.T) {
 	}
 }
 
+func TestRequiredVerificationBlocksImmediateDownstreamPromotion(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	freight := seedFreight(t, env)
+	if _, err := env.svc.ReplaceDeliveryFlowTemplateGraph(ctx, ReplaceDeliveryFlowTemplateGraphInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		Stages: []SaveDeliveryFlowTemplateStageInput{
+			{StageKey: "dev", DisplayName: "开发", Color: "#1677ff", Order: 1, Status: DeliveryFlowTemplateStageEnabled, RequiresVerification: true, VerifyRoles: []string{"operator"}},
+			{StageKey: "test", DisplayName: "测试", Color: "#52c41a", Order: 2, Status: DeliveryFlowTemplateStageEnabled},
+		},
+		Edges: []DeliveryFlowTemplateEdgeInput{{FromStageKey: "dev", ToStageKey: "test"}},
+	}); err != nil {
+		t.Fatalf("ReplaceDeliveryFlowTemplateGraph() error = %v", err)
+	}
+	promoteFreightThrough(t, env, freight, "dev")
+	eligible, err := env.svc.ListEligibleFreights(ctx, "app_user", "test")
+	if err != nil {
+		t.Fatalf("ListEligibleFreights(test) error = %v", err)
+	}
+	if len(eligible) != 0 {
+		t.Fatalf("test should not be eligible before dev verification, got %+v", eligible)
+	}
+	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "test"}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
+		t.Fatalf("test promotion should wait for dev verification, got %v", err)
+	}
+	if _, err := env.svc.CompleteStageVerification(ctx, StageVerificationInput{Actor: actor("usr_ops"), ApplicationID: "app_user", StageKey: "dev", FreightID: freight.ID, Status: StageVerificationPassed, Comment: "通过", SyncStatus: "Synced", HealthStatus: "Healthy", AgentStatus: "ready"}); err != nil {
+		t.Fatalf("CompleteStageVerification(dev) error = %v", err)
+	}
+	eligible, err = env.svc.ListEligibleFreights(ctx, "app_user", "test")
+	if err != nil || len(eligible) != 1 || eligible[0].ID != freight.ID {
+		t.Fatalf("test should become eligible after dev verification, got %+v %v", eligible, err)
+	}
+}
+
 func TestFreightCreationContextUsesStageProjectionKeys(t *testing.T) {
 	env := newDeliveryEnv(t)
 	freight := seedFreight(t, env)
@@ -1210,14 +1354,11 @@ func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
 	if prod.Status != PromotionPendingApproval || len(env.gitops.specs) != 3 {
 		t.Fatalf("prod should wait approval, got %+v specs=%+v", prod, env.gitops.specs)
 	}
-	if _, err := env.svc.ApprovePromotion(context.Background(), ApprovalInput{Actor: actor("usr_dev"), PromotionID: prod.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("self approval should fail, got %v", err)
-	}
-	approved, err := env.svc.ApprovePromotion(context.Background(), ApprovalInput{Actor: actor("usr_ops"), PromotionID: prod.ID, Comment: "ok"})
+	approved, err := env.svc.ApprovePromotion(context.Background(), ApprovalInput{Actor: actor("usr_dev"), PromotionID: prod.ID, Comment: "ok"})
 	if err != nil {
 		t.Fatalf("ApprovePromotion() error = %v", err)
 	}
-	if approved.Status != PromotionManifestUpdated || approved.ApprovedBy != "usr_ops" || len(env.gitops.specs) != 4 {
+	if approved.Status != PromotionManifestUpdated || approved.ApprovedBy != "usr_dev" || len(env.gitops.specs) != 4 {
 		t.Fatalf("approved prod should apply gitops, got %+v specs=%+v", approved, env.gitops.specs)
 	}
 }
@@ -1611,8 +1752,12 @@ func TestPromotionFailureBranches(t *testing.T) {
 	freight = seedFreight(t, env)
 	promoteFreightThrough(t, env, freight, "dev", "test", "staging")
 	prod, _ := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"})
-	if _, err := env.svc.RejectPromotion(ctx, ApprovalInput{Actor: actor("usr_dev"), PromotionID: prod.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("self reject should fail, got %v", err)
+	rejected, err := env.svc.RejectPromotion(ctx, ApprovalInput{Actor: actor("usr_dev"), PromotionID: prod.ID, Comment: "single-account test"})
+	if err != nil {
+		t.Fatalf("self reject should succeed, got %v", err)
+	}
+	if rejected.Status != PromotionRejected || rejected.Message != "single-account test" {
+		t.Fatalf("self reject should mark promotion rejected, got %+v", rejected)
 	}
 	if _, err := env.svc.ApprovePromotion(ctx, ApprovalInput{Actor: actor("usr_ops"), PromotionID: "missing"}); shared.CodeOf(err) != shared.CodeNotFound {
 		t.Fatalf("missing approve should fail, got %v", err)
@@ -1627,6 +1772,10 @@ func TestPromotionFailureBranches(t *testing.T) {
 	if _, err := env.svc.RejectPromotion(ctx, ApprovalInput{Actor: actor("usr_ops"), PromotionID: dev.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("reject non-pending should fail, got %v", err)
 	}
+	env = newDeliveryEnv(t)
+	freight = seedFreight(t, env)
+	promoteFreightThrough(t, env, freight, "dev", "test", "staging")
+	prod, _ = env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "prod"})
 	if _, err := env.svc.AbortPromotion(ctx, identityaccess.Subject{}, prod.ID); shared.CodeOf(err) != shared.CodeUnauthenticated {
 		t.Fatalf("abort missing actor should fail, got %v", err)
 	}
@@ -1737,8 +1886,8 @@ func TestMigrationsAddWorkloadColumnsWithoutBlockingLegacyMultiItemFreight(t *te
 		"  image_ref VARCHAR(1024) NOT NULL DEFAULT '',\n",
 		"  image_repository VARCHAR(1024) NOT NULL DEFAULT '',\n",
 		"  image_tag VARCHAR(255) NOT NULL DEFAULT '',\n",
-		"  UNIQUE KEY uk_freight_items_workload (freight_id, workload_id),\n",
-		"  UNIQUE KEY uk_releases_build_run_workload (build_run_id, workload_id),\n",
+		"  UNIQUE KEY uk_freight_items_workload (freight_id, workload_id, container_name),\n",
+		"  UNIQUE KEY uk_releases_build_run_workload (build_run_id, workload_id, container_name),\n",
 	}
 	for _, replacement := range replacements {
 		oldCore.Up = strings.Replace(oldCore.Up, replacement, "", 1)

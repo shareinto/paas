@@ -210,6 +210,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	audit.NewHandler(auditSvc).Register(mux)
 	notification.NewHandler(notificationSvc).Register(mux)
 	clusteragent.NewHandler(clusterSvc).Register(mux)
+	newConsoleV2Handler(appSvc, buildSvc, deliverySvc, clusterSvc).Register(mux)
 
 	return &application{handler: withCORS(mux), identity: identitySvc, tenants: tenantSvc, sources: sourceSvc, apps: appSvc, builds: buildSvc, delivery: deliverySvc, audit: auditSvc, state: state, db: db}, nil
 }
@@ -811,11 +812,88 @@ func (q workloadForBuild) ListEnabledWorkloadsByPipeline(ctx context.Context, ap
 	}
 	out := make([]build.WorkloadRef, 0, len(workloads))
 	for _, workload := range workloads {
+		if refs := q.pipelineContainerRefs(ctx, workload, pipelineID); len(refs) > 0 {
+			out = append(out, refs...)
+			continue
+		}
 		if workload.PipelineID == pipelineID {
-			out = append(out, build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, PipelineID: workload.PipelineID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)})
+			out = append(out, build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, PipelineID: workload.PipelineID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status), ContainerName: "app"})
 		}
 	}
 	return out, nil
+}
+
+func (q workloadForBuild) pipelineContainerRefs(ctx context.Context, workload appenv.Workload, pipelineID shared.ID) []build.WorkloadRef {
+	config, err := q.service.GetWorkloadDefaultConfig(ctx, workload.ID)
+	if err != nil {
+		return nil
+	}
+	containers := workloadContainersFromValues(config.ValuesOverride)
+	out := make([]build.WorkloadRef, 0, len(containers))
+	for _, container := range containers {
+		if container.PipelineID == pipelineID {
+			out = append(out, build.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, PipelineID: pipelineID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status), ContainerName: container.Name})
+		}
+	}
+	return out
+}
+
+type workloadContainerBinding struct {
+	Name       string
+	PipelineID shared.ID
+}
+
+func workloadContainersFromValues(values map[string]any) []workloadContainerBinding {
+	containers := allWorkloadContainersFromValues(values)
+	out := make([]workloadContainerBinding, 0, len(containers))
+	for _, container := range containers {
+		if container.PipelineID.IsZero() {
+			continue
+		}
+		out = append(out, container)
+	}
+	return out
+}
+
+func allWorkloadContainersFromValues(values map[string]any) []workloadContainerBinding {
+	raw, ok := values["containers"]
+	if !ok {
+		return nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]workloadContainerBinding, 0, len(list))
+	for index, item := range list {
+		container, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(stringFromAny(container["name"]))
+		if name == "" {
+			name = fmt.Sprintf("container-%d", index+1)
+		}
+		var pipelineID shared.ID
+		if source, _ := container["image_source"].(map[string]any); source != nil {
+			if strings.TrimSpace(stringFromAny(source["mode"])) == "pipeline" {
+				pipelineID = shared.ID(firstNonEmpty(stringFromAny(source["pipeline_id"]), stringFromAny(source["pipelineId"])))
+			}
+		} else if source, _ := container["imageSource"].(map[string]any); source != nil {
+			if strings.TrimSpace(stringFromAny(source["mode"])) == "pipeline" {
+				pipelineID = shared.ID(firstNonEmpty(stringFromAny(source["pipeline_id"]), stringFromAny(source["pipelineId"])))
+			}
+		}
+		out = append(out, workloadContainerBinding{Name: name, PipelineID: pipelineID})
+	}
+	return out
+}
+
+func stringFromAny(value any) string {
+	if value == nil {
+		return ""
+	}
+	return fmt.Sprint(value)
 }
 
 type buildPipelineForAppEnv struct{ service *build.Service }
@@ -876,9 +954,25 @@ func (q workloadForDelivery) ListEnabledWorkloads(ctx context.Context, applicati
 	}
 	out := make([]delivery.WorkloadRef, 0, len(workloads))
 	for _, workload := range workloads {
-		out = append(out, delivery.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status)})
+		out = append(out, delivery.WorkloadRef{ID: workload.ID, TenantID: workload.TenantID, ProjectID: workload.ProjectID, ApplicationID: workload.ApplicationID, Name: workload.Name, DisplayName: workload.DisplayName, Status: string(workload.Status), Containers: q.workloadContainers(ctx, workload)})
 	}
 	return out, nil
+}
+
+func (q workloadForDelivery) workloadContainers(ctx context.Context, workload appenv.Workload) []delivery.WorkloadContainerRef {
+	config, err := q.service.GetWorkloadDefaultConfig(ctx, workload.ID)
+	if err == nil {
+		containers := allWorkloadContainersFromValues(config.ValuesOverride)
+		if len(containers) > 0 {
+			out := make([]delivery.WorkloadContainerRef, 0, len(containers))
+			for _, container := range containers {
+				out = append(out, delivery.WorkloadContainerRef{Name: container.Name, PipelineID: container.PipelineID})
+			}
+			return out
+		}
+	}
+	pipelineID := workload.PipelineID
+	return []delivery.WorkloadContainerRef{{Name: "app", PipelineID: pipelineID}}
 }
 
 type jenkinsTemplateForAppEnv struct{ repo build.Repository }
@@ -1217,7 +1311,7 @@ func toBuildRuntimeEnvironments(environments []appenv.ApplicationRuntimeEnvironm
 }
 
 func toDeliveryBuildArtifactRef(artifact build.BuildArtifact) delivery.BuildArtifactRef {
-	return delivery.BuildArtifactRef{ID: artifact.ID, BuildRunID: artifact.BuildRunID, ApplicationID: artifact.ApplicationID, WorkloadID: artifact.WorkloadID, SourceKey: artifact.SourceKey, URI: artifact.URI, Digest: artifact.Digest, IsPrimary: artifact.IsPrimary, SelectorLabels: artifact.SelectorLabels, Metadata: artifact.Metadata}
+	return delivery.BuildArtifactRef{ID: artifact.ID, BuildRunID: artifact.BuildRunID, ApplicationID: artifact.ApplicationID, WorkloadID: artifact.WorkloadID, ContainerName: artifact.ContainerName, SourceKey: artifact.SourceKey, URI: artifact.URI, Digest: artifact.Digest, IsPrimary: artifact.IsPrimary, SelectorLabels: artifact.SelectorLabels, Metadata: artifact.Metadata}
 }
 
 func toDeliveryBuildRunRef(run build.BuildRun) delivery.BuildRunRef {

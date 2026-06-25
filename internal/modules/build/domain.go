@@ -182,6 +182,7 @@ type BuildRun struct {
 	SourceRepositoryID  shared.ID      `json:"source_repository_id"`
 	GitRef              string         `json:"git_ref"`
 	CommitSHA           string         `json:"commit_sha"`
+	Version             string         `json:"version"`
 	Status              BuildRunStatus `json:"status"`
 	JenkinsQueueID      string         `json:"jenkins_queue_id"`
 	JenkinsBuildNumber  int64          `json:"jenkins_build_number"`
@@ -226,6 +227,7 @@ type BuildArtifact struct {
 	BuildRunID     shared.ID         `json:"build_run_id"`
 	ApplicationID  shared.ID         `json:"application_id"`
 	WorkloadID     shared.ID         `json:"workload_id"`
+	ContainerName  string            `json:"container_name"`
 	SourceKey      string            `json:"source_key"`
 	Type           BuildArtifactType `json:"type"`
 	Name           string            `json:"name"`
@@ -244,16 +246,23 @@ type BuildStartedPayload struct {
 }
 
 type BuildSucceededPayload struct {
-	BuildRunID          shared.ID   `json:"build_run_id"`
-	ApplicationID       shared.ID   `json:"application_id"`
-	WorkloadID          shared.ID   `json:"workload_id"`
-	WorkloadIDs         []shared.ID `json:"workload_ids"`
-	PipelineID          shared.ID   `json:"pipeline_id"`
-	PipelineName        string      `json:"pipeline_name"`
-	PipelineDisplayName string      `json:"pipeline_display_name"`
-	BuildArtifactID     shared.ID   `json:"build_artifact_id"`
-	BuildArtifactIDs    []shared.ID `json:"build_artifact_ids"`
-	CommitSHA           string      `json:"commit_sha"`
+	BuildRunID          shared.ID        `json:"build_run_id"`
+	ApplicationID       shared.ID        `json:"application_id"`
+	WorkloadID          shared.ID        `json:"workload_id"`
+	WorkloadIDs         []shared.ID      `json:"workload_ids"`
+	WorkloadTargets     []WorkloadTarget `json:"workload_targets"`
+	ContainerName       string           `json:"container_name"`
+	PipelineID          shared.ID        `json:"pipeline_id"`
+	PipelineName        string           `json:"pipeline_name"`
+	PipelineDisplayName string           `json:"pipeline_display_name"`
+	BuildArtifactID     shared.ID        `json:"build_artifact_id"`
+	BuildArtifactIDs    []shared.ID      `json:"build_artifact_ids"`
+	CommitSHA           string           `json:"commit_sha"`
+}
+
+type WorkloadTarget struct {
+	WorkloadID    shared.ID `json:"workload_id"`
+	ContainerName string    `json:"container_name"`
 }
 
 type BuildFailedPayload struct {

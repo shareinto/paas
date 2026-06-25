@@ -579,7 +579,7 @@ func (s *Service) CreateWorkload(ctx context.Context, input CreateWorkloadInput)
 	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
 		return Workload{}, err
 	}
-	pipelineID, err := s.normalizeWorkloadPipeline(ctx, app.ID, input.PipelineID)
+	pipelineID, err := s.normalizeWorkloadPipelineForImageSource(ctx, app.ID, imageSourceMode, input.PipelineID)
 	if err != nil {
 		return Workload{}, err
 	}
@@ -684,7 +684,9 @@ func (s *Service) UpdateWorkload(ctx context.Context, input UpdateWorkloadInput)
 		}
 	}
 	pipelineID := workload.PipelineID
-	if strings.TrimSpace(string(input.PipelineID)) != "" {
+	if imageSourceMode == "custom_image" {
+		pipelineID = ""
+	} else if strings.TrimSpace(string(input.PipelineID)) != "" {
 		pipelineID, err = s.normalizeWorkloadPipeline(ctx, workload.ApplicationID, input.PipelineID)
 		if err != nil {
 			return Workload{}, err
@@ -728,6 +730,13 @@ func (s *Service) normalizeWorkloadPipeline(ctx context.Context, applicationID s
 		return "", shared.NewError(shared.CodeFailedPrecondition, "build pipeline is disabled")
 	}
 	return pipeline.ID, nil
+}
+
+func (s *Service) normalizeWorkloadPipelineForImageSource(ctx context.Context, applicationID shared.ID, imageSourceMode string, pipelineID shared.ID) (shared.ID, error) {
+	if imageSourceMode == "custom_image" {
+		return "", nil
+	}
+	return s.normalizeWorkloadPipeline(ctx, applicationID, pipelineID)
 }
 
 func (s *Service) EnableWorkload(ctx context.Context, input WorkloadStatusInput) (Workload, error) {
