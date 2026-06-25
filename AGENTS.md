@@ -1,5 +1,4 @@
 ﻿# AGENTS.md
-开始编码之前，必须新建worktree,在.worktrees下创建新的目录，禁止在当前文件夹修改代码
 开始编码之前，你如果判断可以开始启多个子agent并行开发，就直接开启子agent
 https://www.figma.com/make/qRTK9BUrwoRNkYjLK8yE0C/%E4%BC%81%E4%B8%9A%E5%86%85%E9%83%A8-PaaS-%E6%8E%A7%E5%88%B6%E5%8F%B0%E8%AE%BE%E8%AE%A1?t=dD6m4V5arXoojstW-1&preview-route=%2Fstage-template
 本文件为在本仓库中工作的 coding agent 提供项目约定和工作指引。
