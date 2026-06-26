@@ -122,8 +122,15 @@ type WorkloadProbe struct {
 }
 
 type WorkloadIngressHost struct {
-	Host string `json:"host"`
-	Path string `json:"path"`
+	Host        string `json:"host"`
+	Path        string `json:"path"`
+	ServerName  string `json:"server_name,omitempty"`
+	ServicePort string `json:"service_port,omitempty"`
+	PathType    string `json:"path_type,omitempty"`
+	TLS         bool   `json:"tls,omitempty"`
+	TLSRedirect bool   `json:"tls_redirect,omitempty"`
+	Rewrite     bool   `json:"rewrite,omitempty"`
+	RewritePath string `json:"rewrite_path,omitempty"`
 }
 
 type WorkloadEnvVar struct {

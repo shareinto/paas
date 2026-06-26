@@ -275,6 +275,7 @@ type AppStage struct {
 	RuntimeMessage        string                          `json:"runtime_message,omitempty"`
 	UpstreamStageKeys     []string                        `json:"upstream_stage_keys,omitempty"`
 	DownstreamStageKeys   []string                        `json:"downstream_stage_keys,omitempty"`
+	VerificationStatus    StageVerificationStatus         `json:"verification_status,omitempty"`
 }
 
 type DeliveryStage struct {

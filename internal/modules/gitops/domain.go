@@ -11,8 +11,7 @@ import (
 type TemplateScope string
 
 const (
-	TemplateScopePlatform    TemplateScope = "platform"
-	TemplateScopeApplication TemplateScope = "application"
+	TemplateScopePlatform TemplateScope = "platform"
 )
 
 type DeploymentStatus string
@@ -30,10 +29,7 @@ const (
 type DeploymentTemplate struct {
 	ID             shared.ID     `json:"id"`
 	TenantID       shared.ID     `json:"tenant_id"`
-	ProjectID      shared.ID     `json:"project_id"`
-	ApplicationID  shared.ID     `json:"application_id"`
 	Name           string        `json:"name"`
-	Scope          TemplateScope `json:"scope"`
 	Content        string        `json:"content"`
 	CurrentVersion int           `json:"current_version"`
 	CreatedAt      time.Time     `json:"created_at"`
@@ -77,6 +73,7 @@ type Deployment struct {
 	ImageTag           string           `json:"image_tag"`
 	ImageDigest        string           `json:"image_digest"`
 	WorkloadSummary    string           `json:"workload_summary"`
+	ConfigHash         string           `json:"config_hash"`
 	Status             DeploymentStatus `json:"status"`
 	Message            string           `json:"message"`
 	CreatedAt          time.Time        `json:"created_at"`
@@ -146,8 +143,15 @@ type WorkloadProbeRef struct {
 }
 
 type WorkloadIngressHostRef struct {
-	Host string `yaml:"host"`
-	Path string `yaml:"path"`
+	Host        string `yaml:"host"`
+	Path        string `yaml:"path"`
+	ServerName  string `yaml:"serverName,omitempty"`
+	ServicePort string `yaml:"servicePort,omitempty"`
+	PathType    string `yaml:"pathType,omitempty"`
+	TLS         bool   `yaml:"tls,omitempty"`
+	TLSRedirect bool   `yaml:"tlsRedirect,omitempty"`
+	Rewrite     bool   `yaml:"rewrite,omitempty"`
+	RewritePath string `yaml:"rewritePath,omitempty"`
 }
 
 type WorkloadSecretRef struct {
@@ -196,7 +200,7 @@ type WorkloadStageConfigRef struct {
 }
 
 func manifestPath(appName, stageKey string) string {
-	return fmt.Sprintf("apps/%s/%s/values.yaml", appName, stageKey)
+	return fmt.Sprintf("apps/%s/%s/manifests.yaml", appName, stageKey)
 }
 
 func manifestPathForBinding(appName, stageKey string, binding ClusterBindingRef) string {

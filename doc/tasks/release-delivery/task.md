@@ -4,7 +4,7 @@
 
 实现 Release、Freight、DeliveryFlow、Promotion 和审批流程，使构建产物可以按租户交付流模板 DAG 晋级；默认模板兼容 dev/test/staging/prod。
 
-> V2 变更：BuildSucceeded 只生成 Workload Release 候选，不再自动生成 Freight；Freight 由用户手动创建并必须覆盖所有启用 Workload。新开发任务见 `doc/tasks/workload-freight-v2/task.md`。
+> V2 变更：BuildSucceeded 生成 Workload Release 候选后，自动尝试生成覆盖所有启用 Workload 的 Freight；其他 Workload 使用最近一次成功构建产物补齐。自动生成失败时保留版本源变更提示；用户仍可手动创建 Freight。新开发任务见 `doc/tasks/workload-freight-v2/task.md`。
 
 ## 任务清单
 

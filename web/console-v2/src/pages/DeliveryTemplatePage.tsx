@@ -307,8 +307,12 @@ function DeliveryTemplateContent() {
       stages: stages.map(({ clientId, originalStageKey, ...stage }, index) => ({ ...stage, order: index + 1 })),
       edges: templateEdges
     };
+    const renamedKeys = stages
+      .filter((s) => s.originalStageKey && s.stageKey !== s.originalStageKey)
+      .map((s) => s.originalStageKey!);
+    const allDeletedKeys = Array.from(new Set([...deletedStageKeys, ...renamedKeys]));
     setSaving(true);
-    saveDeliveryTemplateGraph(currentTenant.id, nextTemplate, deletedStageKeys)
+    saveDeliveryTemplateGraph(currentTenant.id, nextTemplate, allDeletedKeys)
       .then(async (result) => {
         if (result.source === 'api') {
           await Promise.all(stages.map((stage) => saveStageClusterBinding(currentTenant.id, stage.stageKey, resolveStageClusterBinding(stage, clusters))));

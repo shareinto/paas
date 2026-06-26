@@ -36,6 +36,10 @@ type WebSocketRuntimeGateway struct {
 	groups map[runtimeSubscriptionKey]*runtimeSubscriptionGroup
 	seq    atomic.Uint64
 	subSeq atomic.Uint64
+
+	// OnStageChanged is called when an agent reports a stage_changed event.
+	// Set by the server to trigger cache invalidation and WS broadcast.
+	OnStageChanged func(applicationID string, stageKey string)
 }
 
 func NewWebSocketRuntimeGateway() *WebSocketRuntimeGateway {
@@ -404,7 +408,11 @@ func (g *WebSocketRuntimeGateway) groupIfActive(key runtimeSubscriptionKey) *run
 }
 
 func (g *WebSocketRuntimeGateway) invalidateStage(clusterID shared.ID, applicationID shared.ID, stageKey string) {
-	key := runtimeSubscriptionKey{ClusterID: clusterID, ApplicationID: applicationID, StageKey: strings.TrimSpace(stageKey)}
+	sk := strings.TrimSpace(stageKey)
+	if g.OnStageChanged != nil {
+		g.OnStageChanged(string(applicationID), sk)
+	}
+	key := runtimeSubscriptionKey{ClusterID: clusterID, ApplicationID: applicationID, StageKey: sk}
 	group := g.groupIfActive(key)
 	if group == nil {
 		return

@@ -24,8 +24,10 @@
 
 - Workload 通过 `pipeline_id` 关联 BuildPipeline；`build_pipelines.workload_id` 废除。
 - BuildSucceeded 事件 payload 包含 `app_id`、`workload_ids`、`build_run_id`、`build_artifact_id`。
-- BuildSucceeded 只创建 Workload Release 候选。
-- 停用或删除自动创建 Freight 的事件处理路径。
+- BuildSucceeded 创建 Workload Release 候选后，自动尝试创建完整 Freight。
+- 自动 Freight 使用本次构建产物 + 其他启用 Workload 最近成功产物补齐，不要求同一分支。
+- 自动 Freight 成功后清除版本源“有变更”语义；失败时保留提示并记录原因。
+- 构建成功、发布完成和验证通过后，为当前 eligible Stage 自动创建 `auto_publish=false` 的手动发布 Promotion。
 - Release 补充 Workload 和镜像信息。
 - Freight creation-context API。
 - 用户手动创建 Freight。
@@ -62,18 +64,19 @@
 1. 搜索现有 `internal/modules/build` 和 `internal/modules/delivery`。
 2. 先补 BuildArtifact/Release/FreightItem 的 `workload_id` 迁移和仓储测试。
 3. 改 BuildSucceeded 事件 payload 和消费逻辑。
-4. 写“BuildSucceeded 不自动创建 Freight”的失败优先测试。
+4. 写“BuildSucceeded 自动创建完整 Freight，缺产物时跳过并保留版本源变更提示”的失败优先测试。
 5. 实现手动 Freight 创建和完整性校验。
-6. 实现 creation-context 和 eligible-freights API。
-7. 补 Promotion 创建前校验。
-8. 补审计。
+6. 实现自动 `auto_publish=false` Promotion 编排。
+7. 实现 creation-context 和 eligible-freights API。
+8. 补 Promotion 创建前校验。
+9. 补审计。
 
 ## 必须测试
 
 至少覆盖：
 
-- BuildSucceeded 创建 Workload Release 候选。
-- BuildSucceeded 不自动创建 Freight。
+- BuildSucceeded 创建 Workload Release 候选并自动尝试创建完整 Freight。
+- 自动创建的 Promotion 必须为手动发布，`auto_publish=false`。
 - Freight 缺少任一启用 Workload 时失败。
 - Freight 对同一 Workload 出现多个 FreightItem 时失败。
 - pipeline artifact 不属于目标 Workload 时失败。

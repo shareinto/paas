@@ -3,12 +3,15 @@ package delivery
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
 )
+
+const deliverySystemActorID shared.ID = "system"
 
 type Service struct {
 	repo          Repository
@@ -250,6 +253,13 @@ func (s *Service) HandleBuildSucceeded(ctx context.Context, payload BuildSucceed
 	if _, err := s.ensureDefaultFlow(ctx, run.ApplicationID); err != nil {
 		return Release{}, err
 	}
+	if freight, ok, err := s.autoCreateFreightFromBuildSucceeded(ctx, run.ApplicationID); err != nil {
+		_ = s.audit.Log(ctx, AuditEvent{ActorID: deliverySystemActorID, Action: "freight.auto_create", ResourceType: "application", ResourceID: run.ApplicationID, Result: "failed", Summary: "构建成功后自动创建 Freight 失败", Details: map[string]string{"reason": err.Error()}, OccurredAt: s.clock.Now()})
+	} else if ok {
+		if _, err := s.createManualPromotionsForEligibleStages(ctx, run.ApplicationID, freight.ID, deliverySystemActorID, "build_succeeded"); err != nil {
+			_ = s.audit.Log(ctx, AuditEvent{ActorID: deliverySystemActorID, Action: "promotion.auto_create", ResourceType: "freight", ResourceID: freight.ID, Result: "failed", Summary: "构建成功后自动创建手动 Promotion 失败", Details: map[string]string{"reason": err.Error()}, OccurredAt: s.clock.Now()})
+		}
+	}
 	return releases[0], nil
 }
 
@@ -389,17 +399,20 @@ func (s *Service) CreatePromotion(ctx context.Context, input CreatePromotionInpu
 	if err := s.validateFreightComplete(ctx, freight.ApplicationID, freight.ID); err != nil {
 		return Promotion{}, err
 	}
+	autoPublish := true
+	if input.AutoPublish != nil {
+		autoPublish = *input.AutoPublish
+	}
 	if existing, ok, err := s.findPendingPromotion(ctx, freight.ApplicationID, freight.ID, stage.ID, stageKey); err != nil {
 		return Promotion{}, err
 	} else if ok {
+		if autoPublish && canPublishExistingPromotion(existing.Status) {
+			return s.applyPromotion(ctx, existing, targetClusters)
+		}
 		return existing, nil
 	}
 	if err := s.validateStageOrder(ctx, freight, stage); err != nil {
 		return Promotion{}, err
-	}
-	autoPublish := true
-	if input.AutoPublish != nil {
-		autoPublish = *input.AutoPublish
 	}
 	promotion, err := s.newPromotion(ctx, freight, stage, stageKey, namespaceOverride, input.Actor.ID, strings.TrimSpace(input.Message), false, "", autoPublish)
 	if err != nil {
@@ -445,13 +458,23 @@ func pendingPromotion(status PromotionStatus) bool {
 	}
 }
 
+func canPublishExistingPromotion(status PromotionStatus) bool {
+	return status == PromotionCreated || status == PromotionApproved
+}
+
 func (s *Service) CreateFreight(ctx context.Context, input CreateFreightInput) (Freight, error) {
+	return s.createFreight(ctx, input, true)
+}
+
+func (s *Service) createFreight(ctx context.Context, input CreateFreightInput, checkPermission bool) (Freight, error) {
 	app, err := s.appsOrError().GetApplication(ctx, input.ApplicationID)
 	if err != nil {
 		return Freight{}, err
 	}
-	if err := s.check(ctx, input.Actor, app, "freight:create"); err != nil {
-		return Freight{}, err
+	if checkPermission {
+		if err := s.check(ctx, input.Actor, app, "freight:create"); err != nil {
+			return Freight{}, err
+		}
 	}
 	workloads, err := s.workloadsOrError().ListEnabledWorkloads(ctx, app.ID)
 	if err != nil {
@@ -549,6 +572,113 @@ func (s *Service) CreateFreight(ctx context.Context, input CreateFreightInput) (
 	}
 	_ = s.publish(ctx, "FreightCreated", now, map[string]any{"freight_id": freight.ID, "application_id": app.ID})
 	return freight, nil
+}
+
+func (s *Service) autoCreateFreightFromBuildSucceeded(ctx context.Context, applicationID shared.ID) (Freight, bool, error) {
+	workloads, err := s.workloadsOrError().ListEnabledWorkloads(ctx, applicationID)
+	if err != nil {
+		return Freight{}, false, err
+	}
+	required := freightTargets(workloads)
+	if len(required) == 0 {
+		return Freight{}, false, shared.NewError(shared.CodeFailedPrecondition, "enabled workload is required")
+	}
+	releases, err := s.repo.ListReleasesByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
+	if err != nil {
+		return Freight{}, false, err
+	}
+	latest := map[string]Release{}
+	for _, release := range releases.Items {
+		key := freightTargetKey(release.WorkloadID, release.ContainerName)
+		if _, ok := required[key]; !ok {
+			continue
+		}
+		if _, ok := latest[key]; ok {
+			continue
+		}
+		latest[key] = release
+	}
+	inputItems := make([]CreateFreightItemInput, 0, len(required))
+	releaseByKey := map[string]Release{}
+	missing := make([]string, 0)
+	for key := range required {
+		release, ok := latest[key]
+		if !ok {
+			missing = append(missing, key)
+			continue
+		}
+		releaseByKey[key] = release
+		inputItems = append(inputItems, CreateFreightItemInput{
+			WorkloadID:    release.WorkloadID,
+			ContainerName: release.ContainerName,
+			SourceType:    FreightItemPipelineArtifact,
+			ReleaseID:     release.ID,
+		})
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return Freight{}, false, shared.NewError(shared.CodeFailedPrecondition, "missing successful build artifact for "+strings.Join(missing, ", "))
+	}
+	sort.Slice(inputItems, func(i, j int) bool {
+		return freightTargetKey(inputItems[i].WorkloadID, inputItems[i].ContainerName) < freightTargetKey(inputItems[j].WorkloadID, inputItems[j].ContainerName)
+	})
+	if existing, ok, err := s.findFreightByReleaseSet(ctx, applicationID, releaseByKey); err != nil {
+		return Freight{}, false, err
+	} else if ok {
+		return existing, true, nil
+	}
+	freight, err := s.createFreight(ctx, CreateFreightInput{
+		Actor:             identityaccess.Subject{Type: identityaccess.SubjectServiceAccount, ID: deliverySystemActorID},
+		ApplicationID:     applicationID,
+		SourceFingerprint: autoFreightSourceFingerprint(releaseByKey),
+		Items:             inputItems,
+	}, false)
+	if err != nil {
+		return Freight{}, false, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: deliverySystemActorID, Action: "freight.auto_create", ResourceType: "freight", ResourceID: freight.ID, Result: "succeeded", Summary: "构建成功后自动创建 Freight", Details: map[string]string{"item_count": fmt.Sprintf("%d", len(inputItems))}, OccurredAt: s.clock.Now()})
+	return freight, true, nil
+}
+
+func (s *Service) findFreightByReleaseSet(ctx context.Context, applicationID shared.ID, releases map[string]Release) (Freight, bool, error) {
+	result, err := s.repo.ListFreightsByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
+	if err != nil {
+		return Freight{}, false, err
+	}
+	expected := map[string]shared.ID{}
+	for key, release := range releases {
+		expected[key] = release.BuildArtifactID
+	}
+	for _, freight := range result.Items {
+		items, err := s.repo.ListFreightItems(ctx, freight.ID)
+		if err != nil {
+			return Freight{}, false, err
+		}
+		if len(items) != len(expected) {
+			continue
+		}
+		matched := true
+		for _, item := range items {
+			key := freightTargetKey(item.WorkloadID, item.ContainerName)
+			if expected[key].IsZero() || item.BuildArtifactID != expected[key] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return freight, true, nil
+		}
+	}
+	return Freight{}, false, nil
+}
+
+func autoFreightSourceFingerprint(releases map[string]Release) string {
+	parts := make([]string, 0, len(releases))
+	for key, release := range releases {
+		parts = append(parts, fmt.Sprintf("%s:pipeline:%s:%s", key, release.BuildArtifactID, firstNonEmpty(release.ImageTag, release.Version)))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
 }
 
 func freightDisplayName(t time.Time) string {
@@ -873,6 +1003,12 @@ func (s *Service) ListAppStages(ctx context.Context, applicationID shared.ID) ([
 		}
 		currentFreight := currentFreights[stage.StageKey]
 		runtimeState := runtimeStates[stage.StageKey]
+		var verificationStatus StageVerificationStatus
+		if stage.RequiresVerification && currentFreight.ID != "" {
+			if v, err := s.repo.FindStageVerification(ctx, applicationID, stage.StageKey, currentFreight.ID); err == nil {
+				verificationStatus = v.Status
+			}
+		}
 		out = append(out, AppStage{
 			TenantID:              app.TenantID,
 			ProjectID:             app.ProjectID,
@@ -899,6 +1035,7 @@ func (s *Service) ListAppStages(ctx context.Context, applicationID shared.ID) ([
 			RuntimeMessage:        runtimeState.Message,
 			UpstreamStageKeys:     append([]string(nil), upstreams[stage.StageKey]...),
 			DownstreamStageKeys:   append([]string(nil), downstreams[stage.StageKey]...),
+			VerificationStatus:    verificationStatus,
 		})
 	}
 	return out, nil
@@ -1018,6 +1155,8 @@ func (s *Service) CompleteStageVerification(ctx context.Context, input StageVeri
 			return StageVerification{}, err
 		}
 		_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "stage.verify", ResourceType: "stage_verification", ResourceID: existing.ID, Result: "succeeded", Summary: "更新人工验证", OccurredAt: now})
+		s.triggerAutoPromotionsAfterPassedVerification(ctx, existing)
+		_ = s.publish(ctx, "StageVerificationCompleted", s.clock.Now(), map[string]any{"application_id": existing.ApplicationID, "stage_key": existing.StageKey, "freight_id": existing.FreightID, "verification_id": existing.ID, "status": existing.Status})
 		return existing, nil
 	} else if shared.CodeOf(err) != shared.CodeNotFound {
 		return StageVerification{}, err
@@ -1031,7 +1170,18 @@ func (s *Service) CompleteStageVerification(ctx context.Context, input StageVeri
 		return StageVerification{}, err
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "stage.verify", ResourceType: "stage_verification", ResourceID: verification.ID, Result: "succeeded", Summary: "完成人工验证", OccurredAt: now})
+	s.triggerAutoPromotionsAfterPassedVerification(ctx, verification)
+	_ = s.publish(ctx, "StageVerificationCompleted", s.clock.Now(), map[string]any{"application_id": verification.ApplicationID, "stage_key": verification.StageKey, "freight_id": verification.FreightID, "verification_id": verification.ID, "status": verification.Status})
 	return verification, nil
+}
+
+func (s *Service) triggerAutoPromotionsAfterPassedVerification(ctx context.Context, verification StageVerification) {
+	if verification.Status != StageVerificationPassed {
+		return
+	}
+	if _, err := s.createManualPromotionsForEligibleStages(ctx, verification.ApplicationID, verification.FreightID, deliverySystemActorID, "stage_verification_passed:"+verification.StageKey); err != nil {
+		_ = s.audit.Log(ctx, AuditEvent{ActorID: deliverySystemActorID, Action: "promotion.auto_create", ResourceType: "freight", ResourceID: verification.FreightID, Result: "failed", Summary: "验证通过后自动创建手动 Promotion 失败", Details: map[string]string{"stage_key": verification.StageKey, "reason": err.Error()}, OccurredAt: s.clock.Now()})
+	}
 }
 
 func (s *Service) GetFreightCreationContext(ctx context.Context, applicationID shared.ID) (FreightCreationContext, error) {
@@ -1039,9 +1189,7 @@ func (s *Service) GetFreightCreationContext(ctx context.Context, applicationID s
 	if err != nil {
 		return FreightCreationContext{}, err
 	}
-	if err := s.backfillMissingReleasesFromSucceededBuilds(ctx, applicationID, workloads); err != nil {
-		return FreightCreationContext{}, err
-	}
+	_ = s.backfillMissingReleasesFromSucceededBuilds(ctx, applicationID, workloads)
 	releases, err := s.repo.ListReleasesByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
 	if err != nil {
 		return FreightCreationContext{}, err
@@ -1173,6 +1321,86 @@ func (s *Service) ListEligibleFreights(ctx context.Context, applicationID shared
 	return out, nil
 }
 
+func (s *Service) createManualPromotionsForEligibleStages(ctx context.Context, applicationID shared.ID, freightID shared.ID, actorID shared.ID, trigger string) ([]Promotion, error) {
+	freight, err := s.repo.GetFreight(ctx, freightID)
+	if err != nil {
+		return nil, err
+	}
+	if freight.ApplicationID != applicationID {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "freight does not belong to application")
+	}
+	if err := s.validateFreightComplete(ctx, applicationID, freight.ID); err != nil {
+		return nil, err
+	}
+	stages, err := s.ListAppStages(ctx, applicationID)
+	if err != nil {
+		return nil, err
+	}
+	created := make([]Promotion, 0)
+	for _, appStage := range stages {
+		stageKey := normalizeStageKey(appStage.StageKey)
+		if stageKey == "" || appStage.Status == DeliveryFlowTemplateStageDisabled {
+			continue
+		}
+		_, stage, _, err := s.validateStagePromotionTarget(ctx, applicationID, stageKey, nil, "")
+		if err != nil {
+			s.auditAutoPromotionSkip(ctx, freight.ID, stageKey, trigger, err)
+			continue
+		}
+		if exists, err := s.hasPromotionForFreightStage(ctx, applicationID, freight.ID, stage.ID, stageKey); err != nil {
+			return created, err
+		} else if exists {
+			continue
+		}
+		if err := s.validateStageOrder(ctx, freight, stage); err != nil {
+			s.auditAutoPromotionSkip(ctx, freight.ID, stageKey, trigger, err)
+			continue
+		}
+		promotion, err := s.newPromotion(ctx, freight, stage, stageKey, "", actorID, "自动创建，等待手动发布", false, "", false)
+		if err != nil {
+			return created, err
+		}
+		if promotion.Status == PromotionPendingApproval {
+			promotion, err = s.createApproval(ctx, promotion)
+			if err != nil {
+				return created, err
+			}
+		}
+		created = append(created, promotion)
+		_ = s.audit.Log(ctx, AuditEvent{ActorID: actorID, Action: "promotion.auto_create", ResourceType: "promotion", ResourceID: promotion.ID, Result: "succeeded", Summary: "自动创建手动发布 Promotion", Details: map[string]string{"freight_id": freight.ID.String(), "stage_key": stageKey, "trigger": trigger}, OccurredAt: s.clock.Now()})
+	}
+	return created, nil
+}
+
+func (s *Service) hasPromotionForFreightStage(ctx context.Context, applicationID shared.ID, freightID shared.ID, stageID shared.ID, stageKey string) (bool, error) {
+	promotions, err := s.repo.ListPromotionsByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
+	if err != nil {
+		return false, err
+	}
+	stageKey = normalizeStageKey(stageKey)
+	for _, promotion := range promotions.Items {
+		if promotion.FreightID != freightID {
+			continue
+		}
+		promotionStageKey := normalizeStageKey(promotion.TargetStageKey)
+		sameStage := promotionStageKey != "" && promotionStageKey == stageKey
+		if !sameStage && !stageID.IsZero() && promotion.TargetStageID == stageID {
+			sameStage = true
+		}
+		if sameStage {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *Service) auditAutoPromotionSkip(ctx context.Context, freightID shared.ID, stageKey string, trigger string, err error) {
+	if err == nil {
+		return
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: deliverySystemActorID, Action: "promotion.auto_skip", ResourceType: "freight", ResourceID: freightID, Result: "skipped", Summary: "自动创建 Promotion 跳过不可达 Stage", Details: map[string]string{"stage_key": stageKey, "trigger": trigger, "reason": err.Error()}, OccurredAt: s.clock.Now()})
+}
+
 func (s *Service) deliveryStageByIDOrKey(ctx context.Context, applicationID shared.ID, stageIDOrKey shared.ID) (DeliveryStage, error) {
 	stage, err := s.repo.GetDeliveryStage(ctx, stageIDOrKey)
 	if err == nil {
@@ -1272,7 +1500,11 @@ func (s *Service) ApprovePromotion(ctx context.Context, input ApprovalInput) (Pr
 	if !promotion.AutoPublish {
 		return promotion, nil
 	}
-	return s.applyPromotion(ctx, promotion, nil)
+	_, _, targetClusters, err := s.validateStagePromotionTarget(ctx, promotion.ApplicationID, promotion.TargetStageKey, nil, promotion.NamespaceOverride)
+	if err != nil {
+		return Promotion{}, err
+	}
+	return s.applyPromotion(ctx, promotion, targetClusters)
 }
 
 func (s *Service) RejectPromotion(ctx context.Context, input ApprovalInput) (Promotion, error) {
@@ -1333,7 +1565,11 @@ func (s *Service) PublishPromotion(ctx context.Context, input ApprovalInput) (Pr
 		promotion.Message = strings.TrimSpace(input.Comment)
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "promotion.publish", ResourceType: "promotion", ResourceID: promotion.ID, Result: "succeeded", Summary: "提交发布晋级", OccurredAt: s.clock.Now()})
-	return s.applyPromotion(ctx, promotion, nil)
+	_, _, targetClusters, err := s.validateStagePromotionTarget(ctx, promotion.ApplicationID, promotion.TargetStageKey, nil, promotion.NamespaceOverride)
+	if err != nil {
+		return Promotion{}, err
+	}
+	return s.applyPromotion(ctx, promotion, targetClusters)
 }
 
 func (s *Service) RejectPendingPromotion(ctx context.Context, input ApprovalInput) (Promotion, error) {
@@ -1890,7 +2126,12 @@ func (s *Service) applyPromotion(ctx context.Context, promotion Promotion, targe
 	if err := s.repo.UpdatePromotion(ctx, promotion); err != nil {
 		return Promotion{}, err
 	}
-	_ = s.publish(ctx, "PromotionManifestUpdated", now, map[string]any{"promotion_id": promotion.ID, "freight_id": promotion.FreightID})
+	if !promotion.IsRollback {
+		if _, err := s.createManualPromotionsForEligibleStages(ctx, promotion.ApplicationID, promotion.FreightID, deliverySystemActorID, "promotion_applied:"+promotion.TargetStageKey); err != nil {
+			_ = s.audit.Log(ctx, AuditEvent{ActorID: deliverySystemActorID, Action: "promotion.auto_create", ResourceType: "freight", ResourceID: promotion.FreightID, Result: "failed", Summary: "发布完成后自动创建手动 Promotion 失败", Details: map[string]string{"stage_key": promotion.TargetStageKey, "reason": err.Error()}, OccurredAt: s.clock.Now()})
+		}
+	}
+	_ = s.publish(ctx, "PromotionManifestUpdated", s.clock.Now(), map[string]any{"application_id": promotion.ApplicationID, "stage_key": promotion.TargetStageKey, "promotion_id": promotion.ID, "freight_id": promotion.FreightID})
 	return promotion, nil
 }
 

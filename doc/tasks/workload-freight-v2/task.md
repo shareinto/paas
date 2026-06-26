@@ -118,8 +118,14 @@ created_at
 
 规则：
 
-- BuildSucceeded 只创建 Release 候选。
-- BuildSucceeded 不自动创建 Freight。
+- BuildSucceeded 先创建 Workload Release 候选，再自动尝试创建 Application 级完整 Freight。
+- 自动 Freight 使用本次构建产物作为对应 Workload/容器版本，其他启用 Workload/容器使用最近一次成功构建产物补齐，不要求同一分支。
+- 如果任一启用 Workload/容器没有成功构建产物，则自动 Freight 创建失败但保留 Release 候选；版本源继续显示“有变更”并提示失败原因。
+- 自动 Freight 创建成功后，相关成功构建产物视为已被 Freight 消费，版本源不再显示“有变更”；“已有新版本可发布”应通过 Freight 列表或 Stage 可发布提示表达。
+- 构建成功、发布完成或 Stage 验证通过后，系统自动为当前 eligible Stage 创建 Promotion，但所有自动 Promotion 均设置为 `auto_publish=false`，由用户手动提交发布。
+- BuildStarted、BuildFailed 和 BuildSucceeded 都必须广播应用级 WebSocket 事件；BuildSucceeded 事件完成自动 Freight/Promotion 编排后再广播。console-v2 收到事件后刷新流水线、Freight、Promotion 和 Stage 拓扑状态，不依赖前端构建轮询或用户手动刷新浏览器。
+- 用户手动提交发布或完成 Stage 验证后，console-v2 也必须通过应用级 WebSocket 自动刷新所有已订阅页面的部署工作区，避免验证角标、待发布角标或后继 Promotion 需要浏览器手动刷新才出现。
+- 用户修改版本源默认配置或 Stage 覆盖配置后，console-v2 也必须通过应用级 WebSocket 自动刷新所有已订阅页面的部署工作区，避免版本源节点或 Stage 卡片的“配置已变更”提示必须手动刷新页面才出现。
 - 缺少 digest 或 commit 的流水线产物仍可作为 Release 候选；commit 为空时版本使用 BuildRun ID 兜底。
 
 ### 2.5 Freight 和 FreightItem
@@ -269,8 +275,12 @@ POST /api/v1/applications/{app_id}/delivery/stages/{stage_id}/promotions
 **Files:**
 - Modify: `release-delivery` domain、service、repository、api。
 
-- [ ] BuildSucceeded 消费逻辑改为只创建 Workload Release 候选。
-- [ ] 删除或停用自动创建 Freight 的事件处理路径。
+- [ ] BuildSucceeded 消费逻辑创建 Workload Release 候选后，自动尝试创建完整 Freight。
+- [ ] 自动 Freight 使用本次构建产物 + 其他启用 Workload 最近成功产物补齐，不要求同一分支。
+- [ ] 自动 Freight 成功后不再让版本源显示“有变更”；失败时保留提示并记录失败原因。
+- [ ] 构建成功、发布完成和验证通过后，自动为当前 eligible Stage 创建 `auto_publish=false` 的 Promotion。
+- [ ] BuildStarted、BuildFailed 和 BuildSucceeded 都广播应用级 WebSocket 事件；BuildSucceeded 自动编排完成后再广播，前端收到后自动刷新部署工作区。
+- [ ] 版本源默认配置和 Stage 覆盖配置保存后广播应用级 WebSocket 事件，前端收到后自动刷新部署工作区并更新“配置已变更”提示。
 - [ ] 实现 Freight creation-context 查询。
 - [ ] 实现手动创建 Freight。
 - [ ] 校验 FreightItem 覆盖全部启用 Workload。

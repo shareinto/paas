@@ -163,7 +163,7 @@ export function mapVersionSourceWorkloadsFromWorkspace(
   };
 }
 
-export async function saveVersionSourceWorkloads(applicationId: string, config: WorkloadSourceResult['config']) {
+export async function saveVersionSourceWorkloads(applicationId: string, config: WorkloadSourceResult['config'], previousWorkloadIds?: string[]) {
   await Promise.all(config.workloads.map(async (workload) => {
     const primaryContainer = workload.containers[0];
     const saved = await upsertWorkload(applicationId, workload, primaryContainer);
@@ -176,6 +176,18 @@ export async function saveVersionSourceWorkloads(applicationId: string, config: 
       }
     );
   }));
+
+  // Delete workloads that were removed from the config
+  if (previousWorkloadIds) {
+    const currentIds = new Set(config.workloads.map((w) => w.id));
+    const removedIds = previousWorkloadIds.filter((id) => !currentIds.has(id));
+    await Promise.all(removedIds.map((id) =>
+      request(`/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        body: JSON.stringify({ actor: actorBody() })
+      }).catch(() => {})
+    ));
+  }
 }
 
 async function upsertWorkload(
@@ -293,6 +305,8 @@ function mapWorkloadConfig(
     probePeriodSeconds: fallbackProbes.livenessProbe.periodSeconds,
     probeTimeoutSeconds: fallbackProbes.livenessProbe.timeoutSeconds,
     terminationGracePeriodSeconds: Number(valuesOverride.terminationGracePeriodSeconds ?? 30),
+    nodeType: (valuesOverride.nodeType as VersionSourceWorkloadConfig['nodeType']) || 'general',
+    exclusive: !!valuesOverride.exclusive,
     envVars: [],
     secretRefs: [],
     configFiles: [],
@@ -406,6 +420,10 @@ function workloadDefaultConfigPayload(workload: VersionSourceWorkloadConfig) {
   if (workload.serviceType && workload.serviceType !== 'ClusterIP') valuesOverride.serviceType = workload.serviceType;
   else delete valuesOverride.serviceType;
   if (workload.terminationGracePeriodSeconds !== undefined) valuesOverride.terminationGracePeriodSeconds = Number(workload.terminationGracePeriodSeconds);
+  if (workload.nodeType && workload.nodeType !== 'general') valuesOverride.nodeType = workload.nodeType;
+  else delete valuesOverride.nodeType;
+  if (workload.exclusive) valuesOverride.exclusive = true;
+  else delete valuesOverride.exclusive;
   delete valuesOverride.nginxSidecar;
   return {
     actor: actorBody(),
@@ -613,4 +631,34 @@ function normalizeWorkloadKind(value?: string): VersionSourceWorkloadConfig['kin
   const normalized = String(value || '').toLowerCase();
   if (normalized === 'statefulset') return 'StatefulSet';
   return 'Deployment';
+}
+
+// --- Stage config overlay API ---
+
+export async function loadWorkloadStageConfig(
+  applicationId: string,
+  workloadId: string,
+  stageKey: string
+): Promise<BackendWorkloadStageConfig | null> {
+  if (!hasAPIBaseURL()) return null;
+  try {
+    return await request<BackendWorkloadStageConfig>(
+      `/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/stage-configs/${encodeURIComponent(stageKey)}`
+    );
+  } catch (error) {
+    if (error instanceof APIError && (error.status === 404 || error.status === 204)) return null;
+    throw error;
+  }
+}
+
+export async function saveWorkloadStageConfig(
+  applicationId: string,
+  workloadId: string,
+  stageKey: string,
+  config: BackendWorkloadStageConfig
+): Promise<void> {
+  await request(
+    `/api/applications/${encodeURIComponent(applicationId)}/workloads/${encodeURIComponent(workloadId)}/stage-configs/${encodeURIComponent(stageKey)}`,
+    { method: 'PUT', body: JSON.stringify({ actor: actorBody(), ...config }) }
+  );
 }

@@ -18,7 +18,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/deployment-templates/platform", h.handleCreatePlatformTemplate)
 	mux.HandleFunc("GET /api/apps/{appId}/deployment-template", h.handleGetApplicationTemplate)
 	mux.HandleFunc("POST /api/apps/{appId}/deployment-template", h.handleCreateApplicationTemplate)
-	mux.HandleFunc("PUT /api/apps/{appId}/deployment-template", h.handleUpdateApplicationTemplate)
 	mux.HandleFunc("POST /api/apps/{appId}/deployment-template/validate", h.handleValidateTemplate)
 }
 
@@ -67,7 +66,7 @@ func (h *Handler) handleCreatePlatformTemplate(w http.ResponseWriter, r *http.Re
 }
 
 func (h *Handler) handleGetApplicationTemplate(w http.ResponseWriter, r *http.Request) {
-	template, revision, err := h.service.GetApplicationTemplate(r.Context(), shared.ID(r.PathValue("appId")))
+	template, revision, err := h.service.GetPlatformTemplateRevision(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
@@ -83,28 +82,12 @@ func (h *Handler) handleCreateApplicationTemplate(w http.ResponseWriter, r *http
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	template, err := h.service.CreateApplicationTemplate(r.Context(), shared.ID(r.PathValue("appId")), req.BaseTemplateName, req.ActorID)
+	template, revision, err := h.service.GetPlatformTemplateRevision(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, template)
-}
-
-func (h *Handler) handleUpdateApplicationTemplate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Content string    `json:"content"`
-		ActorID shared.ID `json:"actor_id"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	revision, err := h.service.UpdateApplicationTemplate(r.Context(), shared.ID(r.PathValue("appId")), req.Content, req.ActorID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, revision)
+	writeJSON(w, http.StatusCreated, map[string]any{"template": template, "current_revision": revision})
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {

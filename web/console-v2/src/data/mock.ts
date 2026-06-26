@@ -366,6 +366,8 @@ export type VersionSourceWorkloadConfig = {
   probePeriodSeconds?: number;
   probeTimeoutSeconds?: number;
   terminationGracePeriodSeconds?: number;
+  nodeType?: 'general' | 'network' | 'memory' | 'compute';
+  exclusive?: boolean;
   envVars?: WorkloadKeyValueConfig[];
   secretRefs?: WorkloadSecretRefConfig[];
   configFiles?: WorkloadConfigFileConfig[];
@@ -622,6 +624,8 @@ export const deliveryTopology = {
       freightId: 'freight-20260622.4',
       promotionPolicy: 'auto',
       requiresVerification: false,
+      verificationStatus: '' as string,
+      configOutdated: false,
       clusterBindingId: 'bind-dev-shanghai',
       cluster: 'shanghai-dev-01',
       namespace: 'order-dev',
@@ -651,6 +655,7 @@ export const deliveryTopology = {
       freightId: 'freight-20260622.4',
       promotionPolicy: 'manual',
       requiresVerification: false,
+      configOutdated: false,
       clusterBindingId: 'bind-test-shanghai',
       cluster: 'shanghai-test-01',
       namespace: 'order-test',
@@ -680,6 +685,7 @@ export const deliveryTopology = {
       freightId: 'freight-20260622.4',
       promotionPolicy: 'approval_required',
       requiresVerification: true,
+      configOutdated: false,
       clusterBindingId: 'bind-pre-shanghai',
       cluster: 'shanghai-pre-01',
       namespace: 'order-pre',
@@ -709,6 +715,7 @@ export const deliveryTopology = {
       freightId: 'freight-20260621.8',
       promotionPolicy: 'approval_required',
       requiresVerification: true,
+      configOutdated: false,
       clusterBindingId: 'bind-prod-shanghai-a',
       cluster: 'shanghai-prod-01',
       namespace: 'order-prod-canary',
@@ -738,6 +745,7 @@ export const deliveryTopology = {
       freightId: 'freight-20260621.8',
       promotionPolicy: 'approval_required',
       requiresVerification: true,
+      configOutdated: false,
       clusterBindingId: 'bind-prod-shanghai-b',
       cluster: 'shanghai-prod-02',
       namespace: 'order-prod',

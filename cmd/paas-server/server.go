@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shareinto/paas/internal/cache"
 	"github.com/shareinto/paas/internal/integrations/gitlab"
 	"github.com/shareinto/paas/internal/integrations/jenkins"
 	"github.com/shareinto/paas/internal/modules/appenv"
@@ -26,6 +27,7 @@ import (
 	"github.com/shareinto/paas/internal/modules/tenantproject"
 	"github.com/shareinto/paas/internal/platform/database"
 	"github.com/shareinto/paas/internal/shared"
+	"github.com/shareinto/paas/internal/ws"
 )
 
 type application struct {
@@ -55,18 +57,118 @@ type serverState struct {
 
 type buildEventBridge struct {
 	delivery *delivery.Service
+	hub      *ws.Hub
 }
 
 func (b *buildEventBridge) Publish(ctx context.Context, event shared.DomainEvent) error {
+	var appID shared.ID
+	if event.EventType == "BuildStarted" || event.EventType == "BuildSucceeded" || event.EventType == "BuildFailed" {
+		var base struct {
+			ApplicationID shared.ID `json:"application_id"`
+			BuildRunID    shared.ID `json:"build_run_id"`
+		}
+		if json.Unmarshal(event.Payload, &base) == nil {
+			appID = base.ApplicationID
+		}
+	}
 	if event.EventType != "BuildSucceeded" || b.delivery == nil {
+		b.broadcastBuildStatusChanged(appID, event.Payload)
 		return nil
 	}
 	var payload delivery.BuildSucceededPayload
 	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		b.broadcastBuildStatusChanged(appID, event.Payload)
 		return shared.WrapError(shared.CodeInvalidArgument, "decode build succeeded payload failed", err)
 	}
 	_, err := b.delivery.HandleBuildSucceeded(ctx, payload)
+	b.broadcastBuildStatusChanged(firstNonZeroID(appID, payload.ApplicationID), event.Payload)
 	return err
+}
+
+func (b *buildEventBridge) broadcastBuildStatusChanged(appID shared.ID, payload []byte) {
+	if b.hub == nil || appID.IsZero() {
+		return
+	}
+	b.hub.Broadcast(ws.Message{
+		Type:    "build_status_changed",
+		AppID:   string(appID),
+		Payload: payload,
+	})
+}
+
+type deliveryEventBridge struct {
+	hub *ws.Hub
+}
+
+func (b *deliveryEventBridge) Publish(_ context.Context, event shared.DomainEvent) error {
+	if b.hub == nil {
+		return nil
+	}
+	var payload struct {
+		ApplicationID shared.ID `json:"application_id"`
+		StageKey      string    `json:"stage_key"`
+		FreightID     shared.ID `json:"freight_id"`
+		PromotionID   shared.ID `json:"promotion_id"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.ApplicationID.IsZero() {
+		return nil
+	}
+	switch event.EventType {
+	case "FreightCreated", "FreightArchived", "PromotionManifestUpdated", "StageVerificationCompleted":
+		b.hub.Broadcast(ws.Message{
+			Type:  "deployment_workspace_changed",
+			AppID: payload.ApplicationID.String(),
+			Payload: marshalJSON(map[string]string{
+				"event_type":   event.EventType,
+				"stage_key":    payload.StageKey,
+				"freight_id":   payload.FreightID.String(),
+				"promotion_id": payload.PromotionID.String(),
+			}),
+		})
+	}
+	return nil
+}
+
+type appenvEventBridge struct {
+	hub *ws.Hub
+}
+
+func (b *appenvEventBridge) Publish(_ context.Context, event shared.DomainEvent) error {
+	if b.hub == nil {
+		return nil
+	}
+	var payload struct {
+		ApplicationID shared.ID `json:"application_id"`
+		WorkloadID    shared.ID `json:"workload_id"`
+		StageKey      string    `json:"stage_key"`
+		Reason        string    `json:"reason"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil || payload.ApplicationID.IsZero() {
+		return nil
+	}
+	switch event.EventType {
+	case "WorkloadChanged", "WorkloadDefaultConfigUpdated", "WorkloadStageConfigUpdated":
+		b.hub.Broadcast(ws.Message{
+			Type:  "deployment_workspace_changed",
+			AppID: payload.ApplicationID.String(),
+			Payload: marshalJSON(map[string]string{
+				"event_type":  event.EventType,
+				"stage_key":   payload.StageKey,
+				"workload_id": payload.WorkloadID.String(),
+				"reason":      payload.Reason,
+			}),
+		})
+	}
+	return nil
+}
+
+func firstNonZeroID(ids ...shared.ID) shared.ID {
+	for _, id := range ids {
+		if !id.IsZero() {
+			return id
+		}
+	}
+	return shared.ID("")
 }
 
 type projectDeletionGuard struct {
@@ -141,6 +243,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	templateID := firstNonEmpty(os.Getenv("JENKINS_DEFAULT_TEMPLATE_ID"), "java-unified-v1")
 	buildEvents := &buildEventBridge{}
 	buildSvc := build.NewService(build.Options{Repository: buildRepo, SourceRepositoryQuery: sourceForBuild{service: sourceSvc}, BuildRunner: jenkinsAdapter, Audit: audit.BuildLogger{Logger: auditSvc}, EventPublisher: buildEvents, IDGenerator: ids, Clock: clock, TemplateID: templateID, CallbackURL: firstNonEmpty(os.Getenv("JENKINS_CALLBACK_BASE_URL"), "http://127.0.0.1:8080"), ImageRepository: firstNonEmpty(os.Getenv("IMAGE_REPOSITORY"), "registry.local/order-api"), DockerfileRepository: build.DockerfileRepositoryConfig{URL: firstNonEmpty(os.Getenv("DOCKERFILE_REPOSITORY_URL"), "ssh://git@192.168.100.80:2422/paas/dockerfiles.git"), Ref: os.Getenv("DOCKERFILE_REPOSITORY_REF"), CredentialsID: os.Getenv("DOCKERFILE_REPOSITORY_CREDENTIALS_ID")}})
+	appEvents := &appenvEventBridge{}
 	appSvc := appenv.NewService(appenv.Options{
 		Repository:               appRepo,
 		ProjectQuery:             tenantSvc,
@@ -152,6 +255,7 @@ func newApplication(ctx context.Context) (*application, error) {
 		BuildPipelineCommand:     buildPipelineCommandForAppEnv{service: buildSvc},
 		BuildPipelineQuery:       buildPipelineForAppEnv{service: buildSvc},
 		Audit:                    audit.ApplicationEnvironmentLogger{Logger: auditSvc},
+		EventPublisher:           appEvents,
 		IDGenerator:              ids,
 		Clock:                    clock,
 	})
@@ -162,15 +266,11 @@ func newApplication(ctx context.Context) (*application, error) {
 
 	deliveryRepo := repos.delivery
 	gitopsRepo := repos.gitops
-	manifestRepo, chartRepo, manifestRepoURL, chartRepoURL := manifestRepositoriesFromEnv()
+	manifestRepo, manifestRepoURL := manifestRepositoryFromEnv()
 	gitopsSvc := gitops.NewService(gitops.Options{
 		Repository:      gitopsRepo,
 		ManifestRepo:    manifestRepo,
-		ChartRepo:       chartRepo,
 		ManifestRepoURL: manifestRepoURL,
-		ChartRepoURL:    chartRepoURL,
-		ChartName:       firstNonEmpty(os.Getenv("PAAS_PLATFORM_CHART_NAME"), "paas-app"),
-		ChartVersion:    firstNonEmpty(os.Getenv("PAAS_PLATFORM_CHART_VERSION"), "0.1.0"),
 		Application:     appForGitOps{service: appSvc},
 		Workload:        workloadForGitOps{service: appSvc},
 		Audit:           audit.GitOpsLogger{Logger: auditSvc},
@@ -179,7 +279,8 @@ func newApplication(ctx context.Context) (*application, error) {
 	})
 	appSvc.SetManifestCleaner(gitopsSvc)
 	stageRuntimeDelivery := stageRuntimeForDelivery{service: appSvc}
-	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc, projects: tenantSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, StageRuntimeStateQuery: stageRuntimeDelivery, StageSync: stageSyncForDelivery{service: appSvc}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+	deliveryEvents := &deliveryEventBridge{}
+	deliverySvc := delivery.NewService(delivery.Options{Repository: deliveryRepo, BuildQuery: buildForDelivery{service: buildSvc, repo: buildRepo}, ApplicationQuery: appForDelivery{service: appSvc, projects: tenantSvc}, WorkloadQuery: workloadForDelivery{service: appSvc}, StageRuntimeStateQuery: stageRuntimeDelivery, StageSync: stageSyncForDelivery{service: appSvc}, ClusterQuery: clusterForDelivery{repo: repos.cluster}, GitOpsDeployment: gitopsSvc, Audit: audit.DeliveryLogger{Logger: auditSvc}, EventPublisher: deliveryEvents, IDGenerator: ids, Clock: clock})
 	buildEvents.delivery = deliverySvc
 	if err := buildSvc.EnsureDefaultJenkinsJobTemplate(ctx, "usr_admin"); err != nil {
 		return nil, err
@@ -191,6 +292,21 @@ func newApplication(ctx context.Context) (*application, error) {
 	clusterRepo := repos.cluster
 	runtimeGateway := clusteragent.NewWebSocketRuntimeGateway()
 	clusterSvc := clusteragent.NewService(clusteragent.Options{Repository: clusterRepo, TenantQuery: tenantForClusterAgent{service: tenantSvc}, PermissionChecker: identitySvc, RuntimeGateway: runtimeGateway, StageClusters: stageClusterForRuntime{apps: appSvc, delivery: deliveryRepo}, StageState: stageUpdater{service: appSvc}, DeploymentStatus: gitopsSvc, Audit: audit.ClusterAgentLogger{Logger: auditSvc}, IDGenerator: ids, Clock: clock})
+
+	// --- Cache + WebSocket hub for console-v2 deployment page ---
+	deployCache := cache.NewMemoryCache(15*time.Second, 60*time.Second)
+	wsHub := ws.NewHub()
+	runtimeGateway.OnStageChanged = func(applicationID, stageKey string) {
+		deployCache.InvalidateStageRuntime(applicationID, stageKey)
+		wsHub.Broadcast(ws.Message{
+			Type:    "stage_runtime_changed",
+			AppID:   applicationID,
+			Payload: marshalJSON(map[string]string{"stage_key": stageKey}),
+		})
+	}
+	buildEvents.hub = wsHub
+	deliveryEvents.hub = wsHub
+	appEvents.hub = wsHub
 
 	notificationSvc := notification.NewService(notification.Options{Repository: repos.notification, IDGenerator: ids, Clock: clock})
 	if err := notificationSvc.EnsureDefaults(ctx); err != nil {
@@ -210,7 +326,7 @@ func newApplication(ctx context.Context) (*application, error) {
 	audit.NewHandler(auditSvc).Register(mux)
 	notification.NewHandler(notificationSvc).Register(mux)
 	clusteragent.NewHandler(clusterSvc).Register(mux)
-	newConsoleV2Handler(appSvc, buildSvc, deliverySvc, clusterSvc).Register(mux)
+	newConsoleV2Handler(appSvc, buildSvc, deliverySvc, clusterSvc, gitopsSvc, deployCache, wsHub).Register(mux)
 
 	return &application{handler: withCORS(mux), identity: identitySvc, tenants: tenantSvc, sources: sourceSvc, apps: appSvc, builds: buildSvc, delivery: deliverySvc, audit: auditSvc, state: state, db: db}, nil
 }
@@ -355,6 +471,11 @@ func sourceGitAdapterFromEnv() (sourcerepository.GitSourceRepositoryPort, string
 	return gitlab.NewSourceRepositoryAdapterWithNamespace(gitlab.NewClient(cfg), os.Getenv("GITLAB_ROOT_GROUP_PATH")), webhookURL
 }
 
+func manifestRepositoryFromEnv() (gitops.ManifestRepositoryPort, string) {
+	manifest, _, manifestRepoURL, _ := manifestRepositoriesFromEnv()
+	return manifest, manifestRepoURL
+}
+
 func manifestRepositoriesFromEnv() (gitops.ManifestRepositoryPort, gitops.ManifestRepositoryPort, string, string) {
 	baseURL := firstNonEmpty(os.Getenv("GITOPS_GITLAB_BASE_URL"), os.Getenv("GITLAB_BASE_URL"))
 	token := firstNonEmpty(os.Getenv("GITOPS_GITLAB_TOKEN"), os.Getenv("GITLAB_TOKEN"))
@@ -362,8 +483,10 @@ func manifestRepositoriesFromEnv() (gitops.ManifestRepositoryPort, gitops.Manife
 	chartProjectID := strings.TrimSpace(os.Getenv("GITLAB_CHART_PROJECT_ID"))
 	manifestRepoURL := strings.TrimSpace(os.Getenv("GITLAB_MANIFEST_REPO_URL"))
 	chartRepoURL := strings.TrimSpace(os.Getenv("GITLAB_CHART_REPO_URL"))
-	if baseURL == "" || token == "" || manifestProjectID == "" || chartProjectID == "" {
-		return gitlab.NewFakeManifestRepositoryAdapter(), gitlab.NewFakeManifestRepositoryAdapter(), manifestRepoURL, chartRepoURL
+	if baseURL == "" || token == "" || manifestProjectID == "" {
+		manifest := gitlab.NewFakeManifestRepositoryAdapter()
+		chart := gitlab.NewFakeManifestRepositoryAdapter()
+		return manifest, chart, manifestRepoURL, chartRepoURL
 	}
 	cfg := gitlabConfigFromValues(
 		baseURL,
@@ -375,10 +498,15 @@ func manifestRepositoriesFromEnv() (gitops.ManifestRepositoryPort, gitops.Manife
 	if manifestRepoURL == "" {
 		manifestRepoURL = defaultGitLabProjectRepoURL(baseURL, manifestProjectID)
 	}
-	if chartRepoURL == "" {
+	if chartRepoURL == "" && chartProjectID != "" {
 		chartRepoURL = defaultGitLabProjectRepoURL(baseURL, chartProjectID)
 	}
-	return gitlab.NewManifestRepositoryAdapter(client, manifestProjectID), gitlab.NewManifestRepositoryAdapter(client, chartProjectID), manifestRepoURL, chartRepoURL
+	manifest := gitlab.NewManifestRepositoryAdapter(client, manifestProjectID)
+	var chart gitops.ManifestRepositoryPort = gitlab.NewFakeManifestRepositoryAdapter()
+	if chartProjectID != "" {
+		chart = gitlab.NewManifestRepositoryAdapter(client, chartProjectID)
+	}
+	return manifest, chart, manifestRepoURL, chartRepoURL
 }
 
 func gitlabConfigFromValues(baseURL string, token string, timeoutValue string, retryValue string) gitlab.Config {
@@ -1380,6 +1508,11 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func marshalJSON(v any) json.RawMessage {
+	data, _ := json.Marshal(v)
+	return data
+}
+
 func decodeDevelopmentJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	defer r.Body.Close()
 	if err := json.NewDecoder(r.Body).Decode(target); err != nil {
@@ -1404,7 +1537,7 @@ func developmentErrorMessage(err error) string {
 	if errors.As(err, &appErr) && strings.TrimSpace(appErr.Message) != "" {
 		return appErr.Message
 	}
-	return "请求处理失败"
+	return fmt.Sprintf("请求处理失败: %v", err)
 }
 
 func withCORS(next http.Handler) http.Handler {

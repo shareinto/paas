@@ -28,6 +28,7 @@ import {
   GitPullRequestArrow,
   Globe2,
   HeartPulse,
+  HelpCircle,
   Layers3,
   PanelRightOpen,
   PackageOpen,
@@ -64,15 +65,16 @@ import {
   createFreightFromVersionSource,
   createStagePromotion,
   getApprovalTask,
+  getConfigDiff,
   getPublishTask,
   loadDeploymentPageBundle,
   listApprovalTasks,
   listPublishTasks,
   publishTask,
+  redeployWithConfig,
   rejectApprovalTask,
   rejectPublishTask,
   restartRuntimeResource,
-  type ApprovalGateSummary,
   type ApprovalTaskDetail,
   type ApprovalTaskSummary,
   type DeploymentEdge,
@@ -91,7 +93,8 @@ import {
   updateVersionSourcePipeline,
   type PipelineEnvironmentOption
 } from '../api/buildPipelines';
-import { saveVersionSourceWorkloads } from '../api/workloads';
+import { saveVersionSourceWorkloads, loadWorkloadStageConfig, saveWorkloadStageConfig } from '../api/workloads';
+import { paasWS, type WSMessage } from '../api/ws';
 import { StatusBadge } from '../components/StatusBadge';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -112,6 +115,8 @@ type VersionSourceConfig = {
 
 type StageNodeData = {
   stage: Stage;
+  freight: Freight | null;
+  freightDisplayName: string;
   dragging: boolean;
   canDrop: boolean;
   dragOver: boolean;
@@ -122,14 +127,11 @@ type StageNodeData = {
   onOpenRuntime: (stage: Stage) => void;
   onOpenConfig: (stage: Stage) => void;
   onOpenVerification: (stage: Stage) => void;
-  onRevokeVerification: (stageId: string) => void;
-  requiresApproval: boolean;
-  approvalPendingCount: number;
-  canReviewApproval: boolean;
-  onOpenApproval: (stageId: string) => void;
+  canVerify: boolean;
   publishPendingCount: number;
   canPublishPending: boolean;
   onOpenPublish: (stageId: string) => void;
+  onOpenConfigDiff: (stage: Stage) => void;
 };
 type WarehouseNodeData = {
   config: VersionSourceConfig;
@@ -216,9 +218,17 @@ function freightIdFromDrag(event: DragEvent<HTMLElement>) {
 
 function deepestStageForFreight(freight: Freight, stages = deliveryTopology.stages) {
   return freight.currentStages
-    .map((stageId) => stages.find((stage) => stage.id === stageId))
+    .map((stageId) => stages.find((stage) => stage.id === stageId || stage.key === stageId))
     .filter((stage): stage is Stage => Boolean(stage))
     .sort((a, b) => b.lane - a.lane)[0];
+}
+
+function stagesByIds(stageIds: string[], stages: Stage[]) {
+  const unique = [...new Set(stageIds)];
+  return unique
+    .map((stageId) => stages.find((stage) => stage.id === stageId || stage.key === stageId))
+    .filter((stage): stage is Stage => Boolean(stage))
+    .sort((a, b) => (a.lane - b.lane) || (a.row - b.row) || a.name.localeCompare(b.name));
 }
 
 function versionFromPipeline(pipeline?: VersionSourcePipeline) {
@@ -243,62 +253,57 @@ function latestSuccessfulBuild(pipeline?: VersionSourcePipeline) {
   return pipeline?.buildHistory.find((run) => run.status === 'healthy');
 }
 
+function normalizeFreightContainerName(name: string) {
+  return name.trim() || 'app';
+}
+
 function versionSourceFingerprint(config: VersionSourceConfig, pipelines: VersionSourcePipeline[]) {
   return config.workloads.map((workload) => {
     const containers = workload.containers.map((container) => {
-      const containerConfig = stableFingerprint({
-        port: container.port,
-        cpu: container.cpu,
-        memory: container.memory,
-        limitCpu: container.limitCpu || '',
-        limitMemory: container.limitMemory || '',
-        command: container.command || '',
-        livenessProbe: container.livenessProbe || null,
-        readinessProbe: container.readinessProbe || null,
-        startupProbe: container.startupProbe || null,
-        envVars: container.envVars || [],
-        secretRefs: container.secretRefs || [],
-        configFiles: container.configFiles || [],
-        writableDirs: container.writableDirs || [],
-        nasMount: container.nasMount || { enabled: false, nasPath: '', mountPath: '' }
-      });
       if (container.imageSource.mode === 'custom') {
-        return `${container.id}:${container.name}:custom:${container.imageSource.customImage || ''}:${containerConfig}`;
+        return `${workload.id}:${container.name}:custom:${container.imageSource.customImage || ''}`;
       }
       const pipeline = pipelines.find((item) => item.id === container.imageSource.pipelineId);
-      return `${container.id}:${container.name}:pipeline:${container.imageSource.pipelineId || ''}:${latestSuccessfulBuild(pipeline)?.version || 'NO_SUCCESS'}:${containerConfig}`;
+      const version = latestSuccessfulBuild(pipeline)?.version || 'NO_SUCCESS';
+      return `${workload.id}:${container.name}:pipeline:${version}`;
     }).sort();
-    const workloadConfig = stableFingerprint({
-      name: workload.name,
-      kind: workload.kind,
-      replicas: workload.replicas,
-      serviceType: workload.serviceType || 'ClusterIP',
-      servicePort: workload.servicePort,
-      enableDomainAccess: !!workload.enableDomainAccess,
-      serverName: workload.serverName || workload.name,
-      domain: workload.domain || '',
-      ingressPath: workload.ingressPath || '/',
-      ingressRewrite: !!workload.ingressRewrite,
-      ingressRewritePath: workload.ingressRewritePath || '',
-      ingressTls: !!workload.ingressTls,
-      ingressTlsRedirect: !!workload.ingressTlsRedirect,
-      terminationGracePeriodSeconds: workload.terminationGracePeriodSeconds ?? 30
-    });
-    return `${workload.id}:${workloadConfig}:${containers.join(',')}`;
+    return containers.join(',');
   }).sort().join('|');
 }
 
-function stableFingerprint(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableFingerprint).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${key}:${stableFingerprint(item)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value ?? null);
+function versionSourceConsumedByFreights(
+  config: VersionSourceConfig,
+  pipelines: VersionSourcePipeline[],
+  freights: Freight[],
+  sourceFingerprint: string
+) {
+  return freights.some((freight) => {
+    if (sourceFingerprint && freight.sourceFingerprint === sourceFingerprint) return true;
+    return config.workloads.every((workload) => {
+      const freightWorkload = freight.workloads.find((item) => item.name === workload.id);
+      if (!freightWorkload) return false;
+      return workload.containers.every((container) => {
+        const containerName = normalizeFreightContainerName(container.name);
+        const freightContainer = containersForFreightWorkload(freightWorkload).find((item) => normalizeFreightContainerName(item.name) === containerName);
+        if (!freightContainer) return false;
+        if (container.imageSource.mode === 'custom') {
+          const expectedImage = (container.imageSource.customImage || '').trim();
+          return Boolean(expectedImage) && freightContainer.image === expectedImage;
+        }
+        const pipeline = pipelines.find((item) => item.id === container.imageSource.pipelineId);
+        const latest = latestSuccessfulBuild(pipeline);
+        if (!latest) return false;
+        const expectedVersions = [latest.version, latest.id].filter(Boolean);
+        return expectedVersions.some((version) => (
+          freightContainer.version === version ||
+          freightContainer.version.includes(version) ||
+          freightContainer.image.includes(`:${version}`) ||
+          freightContainer.image.includes(version) ||
+          freight.sourceFingerprint?.includes(version)
+        ));
+      });
+    });
+  });
 }
 
 function versionSourceMissingSuccessfulPipelines(config: VersionSourceConfig, pipelines: VersionSourcePipeline[]) {
@@ -418,23 +423,22 @@ export function DeploymentPage() {
   const [draggingFreightId, setDraggingFreightId] = useState<string | null>(null);
   const [dragOverStageId, setDragOverStageId] = useState<string | null>(null);
   const [confirmTargetId, setConfirmTargetId] = useState<string | null>(null);
-  const [runtimeStageId, setRuntimeStageId] = useState<string | null>(deliveryTopology.stages[2].id);
+  const [runtimeStageId, setRuntimeStageId] = useState<string | null>(null);
   const [configStageId, setConfigStageId] = useState<string | null>(null);
   const [versionSourceOpen, setVersionSourceOpen] = useState(false);
   const [pipelineDialogOpen, setPipelineDialogOpen] = useState(false);
+  const [configDiffStage, setConfigDiffStage] = useState<Stage | null>(null);
   const [pipelineConfigId, setPipelineConfigId] = useState<string | null>(null);
   const [pipelineBuildId, setPipelineBuildId] = useState<string | null>(null);
   const [approvalStageId, setApprovalStageId] = useState<string | null>(null);
-  const [approvalGates, setApprovalGates] = useState<ApprovalGateSummary[]>([]);
   const [publishStageId, setPublishStageId] = useState<string | null>(null);
   const [publishGates, setPublishGates] = useState<PublishGateSummary[]>([]);
   const [verificationStageId, setVerificationStageId] = useState<string | null>(null);
   const [showPipelines, setShowPipelines] = useState(true);
-  const [verifiedStageIds, setVerifiedStageIds] = useState<Set<string>>(() => new Set());
+  const [verifiedStageKeys, setVerifiedStageKeys] = useState<Set<string>>(() => new Set());
   const [configWorkloadId, setConfigWorkloadId] = useState(deliveryTopology.stages[0].configurableWorkloadIds[0]);
-  const [promotionConfirmed, setPromotionConfirmed] = useState(false);
   const [promotionAutoPublish, setPromotionAutoPublish] = useState(true);
-  const buildPollingRef = useRef(false);
+  const buildRefreshRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -448,13 +452,13 @@ export function DeploymentPage() {
         const sortedFreights = sortFreightsNewestFirst(workspace.freights);
         setTopology(workspace.topology);
         setFreightItems(sortedFreights);
-        setApprovalGates(workspace.approvalGates || []);
         setPublishGates(workspace.publishGates || []);
         setDeploymentSource(workspace.source);
         setDeploymentError(workspace.error || '');
         setActiveFreightId(sortedFreights[0]?.id || '');
-        setRuntimeStageId(workspace.topology.stages[0]?.id || null);
+        setRuntimeStageId(null);
         setConfigWorkloadId(workspace.topology.stages[0]?.configurableWorkloadIds[0] || '');
+        setVerifiedStageKeys(verifiedKeysFromStages(workspace.topology.stages));
         setSourcePipelines(pipelines.pipelines);
         setPipelineSource(pipelines.source);
         setPipelineOptionSource(pipelineOptions.source);
@@ -478,7 +482,6 @@ export function DeploymentPage() {
           edges: []
         });
         setFreightItems([]);
-        setApprovalGates([]);
         setPublishGates([]);
         setDeploymentSource('api');
         setDeploymentError(error instanceof Error ? error.message : '部署数据加载失败');
@@ -520,9 +523,32 @@ export function DeploymentPage() {
     setApprovalStageId(null);
     setPublishStageId(null);
     setVerificationStageId(null);
-    setVerifiedStageIds(new Set());
     return () => {
       cancelled = true;
+    };
+  }, [currentApplication.id]);
+
+  // WebSocket subscription for real-time updates
+  useEffect(() => {
+    paasWS.connect();
+    paasWS.subscribe(currentApplication.id);
+
+    const unsubMessage = paasWS.onMessage((msg: WSMessage) => {
+      if (msg.app_id !== currentApplication.id) return;
+      if (msg.type === 'stage_runtime_changed' || msg.type === 'build_status_changed' || msg.type === 'deployment_workspace_changed') {
+        void reloadDeploymentPageData();
+      }
+    });
+
+    const unsubReconnect = paasWS.onReconnect(() => {
+      // Full refetch on reconnect
+      void reloadDeploymentPageData();
+    });
+
+    return () => {
+      unsubMessage();
+      unsubReconnect();
+      paasWS.unsubscribe(currentApplication.id);
     };
   }, [currentApplication.id]);
 
@@ -566,9 +592,6 @@ export function DeploymentPage() {
   const configPipeline = sourcePipelines.find((pipeline) => pipeline.id === pipelineConfigId);
   const buildPipeline = sourcePipelines.find((pipeline) => pipeline.id === pipelineBuildId);
   const configWorkload = configStage?.workloads.find((workload) => workload.name === configWorkloadId) || configStage?.workloads[0];
-  const hasActiveBuild = sourcePipelines.some((pipeline) => (
-    pipeline.buildHistory.some((run) => isUnfinishedBuildStatus(run.status))
-  ));
 
   const currentVersionSourceFingerprint = useMemo(() => (
     versionSourceFingerprint(versionSource, sourcePipelines)
@@ -579,38 +602,26 @@ export function DeploymentPage() {
   const sourceDirty = useMemo(() => {
     if (!currentVersionSourceFingerprint || versionSource.workloads.length === 0) return false;
     if (!versionSourceReadyForFreight) return false;
-    return !freightItems.some((freight) => freight.sourceFingerprint === currentVersionSourceFingerprint);
-  }, [currentVersionSourceFingerprint, freightItems, versionSource.workloads.length, versionSourceReadyForFreight]);
+    return !versionSourceConsumedByFreights(versionSource, sourcePipelines, freightItems, currentVersionSourceFingerprint);
+  }, [currentVersionSourceFingerprint, freightItems, sourcePipelines, versionSource, versionSourceReadyForFreight]);
 
   useEffect(() => {
-    if (!hasActiveBuild || pipelineSource !== 'api') return undefined;
-
-    const refreshBuildState = async () => {
-      if (buildPollingRef.current) return;
-      buildPollingRef.current = true;
-      try {
-        await reloadPipelines();
-      } finally {
-        buildPollingRef.current = false;
-      }
-    };
-
-    const timer = window.setInterval(() => {
-      void refreshBuildState();
-    }, 5000);
+    if (pipelineSource !== 'api') return undefined;
 
     const handleFocus = () => {
-      void refreshBuildState();
+      if (document.visibilityState === 'hidden') return;
+      if (buildRefreshRef.current) return;
+      buildRefreshRef.current = true;
+      reloadPipelines().finally(() => { buildRefreshRef.current = false; });
     };
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleFocus);
 
     return () => {
-      window.clearInterval(timer);
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleFocus);
     };
-  }, [hasActiveBuild, pipelineSource, currentApplication.id]);
+  }, [pipelineSource, currentApplication.id]);
 
   function openConfig(stage: Stage) {
     setConfigStageId(stage.id);
@@ -625,12 +636,43 @@ export function DeploymentPage() {
     } catch (error) {
       setDeploymentError(error instanceof Error ? error.message : '创建 Promotion 失败');
     } finally {
-      setPromotionConfirmed(false);
       setPromotionAutoPublish(true);
       setConfirmTargetId(null);
       setDragOverStageId(null);
       setDraggingFreightId(null);
       void reloadDeploymentWorkspace();
+    }
+  }
+
+  async function reloadDeploymentPageData(preferredFreightId?: string) {
+    try {
+      const { workspace, pipelines, pipelineOptions, workloads } = await loadDeploymentPageBundle(currentApplication.id);
+      const sortedFreights = sortFreightsNewestFirst(workspace.freights);
+      setTopology(workspace.topology);
+      setFreightItems(sortedFreights);
+      setPublishGates(workspace.publishGates || []);
+      setDeploymentSource(workspace.source);
+      setDeploymentError(workspace.error || '');
+      setSourcePipelines((current) => mergePipelineRefresh(current, pipelines.pipelines));
+      setPipelineSource(pipelines.source);
+      setPipelineOptionSource(pipelineOptions.source);
+      setRuntimeEnvironmentOptions(pipelineOptions.runtimeOptions.length ? pipelineOptions.runtimeOptions : fallbackRuntimeEnvironmentOptions);
+      setBuildEnvironmentOptions(pipelineOptions.buildEnvironmentOptions.length ? pipelineOptions.buildEnvironmentOptions : fallbackBuildEnvironmentOptions);
+      setPipelineError([pipelines.error, pipelineOptions.error].filter(Boolean).join('；'));
+      setVersionSource(workloads.config);
+      setWorkloadSource(workloads.source);
+      setWorkloadError(workloads.error || '');
+      setFreightSerial(workloads.config.freightSerial);
+      setVerifiedStageKeys(verifiedKeysFromStages(workspace.topology.stages));
+      setActiveFreightId((current) => {
+        if (preferredFreightId && sortedFreights.some((freight) => freight.id === preferredFreightId)) return preferredFreightId;
+        return sortedFreights.some((freight) => freight.id === current) ? current : sortedFreights[0]?.id || '';
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '部署数据刷新失败';
+      setDeploymentError(message);
+      setPipelineError(message);
+      setWorkloadError(message);
     }
   }
 
@@ -640,10 +682,10 @@ export function DeploymentPage() {
       const sortedFreights = sortFreightsNewestFirst(workspace.freights);
       setTopology(workspace.topology);
       setFreightItems(sortedFreights);
-      setApprovalGates(workspace.approvalGates || []);
       setPublishGates(workspace.publishGates || []);
       setDeploymentSource(workspace.source);
       setDeploymentError(workspace.error || '');
+      setVerifiedStageKeys(verifiedKeysFromStages(workspace.topology.stages));
       setActiveFreightId((current) => {
         if (preferredFreightId && sortedFreights.some((freight) => freight.id === preferredFreightId)) return preferredFreightId;
         return sortedFreights.some((freight) => freight.id === current) ? current : sortedFreights[0]?.id || '';
@@ -651,7 +693,6 @@ export function DeploymentPage() {
     } catch (error) {
       setTopology((current) => ({ ...current, stages: [], edges: [], topologyVersion: '后端加载失败' }));
       setFreightItems([]);
-      setApprovalGates([]);
       setPublishGates([]);
       setDeploymentSource('api');
       setDeploymentError(error instanceof Error ? error.message : '部署数据加载失败');
@@ -710,7 +751,6 @@ function dropFreight(stage: Stage, freightId: string) {
     setActiveFreightId(freightId);
     setConfirmTargetId(stage.id);
     setRuntimeStageId(stage.id);
-    setPromotionConfirmed(false);
     setPromotionAutoPublish(true);
     setDragOverStageId(null);
   }
@@ -750,9 +790,12 @@ function dropFreight(stage: Stage, freightId: string) {
   async function saveVersionSource(nextConfig: VersionSourceConfig) {
     try {
       if (workloadSource === 'api') {
-        await saveVersionSourceWorkloads(currentApplication.id, nextConfig);
+        const previousWorkloadIds = versionSource.workloads.map((w) => w.id);
+        await saveVersionSourceWorkloads(currentApplication.id, nextConfig, previousWorkloadIds);
+        await reloadDeploymentPageData();
+      } else {
+        setVersionSource(nextConfig);
       }
-      setVersionSource(nextConfig);
       setVersionSourceMessage('工作负载配置已保存，刷新版本源前会检查成功构建版本');
       setVersionSourceOpen(false);
       setWorkloadError('');
@@ -764,7 +807,7 @@ function dropFreight(stage: Stage, freightId: string) {
   async function reloadPipelines() {
     try {
       const bundle = await loadDeploymentPageBundle(currentApplication.id);
-      setSourcePipelines(bundle.pipelines.pipelines);
+      setSourcePipelines((current) => mergePipelineRefresh(current, bundle.pipelines.pipelines));
       setPipelineSource(bundle.pipelines.source);
       setPipelineError(bundle.pipelines.error || '');
       setPipelineOptionSource(bundle.pipelineOptions.source);
@@ -839,24 +882,27 @@ function dropFreight(stage: Stage, freightId: string) {
     if (pipelineSource === 'api') {
       try {
         const result = await triggerVersionSourcePipelineBuild(currentApplication.id, pipeline, gitRef, buildCommand, version);
+        const runningRun = normalizeTriggeredBuildRun(result.run);
         setSourcePipelines((current) => current.map((item) => (
           item.id === pipeline.id
             ? {
                 ...item,
                 branch: gitRef || item.branch,
                 buildCommand,
+                sourcePath: item.sources[0]?.sourcePath || item.sourcePath,
+                sources: item.sources.map((source, index) => index === 0 ? { ...source, branch: gitRef || source.branch, buildCommand } : source),
                 buildHistory: [
-                  result.run,
-                  ...item.buildHistory.filter((run) => run.id !== result.run.id)
+                  runningRun,
+                  ...item.buildHistory.filter((run) => run.id !== runningRun.id)
                 ],
                 status: pipelineStatusFromBuildHistory([
-                  result.run,
-                  ...item.buildHistory.filter((run) => run.id !== result.run.id)
+                  runningRun,
+                  ...item.buildHistory.filter((run) => run.id !== runningRun.id)
                 ], item.status)
               }
             : item
         )));
-        await reloadPipelines();
+        void reloadPipelines();
         setPipelineBuildId(pipeline.id);
         setPipelineError('');
       } catch (error) {
@@ -1026,7 +1072,6 @@ function dropFreight(stage: Stage, freightId: string) {
               versionSource={versionSource}
               sourcePipelines={sourcePipelines}
               showPipelines={showPipelines}
-              approvalGates={approvalGates}
               publishGates={publishGates}
               sourceDirty={sourceDirty}
               draggingFreight={draggingFreight}
@@ -1042,15 +1087,11 @@ function dropFreight(stage: Stage, freightId: string) {
               onOpenPipelineConfig={(pipeline) => setPipelineConfigId(pipeline.id)}
               onOpenPipelineBuild={(pipeline) => setPipelineBuildId(pipeline.id)}
               onDeletePipeline={deletePipeline}
-              onOpenApproval={setApprovalStageId}
               onOpenPublish={setPublishStageId}
+              onOpenConfigDiff={(stage) => setConfigDiffStage(stage)}
               onOpenVerification={(stage) => setVerificationStageId(stage.id)}
-              onRevokeVerification={(stageId) => setVerifiedStageIds((current) => {
-                const next = new Set(current);
-                next.delete(stageId);
-                return next;
-              })}
-              verifiedStageIds={verifiedStageIds}
+              verifiedStageKeys={verifiedStageKeys}
+              freights={freightItems}
             />
           </CardContent>
         </Card>
@@ -1061,6 +1102,7 @@ function dropFreight(stage: Stage, freightId: string) {
         <RuntimeDrawer
           applicationId={currentApplication.id}
           stage={runtimeStage}
+          freightDisplayName={freightItems.find((f) => f.id === runtimeStage.freightId)?.name || runtimeStage.freightId || '无'}
           onClose={() => setRuntimeStageId(null)}
           onReload={reloadDeploymentWorkspace}
         />
@@ -1116,14 +1158,13 @@ function dropFreight(stage: Stage, freightId: string) {
           }}
         />
       )}
-      {configStage && configWorkload && (
-        <ConfigDrawer
+      {configStage && (
+        <StageConfigDialog
+          applicationId={currentApplication.id}
           stage={configStage}
-          workload={configWorkload}
-          selectedWorkloadId={configWorkloadId}
-          onSelectWorkload={setConfigWorkloadId}
-          schema={topology.stageConfigSchema}
+          workloads={versionSource.workloads}
           onClose={() => setConfigStageId(null)}
+          onSaved={reloadDeploymentPageData}
         />
       )}
       {approvalStage && (
@@ -1142,9 +1183,9 @@ function dropFreight(stage: Stage, freightId: string) {
         <PublishReviewDialog
           applicationId={currentApplication.id}
           stage={publishStage}
-          onPublished={() => {
+          onPublished={async () => {
             setDeploymentError('');
-            void reloadDeploymentWorkspace();
+            await reloadDeploymentWorkspace();
           }}
           onError={(message) => setDeploymentError(message)}
           onClose={() => setPublishStageId(null)}
@@ -1153,11 +1194,12 @@ function dropFreight(stage: Stage, freightId: string) {
       {verificationStage && (
         <VerificationDialog
           stage={verificationStage}
-          freight={activeFreight}
-          onVerify={async () => {
+          freight={freightItems.find((freight) => freight.id === verificationStage.freightId) || null}
+          onVerify={async (comment) => {
             try {
-              if (activeFreight) await completeStageVerification(currentApplication.id, verificationStage.key, activeFreight.id);
-              setVerifiedStageIds((current) => new Set(current).add(verificationStage.id));
+              if (!verificationStage.freightId) throw new Error('当前 Stage 没有已发布的 Freight，无法验证');
+              await completeStageVerification(currentApplication.id, verificationStage.key, verificationStage.freightId, comment);
+              setVerifiedStageKeys((current) => new Set(current).add(stageVerificationKey(verificationStage)));
               setDeploymentError('');
             } catch (error) {
               setDeploymentError(error instanceof Error ? error.message : '验证失败');
@@ -1174,16 +1216,24 @@ function dropFreight(stage: Stage, freightId: string) {
           freight={activeFreight}
           stage={confirmStage}
           topologyVersion={topology.topologyVersion}
-          approved={promotionConfirmed}
           autoPublish={promotionAutoPublish}
-          onApprovedChange={setPromotionConfirmed}
           onAutoPublishChange={setPromotionAutoPublish}
           onClose={() => {
             setConfirmTargetId(null);
-            setPromotionConfirmed(false);
             setPromotionAutoPublish(true);
           }}
           onSubmit={submitPromotion}
+        />
+      )}
+      {configDiffStage && (
+        <ConfigDiffDialog
+          applicationId={currentApplication.id}
+          stage={configDiffStage}
+          onClose={() => setConfigDiffStage(null)}
+          onRedeployed={() => {
+            setConfigDiffStage(null);
+            void reloadDeploymentWorkspace();
+          }}
         />
       )}
     </div>
@@ -1209,6 +1259,8 @@ function FreightBundleCard({
 }) {
   const currentStage = deepestStageForFreight(freight, stages);
   const tone = toneForStage(currentStage);
+  const deployedStages = stagesByIds(freight.currentStages, stages);
+  const eligibleStages = stagesByIds(freight.eligibleStages, stages);
 
   return (
     <button
@@ -1230,22 +1282,19 @@ function FreightBundleCard({
               <FileArchive className="h-5 w-5" />
             </div>
             <div className="min-w-0">
-              <div className="mono truncate text-sm font-semibold">{freightDisplayName(freight)}</div>
+              <div
+                className="mono inline-flex max-w-full rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-sm font-semibold text-amber-700"
+                title={freightDisplayName(freight)}
+              >
+                <span className="truncate">{freightDisplayName(freight)}</span>
+              </div>
               <div className="mono mt-1 truncate text-xs text-muted-foreground" title={freight.createdAt}>{freight.createdAt}</div>
             </div>
           </div>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          {currentStage ? (
-            <span className="rounded border border-[color:var(--stage-chip-border)] bg-[color:var(--stage-chip-bg)] px-2 py-0.5 text-xs font-medium text-[color:var(--stage-fg)]">
-              {currentStage.name}
-            </span>
-          ) : (
-            <span className="rounded border border-[color:var(--stage-chip-border)] bg-[color:var(--stage-chip-bg)] px-2 py-0.5 text-xs font-medium text-[color:var(--stage-fg)]">未发布</span>
-          )}
-          {freight.eligibleStages.map((stageId) => (
-            <Badge key={stageId} variant="success">可到 {stageId}</Badge>
-          ))}
+        <div className="mt-3 space-y-1 rounded-md border border-border/70 bg-muted/20 px-2.5 py-2">
+          <FreightStageSummaryRow label="可到" stages={eligibleStages} emptyText="暂无" />
+          <FreightStageSummaryRow label="已到" stages={deployedStages} emptyText="无" />
         </div>
       </div>
       <div className="divide-y">
@@ -1254,6 +1303,31 @@ function FreightBundleCard({
         ))}
       </div>
     </button>
+  );
+}
+
+function FreightStageSummaryRow({ label, stages, emptyText }: { label: string; stages: Stage[]; emptyText: string }) {
+  return (
+    <div className="grid grid-cols-[44px_minmax(0,1fr)] items-start gap-2 text-xs leading-5">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <div className="min-w-0 text-foreground">
+        {stages.length ? (
+          <span className="inline-flex flex-wrap items-center gap-x-1 gap-y-0.5">
+            {stages.map((stage, index) => {
+              const color = stagePalette[inferStageColorToken(stage)].hex;
+              return (
+                <span key={stage.id} className="inline-flex items-center gap-x-1">
+                  {index > 0 && <span className="text-muted-foreground/50">|</span>}
+                  <span className="font-medium" style={{ color }}>{stage.name}</span>
+                </span>
+              );
+            })}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">{emptyText}</span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1321,7 +1395,6 @@ function TopologyBoard({
   versionSource,
   sourcePipelines,
   showPipelines,
-  approvalGates,
   publishGates,
   sourceDirty,
   draggingFreight,
@@ -1337,18 +1410,17 @@ function TopologyBoard({
   onOpenPipelineConfig,
   onOpenPipelineBuild,
   onDeletePipeline,
-  onOpenApproval,
   onOpenPublish,
+  onOpenConfigDiff,
   onOpenVerification,
-  onRevokeVerification,
-  verifiedStageIds
+  verifiedStageKeys,
+  freights
 }: {
   stages: Stage[];
   edges: DeploymentEdge[];
   versionSource: VersionSourceConfig;
   sourcePipelines: VersionSourcePipeline[];
   showPipelines: boolean;
-  approvalGates: ApprovalGateSummary[];
   publishGates: PublishGateSummary[];
   sourceDirty: boolean;
   draggingFreight: Freight | null;
@@ -1364,11 +1436,11 @@ function TopologyBoard({
   onOpenPipelineConfig: (pipeline: VersionSourcePipeline) => void;
   onOpenPipelineBuild: (pipeline: VersionSourcePipeline) => void;
   onDeletePipeline: (pipeline: VersionSourcePipeline) => void;
-  onOpenApproval: (stageId: string) => void;
   onOpenPublish: (stageId: string) => void;
+  onOpenConfigDiff: (stage: Stage) => void;
   onOpenVerification: (stage: Stage) => void;
-  onRevokeVerification: (stageId: string) => void;
-  verifiedStageIds: Set<string>;
+  verifiedStageKeys: Set<string>;
+  freights: Freight[];
 }) {
   const firstStageColumnCenterY = useMemo(() => firstStageColumnCenter(stages), [stages]);
 
@@ -1416,9 +1488,8 @@ function TopologyBoard({
     };
 
     const stageNodes: StageFlowNode[] = stages.map((stage) => {
-      const gate = approvalGates.find((item) => item.targetStageKey === stage.key || item.targetStageKey === stage.id);
       const publishGate = publishGates.find((item) => item.targetStageKey === stage.key || item.targetStageKey === stage.id);
-      const requiresApproval = stage.promotionPolicy === 'approval_required';
+      const freight = freights.find((item) => item.id === stage.freightId) || null;
 
       return {
         id: stage.id,
@@ -1428,13 +1499,13 @@ function TopologyBoard({
         selectable: false,
         data: {
           stage,
+          freight,
+          freightDisplayName: freight?.name || stage.freightId || '无',
           dragging: Boolean(draggingFreight),
           canDrop: canDropFreight(stage, draggingFreight),
           dragOver: dragOverStageId === stage.id,
-          verificationDone: verifiedStageIds.has(stage.id),
-          requiresApproval,
-          approvalPendingCount: gate?.pendingCount || 0,
-          canReviewApproval: gate ? gate.canReview : requiresApproval,
+          verificationDone: verifiedStageKeys.has(stageVerificationKey(stage)),
+          canVerify: stageRequiresVerification(stage),
           publishPendingCount: publishGate?.pendingCount || 0,
           canPublishPending: publishGate ? publishGate.canPublish : false,
           onDragEnterStage,
@@ -1443,9 +1514,8 @@ function TopologyBoard({
           onOpenRuntime,
           onOpenConfig,
           onOpenVerification,
-          onRevokeVerification,
-          onOpenApproval,
-          onOpenPublish
+          onOpenPublish,
+          onOpenConfigDiff
         }
       };
     });
@@ -1467,18 +1537,17 @@ function TopologyBoard({
     draggingFreight,
     dragOverStageId,
     canDropFreight,
-    verifiedStageIds,
+    verifiedStageKeys,
     onDragEnterStage,
     onDragLeaveStage,
     onDropFreight,
     onOpenRuntime,
     onOpenConfig,
     onOpenVerification,
-    onRevokeVerification,
-    onOpenApproval,
     onOpenPublish,
-    approvalGates,
-    publishGates
+    onOpenConfigDiff,
+    publishGates,
+    freights
   ]);
 
   const flowEdges = useMemo<Edge[]>(() => {
@@ -1832,6 +1901,8 @@ function StageFlowNodeCard({ data }: NodeProps<StageFlowNode>) {
       <Handle id="bottom" type="source" position={Position.Bottom} className="!h-2 !w-2 !border-0 !bg-transparent" />
       <StageCard
         stage={data.stage}
+        freight={data.freight}
+        freightDisplayName={data.freightDisplayName}
         dragging={data.dragging}
         canDrop={data.canDrop}
         dragOver={data.dragOver}
@@ -1842,15 +1913,69 @@ function StageFlowNodeCard({ data }: NodeProps<StageFlowNode>) {
         onOpenRuntime={() => data.onOpenRuntime(data.stage)}
         onOpenConfig={() => data.onOpenConfig(data.stage)}
         onOpenVerification={() => data.onOpenVerification(data.stage)}
-        onRevokeVerification={() => data.onRevokeVerification(data.stage.id)}
-        requiresApproval={data.requiresApproval}
-        approvalPendingCount={data.approvalPendingCount}
-        canReviewApproval={data.canReviewApproval}
-        onOpenApproval={() => data.onOpenApproval(data.stage.id)}
+        canVerify={data.canVerify}
         publishPendingCount={data.publishPendingCount}
         canPublishPending={data.canPublishPending}
         onOpenPublish={() => data.onOpenPublish(data.stage.id)}
+        onOpenConfigDiff={() => data.onOpenConfigDiff(data.stage)}
       />
+    </div>
+  );
+}
+
+function StageFreightTooltip({
+  freight,
+  freightDisplayName
+}: {
+  freight: Freight;
+  freightDisplayName: string;
+}) {
+  return (
+    <div
+      className="group relative inline-flex min-w-0 justify-end"
+      onPointerDownCapture={(event) => event.stopPropagation()}
+      onMouseDownCapture={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <div
+        tabIndex={0}
+        className="nodrag nopan nowheel mono max-w-[168px] cursor-default truncate rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-right font-semibold text-amber-700 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-200"
+        aria-label={`查看发布包 ${freightDisplayName} 的版本明细`}
+      >
+        {freightDisplayName}
+      </div>
+      <div className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden w-[320px] rounded-lg border border-slate-200 bg-white p-3 text-left text-xs text-slate-700 shadow-xl group-hover:block group-focus-within:block">
+        <div className="mb-2 border-b border-slate-100 pb-2">
+          <div className="text-[11px] font-medium text-slate-500">发布包明细</div>
+          <div className="mono mt-0.5 truncate font-semibold text-slate-800">{freightDisplayName}</div>
+        </div>
+        <div className="max-h-64 space-y-2 overflow-auto pr-1">
+          {freight.workloads.map((workload) => {
+            const containers = containersForFreightWorkload(workload);
+            return (
+              <div key={workload.name} className="rounded-md border border-slate-100 bg-slate-50/70 p-2">
+                <div className="mb-1.5 truncate font-medium text-slate-800" title={workload.displayName}>
+                  {workload.displayName}
+                </div>
+                <div className="space-y-1.5">
+                  {containers.map((container) => {
+                    return (
+                      <div key={`${workload.name}-${container.name}`} className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="min-w-0 truncate text-slate-600" title={container.name}>{container.name}</span>
+                          <span className="mono shrink-0 font-semibold text-slate-800" title={freightContainerVersionLabel(container)}>
+                            {freightContainerVersionLabel(container)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1905,6 +2030,8 @@ function argoSyncMeta(status: ArgoSyncStatus) {
 
 function StageCard({
   stage,
+  freight,
+  freightDisplayName,
   dragging,
   canDrop,
   dragOver,
@@ -1914,17 +2041,16 @@ function StageCard({
   onOpenRuntime,
   onOpenConfig,
   onOpenVerification,
-  onRevokeVerification,
-  requiresApproval,
-  approvalPendingCount,
-  canReviewApproval,
-  onOpenApproval,
+  canVerify,
   publishPendingCount,
   canPublishPending,
   onOpenPublish,
+  onOpenConfigDiff,
   verificationDone
 }: {
   stage: Stage;
+  freight: Freight | null;
+  freightDisplayName: string;
   dragging: boolean;
   canDrop: boolean;
   dragOver: boolean;
@@ -1935,14 +2061,11 @@ function StageCard({
   onOpenRuntime: () => void;
   onOpenConfig: () => void;
   onOpenVerification: () => void;
-  onRevokeVerification: () => void;
-  requiresApproval: boolean;
-  approvalPendingCount: number;
-  canReviewApproval: boolean;
-  onOpenApproval: () => void;
+  canVerify: boolean;
   publishPendingCount: number;
   canPublishPending: boolean;
   onOpenPublish: () => void;
+  onOpenConfigDiff: () => void;
 }) {
   const tone = toneForStage(stage);
   const needsVerification = stageRequiresVerification(stage);
@@ -1976,7 +2099,7 @@ function StageCard({
         onDropFreight(freightIdFromDrag(event));
       }}
       className={cn(
-        'nodrag nopan flex flex-col overflow-hidden rounded-lg border border-[color:var(--stage-card-border)] bg-card text-left text-foreground shadow-sm transition-all hover:border-[color:var(--stage-color)]',
+        'nodrag nopan flex flex-col overflow-visible rounded-lg border border-[color:var(--stage-card-border)] bg-card text-left text-foreground shadow-sm transition-all hover:border-[color:var(--stage-color)]',
         dragging && canDrop && 'border-[color:var(--stage-color)] ring-2 ring-primary/20',
         dragging && !canDrop && 'opacity-40 grayscale',
         dragOver && canDrop && 'scale-[1.02] shadow-lg',
@@ -1984,45 +2107,37 @@ function StageCard({
       )}
       style={{ ...toneStyle(tone), width: FLOW_CARD_WIDTH, minHeight: 260 }}
     >
-      <div className="flex min-h-11 items-center justify-between gap-2 bg-[color:var(--stage-color)] px-3 py-2.5 text-white">
+      <div className="flex min-h-11 items-center justify-between gap-2 rounded-t-lg bg-[color:var(--stage-color)] px-3 py-2.5 text-white">
         <div className="min-w-0">
           <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-white/75">{stage.key}</div>
           <div className="truncate text-base font-semibold leading-tight">{stage.name}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {requiresApproval && canReviewApproval && (
-            <StageHeaderAction
-              label="审核"
-              icon={<ShieldCheck className="h-3.5 w-3.5" />}
-              badge={approvalPendingCount}
-              ariaLabel={`审核发布到${stage.name}的发布包`}
-              onClick={onOpenApproval}
-            />
-          )}
-          {canPublishPending && (
-            <StageHeaderAction
-              label="发布"
-              icon={<Rocket className="h-3.5 w-3.5" />}
-              badge={publishPendingCount}
-              ariaLabel={`发布待发布到${stage.name}的发布包`}
-              onClick={onOpenPublish}
-            />
-          )}
-          {needsVerification && (
-            <StageHeaderAction
-              label={verificationDone ? '撤销' : '验证'}
-              icon={<ShieldCheck className="h-3.5 w-3.5" />}
-              badge={verificationPending ? 1 : 0}
-              ariaLabel={`${verificationDone ? '撤销' : '验证'}${stage.name}当前发布包`}
-              onClick={verificationDone ? onRevokeVerification : onOpenVerification}
-            />
-          )}
+          <StageHeaderAction
+            label={verificationDone ? "已验证" : "验证"}
+            icon={<ShieldCheck className="h-3.5 w-3.5" />}
+            badge={needsVerification && verificationPending ? 1 : 0}
+            ariaLabel={`验证${stage.name}当前发布包`}
+            onClick={onOpenVerification}
+            disabled={!canVerify || verificationDone}
+          />
+          <StageHeaderAction
+            label="发布"
+            icon={<Rocket className="h-3.5 w-3.5" />}
+            badge={canPublishPending ? publishPendingCount : 0}
+            ariaLabel={`发布待发布到${stage.name}的发布包`}
+            onClick={onOpenPublish}
+          />
         </div>
       </div>
       <div className="mx-3 mt-3 space-y-2 rounded-md border border-dashed border-[color:var(--stage-chip-border)] bg-background p-3 text-xs text-muted-foreground">
         <div className="flex justify-between gap-2">
           <span>版本</span>
-          <span className="mono truncate text-foreground">{stage.freightId || '无'}</span>
+          {freight ? (
+            <StageFreightTooltip freight={freight} freightDisplayName={freightDisplayName} />
+          ) : (
+            <span className="mono truncate text-foreground">{freightDisplayName}</span>
+          )}
         </div>
         <div className="flex justify-between gap-2">
           <span>集群</span>
@@ -2050,6 +2165,15 @@ function StageCard({
           </span>
         </div>
       </div>
+      {stage.configOutdated && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onOpenConfigDiff(); }}
+          className="mx-3 mt-2 inline-flex cursor-pointer items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 transition-colors hover:bg-amber-100"
+        >
+          <CircleDashed className="h-3 w-3" />
+          配置已变更
+        </button>
+      )}
       <div
         data-stage-id={stage.id}
         onDragEnter={(event) => {
@@ -2134,18 +2258,21 @@ function StageHeaderAction({
   icon,
   badge,
   ariaLabel,
-  onClick
+  onClick,
+  disabled
 }: {
   label: string;
   icon: ReactNode;
   badge?: number;
   ariaLabel: string;
   onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
-      className="nodrag nopan nowheel relative inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-white/35 bg-white/15 px-2 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-white/25"
+      disabled={disabled}
+      className={`nodrag nopan nowheel relative inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-white/35 bg-white/15 px-2 text-[11px] font-semibold text-white shadow-sm transition-colors ${disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-white/25'}`}
       onPointerDownCapture={(event) => event.stopPropagation()}
       onMouseDownCapture={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
@@ -2168,13 +2295,83 @@ function StageHeaderAction({
   );
 }
 
+function ConfigDiffDialog({
+  applicationId,
+  stage,
+  onClose,
+  onRedeployed
+}: {
+  applicationId: string;
+  stage: Stage;
+  onClose: () => void;
+  onRedeployed: () => void;
+}) {
+  const [loading, setLoading] = useState(true);
+  const [diffLines, setDiffLines] = useState<string[]>([]);
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    getConfigDiff(applicationId, stage.key)
+      .then((result) => setDiffLines(result.diff_lines || []))
+      .catch((err) => setError(err instanceof Error ? err.message : '获取配置差异失败'))
+      .finally(() => setLoading(false));
+  }, [applicationId, stage.key]);
+
+  const handleRedeploy = async () => {
+    setSubmitting(true);
+    try {
+      const token = window.localStorage.getItem('paas_token');
+      const actor = token ? { type: 'user', id: 'usr_admin' } : { type: 'user', id: 'usr_admin' };
+      await redeployWithConfig(applicationId, stage.key, actor);
+      onRedeployed();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '重新部署失败');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/40 p-4">
+      <div className="flex max-h-[80vh] w-[720px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-lg border bg-card shadow-2xl">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <div>
+            <h2 className="text-base font-semibold">配置变更 · {stage.name}</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">当前部署的配置与最新配置不一致</p>
+          </div>
+          <Button variant="ghost" size="icon" onClick={onClose}><X className="h-4 w-4" /></Button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {loading && <p className="text-sm text-muted-foreground">正在加载配置差异…</p>}
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          {!loading && !error && diffLines.length === 0 && <p className="text-sm text-muted-foreground">未发现差异</p>}
+          {!loading && !error && diffLines.length > 0 && (
+            <pre className="overflow-x-auto rounded-md border bg-slate-50 p-3 text-xs leading-5 font-mono">
+              {diffLines.map((line, i) => {
+                const color = line.startsWith('+') ? 'text-green-700 bg-green-50' : line.startsWith('-') ? 'text-red-700 bg-red-50' : 'text-slate-600';
+                return <div key={i} className={color}>{line}</div>;
+              })}
+            </pre>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+          <Button variant="outline" size="sm" onClick={onClose}>取消</Button>
+          <Button size="sm" disabled={submitting || loading || !!error} onClick={handleRedeploy}>
+            {submitting ? '提交中…' : '重新部署'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PromotionConfirmDialog({
   freight,
   stage,
   topologyVersion,
-  approved,
   autoPublish,
-  onApprovedChange,
   onAutoPublishChange,
   onClose,
   onSubmit
@@ -2182,9 +2379,7 @@ function PromotionConfirmDialog({
   freight: Freight;
   stage: Stage;
   topologyVersion: string;
-  approved: boolean;
   autoPublish: boolean;
-  onApprovedChange: (approved: boolean) => void;
   onAutoPublishChange: (autoPublish: boolean) => void;
   onClose: () => void;
   onSubmit: () => void;
@@ -2234,21 +2429,6 @@ function PromotionConfirmDialog({
           <label className="flex items-start gap-3 rounded-md border bg-muted/30 p-3 text-sm">
             <input
               type="checkbox"
-              checked={approved}
-              onChange={(event) => onApprovedChange(event.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-input accent-blue-600"
-            />
-            <span>
-              <span className="block font-medium">使用当前拓扑版本提交</span>
-              <span className="mt-1 block text-xs text-muted-foreground">
-                我确认这个 Freight 覆盖全部启用 Workload，并按 {topologyVersion} 创建 Promotion。
-              </span>
-            </span>
-          </label>
-
-          <label className="flex items-start gap-3 rounded-md border bg-muted/30 p-3 text-sm">
-            <input
-              type="checkbox"
               checked={autoPublish}
               onChange={(event) => onAutoPublishChange(event.target.checked)}
               className="mt-0.5 h-4 w-4 rounded border-input accent-blue-600"
@@ -2264,7 +2444,7 @@ function PromotionConfirmDialog({
 
         <div className="flex justify-end gap-2 border-t bg-slate-50 px-5 py-4">
           <Button variant="outline" onClick={onClose}>取消</Button>
-          <Button disabled={!approved} onClick={onSubmit}>
+          <Button onClick={onSubmit}>
             <ShieldCheck className="h-4 w-4" />
             创建 Promotion
           </Button>
@@ -2454,7 +2634,7 @@ function PublishReviewDialog({
 }: {
   applicationId: string;
   stage: Stage;
-  onPublished: () => void;
+  onPublished: () => void | Promise<void>;
   onError: (message: string) => void;
   onClose: () => void;
 }) {
@@ -2522,7 +2702,7 @@ function PublishReviewDialog({
         await rejectPublishTask(selectedTaskId, comment);
       }
       setComment('');
-      onPublished();
+      await onPublished();
       const nextTasks = tasks.filter((task) => task.id !== selectedTaskId);
       setTasks(nextTasks);
       setSelectedTaskId(nextTasks[0]?.id || '');
@@ -2707,39 +2887,56 @@ function VerificationDialog({
   onClose
 }: {
   stage: Stage;
-  freight?: Freight;
-  onVerify: () => void;
+  freight?: Freight | null;
+  onVerify: (comment: string) => void;
   onClose: () => void;
 }) {
+  const [comment, setComment] = useState('');
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/40 p-4">
       <div className={DEPLOYMENT_DIALOG_CLASS}>
         <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
           <div>
             <div className="dense-label">人工验证</div>
-            <h2 className="mt-1 text-lg font-semibold">{stage.name} 验证项</h2>
+            <h2 className="mt-1 text-lg font-semibold">验证 {stage.name} 当前发布包</h2>
             <p className="mt-1 text-sm text-muted-foreground">验证结果会影响后续 Stage 是否允许晋级。</p>
           </div>
           <Button variant="ghost" size="icon" onClick={onClose} aria-label="关闭验证弹窗">
             <X className="h-4 w-4" />
           </Button>
         </div>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
-          {stage.checks.map((check) => (
-            <div key={check} className="flex items-center gap-3 rounded-md border bg-card p-3 text-sm">
-              <CheckCircle2 className="h-4 w-4 text-success" />
-              <span>{check}</span>
-            </div>
-          ))}
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-900">
-            当前验证对象：{freight ? freightDisplayName(freight) : stage.freightId || '无版本'}。验证结果会写入审计事件。
+        <div className="min-h-0 flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="grid grid-cols-3 gap-3">
+            <Metric label="目标 Stage" value={stage.name} />
+            <Metric label="待验证发布包" value={freight ? freightDisplayName(freight) : stage.freightId || '无版本'} />
+            <Metric label="目标集群" value={stage.cluster || '未绑定'} />
           </div>
+          {stage.checks.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-sm font-semibold text-slate-900">验证项</div>
+              {stage.checks.map((check) => (
+                <div key={check} className="flex items-center gap-3 rounded-md border bg-card p-3 text-sm">
+                  <CheckCircle2 className="h-4 w-4 text-success" />
+                  <span>{check}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
-        <div className="flex justify-end gap-2 border-t bg-slate-50 px-5 py-4">
+        <div className="flex items-end gap-3 border-t bg-slate-50 px-5 py-4">
+          <div className="flex-1">
+            <label className="mb-1 block text-xs font-medium text-slate-600">验证备注</label>
+            <textarea
+              className="min-h-[72px] w-full rounded-md border bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
+              value={comment}
+              onChange={(event) => setComment(event.target.value)}
+              placeholder="请输入验证备注（可选）"
+            />
+          </div>
           <Button variant="outline" onClick={onClose}>取消</Button>
-          <Button onClick={onVerify}>
+          <Button onClick={() => onVerify(comment)}>
             <ShieldCheck className="h-4 w-4" />
-            标记验证通过
+            验证通过
           </Button>
         </div>
       </div>
@@ -3209,7 +3406,7 @@ function VersionSourceConfigDialog({
                                     disabled={accessDisabled}
                                     onChange={(event) => updateWorkload(activeWorkload.id, { ingressTls: event.target.checked })}
                                   />
-                                  是否开启 TLS
+                                  HTTPS
                                 </label>
                                 {activeWorkload.ingressTls ? (
                                   <label className="flex h-9 items-center gap-2 rounded-md border bg-card px-3 text-sm">
@@ -3499,9 +3696,25 @@ function VersionSourceConfigDialog({
                 <ConfigSection
                   icon={<Settings2 className="h-4 w-4" />}
                   title="高级配置"
-                  description="用于设置工作负载终止等待时间。"
+                  description="用于设置工作负载调度策略和终止等待时间。"
                 >
                   <div className="grid gap-3">
+                    <CompactField label={<span className="inline-flex items-center gap-1">节点类型 <span className="relative group"><HelpCircle className="h-3.5 w-3.5 text-muted-foreground cursor-help" /><span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-2 py-1 text-xs text-background opacity-0 group-hover:opacity-100 transition-opacity">决定调度到不同类型的服务器上</span></span></span>}>
+                      <div className="flex gap-4">
+                        {([['general', '通用'], ['network', '网络'], ['memory', '内存'], ['compute', '计算']] as const).map(([value, label]) => (
+                          <label key={value} className="flex items-center gap-1.5 text-sm">
+                            <input type="radio" name={`nodeType-${activeWorkload.id}`} value={value} checked={(activeWorkload.nodeType || 'general') === value} onChange={() => updateWorkload(activeWorkload.id, { nodeType: value })} />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    </CompactField>
+                    <CompactField label={<span className="inline-flex items-center gap-1">是否独占 <span className="relative group"><HelpCircle className="h-3.5 w-3.5 text-muted-foreground cursor-help" /><span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-foreground px-2 py-1 text-xs text-background opacity-0 group-hover:opacity-100 transition-opacity">独占表示节点只有该工作负载可以调度，如果独占节点未准备好，会出现实例 Pending</span></span></span>}>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={!!activeWorkload.exclusive} onChange={(e) => updateWorkload(activeWorkload.id, { exclusive: e.target.checked })} />
+                        独占节点
+                      </label>
+                    </CompactField>
                     <CompactField label="终止等待">
                       <NumberTextInput value={activeWorkload.terminationGracePeriodSeconds ?? 30} min={0} defaultValue={30} onValueChange={(value) => updateWorkload(activeWorkload.id, { terminationGracePeriodSeconds: value })} />
                     </CompactField>
@@ -4007,14 +4220,68 @@ function isUnfinishedBuildStatus(status: Status) {
   return status === 'running' || status === 'pending';
 }
 
+function stageVerificationKey(stage: Pick<Stage, 'id' | 'freightId'>) {
+  return `${stage.id}:${stage.freightId || ''}`;
+}
+
+function verifiedKeysFromStages(stages: Stage[]) {
+  return new Set(stages
+    .filter((stage) => stage.verificationStatus === 'passed' && Boolean(stage.freightId))
+    .map(stageVerificationKey));
+}
+
 function pipelineStatusFromBuildHistory(history: VersionSourcePipeline['buildHistory'], fallback: Status): Status {
   return history[0]?.status || fallback;
 }
 
+function normalizeTriggeredBuildRun(run: VersionSourcePipeline['buildHistory'][number]) {
+  if (!isUnfinishedBuildStatus(run.status)) return run;
+  return {
+    ...run,
+    status: 'running' as const,
+    duration: run.duration === '-' ? '进行中' : run.duration
+  };
+}
+
+function mergePipelineRefresh(current: VersionSourcePipeline[], refreshed: VersionSourcePipeline[]) {
+  const currentById = new Map(current.map((pipeline) => [pipeline.id, pipeline]));
+  return refreshed.map((next) => mergePipelineRefreshItem(currentById.get(next.id), next));
+}
+
+function mergePipelineRefreshItem(current: VersionSourcePipeline | undefined, refreshed: VersionSourcePipeline) {
+  if (!current) return refreshed;
+  const activeRuns = current.buildHistory.filter((run) => isUnfinishedBuildStatus(run.status));
+  if (!activeRuns.length) return refreshed;
+
+  let changed = false;
+  const nextHistory = refreshed.buildHistory.slice();
+  activeRuns.forEach((activeRun) => {
+    const index = nextHistory.findIndex((run) => run.id === activeRun.id);
+    if (index === -1) {
+      nextHistory.unshift(activeRun);
+      changed = true;
+      return;
+    }
+    if (activeRun.status === 'running' && nextHistory[index].status === 'pending') {
+      nextHistory[index] = { ...nextHistory[index], status: 'running', duration: activeRun.duration || nextHistory[index].duration };
+      changed = true;
+    }
+  });
+  if (!changed) return refreshed;
+
+  return {
+    ...refreshed,
+    branch: current.branch,
+    buildCommand: current.buildCommand,
+    buildHistory: nextHistory,
+    latestVersion: latestSuccessfulBuild({ ...refreshed, buildHistory: nextHistory })?.version || '暂无版本',
+    status: pipelineStatusFromBuildHistory(nextHistory, refreshed.status)
+  };
+}
+
 function buildStatusFromStream(status: string): Status | undefined {
   const normalized = status.toLowerCase();
-  if (['queued', 'pending'].includes(normalized)) return 'pending';
-  if (['running', 'reconnecting', 'streaming', 'connecting'].includes(normalized)) return 'running';
+  if (['queued', 'pending', 'running', 'reconnecting', 'streaming', 'connecting'].includes(normalized)) return 'running';
   if (['succeeded', 'success', 'healthy'].includes(normalized)) return 'healthy';
   if (['failed', 'aborted', 'error', 'danger'].includes(normalized)) return 'danger';
   if (['unstable', 'warning'].includes(normalized)) return 'warning';
@@ -4205,7 +4472,7 @@ function ConfigSection({
   );
 }
 
-function CompactField({ label, children }: { label: string; children: ReactNode }) {
+function CompactField({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
     <label className="grid min-h-9 items-start gap-3 text-sm sm:grid-cols-[132px_minmax(0,1fr)]">
       <span className="pt-2 text-xs font-medium text-slate-600">{label}</span>
@@ -4458,11 +4725,13 @@ type RuntimeWorkloadInfo = Stage['workloads'][number] & {
 function RuntimeDrawer({
   applicationId,
   stage,
+  freightDisplayName,
   onClose,
   onReload
 }: {
   applicationId: string;
   stage: Stage;
+  freightDisplayName: string;
   onClose: () => void;
   onReload: () => Promise<void>;
 }) {
@@ -4534,7 +4803,7 @@ function RuntimeDrawer({
       <div className="flex-1 space-y-4 overflow-y-auto p-5">
         <div className="grid grid-cols-2 gap-3">
           <Metric label="同步状态" value={stage.sync} />
-          <Metric label="版本" value={stage.freightId || '无'} mono />
+          <Metric label="版本" value={freightDisplayName} mono />
           <Metric label="绑定集群" value={stage.clusterBindingId} mono />
           <Metric label="进度" value={`${stage.progress}%`} mono />
         </div>
@@ -4670,79 +4939,532 @@ function RuntimeWorkloadTree({
   );
 }
 
-function ConfigDrawer({
+type StageOverrideValues = {
+  replicas?: string;
+  containers: Record<string, {
+    cpu?: string;
+    memory?: string;
+    limitCpu?: string;
+    limitMemory?: string;
+    envVars?: Array<{ name: string; value: string }>;
+    secretRefs?: Array<{ name: string; secretRef: string }>;
+    configFiles?: Array<{ mountPath: string; content: string }>;
+  }>;
+  ingressHosts?: Array<{ host?: string; path?: string; rewrite?: boolean; rewritePath?: string }>;
+  ingressTls?: boolean;
+  ingressTlsRedirect?: boolean;
+  ingressRewrite?: boolean;
+  ingressRewritePath?: string;
+};
+
+function StageConfigDialog({
+  applicationId,
   stage,
-  workload,
-  selectedWorkloadId,
-  onSelectWorkload,
-  schema,
-  onClose
+  workloads,
+  onClose,
+  onSaved
 }: {
+  applicationId: string;
   stage: Stage;
-  workload: Stage['workloads'][number];
-  selectedWorkloadId: string;
-  onSelectWorkload: (id: string) => void;
-  schema: DeploymentTopology['stageConfigSchema'];
+  workloads: VersionSourceWorkloadConfig[];
   onClose: () => void;
+  onSaved: () => void | Promise<void>;
 }) {
-  const configurableWorkloads = stage.workloads.filter((item) => stage.configurableWorkloadIds.includes(item.name));
+  const [activeWorkloadId, setActiveWorkloadId] = useState(workloads[0]?.id || '');
+  const [overrides, setOverrides] = useState<Record<string, StageOverrideValues>>({});
+  const [defaults, setDefaults] = useState<Record<string, VersionSourceWorkloadConfig>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const activeWorkload = workloads.find((w) => w.id === activeWorkloadId) || workloads[0];
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const defaultsMap: Record<string, VersionSourceWorkloadConfig> = {};
+    workloads.forEach((w) => { defaultsMap[w.id] = w; });
+    setDefaults(defaultsMap);
+
+    Promise.all(workloads.map(async (w) => {
+      const cfg = await loadWorkloadStageConfig(applicationId, w.id, stage.key);
+      return { id: w.id, cfg };
+    })).then((results) => {
+      if (cancelled) return;
+      const map: Record<string, StageOverrideValues> = {};
+      results.forEach(({ id, cfg }) => {
+        const wl = defaultsMap[id];
+        if (!cfg) {
+          // No override exists — pre-fill from version source defaults
+          const containers: StageOverrideValues['containers'] = {};
+          if (wl) {
+            wl.containers.forEach((c) => {
+              containers[c.name] = {
+                cpu: c.cpu || undefined,
+                memory: c.memory || undefined,
+                limitCpu: c.limitCpu || undefined,
+                limitMemory: c.limitMemory || undefined,
+                envVars: (c.envVars || []).filter((e) => e.name).map((e) => ({ name: e.name, value: e.value || '' })),
+                secretRefs: (c.secretRefs || []).filter((s) => s.name).map((s) => ({ name: s.name, secretRef: s.secretRef || '' })),
+                configFiles: (c.configFiles || []).filter((f) => f.mountPath).map((f) => ({ mountPath: f.mountPath, content: f.content || '' })),
+              };
+            });
+          }
+          map[id] = {
+            replicas: wl?.replicas ? String(wl.replicas) : undefined,
+            containers,
+            ingressHosts: wl?.enableDomainAccess && wl?.domain ? [{ host: wl.domain, path: wl.ingressPath || '/' }] : undefined,
+            ingressTls: wl?.ingressTls || false,
+            ingressTlsRedirect: wl?.ingressTlsRedirect || false,
+            ingressRewrite: wl?.ingressRewrite || false,
+            ingressRewritePath: wl?.ingressRewritePath || '/',
+          };
+        } else {
+          // Override exists — parse from response (top-level fields + values_override.containers)
+          const containers: StageOverrideValues['containers'] = {};
+          const valContainers = cfg.values_override?.containers || cfg.valuesOverride?.containers || [];
+          if (valContainers.length) {
+            valContainers.forEach((c: any) => {
+              const name = c.name || 'app';
+              containers[name] = {
+                cpu: c.cpu || undefined,
+                memory: c.memory || undefined,
+                limitCpu: c.limit_cpu || c.limitCpu || undefined,
+                limitMemory: c.limit_memory || c.limitMemory || undefined,
+                envVars: normalizeKV(c.env_vars || c.envVars),
+                secretRefs: normalizeSecretRefsCfg(c.secret_refs || c.secretRefs),
+                configFiles: normalizeConfigFilesCfg(c.config_files || c.configFiles),
+              };
+            });
+          } else if (wl?.containers?.[0]) {
+            // Fallback: read top-level fields as first container's values
+            const firstName = wl.containers[0].name;
+            const rr = cfg.resource_requests || cfg.resourceRequests;
+            const rl = cfg.resource_limits || cfg.resourceLimits;
+            containers[firstName] = {
+              cpu: rr?.cpu || undefined,
+              memory: rr?.memory || undefined,
+              limitCpu: rl?.cpu || undefined,
+              limitMemory: rl?.memory || undefined,
+              envVars: normalizeKV(cfg.env_vars || cfg.envVars),
+              secretRefs: normalizeSecretRefsCfg(cfg.secret_refs || cfg.secretRefs),
+              configFiles: normalizeConfigFilesCfg(cfg.config_files || cfg.configFiles),
+            };
+          }
+          // Merge version source containers that are missing from the override
+          if (wl) {
+            wl.containers.forEach((c) => {
+              if (!containers[c.name]) {
+                containers[c.name] = {
+                  cpu: c.cpu || undefined,
+                  memory: c.memory || undefined,
+                  limitCpu: c.limitCpu || undefined,
+                  limitMemory: c.limitMemory || undefined,
+                  envVars: (c.envVars || []).filter((e) => e.name).map((e) => ({ name: e.name, value: e.value || '' })),
+                  secretRefs: (c.secretRefs || []).filter((s) => s.name).map((s) => ({ name: s.name, secretRef: s.secretRef || '' })),
+                  configFiles: (c.configFiles || []).filter((f) => f.mountPath).map((f) => ({ mountPath: f.mountPath, content: f.content || '' })),
+                };
+              } else {
+                // For existing containers, fill in env vars from version source if override has none
+                const existing = containers[c.name];
+                if (!existing.envVars?.length && c.envVars?.length) {
+                  existing.envVars = c.envVars.filter((e) => e.name).map((e) => ({ name: e.name, value: e.value || '' }));
+                }
+                if (!existing.secretRefs?.length && c.secretRefs?.length) {
+                  existing.secretRefs = c.secretRefs.filter((s) => s.name).map((s) => ({ name: s.name, secretRef: s.secretRef || '' }));
+                }
+                if (!existing.configFiles?.length && c.configFiles?.length) {
+                  existing.configFiles = c.configFiles.filter((f) => f.mountPath).map((f) => ({ mountPath: f.mountPath, content: f.content || '' }));
+                }
+              }
+            });
+          }
+          const ingress = cfg.ingress_hosts || cfg.ingressHosts || [];
+          const firstIngress = ingress[0] as any;
+          map[id] = {
+            replicas: cfg.replicas ? String(cfg.replicas) : undefined,
+            containers,
+            ingressHosts: ingress.length ? ingress.map((h: any) => ({
+              host: h.host || h.server_name || h.serverName || '',
+              path: h.path || '/',
+              rewrite: !!h.rewrite,
+              rewritePath: h.rewrite_path || h.rewritePath || '/'
+            })) : undefined,
+            ingressTls: firstIngress?.tls ?? false,
+            ingressTlsRedirect: firstIngress?.tls_redirect ?? firstIngress?.tlsRedirect ?? false,
+            ingressRewrite: firstIngress?.rewrite ?? false,
+            ingressRewritePath: firstIngress?.rewrite_path || firstIngress?.rewritePath || '/',
+          };
+        }
+      });
+      setOverrides(map);
+      setLoading(false);
+    }).catch(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [applicationId, stage.key]);
+
+  function updateOverride(workloadId: string, patch: Partial<StageOverrideValues>) {
+    setOverrides((prev) => {
+      const current = prev[workloadId] || { containers: {} };
+      return { ...prev, [workloadId]: { ...current, ...patch, containers: patch.containers ?? current.containers ?? {} } };
+    });
+  }
+
+  function updateContainerOverride(workloadId: string, containerName: string, patch: Partial<StageOverrideValues['containers'][string]>) {
+    setOverrides((prev) => {
+      const current = prev[workloadId] || { containers: {} };
+      return { ...prev, [workloadId]: { ...current, containers: { ...current.containers, [containerName]: { ...current.containers[containerName], ...patch } } } };
+    });
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await Promise.all(workloads.map(async (wl) => {
+        const ov = overrides[wl.id];
+        if (!ov) return;
+        const payload: any = {};
+        if (ov.replicas) payload.replicas = Number(ov.replicas);
+        if (ov.ingressHosts?.length) {
+          payload.ingress_hosts = ov.ingressHosts.map((h) => ({
+            host: h.host || '',
+            path: h.path || '/',
+            tls: !!ov.ingressTls,
+            tls_redirect: !!ov.ingressTlsRedirect,
+            rewrite: !!ov.ingressRewrite,
+            rewrite_path: ov.ingressRewritePath || '/'
+          }));
+        }
+        // Flatten first container to top-level resource fields for backend compat
+        const firstContainer = wl.containers[0];
+        const firstCo = firstContainer ? ov.containers[firstContainer.name] : undefined;
+        if (firstCo) {
+          if (firstCo.cpu || firstCo.memory) payload.resource_requests = { cpu: firstCo.cpu || '', memory: firstCo.memory || '' };
+          if (firstCo.limitCpu || firstCo.limitMemory) payload.resource_limits = { cpu: firstCo.limitCpu || '', memory: firstCo.limitMemory || '' };
+          if (firstCo.envVars?.length) payload.env_vars = firstCo.envVars.filter((e) => e.name);
+          if (firstCo.secretRefs?.length) payload.secret_refs = firstCo.secretRefs.filter((s) => s.name).map((s) => ({ name: s.name, secret_ref: s.secretRef }));
+          if (firstCo.configFiles?.length) payload.config_files = firstCo.configFiles.filter((f) => f.mountPath).map((f) => ({ mount_path: f.mountPath, content: f.content }));
+        }
+        // Also store all containers in values_override for multi-container support
+        const containers: any[] = [];
+        wl.containers.forEach((c) => {
+          const co = ov.containers[c.name];
+          if (!co) return;
+          containers.push({
+            name: c.name,
+            cpu: co.cpu || '', memory: co.memory || '',
+            limit_cpu: co.limitCpu || '', limit_memory: co.limitMemory || '',
+            env_vars: (co.envVars || []).filter((e) => e.name),
+            secret_refs: (co.secretRefs || []).filter((s) => s.name).map((s) => ({ name: s.name, secret_ref: s.secretRef })),
+            config_files: (co.configFiles || []).filter((f) => f.mountPath).map((f) => ({ mount_path: f.mountPath, content: f.content }))
+          });
+        });
+        if (containers.length) payload.values_override = { containers };
+        await saveWorkloadStageConfig(applicationId, wl.id, stage.key, payload);
+      }));
+      await onSaved();
+      onClose();
+    } catch (err) {
+      console.error('保存 Stage 配置失败', err);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
-    <aside className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[560px] flex-col border-l bg-card shadow-xl">
-      <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
-        <div>
-          <div className="dense-label">Stage 配置覆盖</div>
-          <h2 className="mt-1 text-lg font-semibold">{stage.name}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">先选择 Workload，再填写平台允许暴露的 values 字段。</p>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/40 p-4">
+      <div className={DEPLOYMENT_DIALOG_CLASS}>
+        <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
+          <div>
+            <div className="dense-label">Stage 配置覆盖</div>
+            <h2 className="mt-1 text-lg font-semibold">{stage.name}</h2>
+            <p className="mt-1 text-sm text-muted-foreground">未填写的字段将继承版本源默认值（灰色 placeholder 所示）</p>
+          </div>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="关闭配置弹窗">
+            <X className="h-4 w-4" />
+          </Button>
         </div>
-        <Button variant="ghost" size="icon" onClick={onClose} aria-label="关闭配置抽屉">
-          <X className="h-4 w-4" />
+
+        <div className="grid min-h-0 flex-1 grid-cols-[248px_minmax(0,1fr)] overflow-hidden">
+          <aside className="border-r bg-slate-50 p-4">
+            <div className="mb-3 text-sm font-semibold">工作负载</div>
+            <div className="space-y-2">
+              {workloads.map((w) => (
+                <button
+                  key={w.id}
+                  type="button"
+                  onClick={() => setActiveWorkloadId(w.id)}
+                  className={cn(
+                    'w-full rounded-md border bg-card p-3 text-left transition-colors hover:border-primary/40',
+                    activeWorkloadId === w.id && 'border-primary bg-accent'
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="truncate text-sm font-semibold">{w.name}</div>
+                      <div className="flex flex-wrap gap-1">
+                        <Badge variant="outline">{workloadKindLabel(w.kind)}</Badge>
+                        <Badge variant="secondary">{w.containers.length} 容器</Badge>
+                      </div>
+                    </div>
+                    <Layers3 className="h-4 w-4 text-muted-foreground" />
+                  </div>
+                </button>
+              ))}
+            </div>
+          </aside>
+
+          <div className="min-h-0 overflow-y-auto bg-white">
+            {loading ? (
+              <div className="flex min-h-[200px] items-center justify-center text-sm text-muted-foreground">加载配置中...</div>
+            ) : activeWorkload ? (
+              <StageConfigWorkloadForm
+                workload={activeWorkload}
+                override={overrides[activeWorkload.id] || { containers: {} }}
+                defaults={defaults[activeWorkload.id]}
+                onUpdateOverride={(patch) => updateOverride(activeWorkload.id, patch)}
+                onUpdateContainer={(name, patch) => updateContainerOverride(activeWorkload.id, name, patch)}
+              />
+            ) : (
+              <div className="flex min-h-[200px] items-center justify-center text-sm text-muted-foreground">暂无工作负载</div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 border-t bg-slate-50 px-5 py-4">
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button onClick={handleSave} disabled={saving}>
+            <CheckCircle2 className="h-4 w-4" />
+            {saving ? '保存中...' : '保存覆盖配置'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StageConfigWorkloadForm({
+  workload,
+  override,
+  defaults,
+  onUpdateOverride,
+  onUpdateContainer
+}: {
+  workload: VersionSourceWorkloadConfig;
+  override: StageOverrideValues;
+  defaults?: VersionSourceWorkloadConfig;
+  onUpdateOverride: (patch: Partial<StageOverrideValues>) => void;
+  onUpdateContainer: (containerName: string, patch: Partial<StageOverrideValues['containers'][string]>) => void;
+}) {
+  return (
+    <div className="divide-y">
+      <ConfigSection icon={<Server className="h-4 w-4" />} title="控制器" description="副本数配置">
+        <div className="grid gap-3">
+          <CompactField label="副本数">
+            <Input
+              type="number"
+              min={0}
+              value={override.replicas ?? ''}
+              placeholder={String(defaults?.replicas ?? 1)}
+              onChange={(e) => onUpdateOverride({ replicas: e.target.value || undefined })}
+            />
+          </CompactField>
+        </div>
+      </ConfigSection>
+
+      {workload.containers.map((container) => {
+        const co = override.containers[container.name] || {};
+        return (
+          <ConfigSection
+            key={container.name}
+            icon={<Box className="h-4 w-4" />}
+            title={`容器: ${container.name}`}
+            description="资源与环境变量覆盖"
+          >
+            <div className="grid gap-3">
+              <div className="grid grid-cols-2 gap-3">
+                <CompactField label="CPU Request">
+                  <Input value={co.cpu ?? ''} placeholder={container.cpu || '250m'} onChange={(e) => onUpdateContainer(container.name, { cpu: e.target.value || undefined })} />
+                </CompactField>
+                <CompactField label="Memory Request">
+                  <Input value={co.memory ?? ''} placeholder={container.memory || '256Mi'} onChange={(e) => onUpdateContainer(container.name, { memory: e.target.value || undefined })} />
+                </CompactField>
+                <CompactField label="CPU Limit">
+                  <Input value={co.limitCpu ?? ''} placeholder={container.limitCpu || '未设置'} onChange={(e) => onUpdateContainer(container.name, { limitCpu: e.target.value || undefined })} />
+                </CompactField>
+                <CompactField label="Memory Limit">
+                  <Input value={co.limitMemory ?? ''} placeholder={container.limitMemory || '未设置'} onChange={(e) => onUpdateContainer(container.name, { limitMemory: e.target.value || undefined })} />
+                </CompactField>
+              </div>
+
+              <StageEnvVarsEditor
+                envVars={co.envVars || []}
+                defaultEnvVars={container.envVars}
+                onChange={(envVars) => onUpdateContainer(container.name, { envVars })}
+              />
+
+              <StageSecretRefsEditor
+                secretRefs={co.secretRefs || []}
+                defaultSecretRefs={container.secretRefs}
+                onChange={(secretRefs) => onUpdateContainer(container.name, { secretRefs })}
+              />
+
+              <StageConfigFilesEditor
+                configFiles={co.configFiles || []}
+                defaultConfigFiles={container.configFiles}
+                onChange={(configFiles) => onUpdateContainer(container.name, { configFiles })}
+              />
+            </div>
+          </ConfigSection>
+        );
+      })}
+
+      {workload.enableDomainAccess && (
+        <ConfigSection icon={<Globe2 className="h-4 w-4" />} title="访问入口" description="域名覆盖">
+          <div className="grid gap-3">
+            <CompactField label="域名">
+              <Input
+                value={override.ingressHosts?.[0]?.host ?? ''}
+                placeholder={defaults?.domain || '未设置'}
+                onChange={(e) => onUpdateOverride({ ingressHosts: [{ ...(override.ingressHosts?.[0] || {}), host: e.target.value }] })}
+              />
+            </CompactField>
+            <CompactField label="路径">
+              <Input
+                value={override.ingressHosts?.[0]?.path ?? ''}
+                placeholder={defaults?.ingressPath || '/'}
+                onChange={(e) => onUpdateOverride({ ingressHosts: [{ ...(override.ingressHosts?.[0] || {}), path: e.target.value }] })}
+              />
+            </CompactField>
+            <label className="flex h-9 items-center gap-2 rounded-md border bg-card px-3 text-sm">
+              <input
+                type="checkbox"
+                checked={override.ingressTls ?? defaults?.ingressTls ?? false}
+                onChange={(e) => onUpdateOverride({ ingressTls: e.target.checked })}
+              />
+              HTTPS
+            </label>
+            {(override.ingressTls ?? defaults?.ingressTls) && (
+              <label className="flex h-9 items-center gap-2 rounded-md border bg-card px-3 text-sm">
+                <input
+                  type="checkbox"
+                  checked={override.ingressTlsRedirect ?? defaults?.ingressTlsRedirect ?? false}
+                  onChange={(e) => onUpdateOverride({ ingressTlsRedirect: e.target.checked })}
+                />
+                HTTP 重定向到 HTTPS
+              </label>
+            )}
+            <label className="flex h-9 items-center gap-2 rounded-md border bg-card px-3 text-sm">
+              <input
+                type="checkbox"
+                checked={override.ingressRewrite ?? defaults?.ingressRewrite ?? false}
+                onChange={(e) => onUpdateOverride({ ingressRewrite: e.target.checked, ingressRewritePath: e.target.checked ? (override.ingressRewritePath || '/') : undefined })}
+              />
+              是否重写
+            </label>
+            {(override.ingressRewrite ?? defaults?.ingressRewrite) && (
+              <CompactField label="重写路径">
+                <Input
+                  value={override.ingressRewritePath ?? ''}
+                  placeholder={defaults?.ingressRewritePath || '/'}
+                  onChange={(e) => onUpdateOverride({ ingressRewritePath: e.target.value })}
+                />
+              </CompactField>
+            )}
+          </div>
+        </ConfigSection>
+      )}
+    </div>
+  );
+}
+
+function StageEnvVarsEditor({ envVars, defaultEnvVars, onChange }: {
+  envVars: Array<{ name: string; value: string }>;
+  defaultEnvVars?: Array<{ name: string; value: string }>;
+  onChange: (vars: Array<{ name: string; value: string }>) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">环境变量 ({envVars.length} 项覆盖{defaultEnvVars?.length ? `，默认 ${defaultEnvVars.length} 项` : ''})</span>
+        <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => onChange([...envVars, { name: '', value: '' }])}>
+          <Plus className="mr-1 h-3 w-3" />添加
         </Button>
       </div>
-      <div className="flex-1 space-y-4 overflow-y-auto p-5">
-        <label className="space-y-2 text-sm">
-          <span className="font-medium">选择 Workload</span>
-          <select
-            value={selectedWorkloadId}
-            onChange={(event) => onSelectWorkload(event.target.value)}
-            className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-          >
-            {configurableWorkloads.map((item) => (
-              <option key={item.name} value={item.name}>{item.displayName} / {workloadKindLabel(item.kind)}</option>
-            ))}
-          </select>
-        </label>
-
-        <div className="rounded-md border bg-muted/30 p-3 text-sm">
-          <div className="flex items-center gap-2 font-medium">
-            <Box className="h-4 w-4 text-primary" />
-            {workload.displayName}
-          </div>
-          <div className="mt-1 text-xs text-muted-foreground">{workloadKindLabel(workload.kind)} · 当前镜像 <span className="mono">{workload.image}</span></div>
+      {envVars.map((item, i) => (
+        <div key={i} className="flex gap-2">
+          <Input className="flex-1" placeholder="变量名" value={item.name} onChange={(e) => { const next = [...envVars]; next[i] = { ...item, name: e.target.value }; onChange(next); }} />
+          <Input className="flex-1" placeholder="变量值" value={item.value} onChange={(e) => { const next = [...envVars]; next[i] = { ...item, value: e.target.value }; onChange(next); }} />
+          <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => onChange(envVars.filter((_, j) => j !== i))}><Trash2 className="h-3 w-3" /></Button>
         </div>
-
-        <div className="grid gap-3">
-          {schema.map((field) => (
-            <label key={field.key} className="grid gap-1.5 text-sm">
-              <span className="font-medium">{field.label}</span>
-              <div className="flex gap-2">
-                <Input defaultValue={field.value} />
-                {field.unit && <span className="flex h-9 min-w-12 items-center justify-center rounded-md border bg-muted px-3 text-xs text-muted-foreground">{field.unit}</span>}
-              </div>
-            </label>
-          ))}
-        </div>
-
-        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-          这些字段会生成该 Stage 下当前 Workload 的受控 values 覆盖，不允许直接编辑完整 YAML。
-        </div>
-      </div>
-      <div className="flex justify-end gap-2 border-t p-4">
-        <Button variant="outline" onClick={onClose}>取消</Button>
-        <Button onClick={onClose}>保存覆盖配置</Button>
-      </div>
-    </aside>
+      ))}
+    </div>
   );
+}
+
+function StageSecretRefsEditor({ secretRefs, defaultSecretRefs, onChange }: {
+  secretRefs: Array<{ name: string; secretRef: string }>;
+  defaultSecretRefs?: Array<{ name: string; secretRef: string }>;
+  onChange: (refs: Array<{ name: string; secretRef: string }>) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">敏感配置 ({secretRefs.length} 项覆盖{defaultSecretRefs?.length ? `，默认 ${defaultSecretRefs.length} 项` : ''})</span>
+        <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => onChange([...secretRefs, { name: '', secretRef: '' }])}>
+          <Plus className="mr-1 h-3 w-3" />添加
+        </Button>
+      </div>
+      {secretRefs.map((item, i) => (
+        <div key={i} className="flex gap-2">
+          <Input className="flex-1" placeholder="名称" value={item.name} onChange={(e) => { const next = [...secretRefs]; next[i] = { ...item, name: e.target.value }; onChange(next); }} />
+          <Input className="flex-1" placeholder="Secret 引用" value={item.secretRef} onChange={(e) => { const next = [...secretRefs]; next[i] = { ...item, secretRef: e.target.value }; onChange(next); }} />
+          <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => onChange(secretRefs.filter((_, j) => j !== i))}><Trash2 className="h-3 w-3" /></Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StageConfigFilesEditor({ configFiles, defaultConfigFiles, onChange }: {
+  configFiles: Array<{ mountPath: string; content: string }>;
+  defaultConfigFiles?: Array<{ mountPath: string; content: string }>;
+  onChange: (files: Array<{ mountPath: string; content: string }>) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">配置文件 ({configFiles.length} 项覆盖{defaultConfigFiles?.length ? `，默认 ${defaultConfigFiles.length} 项` : ''})</span>
+        <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => onChange([...configFiles, { mountPath: '', content: '' }])}>
+          <Plus className="mr-1 h-3 w-3" />添加
+        </Button>
+      </div>
+      {configFiles.map((item, i) => (
+        <div key={i} className="space-y-1">
+          <div className="flex gap-2">
+            <Input className="flex-1" placeholder="挂载路径" value={item.mountPath} onChange={(e) => { const next = [...configFiles]; next[i] = { ...item, mountPath: e.target.value }; onChange(next); }} />
+            <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => onChange(configFiles.filter((_, j) => j !== i))}><Trash2 className="h-3 w-3" /></Button>
+          </div>
+          <textarea className="w-full rounded-md border bg-card p-2 text-xs font-mono" rows={3} placeholder="文件内容" value={item.content} onChange={(e) => { const next = [...configFiles]; next[i] = { ...item, content: e.target.value }; onChange(next); }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function normalizeKV(raw?: any[]): Array<{ name: string; value: string }> {
+  if (!raw?.length) return [];
+  return raw.map((item) => ({ name: item.name || '', value: item.value || '' })).filter((item) => item.name);
+}
+
+function normalizeSecretRefsCfg(raw?: any[]): Array<{ name: string; secretRef: string }> {
+  if (!raw?.length) return [];
+  return raw.map((item) => ({ name: item.name || '', secretRef: item.secret_ref || item.secretRef || '' })).filter((item) => item.name);
+}
+
+function normalizeConfigFilesCfg(raw?: any[]): Array<{ mountPath: string; content: string }> {
+  if (!raw?.length) return [];
+  return raw.map((item) => ({ mountPath: item.mount_path || item.mountPath || '', content: item.content || '' })).filter((item) => item.mountPath);
 }
 
 function Metric({ label, value, mono }: { label: string; value: string; mono?: boolean }) {

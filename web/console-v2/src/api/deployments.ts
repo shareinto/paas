@@ -37,6 +37,7 @@ export type DeploymentFreightContainer = {
   digest: string;
   status: Status;
   sourceMode?: 'pipeline' | 'custom';
+  buildArtifactId?: string;
 };
 export type DeploymentFreightWorkload = Omit<(typeof mockFreights)[number]['workloads'][number], 'containers'> & {
   containers?: DeploymentFreightContainer[];
@@ -120,6 +121,8 @@ type BackendStage = {
   approveRoles?: string[];
   verify_roles?: string[];
   verifyRoles?: string[];
+  verification_status?: string;
+  verificationStatus?: string;
 };
 
 type BackendFreight = {
@@ -266,6 +269,8 @@ type BackendDeploymentWorkspace = {
   workloads?: BackendWorkload[];
   workload_default_configs?: Record<string, BackendWorkloadStageConfig>;
   workloadDefaultConfigs?: Record<string, BackendWorkloadStageConfig>;
+  config_outdated_stages?: Record<string, boolean>;
+  configOutdatedStages?: Record<string, boolean>;
   errors?: BackendDeploymentWorkspaceError[];
 };
 
@@ -386,6 +391,7 @@ export async function loadDeploymentPageBundle(applicationId: string): Promise<D
   const eligibleByStage = data.eligible_freights_by_stage || data.eligibleFreightsByStage || {};
   const runtimeByStage = data.runtime_resources_by_stage || data.runtimeResourcesByStage || {};
   const errors = data.errors || [];
+  const configOutdatedStages: Record<string, boolean> = data.config_outdated_stages || data.configOutdatedStages || {};
   const runtimeErrors = errors
     .filter((error) => error.scope === 'runtime_resources')
     .reduce<Record<string, string>>((acc, error) => {
@@ -393,7 +399,7 @@ export async function loadDeploymentPageBundle(applicationId: string): Promise<D
       return acc;
     }, {});
   const freights = mapFreightsFromWorkspace(freightsRaw, stagesRaw, freightDetails, eligibleByStage);
-  const stages = stagesRaw.map((stage, index) => mapStageFromWorkspace(stage, index, runtimeByStage[stageKeyOf(stage)] || [], runtimeErrors[stageKeyOf(stage)]));
+  const stages = stagesRaw.map((stage, index) => mapStageFromWorkspace(stage, index, runtimeByStage[stageKeyOf(stage)] || [], runtimeErrors[stageKeyOf(stage)], configOutdatedStages[stageKeyOf(stage)] || false));
   const workspace: DeploymentWorkspace = {
     source: 'api',
     topology: {
@@ -562,7 +568,7 @@ export async function completeFreightApproval(freightId: string, targetStageKey:
   });
 }
 
-export async function completeStageVerification(applicationId: string, stageKey: string, freightId: string) {
+export async function completeStageVerification(applicationId: string, stageKey: string, freightId: string, comment?: string) {
   if (!hasAPIBaseURL()) return undefined;
   return request(`/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/verification`, {
     method: 'POST',
@@ -570,7 +576,7 @@ export async function completeStageVerification(applicationId: string, stageKey:
       actor: actorBody(),
       freight_id: freightId,
       status: 'passed',
-      comment: '控制台人工验证通过',
+      comment: comment || '控制台人工验证通过',
       sync_status: 'Synced',
       health_status: 'Healthy',
       agent_status: 'ready'
@@ -775,7 +781,8 @@ function mapFreightItemContainer(item: BackendFreightItem): DeploymentFreightCon
     image,
     digest,
     status: 'healthy',
-    sourceMode
+    sourceMode,
+    buildArtifactId: item.build_artifact_id || item.buildArtifactId || ''
   };
 }
 
@@ -935,6 +942,8 @@ async function mapStage(applicationId: string, stage: BackendStage, index: numbe
     freightId: currentFreight,
     promotionPolicy: (stage.requires_approval || stage.requiresApproval) ? 'approval_required' : 'manual',
     requiresVerification: Boolean(stage.requires_verification || stage.requiresVerification),
+    verificationStatus: (stage.verification_status || stage.verificationStatus || '') as string,
+    configOutdated: false,
     clusterBindingId: stage.bound_cluster_id || stage.boundClusterId || '',
     cluster: stage.bound_cluster_name || stage.boundClusterName || '未绑定集群',
     namespace: stageKey,
@@ -958,7 +967,8 @@ function mapStageFromWorkspace(
   stage: BackendStage,
   index: number,
   runtimeResources: BackendRuntimeResource[],
-  runtimeError?: string
+  runtimeError?: string,
+  configOutdated?: boolean
 ): DeploymentStage {
   const stageKey = stageKeyOf(stage);
   const runtime = mapRuntimeResources(runtimeResources || []);
@@ -988,6 +998,8 @@ function mapStageFromWorkspace(
     freightId: currentFreight,
     promotionPolicy: (stage.requires_approval || stage.requiresApproval) ? 'approval_required' : 'manual',
     requiresVerification: Boolean(stage.requires_verification || stage.requiresVerification),
+    verificationStatus: (stage.verification_status || stage.verificationStatus || '') as string,
+    configOutdated: Boolean(configOutdated),
     clusterBindingId: stage.bound_cluster_id || stage.boundClusterId || '',
     cluster: stage.bound_cluster_name || stage.boundClusterName || '未绑定集群',
     namespace: stageKey,
@@ -1152,4 +1164,17 @@ function formatTime(value?: string) {
   if (Number.isNaN(date.getTime())) return value;
   const pad = (input: number) => String(input).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+export async function getConfigDiff(applicationId: string, stageKey: string): Promise<{ current: string; expected: string; diff_lines: string[] }> {
+  return request<{ current: string; expected: string; diff_lines: string[] }>(
+    `/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/config-diff`
+  );
+}
+
+export async function redeployWithConfig(applicationId: string, stageKey: string, actor: { type: string; id: string }) {
+  return request<unknown>(
+    `/api/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/config-redeploy`,
+    { method: 'POST', body: JSON.stringify({ actor }) }
+  );
 }

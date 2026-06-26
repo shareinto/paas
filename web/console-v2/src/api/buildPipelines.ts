@@ -277,7 +277,7 @@ export function streamBuildRunLog(
       return;
     }
     if (event.event === 'error') {
-      onStatus?.('error');
+      onError?.(new Error(event.data || '构建日志读取失败'));
     }
   }, onError);
   return close;
@@ -444,7 +444,7 @@ function statusOfRun(status: string): Status {
   if (status === 'succeeded') return 'healthy';
   if (status === 'failed' || status === 'aborted') return 'danger';
   if (status === 'unstable') return 'warning';
-  if (status === 'running') return 'running';
+  if (status === 'running' || status === 'queued' || status === 'pending') return 'running';
   return 'pending';
 }
 

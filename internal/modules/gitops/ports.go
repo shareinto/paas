@@ -12,7 +12,6 @@ type Repository interface {
 	UpdateTemplate(ctx context.Context, template DeploymentTemplate) error
 	GetTemplate(ctx context.Context, id shared.ID) (DeploymentTemplate, error)
 	FindPlatformTemplate(ctx context.Context, name string) (DeploymentTemplate, error)
-	FindApplicationTemplate(ctx context.Context, applicationID shared.ID) (DeploymentTemplate, error)
 	CreateTemplateRevision(ctx context.Context, revision DeploymentTemplateRevision) error
 	GetCurrentTemplateRevision(ctx context.Context, templateID shared.ID) (DeploymentTemplateRevision, error)
 
@@ -22,6 +21,7 @@ type Repository interface {
 	CreateDeployment(ctx context.Context, deployment Deployment) error
 	UpdateDeployment(ctx context.Context, deployment Deployment) error
 	GetDeployment(ctx context.Context, id shared.ID) (Deployment, error)
+	GetLatestDeploymentForStage(ctx context.Context, applicationID shared.ID, stageKey string) (Deployment, error)
 	FindDeploymentByPromotion(ctx context.Context, promotionID shared.ID) (Deployment, error)
 	ListDeployments(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Deployment], error)
 	CreateDeploymentEvent(ctx context.Context, event DeploymentEvent) error

@@ -2,6 +2,7 @@ package appenv
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -608,6 +609,11 @@ func (s *Service) CreateWorkload(ctx context.Context, input CreateWorkloadInput)
 		return Workload{}, err
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload.create", ResourceType: "workload", ResourceID: workload.ID, Result: "succeeded", Summary: "创建 Workload", OccurredAt: now})
+	_ = s.publish(ctx, "WorkloadChanged", now, map[string]any{
+		"application_id": workload.ApplicationID,
+		"workload_id":    workload.ID,
+		"reason":         "workload_created",
+	})
 	return workload, nil
 }
 
@@ -709,6 +715,11 @@ func (s *Service) UpdateWorkload(ctx context.Context, input UpdateWorkloadInput)
 	if err := s.repo.UpdateWorkload(ctx, workload); err != nil {
 		return Workload{}, err
 	}
+	_ = s.publish(ctx, "WorkloadChanged", workload.UpdatedAt, map[string]any{
+		"application_id": workload.ApplicationID,
+		"workload_id":    workload.ID,
+		"reason":         "workload_updated",
+	})
 	return workload, nil
 }
 
@@ -794,6 +805,9 @@ func (s *Service) SaveWorkloadStageConfig(ctx context.Context, input SaveWorkloa
 	}
 	if existing, err := s.repo.GetWorkloadStageConfig(ctx, workload.ID, stageKey); err == nil {
 		id = existing.ID
+		if workloadStageConfigEqual(existing, input) {
+			return existing, nil
+		}
 	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
 		return WorkloadStageConfig{}, err
 	}
@@ -824,6 +838,11 @@ func (s *Service) SaveWorkloadStageConfig(ctx context.Context, input SaveWorkloa
 		return WorkloadStageConfig{}, err
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload_stage_config.update", ResourceType: "workload_stage_config", ResourceID: config.ID, Result: "succeeded", Summary: "修改 Workload Stage 部署配置", OccurredAt: now})
+	_ = s.publish(ctx, "WorkloadStageConfigUpdated", now, map[string]any{
+		"application_id": config.ApplicationID,
+		"workload_id":    config.WorkloadID,
+		"stage_key":      config.StageKey,
+	})
 	return config, nil
 }
 
@@ -848,6 +867,9 @@ func (s *Service) SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkl
 	}
 	if existing, err := s.repo.GetWorkloadDefaultConfig(ctx, workload.ID); err == nil {
 		id = existing.ID
+		if workloadConfigEqual(existing, input) {
+			return existing, nil
+		}
 	} else if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
 		return WorkloadStageConfig{}, err
 	}
@@ -877,6 +899,10 @@ func (s *Service) SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkl
 		return WorkloadStageConfig{}, err
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload_default_config.update", ResourceType: "workload_default_config", ResourceID: config.ID, Result: "succeeded", Summary: "修改 Workload 默认部署配置", OccurredAt: now})
+	_ = s.publish(ctx, "WorkloadDefaultConfigUpdated", now, map[string]any{
+		"application_id": config.ApplicationID,
+		"workload_id":    config.WorkloadID,
+	})
 	return config, nil
 }
 
@@ -916,6 +942,11 @@ func (s *Service) changeWorkloadStatus(ctx context.Context, input WorkloadStatus
 		return Workload{}, err
 	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "workload.status_change", ResourceType: "workload", ResourceID: workload.ID, Result: "succeeded", Summary: "变更 Workload 状态", OccurredAt: workload.UpdatedAt})
+	_ = s.publish(ctx, "WorkloadChanged", workload.UpdatedAt, map[string]any{
+		"application_id": workload.ApplicationID,
+		"workload_id":    workload.ID,
+		"reason":         "workload_status_changed",
+	})
 	return workload, nil
 }
 
@@ -1214,6 +1245,52 @@ func firstSubject(subjects ...identityaccess.Subject) identityaccess.Subject {
 		}
 	}
 	return identityaccess.Subject{}
+}
+
+func workloadConfigEqual(existing WorkloadStageConfig, input SaveWorkloadDefaultConfigInput) bool {
+	if existing.Replicas != input.Replicas {
+		return false
+	}
+	type configSnapshot struct {
+		SP []WorkloadServicePort   `json:"sp"`
+		RQ WorkloadResourceList    `json:"rq"`
+		RL WorkloadResourceList    `json:"rl"`
+		PR []WorkloadProbe         `json:"pr"`
+		IH []WorkloadIngressHost   `json:"ih"`
+		EV []WorkloadEnvVar        `json:"ev"`
+		SR []WorkloadSecretRef     `json:"sr"`
+		CF []WorkloadConfigFile    `json:"cf"`
+		WD []WorkloadWritableDir   `json:"wd"`
+		VM []WorkloadVolumeMount   `json:"vm"`
+		IC []WorkloadInitContainer `json:"ic"`
+		VO map[string]any          `json:"vo"`
+	}
+	a, _ := json.Marshal(configSnapshot{existing.ServicePorts, existing.ResourceRequests, existing.ResourceLimits, existing.Probes, existing.IngressHosts, existing.EnvVars, existing.SecretRefs, existing.ConfigFiles, existing.WritableDirs, existing.VolumeMounts, existing.InitContainers, existing.ValuesOverride})
+	b, _ := json.Marshal(configSnapshot{input.ServicePorts, input.ResourceRequests, input.ResourceLimits, input.Probes, input.IngressHosts, input.EnvVars, input.SecretRefs, input.ConfigFiles, input.WritableDirs, input.VolumeMounts, input.InitContainers, input.ValuesOverride})
+	return string(a) == string(b)
+}
+
+func workloadStageConfigEqual(existing WorkloadStageConfig, input SaveWorkloadStageConfigInput) bool {
+	if existing.Replicas != input.Replicas {
+		return false
+	}
+	type configSnapshot struct {
+		SP []WorkloadServicePort   `json:"sp"`
+		RQ WorkloadResourceList    `json:"rq"`
+		RL WorkloadResourceList    `json:"rl"`
+		PR []WorkloadProbe         `json:"pr"`
+		IH []WorkloadIngressHost   `json:"ih"`
+		EV []WorkloadEnvVar        `json:"ev"`
+		SR []WorkloadSecretRef     `json:"sr"`
+		CF []WorkloadConfigFile    `json:"cf"`
+		WD []WorkloadWritableDir   `json:"wd"`
+		VM []WorkloadVolumeMount   `json:"vm"`
+		IC []WorkloadInitContainer `json:"ic"`
+		VO map[string]any          `json:"vo"`
+	}
+	a, _ := json.Marshal(configSnapshot{existing.ServicePorts, existing.ResourceRequests, existing.ResourceLimits, existing.Probes, existing.IngressHosts, existing.EnvVars, existing.SecretRefs, existing.ConfigFiles, existing.WritableDirs, existing.VolumeMounts, existing.InitContainers, existing.ValuesOverride})
+	b, _ := json.Marshal(configSnapshot{input.ServicePorts, input.ResourceRequests, input.ResourceLimits, input.Probes, input.IngressHosts, input.EnvVars, input.SecretRefs, input.ConfigFiles, input.WritableDirs, input.VolumeMounts, input.InitContainers, input.ValuesOverride})
+	return string(a) == string(b)
 }
 
 func normalizeStageKey(stageKey string) (string, error) {

@@ -3,6 +3,7 @@ package delivery
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -371,7 +372,7 @@ func writeError(w http.ResponseWriter, err error) {
 func readableErrorMessage(err error) string {
 	var appErr *shared.AppError
 	if !errors.As(err, &appErr) {
-		return "请求处理失败"
+		return fmt.Sprintf("请求处理失败: %v", err)
 	}
 	switch appErr.Code {
 	case shared.CodeInvalidArgument:
@@ -382,8 +383,16 @@ func readableErrorMessage(err error) string {
 		return conflictMessage(appErr.Message)
 	case shared.CodeFailedPrecondition:
 		return failedPreconditionMessage(appErr.Message)
+	case shared.CodePermissionDenied:
+		return "没有执行此操作的权限"
+	case shared.CodeUnauthenticated:
+		return "未登录或登录已过期"
+	case shared.CodeUnavailable:
+		return "服务暂时不可用，请稍后重试"
+	case shared.CodeInternal:
+		return fmt.Sprintf("内部错误: %s", appErr.Message)
 	default:
-		return "请求处理失败"
+		return fmt.Sprintf("请求处理失败: %s", appErr.Message)
 	}
 }
 func invalidArgumentMessage(message string) string {

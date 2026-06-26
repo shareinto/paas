@@ -10,15 +10,11 @@ var Migrations = []database.Migration{
 CREATE TABLE deployment_templates (
   id VARCHAR(64) NOT NULL PRIMARY KEY,
   tenant_id VARCHAR(64) NOT NULL DEFAULT '',
-  project_id VARCHAR(64) NOT NULL DEFAULT '',
-  application_id VARCHAR(64) NOT NULL DEFAULT '',
   name VARCHAR(128) NOT NULL,
-  scope VARCHAR(32) NOT NULL,
   content MEDIUMTEXT NOT NULL,
   current_version INT NOT NULL,
   created_at DATETIME(6) NOT NULL,
-  updated_at DATETIME(6) NOT NULL,
-  KEY idx_deployment_templates_application (application_id)
+  updated_at DATETIME(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE deployment_template_revisions (
@@ -59,6 +55,8 @@ CREATE TABLE deployments (
   image_repository VARCHAR(1024) NOT NULL,
   image_tag VARCHAR(255) NOT NULL DEFAULT '',
   image_digest VARCHAR(255) NOT NULL DEFAULT '',
+  workload_summary VARCHAR(2048) NOT NULL DEFAULT '',
+  config_hash VARCHAR(64) NOT NULL DEFAULT '',
   status VARCHAR(32) NOT NULL,
   message VARCHAR(1024) NOT NULL DEFAULT '',
   created_at DATETIME(6) NOT NULL,
@@ -91,15 +89,13 @@ DROP TABLE IF EXISTS deployment_templates;
 		Name:    "gitops_lookup_constraints",
 		Up: `
 ALTER TABLE deployment_templates
-  ADD UNIQUE KEY uk_deployment_templates_platform_name (scope, name),
-  ADD UNIQUE KEY uk_deployment_templates_application (scope, application_id);
+  ADD UNIQUE KEY uk_deployment_templates_name (name);
 ALTER TABLE deployments
   ADD UNIQUE KEY uk_deployments_promotion (promotion_id);
 `,
 		Down: `
 ALTER TABLE deployments DROP INDEX uk_deployments_promotion;
-ALTER TABLE deployment_templates DROP INDEX uk_deployment_templates_application;
-ALTER TABLE deployment_templates DROP INDEX uk_deployment_templates_platform_name;
+ALTER TABLE deployment_templates DROP INDEX uk_deployment_templates_name;
 `,
 	},
 	{

@@ -2,17 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/shareinto/paas/internal/cache"
 	"github.com/shareinto/paas/internal/modules/appenv"
 	"github.com/shareinto/paas/internal/modules/build"
 	"github.com/shareinto/paas/internal/modules/clusteragent"
 	"github.com/shareinto/paas/internal/modules/delivery"
+	"github.com/shareinto/paas/internal/modules/gitops"
 	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/shared"
+	"github.com/shareinto/paas/internal/ws"
+	"nhooyr.io/websocket"
 )
 
 type consoleV2Handler struct {
@@ -20,6 +25,9 @@ type consoleV2Handler struct {
 	builds   *build.Service
 	delivery *delivery.Service
 	runtime  *clusteragent.Service
+	gitops   *gitops.Service
+	cache    cache.Cache
+	hub      *ws.Hub
 }
 
 type consoleV2Error struct {
@@ -44,6 +52,7 @@ type deploymentWorkspaceResponse struct {
 	BuildEnvironments       shared.PageResult[build.BuildEnvironment]   `json:"build_environments"`
 	Workloads               []appenv.Workload                           `json:"workloads"`
 	WorkloadDefaultConfigs  map[shared.ID]appenv.WorkloadStageConfig    `json:"workload_default_configs"`
+	ConfigOutdatedStages    map[string]bool                             `json:"config_outdated_stages"`
 	Errors                  []consoleV2Error                            `json:"errors,omitempty"`
 }
 
@@ -118,8 +127,8 @@ type consoleV2ApprovalDecisionInput struct {
 	Comment string                 `json:"comment"`
 }
 
-func newConsoleV2Handler(apps *appenv.Service, builds *build.Service, delivery *delivery.Service, runtime *clusteragent.Service) *consoleV2Handler {
-	return &consoleV2Handler{apps: apps, builds: builds, delivery: delivery, runtime: runtime}
+func newConsoleV2Handler(apps *appenv.Service, builds *build.Service, delivery *delivery.Service, runtime *clusteragent.Service, gitopsSvc *gitops.Service, c cache.Cache, hub *ws.Hub) *consoleV2Handler {
+	return &consoleV2Handler{apps: apps, builds: builds, delivery: delivery, runtime: runtime, gitops: gitopsSvc, cache: c, hub: hub}
 }
 
 func (h *consoleV2Handler) Register(mux *http.ServeMux) {
@@ -132,6 +141,9 @@ func (h *consoleV2Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/console-v2/approval-tasks/{taskId}/reject", h.handleRejectApprovalTask)
 	mux.HandleFunc("POST /api/console-v2/publish-tasks/{taskId}/publish", h.handlePublishTask)
 	mux.HandleFunc("POST /api/console-v2/publish-tasks/{taskId}/reject", h.handleRejectPublishTask)
+	mux.HandleFunc("GET /api/console-v2/ws", h.handleWebSocket)
+	mux.HandleFunc("GET /api/apps/{appId}/stages/{stageKey}/config-diff", h.handleConfigDiff)
+	mux.HandleFunc("POST /api/apps/{appId}/stages/{stageKey}/config-redeploy", h.handleConfigRedeploy)
 }
 
 func (h *consoleV2Handler) handleDeploymentWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -215,11 +227,16 @@ func (h *consoleV2Handler) handleDeploymentWorkspace(w http.ResponseWriter, r *h
 			out.RuntimeResourcesByStage[stageKey] = []clusteragent.RuntimeResource{}
 			continue
 		}
+		if cached, ok := h.cache.GetStageRuntime(string(appID), stageKey); ok {
+			out.RuntimeResourcesByStage[stageKey] = cached.Resources
+			continue
+		}
 		resources, err := h.runtime.ListRuntimeResources(ctx, clusteragent.RuntimeResourceQuery{Actor: actor, ApplicationID: appID, StageKey: stageKey})
 		if err != nil {
 			out.Errors = append(out.Errors, consoleV2Err("runtime_resources", stageKey, err))
 		} else {
 			out.RuntimeResourcesByStage[stageKey] = resources
+			h.cache.SetStageRuntime(string(appID), stageKey, &cache.StageRuntimeSnapshot{Resources: resources, CachedAt: time.Now()})
 		}
 	}
 
@@ -242,6 +259,44 @@ func (h *consoleV2Handler) handleDeploymentWorkspace(w http.ResponseWriter, r *h
 			continue
 		}
 		out.WorkloadDefaultConfigs[workload.ID] = config
+	}
+
+	out.ConfigOutdatedStages = map[string]bool{}
+	if _, templateRevision, err := h.gitops.GetPlatformTemplateRevision(ctx); err == nil {
+		for _, stage := range stages {
+			stageKey := stageKeyForConsoleV2(stage)
+			latestDeploy, err := h.gitops.GetLatestDeploymentForStage(ctx, appID, stageKey)
+			if err != nil || latestDeploy.ConfigHash == "" {
+				continue
+			}
+			// Use the deployed Freight's items as workload source (same as collectStageConfigs in ApplyPromotion)
+			detail, ok := out.FreightDetails[latestDeploy.FreightID]
+			if !ok {
+				d, err := h.delivery.GetFreightDetail(ctx, latestDeploy.FreightID)
+				if err != nil {
+					continue
+				}
+				detail = d
+			}
+			var configs []gitops.WorkloadStageConfigRef
+			for _, item := range detail.Items {
+				if item.WorkloadID.IsZero() {
+					continue
+				}
+				config, err := h.apps.GetWorkloadStageConfig(ctx, item.WorkloadID, stageKey)
+				if err != nil {
+					config, err = h.apps.GetWorkloadDefaultConfig(ctx, item.WorkloadID)
+					if err != nil {
+						continue
+					}
+				}
+				configs = append(configs, toGitOpsWorkloadStageConfig(config))
+			}
+			currentHash := gitops.ComputeStageConfigHash(templateRevision.ID, configs)
+			if latestDeploy.ConfigHash != currentHash {
+				out.ConfigOutdatedStages[stageKey] = true
+			}
+		}
 	}
 
 	writeDevelopmentJSON(w, http.StatusOK, out)
@@ -332,6 +387,7 @@ func (h *consoleV2Handler) handlePublishTask(w http.ResponseWriter, r *http.Requ
 		writeDevelopmentError(w, err)
 		return
 	}
+	h.broadcastDeploymentWorkspaceChanged(promotion.ApplicationID, promotion.TargetStageKey, "promotion_published")
 	writeDevelopmentJSON(w, http.StatusOK, promotion)
 }
 
@@ -348,7 +404,22 @@ func (h *consoleV2Handler) handleRejectPublishTask(w http.ResponseWriter, r *htt
 		writeDevelopmentError(w, err)
 		return
 	}
+	h.broadcastDeploymentWorkspaceChanged(promotion.ApplicationID, promotion.TargetStageKey, "promotion_publish_rejected")
 	writeDevelopmentJSON(w, http.StatusOK, promotion)
+}
+
+func (h *consoleV2Handler) broadcastDeploymentWorkspaceChanged(applicationID shared.ID, stageKey string, reason string) {
+	if h.hub == nil || applicationID.IsZero() {
+		return
+	}
+	h.hub.Broadcast(ws.Message{
+		Type:  "deployment_workspace_changed",
+		AppID: applicationID.String(),
+		Payload: marshalJSON(map[string]string{
+			"stage_key": stageKey,
+			"reason":    reason,
+		}),
+	})
 }
 
 func stageKeyForConsoleV2(stage delivery.AppStage) string {
@@ -693,4 +764,112 @@ func formatConsoleTime(t time.Time) string {
 		return ""
 	}
 	return t.Format("2006-01-02 15:04:05")
+}
+
+func (h *consoleV2Handler) handleConfigDiff(w http.ResponseWriter, r *http.Request) {
+	appID := shared.ID(r.PathValue("appId"))
+	stageKey := r.PathValue("stageKey")
+	ctx := r.Context()
+
+	deploy, err := h.gitops.GetLatestDeploymentForStage(ctx, appID, stageKey)
+	if err != nil {
+		writeDevelopmentError(w, err)
+		return
+	}
+	detail, err := h.delivery.GetFreightDetail(ctx, deploy.FreightID)
+	if err != nil {
+		writeDevelopmentError(w, err)
+		return
+	}
+	expected, current, err := h.gitops.RenderExpectedManifest(ctx, appID, stageKey, detail.Items)
+	if err != nil {
+		writeDevelopmentError(w, err)
+		return
+	}
+	diffLines := computeUnifiedDiff(current, expected)
+	writeDevelopmentJSON(w, http.StatusOK, map[string]any{
+		"current":    current,
+		"expected":   expected,
+		"diff_lines": diffLines,
+	})
+}
+
+func (h *consoleV2Handler) handleConfigRedeploy(w http.ResponseWriter, r *http.Request) {
+	appID := shared.ID(r.PathValue("appId"))
+	stageKey := r.PathValue("stageKey")
+	ctx := r.Context()
+
+	deploy, err := h.gitops.GetLatestDeploymentForStage(ctx, appID, stageKey)
+	if err != nil {
+		writeDevelopmentError(w, err)
+		return
+	}
+	var req struct {
+		Actor identityaccess.Subject `json:"actor"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeDevelopmentError(w, shared.NewError(shared.CodeInvalidArgument, "invalid request body"))
+		return
+	}
+	autoPublish := true
+	promotion, err := h.delivery.CreatePromotion(ctx, delivery.CreatePromotionInput{
+		Actor:          req.Actor,
+		FreightID:      deploy.FreightID,
+		TargetStageKey: stageKey,
+		Message:        "配置变更重新部署",
+		AutoPublish:    &autoPublish,
+	})
+	if err != nil {
+		writeDevelopmentError(w, err)
+		return
+	}
+	writeDevelopmentJSON(w, http.StatusCreated, promotion)
+}
+
+func computeUnifiedDiff(oldText, newText string) []string {
+	oldLines := strings.Split(oldText, "\n")
+	newLines := strings.Split(newText, "\n")
+	var diff []string
+	// Simple line-by-line diff: show removed and added lines
+	maxLen := len(oldLines)
+	if len(newLines) > maxLen {
+		maxLen = len(newLines)
+	}
+	i, j := 0, 0
+	for i < len(oldLines) || j < len(newLines) {
+		if i < len(oldLines) && j < len(newLines) && oldLines[i] == newLines[j] {
+			diff = append(diff, " "+oldLines[i])
+			i++
+			j++
+		} else if i < len(oldLines) && (j >= len(newLines) || !containsLine(newLines[j:], oldLines[i])) {
+			diff = append(diff, "-"+oldLines[i])
+			i++
+		} else if j < len(newLines) && (i >= len(oldLines) || !containsLine(oldLines[i:], newLines[j])) {
+			diff = append(diff, "+"+newLines[j])
+			j++
+		} else if j < len(newLines) {
+			diff = append(diff, "+"+newLines[j])
+			j++
+		} else {
+			i++
+		}
+	}
+	return diff
+}
+
+func containsLine(lines []string, target string) bool {
+	for _, l := range lines {
+		if l == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *consoleV2Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
+	if err != nil {
+		return
+	}
+	h.hub.Serve(r.Context(), conn)
 }

@@ -66,7 +66,8 @@ cd web/console && npm run build
 
 - Application 是否只作为业务交付上下文。
 - Workload 是否成为最小可部署单元。
-- BuildSucceeded 是否不再自动创建 Freight。
+- BuildSucceeded 是否自动创建完整 Freight，并用其他 Workload 最近成功产物补齐。
+- 自动 Promotion 是否只覆盖当前 eligible Stage，且 `auto_publish=false`。
 - Freight 是否必须覆盖所有启用 Workload。
 - FreightItem 是否支持 `pipeline_artifact` 和 `custom_image`。
 - GitOps 是否按 FreightItem 更新每个 Workload 的环境 values。

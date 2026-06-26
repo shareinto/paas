@@ -66,6 +66,10 @@
 
 - Application 调整为业务交付上下文。
 - Workload 是最小可部署单元，一个镜像对应一个 Workload。
-- Freight 由用户手动创建，且必须包含所有启用 Workload。
+- 构建成功后自动尝试创建覆盖所有启用 Workload 的 Freight；其他 Workload 使用最近一次成功构建产物补齐，不要求同一分支。
+- 用户仍可手动创建 Freight，且 Freight 必须包含所有启用 Workload。
+- 自动生成 Freight 成功后，版本源不再显示“有变更”；“已有新版本可发布”由 Freight 列表或 Stage 可发布提示表达。
+- 自动创建的 Promotion 均为手动发布，`auto_publish=false`。
+- BuildSucceeded 自动 Freight/Promotion 编排完成后通过 WebSocket 通知 console-v2 自动刷新部署工作区，不要求用户手动刷新浏览器。
 - Stage 发布按钮负责触发可发布 Freight 选择。
 - dev/prod 等环境差异由 WorkloadStageConfig 或环境 values 承载，不进入 Freight。

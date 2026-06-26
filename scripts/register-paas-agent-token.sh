@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PAAS_URL="${PAAS_URL:-http://122.152.196.135:18080}"
+PAAS_URL="${PAAS_URL:-http://127.0.0.1:8080}"
 ACTOR_ID="${PAAS_ACTOR_ID:-usr_admin}"
-CLUSTER_NAME="${PAAS_AGENT_CLUSTER_NAME:-llt-arm-cluster}"
-CLUSTER_REGION="${PAAS_AGENT_CLUSTER_REGION:-llt}"
+CLUSTER_NAME="${PAAS_AGENT_CLUSTER_NAME:-长周期测试集群}"
+CLUSTER_REGION="${PAAS_AGENT_CLUSTER_REGION:-广州}"
 VALUES_FILE="${PAAS_AGENT_VALUES_FILE:-/usr/local/go/src/github.com/shareinto/manifests/paas-agent/values.yaml}"
 UPDATE_VALUES=false
 

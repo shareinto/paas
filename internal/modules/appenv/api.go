@@ -35,6 +35,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}/default-config", h.handleGetWorkloadDefaultConfig)
 	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}/default-config", h.handleSaveWorkloadDefaultConfig)
 	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}/stage-configs", h.handleListWorkloadStageConfigs)
+	mux.HandleFunc("GET /api/applications/{applicationId}/workloads/{workloadId}/stage-configs/{stageKey}", h.handleGetWorkloadStageConfig)
 	mux.HandleFunc("PUT /api/applications/{applicationId}/workloads/{workloadId}/stage-configs/{stageKey}", h.handleSaveWorkloadStageConfig)
 }
 
@@ -221,6 +222,19 @@ func (h *Handler) handleListWorkloads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": workloads})
+}
+
+func (h *Handler) handleGetWorkloadStageConfig(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.service.GetWorkload(r.Context(), shared.ID(r.PathValue("applicationId")), shared.ID(r.PathValue("workloadId"))); err != nil {
+		writeError(w, err)
+		return
+	}
+	config, err := h.service.GetWorkloadStageConfig(r.Context(), shared.ID(r.PathValue("workloadId")), r.PathValue("stageKey"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
 }
 
 func (h *Handler) handleSaveWorkloadStageConfig(w http.ResponseWriter, r *http.Request) {

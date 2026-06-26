@@ -43,7 +43,8 @@ git show --stat
 - 是否可能暴露 token、secret、password、kubeconfig。
 - 是否所有 Web Console 用户可见文案都是中文。
 - 是否保持 Application、Workload、Release、Freight、FreightItem 的新语义。
-- 是否保留了 BuildSucceeded 自动创建 Freight 的旧逻辑。
+- 是否实现 BuildSucceeded 自动创建完整 Freight，且缺产物时保留版本源变更提示。
+- 是否所有自动创建的 Promotion 都是 `auto_publish=false`。
 - 是否缺少关键失败场景测试。
 
 ## 输出格式

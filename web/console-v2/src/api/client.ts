@@ -51,7 +51,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   const payload = parseJSONPayload(text);
   if (!response.ok) {
     const error = payload?.error;
-    throw new APIError(error?.code || 'request_failed', error?.message || '请求处理失败', response.status);
+    throw new APIError(error?.code || 'request_failed', error?.message || `请求失败 (HTTP ${response.status})`, response.status);
   }
   return payload as T;
 }

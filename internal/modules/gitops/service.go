@@ -2,6 +2,9 @@ package gitops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -15,18 +18,12 @@ const (
 	defaultPlatformTemplateName    = "java"
 	defaultPlatformTemplateContent = "containers: []"
 	defaultTemplateActorID         = shared.ID("usr_admin")
-	defaultPlatformChartName       = "paas-app"
-	defaultPlatformChartVersion    = "0.1.0"
 )
 
 type Service struct {
 	repo            Repository
 	manifest        ManifestRepositoryPort
-	chart           ManifestRepositoryPort
 	manifestRepoURL string
-	chartRepoURL    string
-	chartName       string
-	chartVersion    string
 	apps            ApplicationQuery
 	workloads       WorkloadQuery
 	audit           AuditLogger
@@ -37,11 +34,7 @@ type Service struct {
 type Options struct {
 	Repository      Repository
 	ManifestRepo    ManifestRepositoryPort
-	ChartRepo       ManifestRepositoryPort
 	ManifestRepoURL string
-	ChartRepoURL    string
-	ChartName       string
-	ChartVersion    string
 	Application     ApplicationQuery
 	Workload        WorkloadQuery
 	Audit           AuditLogger
@@ -65,11 +58,7 @@ func NewService(opts Options) *Service {
 	return &Service{
 		repo:            opts.Repository,
 		manifest:        opts.ManifestRepo,
-		chart:           opts.ChartRepo,
 		manifestRepoURL: strings.TrimSpace(opts.ManifestRepoURL),
-		chartRepoURL:    strings.TrimSpace(opts.ChartRepoURL),
-		chartName:       firstNonEmpty(opts.ChartName, defaultPlatformChartName),
-		chartVersion:    firstNonEmpty(opts.ChartVersion, defaultPlatformChartVersion),
 		apps:            opts.Application,
 		workloads:       opts.Workload,
 		audit:           audit,
@@ -94,7 +83,7 @@ func (s *Service) EnsurePlatformTemplate(ctx context.Context, name string, conte
 		return DeploymentTemplate{}, err
 	}
 	now := s.clock.Now()
-	template := DeploymentTemplate{ID: id, Name: name, Scope: TemplateScopePlatform, Content: content, CurrentVersion: 1, CreatedAt: now, UpdatedAt: now}
+	template := DeploymentTemplate{ID: id, Name: name, Content: content, CurrentVersion: 1, CreatedAt: now, UpdatedAt: now}
 	revision := DeploymentTemplateRevision{ID: revisionID, TemplateID: id, Version: 1, Content: content, CreatedAt: now}
 	if err := s.repo.CreateTemplate(ctx, template); err != nil {
 		return DeploymentTemplate{}, err
@@ -106,45 +95,12 @@ func (s *Service) EnsurePlatformTemplate(ctx context.Context, name string, conte
 	return template, nil
 }
 
-func (s *Service) CreateApplicationTemplate(ctx context.Context, applicationID shared.ID, platformTemplateName string, actorID shared.ID) (DeploymentTemplate, error) {
-	if existing, err := s.repo.FindApplicationTemplate(ctx, applicationID); err == nil {
-		return existing, nil
-	}
-	app, err := s.apps.GetApplication(ctx, applicationID)
-	if err != nil {
-		return DeploymentTemplate{}, err
-	}
-	base, err := s.repo.FindPlatformTemplate(ctx, platformTemplateName)
-	if err != nil {
-		return DeploymentTemplate{}, err
-	}
-	id, err := s.ids.NewID("deployment_template")
-	if err != nil {
-		return DeploymentTemplate{}, err
-	}
-	revisionID, err := s.ids.NewID("deployment_template_revision")
-	if err != nil {
-		return DeploymentTemplate{}, err
-	}
-	now := s.clock.Now()
-	template := DeploymentTemplate{ID: id, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, Name: app.Name + "-template", Scope: TemplateScopeApplication, Content: base.Content, CurrentVersion: 1, CreatedAt: now, UpdatedAt: now}
-	revision := DeploymentTemplateRevision{ID: revisionID, TemplateID: id, Version: 1, Content: template.Content, CreatedBy: actorID, CreatedAt: now}
-	if err := s.repo.CreateTemplate(ctx, template); err != nil {
-		return DeploymentTemplate{}, err
-	}
-	if err := s.repo.CreateTemplateRevision(ctx, revision); err != nil {
-		return DeploymentTemplate{}, err
-	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: actorID, TenantID: app.TenantID, ProjectID: app.ProjectID, Action: "deployment_template.application.create", ResourceType: "deployment_template", ResourceID: template.ID, Result: "succeeded", Summary: "创建应用部署模板", OccurredAt: now})
-	return template, nil
-}
-
-func (s *Service) UpdateApplicationTemplate(ctx context.Context, applicationID shared.ID, content string, actorID shared.ID) (DeploymentTemplateRevision, error) {
+func (s *Service) UpdatePlatformTemplate(ctx context.Context, content string, actorID shared.ID) (DeploymentTemplateRevision, error) {
 	result := validateTemplate(content)
 	if !result.Valid {
 		return DeploymentTemplateRevision{}, shared.NewError(shared.CodeInvalidArgument, strings.Join(result.Errors, "; "))
 	}
-	template, err := s.repo.FindApplicationTemplate(ctx, applicationID)
+	template, err := s.repo.FindPlatformTemplate(ctx, defaultPlatformTemplateName)
 	if err != nil {
 		return DeploymentTemplateRevision{}, err
 	}
@@ -163,12 +119,12 @@ func (s *Service) UpdateApplicationTemplate(ctx context.Context, applicationID s
 	if err := s.repo.CreateTemplateRevision(ctx, revision); err != nil {
 		return DeploymentTemplateRevision{}, err
 	}
-	_ = s.audit.Log(ctx, AuditEvent{ActorID: actorID, TenantID: template.TenantID, ProjectID: template.ProjectID, Action: "deployment_template.update", ResourceType: "deployment_template", ResourceID: template.ID, Result: "succeeded", Summary: "更新应用部署模板并生成新版本", OccurredAt: now})
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: actorID, Action: "deployment_template.platform.update", ResourceType: "deployment_template", ResourceID: template.ID, Result: "succeeded", Summary: "更新平台部署模板并生成新版本", OccurredAt: now})
 	return revision, nil
 }
 
-func (s *Service) GetApplicationTemplate(ctx context.Context, applicationID shared.ID) (DeploymentTemplate, DeploymentTemplateRevision, error) {
-	template, err := s.repo.FindApplicationTemplate(ctx, applicationID)
+func (s *Service) GetPlatformTemplateRevision(ctx context.Context) (DeploymentTemplate, DeploymentTemplateRevision, error) {
+	template, err := s.repo.FindPlatformTemplate(ctx, defaultPlatformTemplateName)
 	if err != nil {
 		return DeploymentTemplate{}, DeploymentTemplateRevision{}, err
 	}
@@ -196,12 +152,14 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 	if err != nil {
 		return delivery.GitOpsPromotionResult{}, err
 	}
-	if err := s.ensurePlatformChart(ctx); err != nil {
-		return delivery.GitOpsPromotionResult{}, err
-	}
-	template, err := s.ensureApplicationTemplateForPromotion(ctx, app.ID)
+	template, err := s.repo.FindPlatformTemplate(ctx, defaultPlatformTemplateName)
 	if err != nil {
-		return delivery.GitOpsPromotionResult{}, err
+		if shared.CodeOf(err) == shared.CodeNotFound {
+			template, err = s.EnsurePlatformTemplate(ctx, defaultPlatformTemplateName, defaultPlatformTemplateContent)
+		}
+		if err != nil {
+			return delivery.GitOpsPromotionResult{}, err
+		}
 	}
 	validation := validateTemplate(template.Content)
 	if !validation.Valid {
@@ -257,21 +215,18 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 		resolvedPrimary := primaryPromotionArtifact(resolvedArtifacts)
 		repository, tag := imageRepositoryTag(resolvedPrimary)
 		valuesPath := manifestPathForBinding(app.Name, stageKey, binding)
-		values, workloadSummary, err := s.renderPromotionValues(ctx, app, stageKey, binding, deploymentID, resolvedArtifacts, template.Content)
+		manifests, workloadSummary, err := s.renderK8sManifests(ctx, app, stageKey, binding, deploymentID, resolvedArtifacts)
 		if err != nil {
 			return delivery.GitOpsPromotionResult{}, err
 		}
 		argoPath := argoApplicationPathForBinding(app.Name, stageKey, binding)
-		argo := renderArgoApplication(app, stageKey, binding, deploymentID, argoApplicationRenderOptions{
-			ValuesPath:      valuesPath,
-			ManifestRepoURL: s.manifestRepoURL,
-			ChartRepoURL:    s.chartRepoURL,
-			ChartName:       s.chartName,
-			ChartVersion:    s.chartVersion,
-		})
-		files = append(files, CommitFile{Path: valuesPath, Content: values}, CommitFile{Path: argoPath, Content: argo})
+		manifestDir := fmt.Sprintf("apps/%s/%s", app.Name, stageKey)
+		argo := renderArgoApplication(app, stageKey, binding, deploymentID, s.manifestRepoURL, manifestDir)
+		files = append(files, CommitFile{Path: valuesPath, Content: manifests}, CommitFile{Path: argoPath, Content: argo})
 		manifestRevision := ManifestRevision{ID: manifestRevisionID, DeploymentID: deploymentID, PromotionID: spec.PromotionID, ApplicationID: app.ID, StageKey: stageKey, TemplateRevisionID: revision.ID, Path: valuesPath, ChangeType: changeType, CreatedAt: now}
-		deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, StageKey: stageKey, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: resolvedPrimary.Digest, WorkloadSummary: workloadSummary, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
+		stageConfigs := s.collectStageConfigs(ctx, app.ID, resolvedArtifacts, stageKey)
+		configHash := ComputeStageConfigHash(revision.ID, stageConfigs)
+		deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, StageKey: stageKey, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: resolvedPrimary.Digest, WorkloadSummary: workloadSummary, ConfigHash: configHash, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
 		records = append(records, targetRecord{binding: binding, deployment: deployment, manifestRevision: manifestRevision, eventID: eventID, valuesPath: valuesPath})
 	}
 	var manifestRef string
@@ -315,20 +270,6 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 		_ = s.audit.Log(ctx, AuditEvent{TenantID: app.TenantID, ProjectID: app.ProjectID, Action: "deployment.create", ResourceType: "deployment", ResourceID: record.deployment.ID, Result: "succeeded", Summary: "创建部署记录", OccurredAt: now})
 	}
 	return delivery.GitOpsPromotionResult{ManifestRevision: manifestRef}, nil
-}
-
-func (s *Service) ensureApplicationTemplateForPromotion(ctx context.Context, applicationID shared.ID) (DeploymentTemplate, error) {
-	template, err := s.repo.FindApplicationTemplate(ctx, applicationID)
-	if err == nil {
-		return template, nil
-	}
-	if shared.CodeOf(err) != shared.CodeNotFound {
-		return DeploymentTemplate{}, err
-	}
-	if _, err := s.EnsurePlatformTemplate(ctx, defaultPlatformTemplateName, defaultPlatformTemplateContent); err != nil {
-		return DeploymentTemplate{}, err
-	}
-	return s.CreateApplicationTemplate(ctx, applicationID, defaultPlatformTemplateName, defaultTemplateActorID)
 }
 
 func (s *Service) UpdateFromAgent(ctx context.Context, report clusteragent.StatusReport) error {
@@ -535,62 +476,6 @@ func imageRepositoryTag(artifact delivery.GitOpsArtifactSpec) (string, string) {
 	return repository, tag
 }
 
-func (s *Service) renderPromotionValues(ctx context.Context, app ApplicationRef, stageKey string, binding ClusterBindingRef, deploymentID shared.ID, artifacts []delivery.GitOpsArtifactSpec, template string) (string, string, error) {
-	primary := primaryPromotionArtifact(artifacts)
-	repository, tag := imageRepositoryTag(primary)
-	values := map[string]any{
-		"application":   app.Name,
-		"applicationID": app.ID,
-		"stageKey":      stageKey,
-		"stage":         stageKey,
-		"deploymentID":  deploymentID,
-		"namespace":     binding.Namespace,
-		"image":         imageValues(repository, tag, primary.Digest),
-		"template":      template,
-	}
-	workloadValues := map[string]any{}
-	summary := make([]string, 0, len(artifacts))
-	for _, artifact := range artifacts {
-		if artifact.WorkloadID.IsZero() {
-			continue
-		}
-		workload, err := s.getWorkload(ctx, app.ID, artifact.WorkloadID)
-		if err != nil {
-			return "", "", err
-		}
-		config, err := s.getWorkloadStageConfig(ctx, artifact.WorkloadID, stageKey)
-		if err != nil {
-			if shared.CodeOf(err) != shared.CodeNotFound {
-				return "", "", err
-			}
-			config, err = s.getWorkloadDefaultConfig(ctx, artifact.WorkloadID)
-			if err != nil && shared.CodeOf(err) != shared.CodeNotFound {
-				return "", "", err
-			}
-		}
-		repository, tag := imageRepositoryTag(artifact)
-		name := strings.TrimSpace(workload.Name)
-		if name == "" {
-			name = artifact.WorkloadID.String()
-		}
-		current, ok := workloadValues[name].(map[string]any)
-		if !ok {
-			current = renderWorkloadValues(workload, config, repository, tag, artifact.Digest)
-			workloadValues[name] = current
-		}
-		applyContainerImage(current, artifact.ContainerName, repository, tag, artifact.Digest)
-		summary = append(summary, fmt.Sprintf("%s/%s=%s", name, normalizeContainerName(artifact.ContainerName), imageSummary(repository, tag, artifact.Digest)))
-	}
-	if len(workloadValues) > 0 {
-		values["workloads"] = workloadValues
-	}
-	raw, err := yaml.Marshal(values)
-	if err != nil {
-		return "", "", shared.NewError(shared.CodeInternal, "render values failed: "+err.Error())
-	}
-	return string(raw), strings.Join(summary, "\n"), nil
-}
-
 func (s *Service) getWorkload(ctx context.Context, applicationID shared.ID, workloadID shared.ID) (WorkloadRef, error) {
 	if s.workloads == nil {
 		return WorkloadRef{ID: workloadID, ApplicationID: applicationID, Name: workloadID.String(), WorkloadType: "Deployment"}, nil
@@ -612,88 +497,12 @@ func (s *Service) getWorkloadDefaultConfig(ctx context.Context, workloadID share
 	return s.workloads.GetWorkloadDefaultConfig(ctx, workloadID)
 }
 
-func imageValues(repository string, tag string, digest string) map[string]any {
-	return map[string]any{"repository": repository, "tag": tag, "digest": strings.TrimSpace(digest)}
-}
-
-func applyContainerImage(values map[string]any, containerName string, repository string, tag string, digest string) {
-	name := normalizeContainerName(containerName)
-	containers, _ := values["containers"].(map[string]any)
-	if containers == nil {
-		containers = map[string]any{}
-	}
-	current, _ := containers[name].(map[string]any)
-	if current == nil {
-		current = map[string]any{}
-	}
-	current["image"] = imageValues(repository, tag, digest)
-	containers[name] = current
-	values["containers"] = containers
-	if name == "app" {
-		values["image"] = imageValues(repository, tag, digest)
-	}
-}
-
 func normalizeContainerName(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "app"
 	}
 	return name
-}
-
-func renderWorkloadValues(workload WorkloadRef, config WorkloadStageConfigRef, repository string, tag string, digest string) map[string]any {
-	values := map[string]any{
-		"kind":  normalizeWorkloadKind(workload.WorkloadType),
-		"image": imageValues(repository, tag, digest),
-	}
-	if config.Replicas > 0 {
-		values["replicas"] = config.Replicas
-	}
-	if len(config.ServicePorts) > 0 {
-		values["servicePorts"] = config.ServicePorts
-	}
-	resources := map[string]any{}
-	if config.ResourceRequests.CPU != "" || config.ResourceRequests.Memory != "" {
-		resources["requests"] = config.ResourceRequests
-	}
-	if config.ResourceLimits.CPU != "" || config.ResourceLimits.Memory != "" {
-		resources["limits"] = config.ResourceLimits
-	}
-	if len(resources) > 0 {
-		values["resources"] = resources
-	}
-	if len(config.Probes) > 0 {
-		values["probes"] = config.Probes
-	}
-	if len(config.EnvVars) > 0 {
-		values["env"] = config.EnvVars
-	}
-	if len(config.IngressHosts) > 0 {
-		values["ingressHosts"] = config.IngressHosts
-	}
-	if len(config.SecretRefs) > 0 {
-		values["secretRefs"] = config.SecretRefs
-	}
-	if len(config.ConfigFiles) > 0 {
-		values["configFiles"] = config.ConfigFiles
-	}
-	if len(config.WritableDirs) > 0 {
-		values["writableDirs"] = config.WritableDirs
-	}
-	if len(config.VolumeMounts) > 0 {
-		values["volumeMounts"] = config.VolumeMounts
-	}
-	if len(config.InitContainers) > 0 {
-		values["initContainers"] = config.InitContainers
-	}
-	for key, value := range config.ValuesOverride {
-		if strings.TrimSpace(key) == "" || key == "image" {
-			continue
-		}
-		values[key] = value
-	}
-	return values
 }
 
 func normalizeWorkloadKind(kind string) string {
@@ -837,314 +646,111 @@ func (s *Service) ListDeployments(ctx context.Context, applicationID shared.ID, 
 	return s.repo.ListDeployments(ctx, applicationID, page)
 }
 
-type argoApplicationRenderOptions struct {
-	ValuesPath      string
-	ManifestRepoURL string
-	ChartRepoURL    string
-	ChartName       string
-	ChartVersion    string
+func (s *Service) GetLatestDeploymentForStage(ctx context.Context, appID shared.ID, stageKey string) (Deployment, error) {
+	return s.repo.GetLatestDeploymentForStage(ctx, appID, stageKey)
 }
 
-func (s *Service) ensurePlatformChart(ctx context.Context) error {
-	if s.chart == nil {
-		return nil
-	}
-	name := firstNonEmpty(s.chartName, defaultPlatformChartName)
-	version := firstNonEmpty(s.chartVersion, defaultPlatformChartVersion)
-	_, err := s.chart.CommitFiles(ctx, CommitSpec{
-		Branch:  "main",
-		Message: fmt.Sprintf("paas: ensure platform chart %s %s", name, version),
-		Files:   platformChartFiles(name, version),
-	})
+func ComputeStageConfigHash(templateRevisionID shared.ID, workloadConfigs []WorkloadStageConfigRef) string {
+	raw, _ := json.Marshal(struct {
+		TemplateRevisionID shared.ID              `json:"t"`
+		Configs            []WorkloadStageConfigRef `json:"c"`
+	}{templateRevisionID, workloadConfigs})
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:8])
+}
+
+// RenderExpectedManifest renders the expected manifests.yaml for a stage using current config + the given freight items.
+func (s *Service) RenderExpectedManifest(ctx context.Context, appID shared.ID, stageKey string, freightItems []delivery.FreightItem) (expected string, currentManifest string, err error) {
+	app, err := s.apps.GetApplication(ctx, appID)
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	_, err = s.chart.CreateTag(ctx, platformChartTag(name, version), "main")
-	return err
-}
-
-func platformChartTag(name string, version string) string {
-	return fmt.Sprintf("%s-v%s", firstNonEmpty(name, defaultPlatformChartName), firstNonEmpty(version, defaultPlatformChartVersion))
-}
-
-func platformChartFiles(name string, version string) []CommitFile {
-	name = firstNonEmpty(name, defaultPlatformChartName)
-	version = firstNonEmpty(version, defaultPlatformChartVersion)
-	base := "charts/" + name
-	return []CommitFile{
-		{Path: base + "/Chart.yaml", Content: fmt.Sprintf("apiVersion: v2\nname: %s\ndescription: PaaS standard application workload chart\ntype: application\nversion: %s\nappVersion: %s\n", name, version, version)},
-		{Path: base + "/values.yaml", Content: "application: \"\"\napplicationID: \"\"\nstageKey: \"\"\ndeploymentID: \"\"\nnamespace: \"\"\nimage:\n  repository: \"\"\n  tag: \"\"\n  digest: \"\"\nworkloads: {}\n"},
-		{Path: base + "/templates/_helpers.tpl", Content: platformChartHelpersTemplate(name)},
-		{Path: base + "/templates/workloads.yaml", Content: platformChartWorkloadsTemplate(name)},
+	deploy, err := s.repo.GetLatestDeploymentForStage(ctx, appID, stageKey)
+	if err != nil {
+		return "", "", err
 	}
+	path := manifestPath(app.Name, stageKey)
+	currentManifest, _ = s.manifest.ReadFile(ctx, path, "main")
+
+	// Extract namespace from current manifest for consistent rendering
+	namespace := "default"
+	if currentManifest != "" {
+		var parsed map[string]any
+		if yaml.Unmarshal([]byte(currentManifest), &parsed) == nil {
+			if meta, ok := parsed["metadata"].(map[string]any); ok {
+				if ns, ok := meta["namespace"].(string); ok && ns != "" {
+					namespace = ns
+				}
+			}
+		}
+	}
+	binding := ClusterBindingRef{ID: deploy.ClusterBindingID, StageKey: stageKey, Namespace: namespace}
+	artifacts := make([]delivery.GitOpsArtifactSpec, 0, len(freightItems))
+	for i, item := range freightItems {
+		artifacts = append(artifacts, delivery.GitOpsArtifactSpec{
+			WorkloadID:    item.WorkloadID,
+			ContainerName: item.ContainerName,
+			URI:           item.URI,
+			Repository:    item.ImageRepository,
+			Tag:           item.ImageTag,
+			Digest:        item.Digest,
+			IsPrimary:     i == 0,
+		})
+	}
+	expected, _, err = s.renderK8sManifests(ctx, app, stageKey, binding, deploy.ID, artifacts)
+	if err != nil {
+		return "", "", err
+	}
+	return expected, currentManifest, nil
 }
 
-func platformChartHelpersTemplate(name string) string {
-	return fmt.Sprintf(`{{- define "%s.labels" -}}
-app.kubernetes.io/managed-by: paas
-app.kubernetes.io/part-of: {{ default .Chart.Name .Values.application | quote }}
-paas.shareinto.com/application-id: {{ .Values.applicationID | quote }}
-paas.shareinto.com/stage-key: {{ .Values.stageKey | quote }}
-paas.shareinto.com/deployment-id: {{ .Values.deploymentID | quote }}
-{{- end -}}
-`, name)
+func (s *Service) collectStageConfigs(ctx context.Context, appID shared.ID, artifacts []delivery.GitOpsArtifactSpec, stageKey string) []WorkloadStageConfigRef {
+	var configs []WorkloadStageConfigRef
+	for _, artifact := range artifacts {
+		if artifact.WorkloadID.IsZero() {
+			continue
+		}
+		config, err := s.getWorkloadStageConfig(ctx, artifact.WorkloadID, stageKey)
+		if err != nil {
+			config, err = s.getWorkloadDefaultConfig(ctx, artifact.WorkloadID)
+			if err != nil {
+				continue
+			}
+		}
+		configs = append(configs, config)
+	}
+	return configs
 }
 
-func platformChartWorkloadsTemplate(chartName string) string {
-	return fmt.Sprintf(`{{- range $name, $workload := .Values.workloads }}
-{{- $resourceName := printf "%%s-%%s" $name $.Values.stage | trunc 63 | trimSuffix "-" }}
-{{- $nginxSidecar := default dict $workload.nginxSidecar }}
-{{- $nginxSidecarEnabled := default false $nginxSidecar.enabled }}
-{{- $nginxSidecarPort := default 8080 $nginxSidecar.port }}
-{{- $nginxSidecarPortName := default "nginx" $nginxSidecar.portName }}
-{{- $nginxConfigName := printf "%%s-nginx" $resourceName | trunc 63 | trimSuffix "-" }}
-{{- $nginxConfigVolumeName := printf "%%s-nginx-config" $resourceName | trunc 63 | trimSuffix "-" }}
-{{- $nginxConfDVolumeName := printf "%%s-nginx-conf-d" $resourceName | trunc 63 | trimSuffix "-" }}
-{{- $appPort := 8080 }}
-{{- range $index, $port := $workload.servicePorts }}
-{{- if eq $index 0 }}
-{{- $appPort = default $port.port $port.targetPort }}
-{{- end }}
-{{- end }}
-{{- $nginxUpstreamPort := default $appPort $nginxSidecar.upstreamPort }}
-{{- if $nginxSidecarEnabled }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ $nginxConfigName | quote }}
-  namespace: {{ $.Values.namespace | quote }}
-  labels:
-    app.kubernetes.io/name: {{ $name | quote }}
-    app.kubernetes.io/instance: {{ $resourceName | quote }}
-{{ include "%s.labels" $ | indent 4 }}
-data:
-  nginx.conf: |
-    {{- if $nginxSidecar.nginxConf }}
-{{ $nginxSidecar.nginxConf | indent 4 }}
-    {{- else }}
-    worker_processes auto;
-    events {
-      worker_connections 1024;
-    }
-    http {
-      include /etc/nginx/mime.types;
-      default_type application/octet-stream;
-      include /etc/nginx/conf.d/*.conf;
-    }
-    {{- end }}
-  {{- if $nginxSidecar.confD }}
-  {{- range $conf := $nginxSidecar.confD }}
-  {{ $conf.fileName }}: |
-{{ $conf.content | indent 4 }}
-  {{- end }}
-  {{- else }}
-  default.conf: |
-    server {
-      listen {{ $nginxSidecarPort }};
-      location / {
-        proxy_pass http://127.0.0.1:{{ $nginxUpstreamPort }};
-      }
-    }
-  {{- end }}
-{{- end }}
----
-apiVersion: apps/v1
-kind: {{ default "Deployment" $workload.kind }}
-metadata:
-  name: {{ $resourceName | quote }}
-  namespace: {{ $.Values.namespace | quote }}
-  labels:
-    app.kubernetes.io/name: {{ $name | quote }}
-    app.kubernetes.io/instance: {{ $resourceName | quote }}
-{{ include "%s.labels" $ | indent 4 }}
-spec:
-  {{- if eq (default "Deployment" $workload.kind) "StatefulSet" }}
-  serviceName: {{ $resourceName | quote }}
-  {{- end }}
-  replicas: {{ default 1 $workload.replicas }}
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: {{ $name | quote }}
-      app.kubernetes.io/instance: {{ $resourceName | quote }}
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: {{ $name | quote }}
-        app.kubernetes.io/instance: {{ $resourceName | quote }}
-{{ include "%s.labels" $ | indent 8 }}
-    spec:
-      {{- with $workload.initContainers }}
-      initContainers:
-{{ toYaml . | indent 8 }}
-      {{- end }}
-      containers:
-        - name: {{ $name | quote }}
-          image: {{ printf "%%s:%%s" $workload.image.repository $workload.image.tag | quote }}
-          imagePullPolicy: IfNotPresent
-          {{- with $workload.command }}
-          command:
-{{ toYaml . | indent 12 }}
-          {{- end }}
-          {{- with $workload.args }}
-          args:
-{{ toYaml . | indent 12 }}
-          {{- end }}
-          {{- with $workload.servicePorts }}
-          ports:
-          {{- range . }}
-            - name: {{ .name | quote }}
-              containerPort: {{ default .port .targetPort }}
-              protocol: {{ default "TCP" .protocol | quote }}
-          {{- end }}
-          {{- end }}
-          {{- with $workload.env }}
-          env:
-{{ toYaml . | indent 12 }}
-          {{- end }}
-          {{- with $workload.resources }}
-          resources:
-{{ toYaml . | indent 12 }}
-          {{- end }}
-          {{- with $workload.probes }}
-          {{- range . }}
-          {{- if eq .name "readiness" }}
-          readinessProbe:
-            httpGet:
-              path: {{ .path | quote }}
-              port: {{ .port }}
-            initialDelaySeconds: {{ default 0 .initialDelaySeconds }}
-            periodSeconds: {{ default 10 .periodSeconds }}
-          {{- end }}
-          {{- if eq .name "liveness" }}
-          livenessProbe:
-            httpGet:
-              path: {{ .path | quote }}
-              port: {{ .port }}
-            initialDelaySeconds: {{ default 0 .initialDelaySeconds }}
-            periodSeconds: {{ default 10 .periodSeconds }}
-          {{- end }}
-          {{- end }}
-          {{- end }}
-          {{- with $workload.volumeMounts }}
-          volumeMounts:
-{{ toYaml . | indent 12 }}
-          {{- end }}
-          {{- with $workload.securityContext }}
-          securityContext:
-{{ toYaml . | indent 12 }}
-          {{- end }}
-        {{- if $nginxSidecarEnabled }}
-        - name: {{ default "nginx" $nginxSidecar.name | quote }}
-          image: {{ default "nginx:1.25-alpine" $nginxSidecar.image | quote }}
-          imagePullPolicy: {{ default "IfNotPresent" $nginxSidecar.imagePullPolicy | quote }}
-          ports:
-            - name: {{ $nginxSidecarPortName | quote }}
-              containerPort: {{ $nginxSidecarPort }}
-              protocol: TCP
-          volumeMounts:
-            - name: {{ $nginxConfigVolumeName | quote }}
-              mountPath: {{ default "/etc/nginx/nginx.conf" $nginxSidecar.configMountPath | quote }}
-              subPath: nginx.conf
-              readOnly: true
-            - name: {{ $nginxConfDVolumeName | quote }}
-              mountPath: {{ default "/etc/nginx/conf.d" $nginxSidecar.confDMountPath | quote }}
-              readOnly: true
-          {{- with $nginxSidecar.resources }}
-          resources:
-{{ toYaml . | indent 12 }}
-          {{- end }}
-          {{- with $nginxSidecar.securityContext }}
-          securityContext:
-{{ toYaml . | indent 12 }}
-          {{- end }}
-        {{- end }}
-      {{- if or $workload.volumes $nginxSidecarEnabled }}
-      volumes:
-      {{- with $workload.volumes }}
-{{ toYaml . | indent 8 }}
-      {{- end }}
-      {{- if $nginxSidecarEnabled }}
-        - name: {{ $nginxConfigVolumeName | quote }}
-          configMap:
-            name: {{ $nginxConfigName | quote }}
-            items:
-              - key: nginx.conf
-                path: nginx.conf
-        - name: {{ $nginxConfDVolumeName | quote }}
-          configMap:
-            name: {{ $nginxConfigName | quote }}
-            items:
-            {{- if $nginxSidecar.confD }}
-            {{- range $conf := $nginxSidecar.confD }}
-              - key: {{ $conf.fileName | quote }}
-                path: {{ $conf.fileName | quote }}
-            {{- end }}
-            {{- else }}
-              - key: default.conf
-                path: default.conf
-            {{- end }}
-      {{- end }}
-      {{- end }}
-{{- with $workload.servicePorts }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ $resourceName | quote }}
-  namespace: {{ $.Values.namespace | quote }}
-  labels:
-    app.kubernetes.io/name: {{ $name | quote }}
-    app.kubernetes.io/instance: {{ $resourceName | quote }}
-{{ include "%s.labels" $ | indent 4 }}
-spec:
-  selector:
-    app.kubernetes.io/name: {{ $name | quote }}
-    app.kubernetes.io/instance: {{ $resourceName | quote }}
-  ports:
-  {{- range . }}
-    {{- $serviceTargetPort := default .port .targetPort }}
-    {{- if and $nginxSidecarEnabled (default false $nginxSidecar.routeServiceToSidecar) }}
-    {{- $serviceTargetPort = $nginxSidecarPort }}
-    {{- end }}
-    - name: {{ .name | quote }}
-      port: {{ .port }}
-      targetPort: {{ $serviceTargetPort }}
-      protocol: {{ default "TCP" .protocol | quote }}
-  {{- end }}
-{{- end }}
-{{- with $workload.ingressHosts }}
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: {{ $resourceName | quote }}
-  namespace: {{ $.Values.namespace | quote }}
-spec:
-  rules:
-  {{- range . }}
-    - host: {{ .host | quote }}
-      http:
-        paths:
-          - path: {{ default "/" .path | quote }}
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ $resourceName | quote }}
-                port:
-                  number: {{ default 80 .port }}
-  {{- end }}
-{{- end }}
-{{- end }}
-`, chartName, chartName, chartName, chartName)
-}
-
-func renderArgoApplication(app ApplicationRef, stageKey string, binding ClusterBindingRef, deploymentID shared.ID, opts argoApplicationRenderOptions) string {
+func renderArgoApplication(app ApplicationRef, stageKey string, binding ClusterBindingRef, deploymentID shared.ID, manifestRepoURL string, manifestDir string) string {
 	name := fmt.Sprintf("%s-%s", app.Name, stageKey)
-	valuesPath := strings.TrimPrefix(opts.ValuesPath, "/")
-	chartName := firstNonEmpty(opts.ChartName, defaultPlatformChartName)
-	chartVersion := firstNonEmpty(opts.ChartVersion, defaultPlatformChartVersion)
-	return fmt.Sprintf("apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  finalizers:\n    - resources-finalizer.argocd.argoproj.io\n  labels:\n    paas.shareinto.com/application-id: %s\n    paas.shareinto.com/stage-key: %s\n    paas.shareinto.com/deployment-id: %s\nspec:\n  project: default\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: %s\n  sources:\n    - repoURL: %s\n      targetRevision: %s\n      path: charts/%s\n      helm:\n        valueFiles:\n          - $values/%s\n    - repoURL: %s\n      targetRevision: main\n      ref: values\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n      - ServerSideApply=true\n", name, app.ID, stageKey, deploymentID, binding.Namespace, opts.ChartRepoURL, platformChartTag(chartName, chartVersion), chartName, valuesPath, opts.ManifestRepoURL)
+	return fmt.Sprintf(`apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: %s
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    paas.shareinto.com/application-id: %s
+    paas.shareinto.com/stage-key: %s
+    paas.shareinto.com/deployment-id: %s
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: %s
+  source:
+    repoURL: %s
+    targetRevision: main
+    path: %s
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+`, name, app.ID, stageKey, deploymentID, binding.Namespace, manifestRepoURL, manifestDir)
 }
 
 func indent(value string, prefix string) string {

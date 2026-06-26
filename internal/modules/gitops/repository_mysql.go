@@ -19,20 +19,20 @@ func NewMySQLRepository(_ context.Context, db *sql.DB) (*MySQLRepository, error)
 
 func (r *MySQLRepository) CreateTemplate(ctx context.Context, template DeploymentTemplate) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO deployment_templates (id, tenant_id, project_id, application_id, name, scope, content, current_version, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		template.ID, template.TenantID, template.ProjectID, template.ApplicationID, template.Name,
-		template.Scope, template.Content, template.CurrentVersion, mysqlTime(template.CreatedAt), mysqlTime(template.UpdatedAt))
+INSERT INTO deployment_templates (id, tenant_id, name, content, current_version, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		template.ID, template.TenantID, template.Name,
+		template.Content, template.CurrentVersion, mysqlTime(template.CreatedAt), mysqlTime(template.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "deployment template already exists", "create deployment template failed")
 }
 
 func (r *MySQLRepository) UpdateTemplate(ctx context.Context, template DeploymentTemplate) error {
 	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE deployment_templates
-SET tenant_id = ?, project_id = ?, application_id = ?, name = ?, scope = ?, content = ?,
+SET tenant_id = ?, name = ?, content = ?,
     current_version = ?, updated_at = ?
 WHERE id = ?`,
-		template.TenantID, template.ProjectID, template.ApplicationID, template.Name, template.Scope,
+		template.TenantID, template.Name,
 		template.Content, template.CurrentVersion, mysqlTime(template.UpdatedAt), template.ID)
 	if err != nil {
 		return database.ConflictOrUnavailable(err, "deployment template already exists", "update deployment template failed")
@@ -42,7 +42,7 @@ WHERE id = ?`,
 
 func (r *MySQLRepository) GetTemplate(ctx context.Context, id shared.ID) (DeploymentTemplate, error) {
 	template, err := scanTemplate(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
-SELECT id, tenant_id, project_id, application_id, name, scope, content, current_version, created_at, updated_at
+SELECT id, tenant_id, name, content, current_version, created_at, updated_at
 FROM deployment_templates WHERE id = ?`, id))
 	if err != nil {
 		return DeploymentTemplate{}, database.NotFound(err, "deployment template not found")
@@ -52,20 +52,10 @@ FROM deployment_templates WHERE id = ?`, id))
 
 func (r *MySQLRepository) FindPlatformTemplate(ctx context.Context, name string) (DeploymentTemplate, error) {
 	template, err := scanTemplate(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
-SELECT id, tenant_id, project_id, application_id, name, scope, content, current_version, created_at, updated_at
-FROM deployment_templates WHERE scope = ? AND name = ?`, TemplateScopePlatform, name))
+SELECT id, tenant_id, name, content, current_version, created_at, updated_at
+FROM deployment_templates WHERE name = ?`, name))
 	if err != nil {
 		return DeploymentTemplate{}, database.NotFound(err, "platform template not found")
-	}
-	return template, nil
-}
-
-func (r *MySQLRepository) FindApplicationTemplate(ctx context.Context, applicationID shared.ID) (DeploymentTemplate, error) {
-	template, err := scanTemplate(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
-SELECT id, tenant_id, project_id, application_id, name, scope, content, current_version, created_at, updated_at
-FROM deployment_templates WHERE scope = ? AND application_id = ?`, TemplateScopeApplication, applicationID))
-	if err != nil {
-		return DeploymentTemplate{}, database.NotFound(err, "application template not found")
 	}
 	return template, nil
 }
@@ -113,12 +103,12 @@ func (r *MySQLRepository) CreateDeployment(ctx context.Context, deployment Deplo
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO deployments (
   id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
-  freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
+  freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, config_hash, status, message,
   created_at, updated_at, completed_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		deployment.ID, deployment.TenantID, deployment.ProjectID, deployment.ApplicationID, deployment.StageKey,
 		deployment.ClusterBindingID, deployment.PromotionID, deployment.FreightID, deployment.ManifestRevisionID,
-		deployment.ImageRepository, deployment.ImageTag, deployment.ImageDigest, deployment.WorkloadSummary, deployment.Status, deployment.Message,
+		deployment.ImageRepository, deployment.ImageTag, deployment.ImageDigest, deployment.WorkloadSummary, deployment.ConfigHash, deployment.Status, deployment.Message,
 		mysqlTime(deployment.CreatedAt), mysqlTime(deployment.UpdatedAt), mysqlTimePtr(deployment.CompletedAt))
 	return database.ConflictOrUnavailable(err, "deployment already exists", "create deployment failed")
 }
@@ -140,7 +130,7 @@ WHERE id = ?`,
 func (r *MySQLRepository) GetDeployment(ctx context.Context, id shared.ID) (Deployment, error) {
 	deployment, err := scanDeployment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
 SELECT id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
-       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
+       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, config_hash, status, message,
        created_at, updated_at, completed_at
 FROM deployments WHERE id = ?`, id))
 	if err != nil {
@@ -152,7 +142,7 @@ FROM deployments WHERE id = ?`, id))
 func (r *MySQLRepository) FindDeploymentByPromotion(ctx context.Context, promotionID shared.ID) (Deployment, error) {
 	deployment, err := scanDeployment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
 SELECT id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
-       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
+       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, config_hash, status, message,
        created_at, updated_at, completed_at
 FROM deployments WHERE promotion_id = ?`, promotionID))
 	if err != nil {
@@ -169,7 +159,7 @@ func (r *MySQLRepository) ListDeployments(ctx context.Context, applicationID sha
 	page, limit, offset := database.LimitOffset(page)
 	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
 SELECT id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
-       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, status, message,
+       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, config_hash, status, message,
        created_at, updated_at, completed_at
 FROM deployments
 WHERE application_id = ?
@@ -192,6 +182,18 @@ ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, applicationID, limit, offse
 	return shared.NewPageResult(items, total, page), nil
 }
 
+func (r *MySQLRepository) GetLatestDeploymentForStage(ctx context.Context, applicationID shared.ID, stageKey string) (Deployment, error) {
+	deployment, err := scanDeployment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
+SELECT id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
+       freight_id, manifest_revision_id, image_repository, image_tag, image_digest, workload_summary, config_hash, status, message,
+       created_at, updated_at, completed_at
+FROM deployments WHERE application_id = ? AND stage_key = ? ORDER BY created_at DESC LIMIT 1`, applicationID, stageKey))
+	if err != nil {
+		return Deployment{}, database.NotFound(err, "deployment not found")
+	}
+	return deployment, nil
+}
+
 func (r *MySQLRepository) CreateDeploymentEvent(ctx context.Context, event DeploymentEvent) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO deployment_events (id, deployment_id, status, message, occurred_at)
@@ -206,7 +208,7 @@ type gitopsScanner interface {
 
 func scanTemplate(scanner gitopsScanner) (DeploymentTemplate, error) {
 	var template DeploymentTemplate
-	err := scanner.Scan(&template.ID, &template.TenantID, &template.ProjectID, &template.ApplicationID, &template.Name, &template.Scope, &template.Content, &template.CurrentVersion, &template.CreatedAt, &template.UpdatedAt)
+	err := scanner.Scan(&template.ID, &template.TenantID, &template.Name, &template.Content, &template.CurrentVersion, &template.CreatedAt, &template.UpdatedAt)
 	return template, err
 }
 
@@ -224,7 +226,7 @@ func scanManifestRevision(scanner gitopsScanner) (ManifestRevision, error) {
 
 func scanDeployment(scanner gitopsScanner) (Deployment, error) {
 	var deployment Deployment
-	err := scanner.Scan(&deployment.ID, &deployment.TenantID, &deployment.ProjectID, &deployment.ApplicationID, &deployment.StageKey, &deployment.ClusterBindingID, &deployment.PromotionID, &deployment.FreightID, &deployment.ManifestRevisionID, &deployment.ImageRepository, &deployment.ImageTag, &deployment.ImageDigest, &deployment.WorkloadSummary, &deployment.Status, &deployment.Message, &deployment.CreatedAt, &deployment.UpdatedAt, &deployment.CompletedAt)
+	err := scanner.Scan(&deployment.ID, &deployment.TenantID, &deployment.ProjectID, &deployment.ApplicationID, &deployment.StageKey, &deployment.ClusterBindingID, &deployment.PromotionID, &deployment.FreightID, &deployment.ManifestRevisionID, &deployment.ImageRepository, &deployment.ImageTag, &deployment.ImageDigest, &deployment.WorkloadSummary, &deployment.ConfigHash, &deployment.Status, &deployment.Message, &deployment.CreatedAt, &deployment.UpdatedAt, &deployment.CompletedAt)
 	return deployment, err
 }
 
