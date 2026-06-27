@@ -90,29 +90,62 @@ pipeline {
     stage('checkout {{ .Key }}') {
       steps {
         dir('{{ .CheckoutDir }}') {
-          sh '''
-            set -eu
-            repo_url='{{ .RepoURL }}'
-            ref='{{ .GitRef }}'
-            if [ -d .git ]; then
-              git remote set-url origin "$repo_url"
-              git fetch --prune --tags origin
-            else
+{{ if eq .SourceType "svn" }}
+          withCredentials([usernamePassword(credentialsId: '{{ .SVNCredentials }}', usernameVariable: 'PAAS_SVN_USER', passwordVariable: 'PAAS_SVN_PASSWORD')]) {
+            sh '''
+              set -eu
+              repo_url='{{ .RepoURL }}'
+              svn_revision='{{ .SVNRevision }}'
               find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-              git clone --no-checkout "$repo_url" .
-              git fetch --prune --tags origin
-            fi
-            if git rev-parse --verify --quiet "origin/$ref^{commit}" >/dev/null; then
-              commit="$(git rev-parse "origin/$ref^{commit}")"
-            else
-              commit="$(git rev-parse "$ref^{commit}")"
-            fi
-            git checkout --detach "$commit"
-            git reset --hard "$commit"
-            git clean -fdx
-            mkdir -p "$WORKSPACE/report"
-            printf '%s\n' "$commit" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
-          '''
+              if [ -n "$svn_revision" ] && [ "$svn_revision" != "HEAD" ]; then
+                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert -r "$svn_revision" "$repo_url" .
+              else
+                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert "$repo_url" .
+              fi
+              actual_revision="$(svn info --show-item revision 2>/dev/null || true)"
+              mkdir -p "$WORKSPACE/report"
+              printf '%s\n' "$actual_revision" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
+              printf '%s\n' "$actual_revision" > "$WORKSPACE/report/source-{{ .Key }}-svn-revision.txt"
+            '''
+          }
+{{ else }}
+          withCredentials([usernamePassword(credentialsId: '{{ .GitCredentials }}', usernameVariable: 'PAAS_GIT_USER', passwordVariable: 'PAAS_GIT_PASSWORD')]) {
+            sh '''
+              set -eu
+              askpass="$WORKSPACE/.paas/source-{{ .Key }}-git-askpass"
+              cat > "$askpass" <<'ASKPASS'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\n' "$PAAS_GIT_USER" ;;
+  *) printf '%s\n' "$PAAS_GIT_PASSWORD" ;;
+esac
+ASKPASS
+              chmod 700 "$askpass"
+              export GIT_ASKPASS="$askpass"
+              export GIT_TERMINAL_PROMPT=0
+              repo_url='{{ .RepoURL }}'
+              ref='{{ .SourceRef }}'
+              if [ -d .git ]; then
+                git remote set-url origin "$repo_url"
+                git fetch --prune --tags origin
+              else
+                find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+                git clone --no-checkout "$repo_url" .
+                git fetch --prune --tags origin
+              fi
+              if git rev-parse --verify --quiet "origin/$ref^{commit}" >/dev/null; then
+                commit="$(git rev-parse "origin/$ref^{commit}")"
+              else
+                commit="$(git rev-parse "$ref^{commit}")"
+              fi
+              git checkout --detach "$commit"
+              git reset --hard "$commit"
+              git clean -fdx
+              mkdir -p "$WORKSPACE/report"
+              printf '%s\n' "$commit" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
+            '''
+          }
+{{ end }}
         }
       }
     }
@@ -217,12 +250,8 @@ pipeline {
             sh '''
               set -eu
               . report/build-env.sh
-              primary_commit="$(cat report/source-{{ $.PrimarySourceKey }}-commit.txt 2>/dev/null || true)"
-              image_tag_commit="$(printf '%s' "$primary_commit" | cut -c1-8)"
-              if [ -z "$image_tag_commit" ]; then
-                image_tag_commit='{{ $.ImageTagFallback }}'
-              fi
-              image_uri='{{ .ImageRepository }}:{{ $.ImageTagDate }}-'"${image_tag_commit}"'-{{ .Key }}'
+              image_tag_branch='{{ $.ImageTagBranch }}'
+              image_uri='{{ .ImageRepository }}:{{ $.ImageTagDate }}-'"${image_tag_branch}"'-{{ $.ImageTagVersion }}'
               job_name=$(printf '%s' "${JOB_NAME:-paas}" | tr '/ ' '--')
               cache_dir="/backup_data/buildx-cache/${job_name}/{{ .Key }}"
               cache_next="${cache_dir}.next"

@@ -150,7 +150,6 @@ export DOCKERFILE_REPOSITORY_CREDENTIALS_ID="${DOCKERFILE_REPOSITORY_CREDENTIALS
 WEB_HOST="${WEB_HOST:-0.0.0.0}"
 WEB_PORT="${WEB_PORT:-5173}"
 DEV_SEED_SOURCE_URL="${PAAS_DEV_SEED_SOURCE_URL:-http://192.168.100.80/paas/sbg/macc/log-receiver.git}"
-DEV_SEED_SOURCE_SSH_URL="${PAAS_DEV_SEED_SOURCE_SSH_URL:-ssh://git@192.168.100.80:2422/paas/sbg/macc/log-receiver.git}"
 DEV_SEED_ARTIFACT_COPY_COMMAND='cp log-receiver/build/libs/log-receiver.jar "$PAAS_ARTIFACT_OUTPUT/app.jar"'
 MYSQL_CLIENT_IMAGE="${PAAS_MYSQL_CLIENT_IMAGE:-m.daocloud.io/docker.io/library/mysql:8.0}"
 
@@ -415,9 +414,8 @@ ensure_backend_stopped_for_recreate() {
 }
 
 seed_dev_data_with_mysql_client() {
-  local source_url source_ssh_url artifact_copy_command
+  local source_url artifact_copy_command
   source_url="$(mysql_escape_literal "$DEV_SEED_SOURCE_URL")"
-  source_ssh_url="$(mysql_escape_literal "$DEV_SEED_SOURCE_SSH_URL")"
   artifact_copy_command="$(mysql_escape_literal "$DEV_SEED_ARTIFACT_COPY_COMMAND")"
 
   echo "通过 MySQL 客户端注入 SBG/MACC 开发测试数据"
@@ -426,14 +424,17 @@ SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;
 SET @now := UTC_TIMESTAMP(6);
 SET @tenant_id := 'tenant_sbg';
 SET @project_id := 'project_macc';
-SET @repository_id := 'source_repo_log_receiver';
 SET @application_id := 'app_log_receiver';
 SET @application_source_id := 'app_source_log_receiver_main';
 SET @workload_id := 'workload_log_receiver';
 SET @pipeline_id := 'build_pipeline_log_receiver_main';
 SET @pipeline_source_id := 'build_pipeline_source_log_receiver_main';
+SET @delivery_flow_template_id := 'delivery_flow_template_frql5fvuidx4zsr342koy7k434';
+SET @cluster_id := 'cluster_ujdsav3ur6oocxsx6quqjdjona';
 SET @source_url := '${source_url}';
-SET @source_ssh_url := '${source_ssh_url}';
+SET @source_type := 'git';
+SET @source_ref := 'main';
+SET @svn_revision := '';
 SET @artifact_copy_command := '${artifact_copy_command}';
 SET @build_command := 'gradle --no-daemon --parallel --max-workers=12 :log-receiver:bootJar -x test';
 
@@ -467,6 +468,79 @@ ON DUPLICATE KEY UPDATE
   role_id = VALUES(role_id),
   updated_at = VALUES(updated_at);
 
+INSERT INTO clusters (
+  id, tenant_id, name, region, labels_json, server_version, status, agent_token_hash,
+  last_heartbeat_at, created_at, updated_at
+) VALUES (
+  @cluster_id, @tenant_id, '长周期测试集群', '广州', JSON_OBJECT('cloud', 'aliyun'), '',
+  'ready', '', NULL, @now, @now
+)
+ON DUPLICATE KEY UPDATE
+  tenant_id = VALUES(tenant_id),
+  name = VALUES(name),
+  region = VALUES(region),
+  labels_json = VALUES(labels_json),
+  server_version = VALUES(server_version),
+  status = VALUES(status),
+  updated_at = VALUES(updated_at);
+
+INSERT INTO delivery_flow_templates (id, tenant_id, name, created_at, updated_at)
+VALUES (@delivery_flow_template_id, @tenant_id, '默认交付流模板', @now, @now)
+ON DUPLICATE KEY UPDATE
+  name = VALUES(name),
+  updated_at = VALUES(updated_at);
+SELECT @delivery_flow_template_id := id FROM delivery_flow_templates WHERE tenant_id = @tenant_id LIMIT 1;
+
+INSERT INTO delivery_flow_template_stages (
+  id, tenant_id, template_id, stage_key, display_name, color, stage_order,
+  layout_column, layout_row, status, requires_approval, requires_verification,
+  approve_roles_json, verify_roles_json, created_at, updated_at
+) VALUES
+  ('delivery_flow_stage_template_4fgtnxod72lvfecsv5gymzokom', @tenant_id, @delivery_flow_template_id, 'test', '测试', '#44AA99', 1, 1, 1, 'enabled', 0, 1, JSON_ARRAY(), JSON_ARRAY('developer', 'operator'), @now, @now),
+  ('delivery_flow_stage_template_uajthjvctuns3vnye3ubcwfg6y', @tenant_id, @delivery_flow_template_id, 'prod1', '生产1', '#CC79A7', 2, 3, 0, 'enabled', 0, 0, JSON_ARRAY('prod_approver'), JSON_ARRAY('operator', 'prod_approver'), @now, @now),
+  ('delivery_flow_stage_template_2rg4ctxh5mon7n3mgv3yz35goa', @tenant_id, @delivery_flow_template_id, 'dev', '开发', '#56B4E9', 3, 0, 1, 'enabled', 0, 0, JSON_ARRAY(), JSON_ARRAY(), @now, @now),
+  ('delivery_flow_stage_template_lgtr2qbsydsnxyphs2nm2y26re', @tenant_id, @delivery_flow_template_id, 'staging', '预发', '#D55E00', 4, 2, 1, 'enabled', 0, 1, JSON_ARRAY(), JSON_ARRAY(), @now, @now),
+  ('delivery_flow_stage_template_lt5rc3lvko4f7p6uwjzhomoymm', @tenant_id, @delivery_flow_template_id, 'prod2', '生产2', '#CC79A7', 5, 3, 2, 'enabled', 0, 0, JSON_ARRAY(), JSON_ARRAY(), @now, @now)
+ON DUPLICATE KEY UPDATE
+  template_id = VALUES(template_id),
+  display_name = VALUES(display_name),
+  color = VALUES(color),
+  stage_order = VALUES(stage_order),
+  layout_column = VALUES(layout_column),
+  layout_row = VALUES(layout_row),
+  status = VALUES(status),
+  requires_approval = VALUES(requires_approval),
+  requires_verification = VALUES(requires_verification),
+  approve_roles_json = VALUES(approve_roles_json),
+  verify_roles_json = VALUES(verify_roles_json),
+  updated_at = VALUES(updated_at);
+
+INSERT INTO delivery_flow_template_edges (
+  id, tenant_id, template_id, from_stage_key, to_stage_key, created_at, updated_at
+) VALUES
+  ('delivery_flow_template_edge_6rcr4h6rw4nlpuknl3febb7ppa', @tenant_id, @delivery_flow_template_id, 'dev', 'test', @now, @now),
+  ('delivery_flow_template_edge_b4vd5q5ul3kxf4ramzjzecvavy', @tenant_id, @delivery_flow_template_id, 'test', 'staging', @now, @now),
+  ('delivery_flow_template_edge_732azbh4xfri4lmyuidsn7mbbq', @tenant_id, @delivery_flow_template_id, 'staging', 'prod1', @now, @now),
+  ('delivery_flow_template_edge_3x44jbztwhn2vjcvurxda6lqgy', @tenant_id, @delivery_flow_template_id, 'staging', 'prod2', @now, @now)
+ON DUPLICATE KEY UPDATE
+  tenant_id = VALUES(tenant_id),
+  template_id = VALUES(template_id),
+  updated_at = VALUES(updated_at);
+
+INSERT INTO stage_cluster_bindings (
+  id, tenant_id, stage_key, cluster_id, cluster_name, status, created_at, updated_at
+) VALUES
+  ('stage_cluster_binding_b262g7e655f3o6ihsbfooxkhry', @tenant_id, 'dev', @cluster_id, '长周期测试集群', 'active', @now, @now),
+  ('stage_cluster_binding_46hogifyi6farpbtyf2rbznlpe', @tenant_id, 'test', @cluster_id, '长周期测试集群', 'active', @now, @now),
+  ('stage_cluster_binding_kptqcnzk3yrqvxwwu2wkw7t4uq', @tenant_id, 'staging', @cluster_id, '长周期测试集群', 'active', @now, @now),
+  ('stage_cluster_binding_b727ppqwrgmlnnovtxwiukaz5q', @tenant_id, 'prod1', @cluster_id, '长周期测试集群', 'active', @now, @now),
+  ('stage_cluster_binding_5dn73ysnsk4ihvrkl3efnodu4y', @tenant_id, 'prod2', @cluster_id, '长周期测试集群', 'active', @now, @now)
+ON DUPLICATE KEY UPDATE
+  cluster_id = VALUES(cluster_id),
+  cluster_name = VALUES(cluster_name),
+  status = VALUES(status),
+  updated_at = VALUES(updated_at);
+
 INSERT INTO projects (id, tenant_id, name, display_name, description, created_at, updated_at)
 VALUES (@project_id, @tenant_id, 'macc', 'macc', 'MACC 测试项目', @now, @now)
 ON DUPLICATE KEY UPDATE
@@ -474,24 +548,6 @@ ON DUPLICATE KEY UPDATE
   description = VALUES(description),
   updated_at = VALUES(updated_at);
 SELECT @project_id := id FROM projects WHERE tenant_id = @tenant_id AND name = 'macc' LIMIT 1;
-
-INSERT INTO source_repositories (
-  id, tenant_id, project_id, name, display_name, description, git_provider,
-  git_project_id, http_url, ssh_url, default_branch, status, created_at, updated_at
-) VALUES (
-  @repository_id, @tenant_id, @project_id, 'log-receiver', 'log-receiver', '日志接收服务源码仓库',
-  'gitlab', '', @source_url, @source_ssh_url, 'main', 'ready', @now, @now
-)
-ON DUPLICATE KEY UPDATE
-  display_name = VALUES(display_name),
-  description = VALUES(description),
-  git_provider = VALUES(git_provider),
-  http_url = VALUES(http_url),
-  ssh_url = VALUES(ssh_url),
-  default_branch = VALUES(default_branch),
-  status = VALUES(status),
-  updated_at = VALUES(updated_at);
-SELECT @repository_id := id FROM source_repositories WHERE project_id = @project_id AND name = 'log-receiver' LIMIT 1;
 
 INSERT INTO applications (
   id, tenant_id, project_id, name, display_name, description, runtime_environment_id, status, created_at, updated_at
@@ -512,17 +568,23 @@ SET @application_source_id := COALESCE((
 ), @application_source_id);
 
 INSERT INTO application_sources (
-  id, tenant_id, project_id, application_id, source_key, display_name, source_repository_id,
+  id, tenant_id, project_id, application_id, source_key, display_name,
+  source_type, source_url, source_ref, svn_revision,
   jenkins_template_id, build_environment_id, source_path, build_command, artifact_copy_command,
   runtime_base_image, artifact_deploy_path, default_ref, is_primary, created_at, updated_at
 ) VALUES (
-  @application_source_id, @tenant_id, @project_id, @application_id, 'main', '主代码源', @repository_id,
+  @application_source_id, @tenant_id, @project_id, @application_id, 'main', '主代码源',
+  @source_type, @source_url, @source_ref, @svn_revision,
   '', COALESCE(@build_environment_id, ''), '.', @build_command, @artifact_copy_command,
-  '', '', 'main', 1, @now, @now
+  '', '', @source_ref, 1, @now, @now
 )
 ON DUPLICATE KEY UPDATE
   display_name = VALUES(display_name),
-  source_repository_id = VALUES(source_repository_id),
+  source_type = VALUES(source_type),
+  source_url = VALUES(source_url),
+  source_ref = VALUES(source_ref),
+  svn_revision = VALUES(svn_revision),
+  jenkins_template_id = VALUES(jenkins_template_id),
   build_environment_id = VALUES(build_environment_id),
   source_path = VALUES(source_path),
   build_command = VALUES(build_command),
@@ -547,15 +609,6 @@ ON DUPLICATE KEY UPDATE
   dockerfile_path = VALUES(dockerfile_path),
   selector_labels_json = VALUES(selector_labels_json),
   position = VALUES(position);
-
-INSERT INTO source_repository_associations (
-  source_repository_id, application_id, application_name, application_display_name
-) VALUES (
-  @repository_id, @application_id, 'log-receiver', 'log-receiver'
-)
-ON DUPLICATE KEY UPDATE
-  application_name = VALUES(application_name),
-  application_display_name = VALUES(application_display_name);
 
 SET @pipeline_id := COALESCE((
   SELECT id FROM build_pipelines
@@ -613,13 +666,15 @@ SET @pipeline_source_id := COALESCE((
 
 INSERT INTO build_pipeline_sources (
   id, tenant_id, project_id, application_id, pipeline_id, source_key, display_name,
-  source_repository_id, build_environment_id, source_path, build_spec, is_primary, created_at, updated_at
+  source_type, source_url, source_ref, svn_revision,
+  build_environment_id, source_path, build_spec, is_primary, created_at, updated_at
 ) VALUES (
   @pipeline_source_id, @tenant_id, @project_id, @application_id, @pipeline_id, 'main', '主代码源',
-  @repository_id, COALESCE(@build_environment_id, ''), '.',
+  @source_type, @source_url, @source_ref, @svn_revision,
+  COALESCE(@build_environment_id, ''), '.',
   JSON_OBJECT(
     'source_path', '.',
-    'default_ref', 'main',
+    'default_ref', @source_ref,
     'build_command', @build_command,
     'artifact_copy_command', @artifact_copy_command,
     'runtime_base_image', '',
@@ -629,7 +684,10 @@ INSERT INTO build_pipeline_sources (
 )
 ON DUPLICATE KEY UPDATE
   display_name = VALUES(display_name),
-  source_repository_id = VALUES(source_repository_id),
+  source_type = VALUES(source_type),
+  source_url = VALUES(source_url),
+  source_ref = VALUES(source_ref),
+  svn_revision = VALUES(svn_revision),
   build_environment_id = VALUES(build_environment_id),
   source_path = VALUES(source_path),
   build_spec = VALUES(build_spec),

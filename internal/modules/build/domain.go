@@ -112,6 +112,13 @@ const (
 	BuildPipelineStatusDisabled BuildPipelineStatus = "disabled"
 )
 
+type SourceType string
+
+const (
+	SourceTypeGit SourceType = "git"
+	SourceTypeSVN SourceType = "svn"
+)
+
 type BuildPipeline struct {
 	ID                  shared.ID               `json:"id"`
 	TenantID            shared.ID               `json:"tenant_id"`
@@ -132,20 +139,23 @@ type BuildPipeline struct {
 }
 
 type BuildPipelineSource struct {
-	ID                 shared.ID `json:"id"`
-	TenantID           shared.ID `json:"tenant_id"`
-	ProjectID          shared.ID `json:"project_id"`
-	ApplicationID      shared.ID `json:"application_id"`
-	PipelineID         shared.ID `json:"pipeline_id"`
-	Key                string    `json:"key"`
-	DisplayName        string    `json:"display_name"`
-	SourceRepositoryID shared.ID `json:"source_repository_id"`
-	BuildEnvironmentID shared.ID `json:"build_environment_id"`
-	SourcePath         string    `json:"source_path"`
-	BuildSpec          BuildSpec `json:"build_spec"`
-	IsPrimary          bool      `json:"is_primary"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                 shared.ID  `json:"id"`
+	TenantID           shared.ID  `json:"tenant_id"`
+	ProjectID          shared.ID  `json:"project_id"`
+	ApplicationID      shared.ID  `json:"application_id"`
+	PipelineID         shared.ID  `json:"pipeline_id"`
+	Key                string     `json:"key"`
+	DisplayName        string     `json:"display_name"`
+	SourceType         SourceType `json:"source_type"`
+	SourceURL          string     `json:"source_url"`
+	SourceRef          string     `json:"source_ref"`
+	SVNRevision        string     `json:"svn_revision,omitempty"`
+	BuildEnvironmentID shared.ID  `json:"build_environment_id"`
+	SourcePath         string     `json:"source_path"`
+	BuildSpec          BuildSpec  `json:"build_spec"`
+	IsPrimary          bool       `json:"is_primary"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 type BuildRunStatus string
@@ -179,8 +189,9 @@ type BuildRun struct {
 	PipelineDisplayName string         `json:"pipeline_display_name"`
 	ApplicationID       shared.ID      `json:"application_id"`
 	WorkloadID          shared.ID      `json:"workload_id"`
-	SourceRepositoryID  shared.ID      `json:"source_repository_id"`
-	GitRef              string         `json:"git_ref"`
+	SourceType          SourceType     `json:"source_type"`
+	SourceURL           string         `json:"source_url"`
+	SourceRef           string         `json:"source_ref"`
 	CommitSHA           string         `json:"commit_sha"`
 	Version             string         `json:"version"`
 	Status              BuildRunStatus `json:"status"`
@@ -197,18 +208,19 @@ type BuildRun struct {
 }
 
 type BuildRunSource struct {
-	ID                 shared.ID `json:"id"`
-	TenantID           shared.ID `json:"tenant_id"`
-	ProjectID          shared.ID `json:"project_id"`
-	BuildRunID         shared.ID `json:"build_run_id"`
-	ApplicationID      shared.ID `json:"application_id"`
-	SourceKey          string    `json:"source_key"`
-	SourceRepositoryID shared.ID `json:"source_repository_id"`
-	GitRef             string    `json:"git_ref"`
-	CommitSHA          string    `json:"commit_sha"`
-	SourcePath         string    `json:"source_path"`
-	IsPrimary          bool      `json:"is_primary"`
-	CreatedAt          time.Time `json:"created_at"`
+	ID            shared.ID  `json:"id"`
+	TenantID      shared.ID  `json:"tenant_id"`
+	ProjectID     shared.ID  `json:"project_id"`
+	BuildRunID    shared.ID  `json:"build_run_id"`
+	ApplicationID shared.ID  `json:"application_id"`
+	SourceKey     string     `json:"source_key"`
+	SourceType    SourceType `json:"source_type"`
+	SourceURL     string     `json:"source_url"`
+	SourceRef     string     `json:"source_ref"`
+	CommitSHA     string     `json:"commit_sha"`
+	SourcePath    string     `json:"source_path"`
+	IsPrimary     bool       `json:"is_primary"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 type BuildArtifactType string

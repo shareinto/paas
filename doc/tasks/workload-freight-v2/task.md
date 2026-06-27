@@ -289,6 +289,7 @@ POST /api/v1/applications/{app_id}/delivery/stages/{stage_id}/promotions
 - [ ] 校验 custom_image 镜像地址格式。
 - [ ] 实现 Stage eligible-freights 查询。
 - [ ] Promotion 创建前校验 Freight 完整性和 Stage 顺序。
+- [ ] 发布和审核弹窗展示最终渲染后的 Kubernetes `manifests.yaml` diff，不展示 `source_fingerprint` 或内部 snapshot diff。
 - [ ] 补充 Release、Freight、Promotion 状态机测试。
 
 ### Task 5: gitops-deployment 模块

@@ -622,6 +622,15 @@ func (h *consoleV2Handler) approvalTaskDetail(ctx context.Context, promotionID s
 		PendingFreight: freightSummary(pending.Freight),
 		DeployItems:    deploySnapshotItems(pending.Items),
 	}
+	spec, err := h.delivery.BuildGitOpsPromotionSpec(ctx, promotion.ID)
+	if err != nil {
+		return consoleV2ApprovalDetail{}, err
+	}
+	expectedManifest, currentManifest, err := h.gitops.PreviewPromotionManifest(ctx, spec)
+	if err != nil {
+		return consoleV2ApprovalDetail{}, err
+	}
+	detail.ConfigDiff = manifestDiff(currentManifest, expectedManifest)
 	if currentFreightID.IsZero() {
 		return detail, nil
 	}
@@ -632,7 +641,6 @@ func (h *consoleV2Handler) approvalTaskDetail(ctx context.Context, promotionID s
 	currentSummary := freightSummary(current.Freight)
 	detail.CurrentFreight = &currentSummary
 	detail.ImageChanges = imageChanges(current.Items, pending.Items)
-	detail.ConfigDiff = configDiff(current.Freight.SourceFingerprint, pending.Freight.SourceFingerprint)
 	return detail, nil
 }
 
@@ -743,20 +751,20 @@ func freightItemImage(item delivery.FreightItem) string {
 	return "-"
 }
 
-func configDiff(current string, pending string) string {
+func manifestDiff(current string, pending string) string {
 	current = strings.TrimSpace(current)
 	pending = strings.TrimSpace(pending)
 	if current == "" && pending == "" || current == pending {
 		return ""
 	}
-	return strings.Join([]string{
-		"diff --git a/workload-config.snapshot b/workload-config.snapshot",
-		"--- a/workload-config.snapshot",
-		"+++ b/workload-config.snapshot",
+	lines := []string{
+		"diff --git a/manifests.yaml b/manifests.yaml",
+		"--- a/manifests.yaml",
+		"+++ b/manifests.yaml",
 		"@@",
-		"- source_fingerprint: " + firstNonEmpty(current, "<none>"),
-		"+ source_fingerprint: " + firstNonEmpty(pending, "<none>"),
-	}, "\n")
+	}
+	lines = append(lines, computeUnifiedDiff(current, pending)...)
+	return strings.Join(lines, "\n")
 }
 
 func formatConsoleTime(t time.Time) string {

@@ -2098,17 +2098,9 @@ func (s *Service) applyPromotion(ctx context.Context, promotion Promotion, targe
 	if err := s.repo.UpdatePromotion(ctx, promotion); err != nil {
 		return Promotion{}, err
 	}
-	artifacts := make([]GitOpsArtifactSpec, 0, len(items))
-	for i, item := range items {
-		spec := GitOpsArtifactSpec{WorkloadID: item.WorkloadID, ContainerName: normalizeContainerName(item.ContainerName), Name: item.Name, SourceKey: item.SourceKey, URI: item.URI, Repository: item.ImageRepository, Tag: item.ImageTag, Digest: item.Digest, IsPrimary: i == 0 || item.Type == FreightItemApplicationRelease}
-		if !item.ImageBundleID.IsZero() {
-			images, err := s.repo.ListImageBundleImages(ctx, item.ImageBundleID)
-			if err != nil {
-				return Promotion{}, err
-			}
-			spec.Variants = imageBundleVariants(images)
-		}
-		artifacts = append(artifacts, spec)
+	artifacts, err := s.gitOpsArtifactsForFreightItems(ctx, items)
+	if err != nil {
+		return Promotion{}, err
 	}
 	result, err := s.gitopsOrError().ApplyPromotion(ctx, GitOpsPromotionSpec{PromotionID: promotion.ID, FreightID: promotion.FreightID, ApplicationID: promotion.ApplicationID, StageKey: promotion.TargetStageKey, TargetClusters: targetClusters, Artifacts: artifacts, IsRollback: promotion.IsRollback})
 	if err != nil {
@@ -2133,6 +2125,45 @@ func (s *Service) applyPromotion(ctx context.Context, promotion Promotion, targe
 	}
 	_ = s.publish(ctx, "PromotionManifestUpdated", s.clock.Now(), map[string]any{"application_id": promotion.ApplicationID, "stage_key": promotion.TargetStageKey, "promotion_id": promotion.ID, "freight_id": promotion.FreightID})
 	return promotion, nil
+}
+
+func (s *Service) BuildGitOpsPromotionSpec(ctx context.Context, promotionID shared.ID) (GitOpsPromotionSpec, error) {
+	promotion, err := s.repo.GetPromotion(ctx, promotionID)
+	if err != nil {
+		return GitOpsPromotionSpec{}, err
+	}
+	_, _, targetClusters, err := s.validateStagePromotionTarget(ctx, promotion.ApplicationID, promotion.TargetStageKey, nil, promotion.NamespaceOverride)
+	if err != nil {
+		return GitOpsPromotionSpec{}, err
+	}
+	items, err := s.repo.ListFreightItems(ctx, promotion.FreightID)
+	if err != nil {
+		return GitOpsPromotionSpec{}, err
+	}
+	if len(items) == 0 {
+		return GitOpsPromotionSpec{}, shared.NewError(shared.CodeFailedPrecondition, "freight has no items")
+	}
+	artifacts, err := s.gitOpsArtifactsForFreightItems(ctx, items)
+	if err != nil {
+		return GitOpsPromotionSpec{}, err
+	}
+	return GitOpsPromotionSpec{PromotionID: promotion.ID, FreightID: promotion.FreightID, ApplicationID: promotion.ApplicationID, StageKey: promotion.TargetStageKey, TargetClusters: targetClusters, Artifacts: artifacts, IsRollback: promotion.IsRollback}, nil
+}
+
+func (s *Service) gitOpsArtifactsForFreightItems(ctx context.Context, items []FreightItem) ([]GitOpsArtifactSpec, error) {
+	artifacts := make([]GitOpsArtifactSpec, 0, len(items))
+	for i, item := range items {
+		spec := GitOpsArtifactSpec{WorkloadID: item.WorkloadID, ContainerName: normalizeContainerName(item.ContainerName), Name: item.Name, SourceKey: item.SourceKey, URI: item.URI, Repository: item.ImageRepository, Tag: item.ImageTag, Digest: item.Digest, IsPrimary: i == 0 || item.Type == FreightItemApplicationRelease}
+		if !item.ImageBundleID.IsZero() {
+			images, err := s.repo.ListImageBundleImages(ctx, item.ImageBundleID)
+			if err != nil {
+				return nil, err
+			}
+			spec.Variants = imageBundleVariants(images)
+		}
+		artifacts = append(artifacts, spec)
+	}
+	return artifacts, nil
 }
 
 func (s *Service) pipelineFreightItem(ctx context.Context, item FreightItem, input CreateFreightItemInput) (FreightItem, error) {

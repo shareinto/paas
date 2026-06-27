@@ -46,18 +46,6 @@ type Repository interface {
 	ListApplicationStageEvents(ctx context.Context, applicationID shared.ID, stageKey string, page shared.PageRequest) (shared.PageResult[ApplicationStageEvent], error)
 }
 
-type SourceRepositoryRef struct {
-	ID            shared.ID
-	TenantID      shared.ID
-	ProjectID     shared.ID
-	DefaultBranch string
-	Status        string
-}
-
-type SourceRepositoryQuery interface {
-	GetSourceRepository(ctx context.Context, id shared.ID) (SourceRepositoryRef, error)
-}
-
 type JenkinsTemplateRef struct {
 	ID     shared.ID
 	Status string
@@ -118,7 +106,10 @@ type BuildPipelineRef struct {
 type BuildPipelineSourceInput struct {
 	Key                string    `json:"key"`
 	DisplayName        string    `json:"display_name"`
-	SourceRepositoryID shared.ID `json:"source_repository_id"`
+	SourceType         string    `json:"source_type"`
+	SourceURL          string    `json:"source_url"`
+	SourceRef          string    `json:"source_ref"`
+	SVNRevision        string    `json:"svn_revision,omitempty"`
 	BuildEnvironmentID shared.ID `json:"build_environment_id"`
 	SourcePath         string    `json:"source_path"`
 	BuildSpec          BuildSpec `json:"build_spec"`

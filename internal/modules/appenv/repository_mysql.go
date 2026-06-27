@@ -103,11 +103,11 @@ func (r *MySQLRepository) CreateApplicationSource(ctx context.Context, source Ap
 func (r *MySQLRepository) UpdateApplicationSource(ctx context.Context, source ApplicationSource) error {
 	result, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE application_sources
-SET source_key = ?, display_name = ?, source_repository_id = ?, jenkins_template_id = ?, build_environment_id = ?,
+SET source_key = ?, display_name = ?, source_type = ?, source_url = ?, source_ref = ?, svn_revision = ?, jenkins_template_id = ?, build_environment_id = ?,
     source_path = ?, build_command = ?, artifact_copy_command = ?, runtime_base_image = ?, artifact_deploy_path = ?,
     default_ref = ?, is_primary = ?, updated_at = ?
 WHERE id = ?`,
-		normalizedSourceKey(source.Key), source.DisplayName, source.SourceRepositoryID, source.JenkinsTemplateID, source.BuildEnvironmentID,
+		normalizedSourceKey(source.Key), source.DisplayName, source.SourceType, source.SourceURL, source.SourceRef, source.SVNRevision, source.JenkinsTemplateID, source.BuildEnvironmentID,
 		source.SourcePath, source.BuildSpec.BuildCommand, source.BuildSpec.ArtifactCopyCommand, source.BuildSpec.RuntimeBaseImage,
 		source.BuildSpec.ArtifactDeployPath, source.BuildSpec.DefaultRef, source.IsPrimary, mysqlTime(source.UpdatedAt), source.ID)
 	if err != nil {
@@ -516,9 +516,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 func (r *MySQLRepository) insertApplicationSource(ctx context.Context, source ApplicationSource) error {
 	key := normalizedSourceKey(source.Key)
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO application_sources (id, tenant_id, project_id, application_id, source_key, display_name, source_repository_id, jenkins_template_id, build_environment_id, source_path, build_command, artifact_copy_command, runtime_base_image, artifact_deploy_path, default_ref, is_primary, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		source.ID, source.TenantID, source.ProjectID, source.ApplicationID, key, source.DisplayName, source.SourceRepositoryID, source.JenkinsTemplateID, source.BuildEnvironmentID, source.SourcePath, source.BuildSpec.BuildCommand, source.BuildSpec.ArtifactCopyCommand, source.BuildSpec.RuntimeBaseImage, source.BuildSpec.ArtifactDeployPath, source.BuildSpec.DefaultRef, source.IsPrimary, mysqlTime(source.CreatedAt), mysqlTime(source.UpdatedAt))
+INSERT INTO application_sources (id, tenant_id, project_id, application_id, source_key, display_name, source_type, source_url, source_ref, svn_revision, jenkins_template_id, build_environment_id, source_path, build_command, artifact_copy_command, runtime_base_image, artifact_deploy_path, default_ref, is_primary, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		source.ID, source.TenantID, source.ProjectID, source.ApplicationID, key, source.DisplayName, source.SourceType, source.SourceURL, source.SourceRef, source.SVNRevision, source.JenkinsTemplateID, source.BuildEnvironmentID, source.SourcePath, source.BuildSpec.BuildCommand, source.BuildSpec.ArtifactCopyCommand, source.BuildSpec.RuntimeBaseImage, source.BuildSpec.ArtifactDeployPath, source.BuildSpec.DefaultRef, source.IsPrimary, mysqlTime(source.CreatedAt), mysqlTime(source.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "application source already exists", "create application source failed")
 }
 
@@ -611,7 +611,7 @@ func applicationSelect() string {
 	return "SELECT id, tenant_id, project_id, name, display_name, description, runtime_environment_id, status, created_at, updated_at FROM applications"
 }
 func applicationSourceSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, source_key, display_name, source_repository_id, jenkins_template_id, build_environment_id, source_path, build_command, artifact_copy_command, runtime_base_image, artifact_deploy_path, default_ref, is_primary, created_at, updated_at FROM application_sources"
+	return "SELECT id, tenant_id, project_id, application_id, source_key, display_name, source_type, source_url, source_ref, svn_revision, jenkins_template_id, build_environment_id, source_path, build_command, artifact_copy_command, runtime_base_image, artifact_deploy_path, default_ref, is_primary, created_at, updated_at FROM application_sources"
 }
 func workloadSelect() string {
 	return "SELECT id, tenant_id, project_id, application_id, name, display_name, workload_type, description, status, image_source_mode, pipeline_id, created_by, created_at, updated_at FROM workloads"
@@ -639,7 +639,7 @@ func scanApplication(scanner appenvScanner) (Application, error) {
 }
 func scanApplicationSource(scanner appenvScanner) (ApplicationSource, error) {
 	var source ApplicationSource
-	err := scanner.Scan(&source.ID, &source.TenantID, &source.ProjectID, &source.ApplicationID, &source.Key, &source.DisplayName, &source.SourceRepositoryID, &source.JenkinsTemplateID, &source.BuildEnvironmentID, &source.SourcePath, &source.BuildSpec.BuildCommand, &source.BuildSpec.ArtifactCopyCommand, &source.BuildSpec.RuntimeBaseImage, &source.BuildSpec.ArtifactDeployPath, &source.BuildSpec.DefaultRef, &source.IsPrimary, &source.CreatedAt, &source.UpdatedAt)
+	err := scanner.Scan(&source.ID, &source.TenantID, &source.ProjectID, &source.ApplicationID, &source.Key, &source.DisplayName, &source.SourceType, &source.SourceURL, &source.SourceRef, &source.SVNRevision, &source.JenkinsTemplateID, &source.BuildEnvironmentID, &source.SourcePath, &source.BuildSpec.BuildCommand, &source.BuildSpec.ArtifactCopyCommand, &source.BuildSpec.RuntimeBaseImage, &source.BuildSpec.ArtifactDeployPath, &source.BuildSpec.DefaultRef, &source.IsPrimary, &source.CreatedAt, &source.UpdatedAt)
 	source.BuildSpec.SourcePath = source.SourcePath
 	return source, err
 }

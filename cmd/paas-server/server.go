@@ -242,12 +242,11 @@ func newApplication(ctx context.Context) (*application, error) {
 	jenkinsAdapter := buildRunnerFromEnv()
 	templateID := firstNonEmpty(os.Getenv("JENKINS_DEFAULT_TEMPLATE_ID"), "java-unified-v1")
 	buildEvents := &buildEventBridge{}
-	buildSvc := build.NewService(build.Options{Repository: buildRepo, SourceRepositoryQuery: sourceForBuild{service: sourceSvc}, BuildRunner: jenkinsAdapter, Audit: audit.BuildLogger{Logger: auditSvc}, EventPublisher: buildEvents, IDGenerator: ids, Clock: clock, TemplateID: templateID, CallbackURL: firstNonEmpty(os.Getenv("JENKINS_CALLBACK_BASE_URL"), "http://127.0.0.1:8080"), ImageRepository: firstNonEmpty(os.Getenv("IMAGE_REPOSITORY"), "registry.local/order-api"), DockerfileRepository: build.DockerfileRepositoryConfig{URL: firstNonEmpty(os.Getenv("DOCKERFILE_REPOSITORY_URL"), "ssh://git@192.168.100.80:2422/paas/dockerfiles.git"), Ref: os.Getenv("DOCKERFILE_REPOSITORY_REF"), CredentialsID: os.Getenv("DOCKERFILE_REPOSITORY_CREDENTIALS_ID")}})
+	buildSvc := build.NewService(build.Options{Repository: buildRepo, GitSourceQuery: gitSourceForBuild{git: gitAdapter}, BuildRunner: jenkinsAdapter, Audit: audit.BuildLogger{Logger: auditSvc}, EventPublisher: buildEvents, IDGenerator: ids, Clock: clock, TemplateID: templateID, CallbackURL: firstNonEmpty(os.Getenv("JENKINS_CALLBACK_BASE_URL"), "http://127.0.0.1:8080"), ImageRepository: firstNonEmpty(os.Getenv("IMAGE_REPOSITORY"), "registry.local/order-api"), DockerfileRepository: build.DockerfileRepositoryConfig{URL: firstNonEmpty(os.Getenv("DOCKERFILE_REPOSITORY_URL"), "ssh://git@192.168.100.80:2422/paas/dockerfiles.git"), Ref: os.Getenv("DOCKERFILE_REPOSITORY_REF"), CredentialsID: os.Getenv("DOCKERFILE_REPOSITORY_CREDENTIALS_ID")}})
 	appEvents := &appenvEventBridge{}
 	appSvc := appenv.NewService(appenv.Options{
 		Repository:               appRepo,
 		ProjectQuery:             tenantSvc,
-		SourceRepositoryQuery:    sourceForAppEnv{service: sourceSvc},
 		JenkinsTemplateQuery:     jenkinsTemplateForAppEnv{repo: buildRepo},
 		BuildEnvironmentQuery:    buildEnvironmentForAppEnv{repo: buildRepo},
 		RuntimeEnvironmentQuery:  runtimeEnvironmentForAppEnv{repo: buildRepo},
@@ -779,7 +778,7 @@ func (api developmentAPI) listBuilds(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			for _, run := range runs.Items {
-				rows = append(rows, buildRow{ID: run.ID.String(), Application: app.DisplayName, Status: buildStatusText(run.Status), Ref: run.GitRef, Commit: run.CommitSHA, StartedAt: formatOptional(run.StartedAt), Duration: durationText(run.StartedAt, run.FinishedAt)})
+				rows = append(rows, buildRow{ID: run.ID.String(), Application: app.DisplayName, Status: buildStatusText(run.Status), Ref: run.SourceRef, Commit: run.CommitSHA, StartedAt: formatOptional(run.StartedAt), Duration: durationText(run.StartedAt, run.FinishedAt)})
 			}
 		}
 	}
@@ -845,24 +844,28 @@ func (api developmentAPI) latestFreightSummary(ctx context.Context, applicationI
 	return freights.Items[0].Name
 }
 
-type sourceForAppEnv struct{ service *sourcerepository.Service }
-
-func (q sourceForAppEnv) GetSourceRepository(ctx context.Context, id shared.ID) (appenv.SourceRepositoryRef, error) {
-	repo, err := q.service.GetSourceRepository(ctx, id)
-	if err != nil {
-		return appenv.SourceRepositoryRef{}, err
-	}
-	return appenv.SourceRepositoryRef{ID: repo.ID, TenantID: repo.TenantID, ProjectID: repo.ProjectID, DefaultBranch: repo.DefaultBranch, Status: string(repo.Status)}, nil
+type gitSourceForBuild struct {
+	git sourcerepository.GitSourceRepositoryPort
 }
 
-type sourceForBuild struct{ service *sourcerepository.Service }
-
-func (q sourceForBuild) GetSourceRepository(ctx context.Context, id shared.ID) (build.SourceRepositoryRef, error) {
-	repo, err := q.service.GetSourceRepository(ctx, id)
+func (q gitSourceForBuild) ResolveProjectByHTTPURL(ctx context.Context, sourceURL string) (build.GitProjectRef, error) {
+	project, err := q.git.ResolveProjectByHTTPURL(ctx, sourceURL)
 	if err != nil {
-		return build.SourceRepositoryRef{}, err
+		return build.GitProjectRef{}, err
 	}
-	return build.SourceRepositoryRef{ID: repo.ID, HTTPURL: repo.HTTPURL, SSHURL: repo.SSHURL}, nil
+	return build.GitProjectRef{ID: project.ID}, nil
+}
+
+func (q gitSourceForBuild) ListBranches(ctx context.Context, gitProjectID string) ([]build.SourceBranch, error) {
+	branches, err := q.git.ListBranches(ctx, gitProjectID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]build.SourceBranch, 0, len(branches))
+	for _, branch := range branches {
+		out = append(out, build.SourceBranch{Name: branch.Name, Default: branch.Default})
+	}
+	return out, nil
 }
 
 type appForBuild struct {
@@ -1062,7 +1065,10 @@ func toBuildPipelineSourceInputs(inputs []appenv.BuildPipelineSourceInput) []bui
 		out = append(out, build.BuildPipelineSourceInput{
 			Key:                input.Key,
 			DisplayName:        input.DisplayName,
-			SourceRepositoryID: input.SourceRepositoryID,
+			SourceType:         build.SourceType(input.SourceType),
+			SourceURL:          input.SourceURL,
+			SourceRef:          input.SourceRef,
+			SVNRevision:        input.SVNRevision,
 			BuildEnvironmentID: input.BuildEnvironmentID,
 			SourcePath:         input.SourcePath,
 			BuildSpec:          toBuildSpec(input.BuildSpec),
@@ -1427,7 +1433,7 @@ func toBuildSpec(spec appenv.BuildSpec) build.BuildSpec {
 }
 
 func toBuildApplicationSourceRef(source appenv.ApplicationSource) build.ApplicationSourceRef {
-	return build.ApplicationSourceRef{ApplicationID: source.ApplicationID, Key: source.Key, DisplayName: source.DisplayName, SourceRepositoryID: source.SourceRepositoryID, JenkinsTemplateID: source.JenkinsTemplateID, BuildEnvironmentID: source.BuildEnvironmentID, SourcePath: source.SourcePath, BuildSpec: toBuildSpec(source.BuildSpec), IsPrimary: source.IsPrimary}
+	return build.ApplicationSourceRef{ApplicationID: source.ApplicationID, Key: source.Key, DisplayName: source.DisplayName, SourceType: build.SourceType(source.SourceType), SourceURL: source.SourceURL, SourceRef: source.SourceRef, SVNRevision: source.SVNRevision, JenkinsTemplateID: source.JenkinsTemplateID, BuildEnvironmentID: source.BuildEnvironmentID, SourcePath: source.SourcePath, BuildSpec: toBuildSpec(source.BuildSpec), IsPrimary: source.IsPrimary}
 }
 
 func toBuildRuntimeEnvironments(environments []appenv.ApplicationRuntimeEnvironment) []build.RuntimeEnvironmentRef {

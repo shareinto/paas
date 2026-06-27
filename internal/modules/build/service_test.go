@@ -54,16 +54,24 @@ func (q fakeApplicationQuery) ListApplicationSources(ctx context.Context, applic
 	return []ApplicationSourceRef{source}, nil
 }
 
-type fakeSourceRepositoryQuery struct {
-	repos map[shared.ID]SourceRepositoryRef
+type fakeGitSourceQuery struct {
+	projects map[string]GitProjectRef
+	branches map[string][]SourceBranch
 }
 
-func (q fakeSourceRepositoryQuery) GetSourceRepository(_ context.Context, id shared.ID) (SourceRepositoryRef, error) {
-	repo, ok := q.repos[id]
+func (q fakeGitSourceQuery) ResolveProjectByHTTPURL(_ context.Context, sourceURL string) (GitProjectRef, error) {
+	project, ok := q.projects[sourceURL]
 	if !ok {
-		return SourceRepositoryRef{}, shared.NewError(shared.CodeNotFound, "source repository not found")
+		return GitProjectRef{}, shared.NewError(shared.CodeNotFound, "git project not found")
 	}
-	return repo, nil
+	return project, nil
+}
+
+func (q fakeGitSourceQuery) ListBranches(_ context.Context, gitProjectID string) ([]SourceBranch, error) {
+	if branches, ok := q.branches[gitProjectID]; ok {
+		return branches, nil
+	}
+	return nil, shared.NewError(shared.CodeNotFound, "git branches not found")
 }
 
 type fakeWorkloadQuery struct{ workloads map[shared.ID][]WorkloadRef }
@@ -246,11 +254,13 @@ func newBuildTestEnv(t *testing.T) buildTestEnv {
 				"app_user": {ID: "app_user", TenantID: "tenant_a", ProjectID: "project_payment", TenantName: "rnd", ProjectName: "payment", Name: "user-api"},
 			},
 			sources: map[shared.ID]ApplicationSourceRef{
-				"app_user": {ApplicationID: "app_user", SourceRepositoryID: "repo_user", BuildSpec: validBuildSpec()},
+				"app_user": {ApplicationID: "app_user", SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main", BuildSpec: validBuildSpec()},
 			},
 		},
-		SourceRepositoryQuery: fakeSourceRepositoryQuery{repos: map[shared.ID]SourceRepositoryRef{
-			"repo_user": {ID: "repo_user", HTTPURL: "https://gitlab.example/payment/user-api.git", SSHURL: "git@gitlab.example:payment/user-api.git"},
+		GitSourceQuery: fakeGitSourceQuery{projects: map[string]GitProjectRef{
+			"https://gitlab.example/payment/user-api.git": {ID: "12"},
+		}, branches: map[string][]SourceBranch{
+			"12": {{Name: "main", Default: true}, {Name: "release/1.0"}},
 		}},
 		WorkloadQuery:     fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {{ID: "workload_api", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", Name: "api", DisplayName: "用户接口", Status: "enabled"}}}},
 		BuildRunner:       runner,
@@ -377,12 +387,12 @@ func createDefaultPipeline(t *testing.T, env buildTestEnv) BuildPipeline {
 		DisplayName:           "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "main",
-			DisplayName:        "主代码源",
-			SourceRepositoryID: "repo_user",
-			SourcePath:         validBuildSpec().SourcePath,
-			BuildSpec:          validBuildSpec(),
-			IsPrimary:          true,
+			Key:         "main",
+			DisplayName: "主代码源",
+			SourceType:  SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			SourcePath: validBuildSpec().SourcePath,
+			BuildSpec:  validBuildSpec(),
+			IsPrimary:  true,
 		}},
 	})
 	if err != nil {
@@ -403,10 +413,10 @@ func TestCreateBuildPipelineRequiresRuntimeEnvironments(t *testing.T) {
 		Name:          "main",
 		DisplayName:   "主流水线",
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "main",
-			SourceRepositoryID: "repo_user",
-			BuildSpec:          validBuildSpec(),
-			IsPrimary:          true,
+			Key:        "main",
+			SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			BuildSpec: validBuildSpec(),
+			IsPrimary: true,
 		}},
 	})
 	if shared.CodeOf(err) != shared.CodeInvalidArgument || !strings.Contains(err.Error(), "请选择一个运行时环境") {
@@ -426,10 +436,10 @@ func TestCreateBuildPipelinePersistsRuntimeSnapshots(t *testing.T) {
 		DisplayName:           "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "main",
-			SourceRepositoryID: "repo_user",
-			BuildSpec:          validBuildSpec(),
-			IsPrimary:          true,
+			Key:        "main",
+			SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			BuildSpec: validBuildSpec(),
+			IsPrimary: true,
 		}},
 	})
 	if err != nil {
@@ -482,10 +492,10 @@ func TestCreateBuildPipelineBackfillsRuntimeSnapshotFromImages(t *testing.T) {
 		DisplayName:           "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_images_only"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "main",
-			SourceRepositoryID: "repo_user",
-			BuildSpec:          spec,
-			IsPrimary:          true,
+			Key:        "main",
+			SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			BuildSpec: spec,
+			IsPrimary: true,
 		}},
 	})
 	if err != nil {
@@ -515,10 +525,10 @@ func TestCreateBuildPipelineRejectsMultipleRuntimeEnvironments(t *testing.T) {
 		DisplayName:           "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17", "runtime_env_java21"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "main",
-			SourceRepositoryID: "repo_user",
-			BuildSpec:          validBuildSpec(),
-			IsPrimary:          true,
+			Key:        "main",
+			SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			BuildSpec: validBuildSpec(),
+			IsPrimary: true,
 		}},
 	})
 	if shared.CodeOf(err) != shared.CodeInvalidArgument || !strings.Contains(err.Error(), "请选择一个运行时环境") {
@@ -538,10 +548,10 @@ func TestCreateBuildPipelineAcceptsRuntimeEnvironmentNames(t *testing.T) {
 		DisplayName:           "主流水线",
 		RuntimeEnvironmentIDs: []shared.ID{"java17"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "main",
-			SourceRepositoryID: "repo_user",
-			BuildSpec:          validBuildSpec(),
-			IsPrimary:          true,
+			Key:        "main",
+			SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			BuildSpec: validBuildSpec(),
+			IsPrimary: true,
 		}},
 	})
 	if err != nil {
@@ -755,6 +765,31 @@ func TestEnsureDefaultBuildConfigurationRefreshesSandboxBlockedTemplate(t *testi
 	}
 }
 
+func TestEnsureDefaultBuildConfigurationRefreshesBuiltinTemplateWithoutGitCredentials(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	oldContent := "pipeline { stages { stage('checkout {{ .Key }}') { steps { sh 'git clone --no-checkout {{ .RepoURL }} .' } } } }"
+	if err := env.repo.SaveBuildTemplate(ctx, BuildTemplate{
+		ID:      "global-build-template",
+		Name:    "global-build-template",
+		Version: 6,
+		Content: oldContent,
+	}); err != nil {
+		t.Fatalf("SaveBuildTemplate() error = %v", err)
+	}
+
+	if err := env.svc.EnsureDefaultBuildConfiguration(ctx, buildActor().ID); err != nil {
+		t.Fatalf("EnsureDefaultBuildConfiguration() error = %v", err)
+	}
+	template, err := env.repo.GetBuildTemplate(ctx)
+	if err != nil {
+		t.Fatalf("GetBuildTemplate() error = %v", err)
+	}
+	if template.Version != currentDefaultBuildTemplateVersion || template.Content == oldContent || !strings.Contains(template.Content, "PAAS_GIT_USER") {
+		t.Fatalf("builtin template without git credentials should refresh to version %d, got version=%d content=%q", currentDefaultBuildTemplateVersion, template.Version, template.Content)
+	}
+}
+
 func TestEnsureDefaultBuildConfigurationKeepsCustomTemplate(t *testing.T) {
 	env := newBuildTestEnv(t)
 	ctx := context.Background()
@@ -906,7 +941,7 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	if strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_BUILD_SOURCES") || strings.Contains(env.runner.jobs[0].TemplateXML, "SOURCE_REFS_JSON") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_RUNTIME") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_PACKAGE_SPEC") {
 		t.Fatalf("rendered Jenkinsfile should not depend on Jenkins parameters, got %s", env.runner.jobs[0].TemplateXML)
 	}
-	for _, want := range []string{"abc123", "/api/builds/" + run.ID.String() + "/callback", "registry.example/paas/user-api:", "image_tag_commit", "v1.0.1", "java17-aliyun", "artifacts: artifacts", "report/image-uri-java17-aliyun.txt"} {
+	for _, want := range []string{"/api/builds/" + run.ID.String() + "/callback", "registry.example/paas/user-api:", "image_tag_branch", "v1.0.1", "java17-aliyun", "artifacts: artifacts", "report/image-uri-java17-aliyun.txt", "commit_sha"} {
 		if !strings.Contains(env.runner.jobs[0].TemplateXML, want) {
 			t.Fatalf("rendered Jenkinsfile should contain %q for dynamic image callback, got %s", want, env.runner.jobs[0].TemplateXML)
 		}
@@ -967,12 +1002,12 @@ func TestCreateNamedPipelinesAndTriggerSelectedPipeline(t *testing.T) {
 		DisplayName:           "API 构建",
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "api",
-			DisplayName:        "API 源码",
-			SourceRepositoryID: "repo_user",
-			SourcePath:         "services/user-api",
-			BuildSpec:          validBuildSpec(),
-			IsPrimary:          true,
+			Key:         "api",
+			DisplayName: "API 源码",
+			SourceType:  SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			SourcePath: "services/user-api",
+			BuildSpec:  validBuildSpec(),
+			IsPrimary:  true,
 		}},
 	})
 	if err != nil {
@@ -985,10 +1020,10 @@ func TestCreateNamedPipelinesAndTriggerSelectedPipeline(t *testing.T) {
 		DisplayName:           "管理端构建",
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "admin",
-			DisplayName:        "管理端源码",
-			SourceRepositoryID: "repo_user",
-			SourcePath:         "frontend/admin",
+			Key:         "admin",
+			DisplayName: "管理端源码",
+			SourceType:  SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			SourcePath: "frontend/admin",
 			BuildSpec: BuildSpec{
 				SourcePath:          "frontend/admin",
 				BuildCommand:        "npm ci && npm run build",
@@ -1006,15 +1041,15 @@ func TestCreateNamedPipelinesAndTriggerSelectedPipeline(t *testing.T) {
 	if apiPipeline.ID == adminPipeline.ID || apiPipeline.Name != "api" || adminPipeline.Name != "admin" {
 		t.Fatalf("unexpected pipelines: api=%+v admin=%+v", apiPipeline, adminPipeline)
 	}
-	if _, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "api", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: []BuildPipelineSourceInput{{Key: "api", SourceRepositoryID: "repo_user", BuildSpec: validBuildSpec(), IsPrimary: true}}}); shared.CodeOf(err) != shared.CodeConflict {
+	if _, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "api", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: []BuildPipelineSourceInput{{Key: "api", SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main", BuildSpec: validBuildSpec(), IsPrimary: true}}}); shared.CodeOf(err) != shared.CodeConflict {
 		t.Fatalf("duplicate pipeline name should conflict, got %v", err)
 	}
 
-	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: adminPipeline.ID, Sources: []TriggerBuildSourceInput{{Key: "admin", GitRef: "release/admin"}}})
+	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: adminPipeline.ID, Sources: []TriggerBuildSourceInput{{Key: "admin", SourceRef: "release/admin"}}})
 	if err != nil {
 		t.Fatalf("TriggerBuild() error = %v", err)
 	}
-	if run.ApplicationID != "app_user" || run.PipelineID != adminPipeline.ID || run.GitRef != "release/admin" {
+	if run.ApplicationID != "app_user" || run.PipelineID != adminPipeline.ID || run.SourceRef != "release/admin" {
 		t.Fatalf("build run should use selected pipeline, got %+v", run)
 	}
 	if len(env.runner.jobs) != 1 || env.runner.jobs[0].JobName != "paas/rnd/payment/user-api/admin" {
@@ -1067,6 +1102,11 @@ func TestTriggerBuildRendersAcceleratedDefaultJenkinsfile(t *testing.T) {
 	}
 	xml := env.runner.jobs[0].TemplateXML
 	for _, want := range []string{
+		"credentialsId: &#39;aea4ebeb-2858-4850-b3e0-268e9aff9726&#39;",
+		"PAAS_GIT_USER",
+		"PAAS_GIT_PASSWORD",
+		"GIT_ASKPASS",
+		"GIT_TERMINAL_PROMPT=0",
 		"git fetch --prune --tags origin",
 		"git -C &#34;$checkout_dir&#34; rev-parse --verify --quiet &#34;origin/$ref^{commit}&#34;",
 		"commit=&#34;$(git -C &#34;$checkout_dir&#34; rev-parse &#34;origin/$ref^{commit}&#34;)&#34;",
@@ -1133,10 +1173,19 @@ func TestTriggerBuildImageTagDoesNotUseBuildRunID(t *testing.T) {
 	if strings.Contains(xml, "registry.example/paas/user-api:20260530-build_run_1-main") {
 		t.Fatalf("rendered image tag must not use build run id: %s", xml)
 	}
-	for _, want := range []string{"image_tag_commit=&#39;main&#39;", "registry.example/paas/user-api:", "java17-aliyun"} {
+	for _, want := range []string{"image_tag_branch=&#39;main&#39;", "registry.example/paas/user-api:", "java17-aliyun"} {
 		if !strings.Contains(xml, want) {
-			t.Fatalf("rendered image tag should fall back to git ref when commit is empty, missing %q: %s", want, xml)
+			t.Fatalf("rendered image tag should use git ref, missing %q: %s", want, xml)
 		}
+	}
+}
+
+func TestBuildImageBaseTagUsesBranchName(t *testing.T) {
+	run := BuildRun{Version: "v1.2.3", CreatedAt: time.Date(2026, 6, 26, 7, 7, 32, 0, time.UTC), CommitSHA: "940eef37"}
+	runSources := []BuildRunSource{{SourceKey: "main", SourceRef: "feature/log-receiver", CommitSHA: "940eef37", IsPrimary: true}}
+
+	if got := buildImageBaseTag(runSources, run); got != "20260626-feature-log-receiver-v1.2.3" {
+		t.Fatalf("image tag should use branch name, got %q", got)
 	}
 }
 
@@ -1196,12 +1245,12 @@ func TestListBuildPipelinesReturnsNewestFirst(t *testing.T) {
 		DisplayName:           "发布流水线",
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "main",
-			DisplayName:        "主代码源",
-			SourceRepositoryID: "repo_user",
-			SourcePath:         validBuildSpec().SourcePath,
-			BuildSpec:          validBuildSpec(),
-			IsPrimary:          true,
+			Key:         "main",
+			DisplayName: "主代码源",
+			SourceType:  SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			SourcePath: validBuildSpec().SourcePath,
+			BuildSpec:  validBuildSpec(),
+			IsPrimary:  true,
 		}},
 	})
 	if err != nil {
@@ -1278,14 +1327,14 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 	seedRuntimeEnvironments(t, env)
 	ctx := context.Background()
 	frontSources := []BuildPipelineSourceInput{
-		{Key: "frontcomponents", SourceRepositoryID: "repo_frontcomponents", BuildSpec: BuildSpec{
+		{Key: "frontcomponents", SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/macc/basic-component-cloud.git", SourceRef: "main", BuildSpec: BuildSpec{
 			SourcePath:          ".",
 			BuildCommand:        "yarn install && yarn build",
 			ArtifactCopyCommand: "cp -ar frontcomponents/. \"$PAAS_ARTIFACT_OUTPUT/\"",
 			RuntimeBaseImage:    "nginx:1.26.2",
 			DefaultRef:          "main-backup",
 		}, IsPrimary: true},
-		{Key: "frontmacc5", SourceRepositoryID: "repo_frontmacc5", BuildSpec: BuildSpec{
+		{Key: "frontmacc5", SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/macc/macc-cloud.git", SourceRef: "main", BuildSpec: BuildSpec{
 			SourcePath:          ".",
 			BuildCommand:        "make clean && make public_web_static6",
 			ArtifactCopyCommand: "cp -ar dist/. \"$PAAS_ARTIFACT_OUTPUT/\"",
@@ -1305,16 +1354,11 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 			},
 		},
 	})
-	env.svc.sourceRepos = fakeSourceRepositoryQuery{repos: map[shared.ID]SourceRepositoryRef{
-		"repo_frontcomponents": {ID: "repo_frontcomponents", SSHURL: "git@gitlab.example:macc/basic-component-cloud.git"},
-		"repo_frontmacc5":      {ID: "repo_frontmacc5", SSHURL: "git@gitlab.example:macc/macc-cloud.git"},
-	}}
-
 	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "frontend", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: frontSources})
 	if err != nil {
 		t.Fatalf("CreateBuildPipeline() error = %v", err)
 	}
-	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID, Sources: []TriggerBuildSourceInput{{Key: "frontcomponents", GitRef: "release/a"}, {Key: "frontmacc5", GitRef: "release/b"}}})
+	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID, Sources: []TriggerBuildSourceInput{{Key: "frontcomponents", SourceRef: "release/a"}, {Key: "frontmacc5", SourceRef: "release/b"}}})
 	if err != nil {
 		t.Fatalf("TriggerBuild() error = %v", err)
 	}
@@ -1346,7 +1390,7 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 			t.Fatalf("rendered Jenkinsfile should not contain static aggregation marker %q: %s", forbidden, xml)
 		}
 	}
-	if run.SourceRepositoryID != "repo_frontcomponents" || run.GitRef != "release/a" {
+	if run.SourceURL != "https://gitlab.example/macc/basic-component-cloud.git" || run.SourceRef != "release/a" {
 		t.Fatalf("primary source should drive compatibility fields, got %+v", run)
 	}
 	params := env.runner.triggers[0]
@@ -1366,7 +1410,7 @@ func TestEnsureBuildPipelineRejectsMissingArtifactCopyCommand(t *testing.T) {
 	spec.ArtifactCopyCommand = " "
 
 	seedRuntimeEnvironments(t, env)
-	_, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "bad", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", BuildSpec: spec, IsPrimary: true}}})
+	_, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "bad", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: []BuildPipelineSourceInput{{Key: "main", SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main", BuildSpec: spec, IsPrimary: true}}})
 	if shared.CodeOf(err) != shared.CodeInvalidArgument || !strings.Contains(err.Error(), "artifact_copy_command is required") {
 		t.Fatalf("expected missing artifact_copy_command error, got %v", err)
 	}
@@ -1390,7 +1434,7 @@ func TestTriggerBuildUpdatesPipelineWhenConfigChangesAndSupportsTomcatWar(t *tes
 		RuntimeBaseImage:    "registry.example/runtime/tomcat8:1.0",
 		DefaultRef:          "release/1.0",
 	}
-	if _, err := env.svc.UpdateBuildPipeline(ctx, UpdateBuildPipelineInput{Actor: buildActor(), PipelineID: pipeline.ID, DisplayName: pipeline.DisplayName, RuntimeEnvironmentIDs: []shared.ID{"runtime_env_tomcat8"}, Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", SourcePath: tomcatSpec.SourcePath, BuildSpec: tomcatSpec, IsPrimary: true}}}); err != nil {
+	if _, err := env.svc.UpdateBuildPipeline(ctx, UpdateBuildPipelineInput{Actor: buildActor(), PipelineID: pipeline.ID, DisplayName: pipeline.DisplayName, RuntimeEnvironmentIDs: []shared.ID{"runtime_env_tomcat8"}, Sources: []BuildPipelineSourceInput{{Key: "main", SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main", SourcePath: tomcatSpec.SourcePath, BuildSpec: tomcatSpec, IsPrimary: true}}}); err != nil {
 		t.Fatalf("UpdateBuildPipeline() error = %v", err)
 	}
 	env.runner.queue = BuildQueueItem{QueueID: "queue-2", BuildNumber: 7}
@@ -1429,7 +1473,7 @@ func TestTriggerBuildUpdatesPipelineBeforeBuildWhenPreviousRunIsActive(t *testin
 		RuntimeBaseImage:    "registry.example/runtime/java17:1.0",
 		DefaultRef:          "main",
 	}
-	if _, err := env.svc.UpdateBuildPipeline(ctx, UpdateBuildPipelineInput{Actor: buildActor(), PipelineID: pipeline.ID, DisplayName: pipeline.DisplayName, Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", SourcePath: gradleSpec.SourcePath, BuildSpec: gradleSpec, IsPrimary: true}}}); err != nil {
+	if _, err := env.svc.UpdateBuildPipeline(ctx, UpdateBuildPipelineInput{Actor: buildActor(), PipelineID: pipeline.ID, DisplayName: pipeline.DisplayName, Sources: []BuildPipelineSourceInput{{Key: "main", SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main", SourcePath: gradleSpec.SourcePath, BuildSpec: gradleSpec, IsPrimary: true}}}); err != nil {
 		t.Fatalf("UpdateBuildPipeline() error = %v", err)
 	}
 	env.runner.queue = BuildQueueItem{QueueID: "queue-2", BuildNumber: 10}
@@ -1463,7 +1507,7 @@ func TestTriggerBuildExpandsRuntimeEnvironmentImages(t *testing.T) {
 			},
 		},
 		sources: map[shared.ID]ApplicationSourceRef{
-			"app_user": {ApplicationID: "app_user", Key: "main", SourceRepositoryID: "repo_user", BuildSpec: validBuildSpec(), IsPrimary: true},
+			"app_user": {ApplicationID: "app_user", Key: "main", SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main", BuildSpec: validBuildSpec(), IsPrimary: true},
 		},
 	})
 
@@ -1474,12 +1518,12 @@ func TestTriggerBuildExpandsRuntimeEnvironmentImages(t *testing.T) {
 		DisplayName:           "多镜像流水线",
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "main",
-			DisplayName:        "主代码源",
-			SourceRepositoryID: "repo_user",
-			SourcePath:         validBuildSpec().SourcePath,
-			BuildSpec:          validBuildSpec(),
-			IsPrimary:          true,
+			Key:         "main",
+			DisplayName: "主代码源",
+			SourceType:  SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main",
+			SourcePath: validBuildSpec().SourcePath,
+			BuildSpec:  validBuildSpec(),
+			IsPrimary:  true,
 		}},
 	})
 	if err != nil {
@@ -1508,7 +1552,7 @@ func TestTriggerBuildExpandsRuntimeEnvironmentImages(t *testing.T) {
 	if err != nil || len(artifacts) != 2 {
 		t.Fatalf("expected two runtime image artifacts, got %+v, %v", artifacts, err)
 	}
-	if artifacts[0].URI != "registry.example/paas/user-api:20260530-abc123-v0.0.0" || artifacts[1].URI != "registry.example/paas/user-api:20260530-abc123-v0.0.0" {
+	if artifacts[0].URI != "registry.example/paas/user-api:20260530-main-v0.0.0" || artifacts[1].URI != "registry.example/paas/user-api:20260530-main-v0.0.0" {
 		t.Fatalf("unexpected runtime image URIs: %+v", artifacts)
 	}
 	if !artifacts[0].IsPrimary || artifacts[1].IsPrimary {
@@ -1536,7 +1580,7 @@ func TestTriggerBuildValidationAndFailures(t *testing.T) {
 			env.svc.apps = fakeApplicationQuery{
 				apps: map[shared.ID]ApplicationRef{"app_user": {ID: "app_user", TenantID: "tenant_a", ProjectID: "project_payment", Name: "user-api"}},
 			}
-			_, err := env.svc.CreateBuildPipeline(context.Background(), CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "bad", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: []BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: "repo_user", BuildSpec: spec, IsPrimary: true}}})
+			_, err := env.svc.CreateBuildPipeline(context.Background(), CreateBuildPipelineInput{Actor: buildActor(), ApplicationID: "app_user", Name: "bad", RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"}, Sources: []BuildPipelineSourceInput{{Key: "main", SourceType: SourceTypeGit, SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main", BuildSpec: spec, IsPrimary: true}}})
 			if shared.CodeOf(err) != shared.CodeInvalidArgument {
 				t.Fatalf("expected invalid_argument, got %v", err)
 			}
@@ -1577,12 +1621,6 @@ func TestTriggerBuildValidationAndFailures(t *testing.T) {
 	env.svc.apps = nil
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("missing app query should fail, got %v", err)
-	}
-	env = newBuildTestEnv(t)
-	pipeline = createDefaultPipeline(t, env)
-	env.svc.sourceRepos = nil
-	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("missing source repository query should fail, got %v", err)
 	}
 	env = newBuildTestEnv(t)
 	if _, err := env.svc.TriggerBuild(context.Background(), TriggerBuildInput{Actor: buildActor()}); shared.CodeOf(err) != shared.CodeInvalidArgument {
@@ -1922,11 +1960,14 @@ func TestHelpersAndNoopAdapters(t *testing.T) {
 	if err := (NoopEventPublisher{}).Publish(ctx, shared.DomainEvent{}); err != nil {
 		t.Fatalf("noop publisher should not fail: %v", err)
 	}
-	if got := repoCloneURL(SourceRepositoryRef{HTTPURL: "https://gitlab.example/repo.git", SSHURL: "git@gitlab.example:repo.git"}); got != "git@gitlab.example:repo.git" {
-		t.Fatalf("repoCloneURL should prefer SSH URL, got %q", got)
+	if got := svnTagRefFromURL("svn://repo.company.com/project/trunk/log-receiver"); got != "trunk" {
+		t.Fatalf("svn trunk tag ref = %q", got)
 	}
-	if got := repoCloneURL(SourceRepositoryRef{HTTPURL: "https://gitlab.example/repo.git"}); got != "https://gitlab.example/repo.git" {
-		t.Fatalf("repoCloneURL should fall back to HTTP URL, got %q", got)
+	if got := svnTagRefFromURL("svn://repo.company.com/project/branches/release-1.0/log-receiver"); got != "release-1.0" {
+		t.Fatalf("svn branch tag ref = %q", got)
+	}
+	if got := svnTagRefFromURL("svn://repo.company.com/project/tags/v1.2.0/log-receiver"); got != "tag-v1.2.0" {
+		t.Fatalf("svn tag ref = %q", got)
 	}
 	svc := NewService(Options{SensitiveValues: []string{"", "a", "a"}})
 	if len(svc.sensitiveValues) != 1 || svc.sensitiveValues[0] != "a" {
@@ -2065,7 +2106,7 @@ func TestRepositoryAndHandler(t *testing.T) {
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/build-pipelines/"+pipeline.ID.String(), nil), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodGet, "/api/build-pipelines/"+pipeline.ID.String()+"/sources", nil), http.StatusOK)
 	assertStatus(t, serveJSON(mux, http.MethodPost, "/api/apps/app_user/builds", []byte(`{"actor":{"type":"user","id":"usr_builder"}}`)), http.StatusBadRequest)
-	body, _ := json.Marshal(TriggerBuildInput{Actor: buildActor(), GitRef: "main"})
+	body, _ := json.Marshal(TriggerBuildInput{Actor: buildActor(), SourceRef: "main"})
 	rec := serveJSON(mux, http.MethodPost, "/api/build-pipelines/"+pipeline.ID.String()+"/builds", body)
 	assertStatus(t, rec, http.StatusCreated)
 	var httpRun BuildRun

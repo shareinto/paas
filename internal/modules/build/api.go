@@ -52,6 +52,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/admin/build-types/{templateId}/revisions", h.handleUploadJenkinsJobTemplateRevision)
 	mux.HandleFunc("GET /api/apps/{appId}/build-pipelines", h.handleListBuildPipelines)
 	mux.HandleFunc("POST /api/apps/{appId}/build-pipelines", h.handleCreateBuildPipeline)
+	mux.HandleFunc("POST /api/projects/{projectId}/build-source-branches/preview", h.handlePreviewGitBranches)
 	mux.HandleFunc("GET /api/build-pipelines/{pipelineId}", h.handleGetBuildPipeline)
 	mux.HandleFunc("PATCH /api/build-pipelines/{pipelineId}", h.handleUpdateBuildPipeline)
 	mux.HandleFunc("DELETE /api/build-pipelines/{pipelineId}", h.handleDeleteBuildPipeline)
@@ -356,6 +357,20 @@ func (h *Handler) handleListBuildPipelineSources(w http.ResponseWriter, r *http.
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": sources})
+}
+
+func (h *Handler) handlePreviewGitBranches(w http.ResponseWriter, r *http.Request) {
+	var req ListGitBranchesInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	req.ProjectID = shared.ID(r.PathValue("projectId"))
+	branches, err := h.service.PreviewGitBranches(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": branches})
 }
 
 func (h *Handler) handleUpdateBuildPipeline(w http.ResponseWriter, r *http.Request) {

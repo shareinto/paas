@@ -1487,6 +1487,56 @@ func TestPromotionDevAppliesGitOpsAndProdRequiresApproval(t *testing.T) {
 	}
 }
 
+func TestPublishDynamicStagesAppliesGitOpsForEveryStage(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	for _, stageKey := range []string{"prod1", "prod2"} {
+		if err := env.repo.ReplaceStageClusterBindings(ctx, "tenant_a", stageKey, []StageClusterBinding{{
+			ID:          shared.ID("binding_" + stageKey),
+			TenantID:    "tenant_a",
+			StageKey:    stageKey,
+			ClusterID:   shared.ID("cluster_" + stageKey),
+			ClusterName: stageKey + "-cluster",
+			Status:      StageClusterBindingActive,
+			CreatedAt:   time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC),
+			UpdatedAt:   time.Date(2026, 5, 30, 7, 0, 0, 0, time.UTC),
+		}}); err != nil {
+			t.Fatalf("seed stage cluster binding %s: %v", stageKey, err)
+		}
+	}
+	if _, err := env.svc.ReplaceDeliveryFlowTemplateGraph(ctx, ReplaceDeliveryFlowTemplateGraphInput{
+		Actor:    actor("usr_admin"),
+		TenantID: "tenant_a",
+		Stages: []SaveDeliveryFlowTemplateStageInput{
+			{StageKey: "dev", DisplayName: "开发", Order: 1, Status: DeliveryFlowTemplateStageEnabled},
+			{StageKey: "test", DisplayName: "测试", Order: 2, Status: DeliveryFlowTemplateStageEnabled},
+			{StageKey: "staging", DisplayName: "预发", Order: 3, Status: DeliveryFlowTemplateStageEnabled},
+			{StageKey: "prod1", DisplayName: "生产1", Order: 4, Status: DeliveryFlowTemplateStageEnabled},
+			{StageKey: "prod2", DisplayName: "生产2", Order: 5, Status: DeliveryFlowTemplateStageEnabled},
+		},
+		Edges: []DeliveryFlowTemplateEdgeInput{
+			{FromStageKey: "dev", ToStageKey: "test"},
+			{FromStageKey: "test", ToStageKey: "staging"},
+			{FromStageKey: "staging", ToStageKey: "prod1"},
+			{FromStageKey: "prod1", ToStageKey: "prod2"},
+		},
+	}); err != nil {
+		t.Fatalf("ReplaceDeliveryFlowTemplateGraph() error = %v", err)
+	}
+	freight := seedFreight(t, env)
+	promoteFreightThrough(t, env, freight, "dev", "test", "staging", "prod1", "prod2")
+	if len(env.gitops.specs) != 5 {
+		t.Fatalf("each dynamic stage publish should apply gitops, got %+v", env.gitops.specs)
+	}
+	var got []string
+	for _, spec := range env.gitops.specs {
+		got = append(got, spec.StageKey)
+	}
+	if strings.Join(got, ",") != "dev,test,staging,prod1,prod2" {
+		t.Fatalf("unexpected gitops stages: %s", strings.Join(got, ","))
+	}
+}
+
 func edgePairs(edges []DeliveryFlowTemplateEdge) []string {
 	out := make([]string, 0, len(edges))
 	for _, edge := range edges {

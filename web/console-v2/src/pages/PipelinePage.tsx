@@ -24,7 +24,7 @@ export function PipelinePage() {
   const [activeId, setActiveId] = useState('');
   const [filter, setFilter] = useState<'all' | Status>('all');
   const [query, setQuery] = useState('');
-  const [gitRef, setGitRef] = useState('main');
+  const [sourceRef, setSourceRef] = useState('main');
   const [hasTriggered, setHasTriggered] = useState(false);
 
   useEffect(() => {
@@ -32,7 +32,7 @@ export function PipelinePage() {
     setActiveId('');
     setFilter('all');
     setQuery('');
-    setGitRef('main');
+    setSourceRef('main');
     setHasTriggered(false);
   }, [currentApplication.id, currentApplication.workloads]);
 
@@ -248,14 +248,14 @@ export function PipelinePage() {
               <CardDescription>输入分支或标签，构建完成后生成可晋级的 Freight。</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3 md:grid-cols-[1fr_auto]">
-              <Input value={gitRef} onChange={(event) => setGitRef(event.target.value)} aria-label="Git 引用" />
+              <Input value={sourceRef} onChange={(event) => setSourceRef(event.target.value)} aria-label="源码引用" />
               <Button onClick={() => setHasTriggered(true)}>
                 <CirclePlay className="h-4 w-4" />
                 运行
               </Button>
               {hasTriggered && (
                 <div className="rounded-md border border-primary/30 bg-accent px-3 py-2 text-sm text-accent-foreground md:col-span-2">
-                  已提交构建请求：{activePipeline.name} · {gitRef}
+                  已提交构建请求：{activePipeline.name} · {sourceRef}
                 </div>
               )}
             </CardContent>

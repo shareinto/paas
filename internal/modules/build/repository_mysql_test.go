@@ -31,12 +31,12 @@ func expectBuildRunLookup(mock sqlmock.Sqlmock) {
 		WithArgs(shared.ID("build_run_1")).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "tenant_id", "project_id", "pipeline_id", "pipeline_name", "pipeline_display_name",
-			"application_id", "workload_id", "source_repository_id", "git_ref", "commit_sha", "version", "status", "jenkins_queue_id",
+			"application_id", "workload_id", "source_type", "source_url", "source_ref", "commit_sha", "version", "status", "jenkins_queue_id",
 			"jenkins_build_number", "primary_artifact_id", "log_offset", "error_message", "requested_by",
 			"created_at", "updated_at", "started_at", "finished_at",
 		}).AddRow(
 			"build_run_1", "tenant_1", "project_1", "pipeline_1", "", "",
-			"app_1", "workload_1", "repo_1", "main", "", "v1.0.0", BuildRunRunning, "", int64(0),
+			"app_1", "workload_1", SourceTypeGit, "repo_1", "main", "", "v1.0.0", BuildRunRunning, "", int64(0),
 			"", int64(0), "", "usr_builder", now, now, nil, nil,
 		))
 }

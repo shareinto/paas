@@ -87,24 +87,24 @@ type ApplicationSourceRef struct {
 	WorkloadID         shared.ID
 	Key                string
 	DisplayName        string
-	SourceRepositoryID shared.ID
 	JenkinsTemplateID  shared.ID
 	BuildEnvironmentID shared.ID
+	SourceType         SourceType
+	SourceURL          string
+	SourceRef          string
+	SVNRevision        string
 	SourcePath         string
 	BuildSpec          BuildSpec
 	IsPrimary          bool
 }
 
-type SourceRepositoryRef struct {
-	ID      shared.ID
-	HTTPURL string
-	SSHURL  string
+type GitProjectRef struct {
+	ID string
 }
 
-type ApplicationQuery interface {
-	GetApplication(ctx context.Context, id shared.ID) (ApplicationRef, error)
-	GetApplicationSource(ctx context.Context, applicationID shared.ID) (ApplicationSourceRef, error)
-	ListApplicationSources(ctx context.Context, applicationID shared.ID) ([]ApplicationSourceRef, error)
+type SourceBranch struct {
+	Name    string `json:"name"`
+	Default bool   `json:"default"`
 }
 
 type WorkloadRef struct {
@@ -131,8 +131,15 @@ type WorkloadQuery interface {
 	ListEnabledWorkloadsByPipeline(ctx context.Context, applicationID shared.ID, pipelineID shared.ID) ([]WorkloadRef, error)
 }
 
-type SourceRepositoryQuery interface {
-	GetSourceRepository(ctx context.Context, id shared.ID) (SourceRepositoryRef, error)
+type ApplicationQuery interface {
+	GetApplication(ctx context.Context, id shared.ID) (ApplicationRef, error)
+	GetApplicationSource(ctx context.Context, applicationID shared.ID) (ApplicationSourceRef, error)
+	ListApplicationSources(ctx context.Context, applicationID shared.ID) ([]ApplicationSourceRef, error)
+}
+
+type GitSourceQuery interface {
+	ResolveProjectByHTTPURL(ctx context.Context, httpURL string) (GitProjectRef, error)
+	ListBranches(ctx context.Context, gitProjectID string) ([]SourceBranch, error)
 }
 
 type BuildRunnerPort interface {

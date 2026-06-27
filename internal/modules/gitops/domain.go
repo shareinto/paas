@@ -27,13 +27,13 @@ const (
 )
 
 type DeploymentTemplate struct {
-	ID             shared.ID     `json:"id"`
-	TenantID       shared.ID     `json:"tenant_id"`
-	Name           string        `json:"name"`
-	Content        string        `json:"content"`
-	CurrentVersion int           `json:"current_version"`
-	CreatedAt      time.Time     `json:"created_at"`
-	UpdatedAt      time.Time     `json:"updated_at"`
+	ID             shared.ID `json:"id"`
+	TenantID       shared.ID `json:"tenant_id"`
+	Name           string    `json:"name"`
+	Content        string    `json:"content"`
+	CurrentVersion int       `json:"current_version"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type DeploymentTemplateRevision struct {
@@ -217,10 +217,6 @@ func argoApplicationStageKeepPath(stageKey string) string {
 
 func argoApplicationPathForBinding(appName, stageKey string, binding ClusterBindingRef) string {
 	return argoApplicationPath(appName, stageKey)
-}
-
-func commitDirectly(stageKey string) bool {
-	return stageKey == "dev" || stageKey == "test"
 }
 
 func splitImage(uri string) (repository string, tag string) {

@@ -28,7 +28,10 @@ CREATE TABLE application_sources (
   application_id VARCHAR(64) NOT NULL,
   source_key VARCHAR(64) NOT NULL,
   display_name VARCHAR(128) NOT NULL DEFAULT '',
-  source_repository_id VARCHAR(64) NOT NULL,
+  source_type VARCHAR(16) NOT NULL DEFAULT 'git',
+  source_url VARCHAR(1024) NOT NULL,
+  source_ref VARCHAR(256) NOT NULL,
+  svn_revision VARCHAR(64) NOT NULL DEFAULT '',
   jenkins_template_id VARCHAR(64) NOT NULL DEFAULT '',
   source_path VARCHAR(512) NOT NULL,
   build_command VARCHAR(1024) NOT NULL,
@@ -39,7 +42,6 @@ CREATE TABLE application_sources (
   created_at DATETIME(6) NOT NULL,
   updated_at DATETIME(6) NOT NULL,
   UNIQUE KEY uk_application_sources_application_key (application_id, source_key),
-  KEY idx_application_sources_repo (source_repository_id),
   CONSTRAINT fk_application_sources_application FOREIGN KEY (application_id) REFERENCES applications(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -156,7 +158,7 @@ DEALLOCATE PREPARE add_artifact_path_stmt;
 		Version: 202606090300,
 		Name:    "backfill_application_source_jenkins_template_id",
 		Up: `
-SELECT IF(COUNT(*) = 0, 'ALTER TABLE application_sources ADD COLUMN jenkins_template_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER source_repository_id', 'SELECT 1') INTO @add_source_jenkins_template_id
+SELECT IF(COUNT(*) = 0, 'ALTER TABLE application_sources ADD COLUMN jenkins_template_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER svn_revision', 'SELECT 1') INTO @add_source_jenkins_template_id
   FROM information_schema.columns
   WHERE table_schema = DATABASE() AND table_name = 'application_sources' AND column_name = 'jenkins_template_id';
 PREPARE add_source_jenkins_template_id_stmt FROM @add_source_jenkins_template_id;

@@ -30,18 +30,6 @@ func (q fakeProjectQuery) GetProject(_ context.Context, id shared.ID) (tenantpro
 	return project, nil
 }
 
-type fakeSourceRepositoryQuery struct {
-	repositories map[shared.ID]SourceRepositoryRef
-}
-
-func (q fakeSourceRepositoryQuery) GetSourceRepository(_ context.Context, id shared.ID) (SourceRepositoryRef, error) {
-	repository, ok := q.repositories[id]
-	if !ok {
-		return SourceRepositoryRef{}, shared.NewError(shared.CodeNotFound, "source repository not found")
-	}
-	return repository, nil
-}
-
 type fakeRuntimeEnvironmentQuery struct {
 	environments map[shared.ID]RuntimeEnvironmentRef
 	defaultID    shared.ID
@@ -229,11 +217,6 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 		ProjectQuery: fakeProjectQuery{projects: map[shared.ID]tenantproject.Project{
 			"project_payment": {ID: "project_payment", TenantID: "tenant_a", Name: "payment"},
 		}},
-		SourceRepositoryQuery: fakeSourceRepositoryQuery{repositories: map[shared.ID]SourceRepositoryRef{
-			"repo_user":  {ID: "repo_user", TenantID: "tenant_a", ProjectID: "project_payment", DefaultBranch: "main", Status: "ready"},
-			"repo_other": {ID: "repo_other", TenantID: "tenant_b", ProjectID: "project_other", DefaultBranch: "main", Status: "ready"},
-			"repo_busy":  {ID: "repo_busy", TenantID: "tenant_a", ProjectID: "project_payment", DefaultBranch: "main", Status: "migrating"},
-		}},
 		BuildPipelineProvisioner: pipelines,
 		BuildPipelineCommand:     pipelineCmd,
 		BuildPipelineQuery:       pipelineQuery,
@@ -271,7 +254,11 @@ func validBuildSpec() BuildSpec {
 }
 
 func validSourceInput(repoID shared.ID, spec BuildSpec) CreateApplicationSourceInput {
-	return CreateApplicationSourceInput{Key: "main", SourceRepositoryID: repoID, BuildSpec: spec, IsPrimary: true}
+	sourceURL := strings.TrimSpace(repoID.String())
+	if sourceURL == "" {
+		sourceURL = "https://gitlab.example/payment/user-api.git"
+	}
+	return CreateApplicationSourceInput{Key: "main", SourceType: "git", SourceURL: sourceURL, SourceRef: "main", BuildSpec: spec, IsPrimary: true}
 }
 
 func validPipelineInput(name string) CreateBuildPipelineInput {
@@ -280,10 +267,12 @@ func validPipelineInput(name string) CreateBuildPipelineInput {
 		DisplayName:           name,
 		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
 		Sources: []BuildPipelineSourceInput{{
-			Key:                "main",
-			SourceRepositoryID: "repo_user",
-			BuildSpec:          validBuildSpec(),
-			IsPrimary:          true,
+			Key:        "main",
+			SourceType: "git",
+			SourceURL:  "https://gitlab.example/payment/user-api.git",
+			SourceRef:  "main",
+			BuildSpec:  validBuildSpec(),
+			IsPrimary:  true,
 		}},
 	}
 }
@@ -303,7 +292,7 @@ func TestCreateApplicationPersistsSourceWithoutApplicationEnvironments(t *testin
 	if err != nil {
 		t.Fatalf("GetApplicationSource() error = %v", err)
 	}
-	if source.SourceRepositoryID != "repo_user" || source.SourcePath != "services/user-api" || source.BuildSpec.DefaultRef != "main" || source.BuildSpec.ArtifactDeployPath != "/app/" {
+	if source.SourceURL != "repo_user" || source.SourceRef != "main" || source.SourcePath != "services/user-api" || source.BuildSpec.DefaultRef != "main" || source.BuildSpec.ArtifactDeployPath != "/app/" {
 		t.Fatalf("build spec should be fixed on application source: %+v", source)
 	}
 	if len(env.pipelines.applicationIDs) != 0 {
@@ -432,7 +421,9 @@ func TestBuildEnvironmentSelectionDoesNotDefaultBuildSpecFields(t *testing.T) {
 		RuntimeEnvironmentID: "runtime_env_java17",
 		Sources: []CreateApplicationSourceInput{{
 			Key:                "main",
-			SourceRepositoryID: "repo_user",
+			SourceType:         "git",
+			SourceURL:          "https://gitlab.example/payment/defaulted-api.git",
+			SourceRef:          "main",
 			BuildEnvironmentID: "build_env_java",
 			BuildSpec: BuildSpec{
 				SourcePath:          ".",
@@ -1007,15 +998,14 @@ func TestWorkloadStageConfigRequiresApplicationOwnership(t *testing.T) {
 	}
 }
 
-func TestCreateApplicationValidatesExplicitSourceRepository(t *testing.T) {
+func TestCreateApplicationValidatesDirectSourceURL(t *testing.T) {
 	env := newAppenvTestEnv(t, false)
 	ctx := context.Background()
 
-	if _, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_other", validBuildSpec())}}); shared.CodeOf(err) != shared.CodeInvalidArgument {
-		t.Fatalf("foreign source repository should fail, got %v", err)
-	}
-	if _, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_busy", validBuildSpec())}}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("non-ready source repository should fail, got %v", err)
+	input := validSourceInput("", validBuildSpec())
+	input.SourceURL = " "
+	if _, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{input}}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("empty source_url should fail, got %v", err)
 	}
 }
 
@@ -1085,10 +1075,6 @@ func TestServiceGuardBranches(t *testing.T) {
 	noProjectService := NewService(Options{Repository: newTestRepository(t)})
 	if _, err := noProjectService.ListApplicationsByProject(ctx, "project_payment", shared.PageRequest{}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
 		t.Fatalf("nil project query should fail, got %v", err)
-	}
-	noRepoService := NewService(Options{Repository: newTestRepository(t), ProjectQuery: env.svc.projects})
-	if _, err := noRepoService.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "api", Sources: []CreateApplicationSourceInput{validSourceInput("repo_user", validBuildSpec())}}); shared.CodeOf(err) != shared.CodeFailedPrecondition {
-		t.Fatalf("nil source repository query should fail, got %v", err)
 	}
 }
 
@@ -1202,7 +1188,7 @@ func TestRepositoryDirectMethods(t *testing.T) {
 	if err != nil || found.DisplayName != "接口" {
 		t.Fatalf("FindApplicationByProjectAndName() = %+v, %v", found, err)
 	}
-	source := ApplicationSource{ID: "source_1", TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, Key: "main", SourceRepositoryID: "repo_user", SourcePath: ".", BuildSpec: validBuildSpec(), IsPrimary: true, CreatedAt: now, UpdatedAt: now}
+	source := ApplicationSource{ID: "source_1", TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, Key: "main", SourceType: "git", SourceURL: "https://gitlab.example/payment/user-api.git", SourceRef: "main", SourcePath: ".", BuildSpec: validBuildSpec(), IsPrimary: true, CreatedAt: now, UpdatedAt: now}
 	if err := repo.CreateApplicationSource(ctx, source); err != nil {
 		t.Fatalf("CreateApplicationSource() error = %v", err)
 	}

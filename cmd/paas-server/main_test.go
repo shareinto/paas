@@ -429,7 +429,7 @@ func TestModuleRoutesUseWiredPorts(t *testing.T) {
 	defer app.db.Close()
 	fixture := seedServerTestData(t, app)
 
-	body := bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"git_ref":"main","commit_sha":"abc123"}`)
+	body := bytes.NewBufferString(`{"actor":{"type":"user","id":"usr_admin"},"source_ref":"main","commit_sha":"abc123"}`)
 	buildRec := httptest.NewRecorder()
 	app.handler.ServeHTTP(buildRec, httptest.NewRequest(http.MethodPost, "/api/build-pipelines/"+fixture.pipeline.ID.String()+"/builds", body))
 	if buildRec.Code != http.StatusCreated {
@@ -456,7 +456,7 @@ func TestBuildCallbackCreatesFreightReleaseCandidateThroughWiredEvent(t *testing
 	ctx := context.Background()
 	actor := identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"}
 
-	run, err := app.builds.TriggerBuild(ctx, build.TriggerBuildInput{Actor: actor, PipelineID: fixture.pipeline.ID, GitRef: "main"})
+	run, err := app.builds.TriggerBuild(ctx, build.TriggerBuildInput{Actor: actor, PipelineID: fixture.pipeline.ID, SourceRef: "main"})
 	if err != nil {
 		t.Fatalf("trigger build: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 		ProjectID:   fixture.project.ID,
 		Name:        "invoice-api",
 		DisplayName: "发票服务",
-		Sources: []appenv.CreateApplicationSourceInput{{Key: "main", SourceRepositoryID: shared.ID(source.ID), IsPrimary: true, BuildSpec: appenv.BuildSpec{
+		Sources: []appenv.CreateApplicationSourceInput{{Key: "main", SourceType: "git", SourceURL: "https://gitlab.example/invoice-api.git", SourceRef: "main", IsPrimary: true, BuildSpec: appenv.BuildSpec{
 			SourcePath:          ".",
 			BuildCommand:        "mvn clean package -DskipTests",
 			ArtifactCopyCommand: "cp -ar target/invoice-api.jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"",
@@ -541,7 +541,7 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 		RuntimeEnvironmentIDs: []shared.ID{
 			"runtime_env_springboot_jdk11",
 		},
-		Sources: []build.BuildPipelineSourceInput{{Key: "main", SourceRepositoryID: shared.ID(source.ID), SourcePath: ".", IsPrimary: true, BuildSpec: build.BuildSpec{
+		Sources: []build.BuildPipelineSourceInput{{Key: "main", SourceType: build.SourceTypeGit, SourceURL: "https://gitlab.example/invoice-api.git", SourceRef: "main", SourcePath: ".", IsPrimary: true, BuildSpec: build.BuildSpec{
 			SourcePath:          ".",
 			BuildCommand:        "mvn clean package -DskipTests",
 			ArtifactCopyCommand: "cp -ar target/invoice-api.jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"",
@@ -555,7 +555,7 @@ func TestTriggerBuildCreatesManagedJenkinsPipeline(t *testing.T) {
 	if _, err := app.apps.UpdateWorkload(context.Background(), appenv.UpdateWorkloadInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"}, ApplicationID: created.ID, WorkloadID: workload.ID, Name: workload.Name, DisplayName: workload.DisplayName, WorkloadType: workload.WorkloadType, ImageSourceMode: string(workload.ImageSourceMode), PipelineID: pipeline.ID}); err != nil {
 		t.Fatalf("bind workload pipeline: %v", err)
 	}
-	run, err := app.builds.TriggerBuild(context.Background(), build.TriggerBuildInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"}, PipelineID: pipeline.ID, GitRef: "main"})
+	run, err := app.builds.TriggerBuild(context.Background(), build.TriggerBuildInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_admin"}, PipelineID: pipeline.ID, SourceRef: "main"})
 	if err != nil || run.ID.IsZero() {
 		t.Fatalf("trigger build should create run: %+v, %v", run, err)
 	}
@@ -573,20 +573,6 @@ func TestServerAdaptersAndHelpers(t *testing.T) {
 	defer app.db.Close()
 	fixture := seedServerTestData(t, app)
 	ctx := context.Background()
-
-	sourceApp := sourceForAppEnv{service: app.sources}
-	if ref, err := sourceApp.GetSourceRepository(ctx, fixture.source); err != nil || ref.DefaultBranch != "main" {
-		t.Fatalf("source app ref = %#v err=%v", ref, err)
-	}
-	if _, err := sourceApp.GetSourceRepository(ctx, "missing"); err == nil {
-		t.Fatalf("expected source app ref error")
-	}
-
-	sourceBuild := sourceForBuild{service: app.sources}
-	if ref, err := sourceBuild.GetSourceRepository(ctx, fixture.source); err != nil || ref.HTTPURL == "" {
-		t.Fatalf("source build ref = %#v err=%v", ref, err)
-	}
-
 	appBuild := appForBuild{service: app.apps}
 	if ref, err := appBuild.GetApplication(ctx, fixture.application.ID); err != nil || ref.Name != "test-api-test" {
 		t.Fatalf("app build ref = %#v err=%v", ref, err)
@@ -648,9 +634,6 @@ func TestServerAdaptersAndHelpers(t *testing.T) {
 	if got := toBuildSpec(appenv.BuildSpec{ArtifactDeployPath: "/usr/local/tomcat/webapps/"}); got.ArtifactDeployPath != "/usr/local/tomcat/webapps/" {
 		t.Fatalf("unexpected converted build spec: %#v", got)
 	}
-	if _, err := sourceBuild.GetSourceRepository(ctx, shared.ID("missing")); err == nil {
-		t.Fatalf("expected source build error")
-	}
 }
 
 func seedServerTestData(t *testing.T, app *application) serverTestFixture {
@@ -682,7 +665,7 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 		ProjectID:   project.ID,
 		Name:        "test-api-" + suffix,
 		DisplayName: "测试服务",
-		Sources: []appenv.CreateApplicationSourceInput{{Key: "main", SourceRepositoryID: repo.ID, IsPrimary: true, BuildSpec: appenv.BuildSpec{
+		Sources: []appenv.CreateApplicationSourceInput{{Key: "main", SourceType: "git", SourceURL: repo.HTTPURL, SourceRef: "main", IsPrimary: true, BuildSpec: appenv.BuildSpec{
 			SourcePath:          ".",
 			BuildCommand:        "mvn clean package -DskipTests",
 			ArtifactCopyCommand: "cp -ar target/test-api-" + suffix + ".jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"",
@@ -723,7 +706,7 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 		RuntimeEnvironmentIDs: []shared.ID{
 			"runtime_env_springboot_jdk11",
 		},
-		Sources: []build.BuildPipelineSourceInput{{Key: "main", DisplayName: "主代码源", SourceRepositoryID: repo.ID, SourcePath: ".", IsPrimary: true, BuildSpec: build.BuildSpec{
+		Sources: []build.BuildPipelineSourceInput{{Key: "main", DisplayName: "主代码源", SourceType: build.SourceTypeGit, SourceURL: repo.HTTPURL, SourceRef: "main", SourcePath: ".", IsPrimary: true, BuildSpec: build.BuildSpec{
 			SourcePath:          ".",
 			BuildCommand:        "mvn clean package -DskipTests",
 			ArtifactCopyCommand: "cp -ar target/test-api-" + suffix + ".jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"",
@@ -737,7 +720,7 @@ func seedServerTestDataNamed(t *testing.T, app *application, suffix string) serv
 	if _, err := app.apps.UpdateWorkload(ctx, appenv.UpdateWorkloadInput{Actor: actor, ApplicationID: created.ID, WorkloadID: workload.ID, Name: workload.Name, DisplayName: workload.DisplayName, WorkloadType: workload.WorkloadType, ImageSourceMode: string(workload.ImageSourceMode), PipelineID: pipeline.ID}); err != nil {
 		t.Fatalf("bind workload pipeline: %v", err)
 	}
-	run, err := app.builds.TriggerBuild(ctx, build.TriggerBuildInput{Actor: actor, PipelineID: pipeline.ID, GitRef: "main", CommitSHA: "8c1a09f"})
+	run, err := app.builds.TriggerBuild(ctx, build.TriggerBuildInput{Actor: actor, PipelineID: pipeline.ID, SourceRef: "main", CommitSHA: "8c1a09f"})
 	if err != nil {
 		t.Fatalf("trigger build: %v", err)
 	}

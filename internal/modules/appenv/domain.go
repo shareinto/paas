@@ -49,7 +49,10 @@ type ApplicationSource struct {
 	ApplicationID      shared.ID `json:"application_id"`
 	Key                string    `json:"key"`
 	DisplayName        string    `json:"display_name"`
-	SourceRepositoryID shared.ID `json:"source_repository_id"`
+	SourceType         string    `json:"source_type"`
+	SourceURL          string    `json:"source_url"`
+	SourceRef          string    `json:"source_ref"`
+	SVNRevision        string    `json:"svn_revision,omitempty"`
 	JenkinsTemplateID  shared.ID `json:"jenkins_template_id"`
 	BuildEnvironmentID shared.ID `json:"build_environment_id"`
 	SourcePath         string    `json:"source_path"`
@@ -248,12 +251,11 @@ type ApplicationStageEvent struct {
 }
 
 type ApplicationCreatedPayload struct {
-	ApplicationID      shared.ID `json:"application_id"`
-	TenantID           shared.ID `json:"tenant_id"`
-	ProjectID          shared.ID `json:"project_id"`
-	SourceRepositoryID shared.ID `json:"source_repository_id"`
-	SourceKeys         []string  `json:"source_keys"`
-	Name               string    `json:"name"`
+	ApplicationID shared.ID `json:"application_id"`
+	TenantID      shared.ID `json:"tenant_id"`
+	ProjectID     shared.ID `json:"project_id"`
+	SourceKeys    []string  `json:"source_keys"`
+	Name          string    `json:"name"`
 }
 
 func normalizeApplicationName(name string) string {
@@ -311,6 +313,22 @@ func normalizeSourceKey(key string) string {
 	key = strings.ToLower(strings.TrimSpace(key))
 	key = strings.ReplaceAll(key, "_", "-")
 	return key
+}
+
+func normalizeApplicationSourceType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "svn":
+		return "svn"
+	default:
+		return "git"
+	}
+}
+
+func defaultApplicationSourceRef(sourceType string, sourceURL string) string {
+	if normalizeApplicationSourceType(sourceType) == "svn" {
+		return "HEAD"
+	}
+	return "main"
 }
 
 func validateSourceKey(key string) error {

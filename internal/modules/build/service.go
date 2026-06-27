@@ -16,7 +16,7 @@ import (
 type Service struct {
 	repo            Repository
 	apps            ApplicationQuery
-	sourceRepos     SourceRepositoryQuery
+	gitSources      GitSourceQuery
 	workloads       WorkloadQuery
 	runner          BuildRunnerPort
 	permission      PermissionChecker
@@ -33,7 +33,9 @@ type Service struct {
 }
 
 const maxProgressiveLogDrainIterations = 50
-const currentDefaultBuildTemplateVersion = 4
+const currentDefaultBuildTemplateVersion = 7
+const defaultSVNCredentialsID = "aea4ebeb-2858-4850-b3e0-268e9aff9726"
+const defaultGitCredentialsID = "aea4ebeb-2858-4850-b3e0-268e9aff9726"
 
 type buildLogDrainResult struct {
 	run      BuildRun
@@ -42,22 +44,22 @@ type buildLogDrainResult struct {
 }
 
 type Options struct {
-	Repository            Repository
-	ApplicationQuery      ApplicationQuery
-	SourceRepositoryQuery SourceRepositoryQuery
-	WorkloadQuery         WorkloadQuery
-	BuildRunner           BuildRunnerPort
-	PermissionChecker     PermissionChecker
-	Audit                 AuditLogger
-	EventPublisher        EventPublisher
-	RuntimeSyncer         RuntimeEnvironmentSyncer
-	IDGenerator           shared.IDGenerator
-	Clock                 shared.Clock
-	TemplateID            string
-	CallbackURL           string
-	ImageRepository       string
-	DockerfileRepository  DockerfileRepositoryConfig
-	SensitiveValues       []string
+	Repository           Repository
+	ApplicationQuery     ApplicationQuery
+	GitSourceQuery       GitSourceQuery
+	WorkloadQuery        WorkloadQuery
+	BuildRunner          BuildRunnerPort
+	PermissionChecker    PermissionChecker
+	Audit                AuditLogger
+	EventPublisher       EventPublisher
+	RuntimeSyncer        RuntimeEnvironmentSyncer
+	IDGenerator          shared.IDGenerator
+	Clock                shared.Clock
+	TemplateID           string
+	CallbackURL          string
+	ImageRepository      string
+	DockerfileRepository DockerfileRepositoryConfig
+	SensitiveValues      []string
 }
 
 type DockerfileRepositoryConfig struct {
@@ -90,7 +92,7 @@ func NewService(opts Options) *Service {
 	return &Service{
 		repo:            opts.Repository,
 		apps:            opts.ApplicationQuery,
-		sourceRepos:     opts.SourceRepositoryQuery,
+		gitSources:      opts.GitSourceQuery,
 		workloads:       opts.WorkloadQuery,
 		runner:          opts.BuildRunner,
 		permission:      opts.PermissionChecker,
@@ -124,14 +126,14 @@ type TriggerBuildInput struct {
 	PipelineID    shared.ID                 `json:"pipeline_id"`
 	ApplicationID shared.ID                 `json:"application_id"`
 	Sources       []TriggerBuildSourceInput `json:"sources"`
-	GitRef        string                    `json:"git_ref,omitempty"`
+	SourceRef     string                    `json:"source_ref,omitempty"`
 	CommitSHA     string                    `json:"commit_sha,omitempty"`
 	Version       string                    `json:"version,omitempty"`
 }
 
 type TriggerBuildSourceInput struct {
 	Key       string `json:"key"`
-	GitRef    string `json:"git_ref"`
+	SourceRef string `json:"source_ref"`
 	CommitSHA string `json:"commit_sha"`
 }
 
@@ -155,14 +157,23 @@ type UpdateBuildPipelineInput struct {
 }
 
 type BuildPipelineSourceInput struct {
-	Key                string    `json:"key"`
-	DisplayName        string    `json:"display_name"`
-	SourceRepositoryID shared.ID `json:"source_repository_id"`
-	BuildEnvironmentID shared.ID `json:"build_environment_id"`
-	SourcePath         string    `json:"source_path"`
-	BuildSpec          BuildSpec `json:"build_spec"`
-	DefaultRef         string    `json:"default_ref"`
-	IsPrimary          bool      `json:"is_primary"`
+	Key                string     `json:"key"`
+	DisplayName        string     `json:"display_name"`
+	SourceType         SourceType `json:"source_type"`
+	SourceURL          string     `json:"source_url"`
+	SourceRef          string     `json:"source_ref"`
+	SVNRevision        string     `json:"svn_revision,omitempty"`
+	BuildEnvironmentID shared.ID  `json:"build_environment_id"`
+	SourcePath         string     `json:"source_path"`
+	BuildSpec          BuildSpec  `json:"build_spec"`
+	DefaultRef         string     `json:"default_ref"`
+	IsPrimary          bool       `json:"is_primary"`
+}
+
+type ListGitBranchesInput struct {
+	Actor     identityaccess.Subject `json:"actor"`
+	ProjectID shared.ID              `json:"project_id"`
+	SourceURL string                 `json:"source_url"`
 }
 
 type CreateJenkinsJobTemplateInput struct {
@@ -301,6 +312,17 @@ const defaultBuildTemplateContent = `pipeline {
         withCredentials([usernamePassword(credentialsId: '{{ .DockerfileRepository.CredentialsID }}', usernameVariable: 'PAAS_DOCKERFILE_GIT_USER', passwordVariable: 'PAAS_DOCKERFILE_GIT_PASSWORD')]) {
           sh '''
             set -eu
+            askpass="$WORKSPACE/.paas/dockerfile-git-askpass"
+            cat > "$askpass" <<'ASKPASS'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\n' "$PAAS_DOCKERFILE_GIT_USER" ;;
+  *) printf '%s\n' "$PAAS_DOCKERFILE_GIT_PASSWORD" ;;
+esac
+ASKPASS
+            chmod 700 "$askpass"
+            export GIT_ASKPASS="$askpass"
+            export GIT_TERMINAL_PROMPT=0
             repo_url='{{ .DockerfileRepository.URL }}'
             checkout_dir='.paas/dockerfiles'
             ref='{{ .DockerfileRepository.Ref }}'
@@ -361,29 +383,62 @@ const defaultBuildTemplateContent = `pipeline {
     stage('checkout {{ .Key }}') {
       steps {
         dir('{{ .CheckoutDir }}') {
-          sh '''
-            set -eu
-            repo_url='{{ .RepoURL }}'
-            ref='{{ .GitRef }}'
-            if [ -d .git ]; then
-              git remote set-url origin "$repo_url"
-              git fetch --prune --tags origin
-            else
+{{ if eq .SourceType "svn" }}
+          withCredentials([usernamePassword(credentialsId: '{{ .SVNCredentials }}', usernameVariable: 'PAAS_SVN_USER', passwordVariable: 'PAAS_SVN_PASSWORD')]) {
+            sh '''
+              set -eu
+              repo_url='{{ .RepoURL }}'
+              svn_revision='{{ .SVNRevision }}'
               find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-              git clone --no-checkout "$repo_url" .
-              git fetch --prune --tags origin
-            fi
-            if git rev-parse --verify --quiet "origin/$ref^{commit}" >/dev/null; then
-              commit="$(git rev-parse "origin/$ref^{commit}")"
-            else
-              commit="$(git rev-parse "$ref^{commit}")"
-            fi
-            git checkout --detach "$commit"
-            git reset --hard "$commit"
-            git clean -fdx
-            mkdir -p "$WORKSPACE/report"
-            printf '%s\n' "$commit" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
-          '''
+              if [ -n "$svn_revision" ] && [ "$svn_revision" != "HEAD" ]; then
+                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert -r "$svn_revision" "$repo_url" .
+              else
+                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert "$repo_url" .
+              fi
+              actual_revision="$(svn info --show-item revision 2>/dev/null || true)"
+              mkdir -p "$WORKSPACE/report"
+              printf '%s\n' "$actual_revision" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
+              printf '%s\n' "$actual_revision" > "$WORKSPACE/report/source-{{ .Key }}-svn-revision.txt"
+            '''
+          }
+{{ else }}
+          withCredentials([usernamePassword(credentialsId: '{{ .GitCredentials }}', usernameVariable: 'PAAS_GIT_USER', passwordVariable: 'PAAS_GIT_PASSWORD')]) {
+            sh '''
+              set -eu
+              askpass="$WORKSPACE/.paas/source-{{ .Key }}-git-askpass"
+              cat > "$askpass" <<'ASKPASS'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\n' "$PAAS_GIT_USER" ;;
+  *) printf '%s\n' "$PAAS_GIT_PASSWORD" ;;
+esac
+ASKPASS
+              chmod 700 "$askpass"
+              export GIT_ASKPASS="$askpass"
+              export GIT_TERMINAL_PROMPT=0
+              repo_url='{{ .RepoURL }}'
+              ref='{{ .SourceRef }}'
+              if [ -d .git ]; then
+                git remote set-url origin "$repo_url"
+                git fetch --prune --tags origin
+              else
+                find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+                git clone --no-checkout "$repo_url" .
+                git fetch --prune --tags origin
+              fi
+              if git rev-parse --verify --quiet "origin/$ref^{commit}" >/dev/null; then
+                commit="$(git rev-parse "origin/$ref^{commit}")"
+              else
+                commit="$(git rev-parse "$ref^{commit}")"
+              fi
+              git checkout --detach "$commit"
+              git reset --hard "$commit"
+              git clean -fdx
+              mkdir -p "$WORKSPACE/report"
+              printf '%s\n' "$commit" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
+            '''
+          }
+{{ end }}
         }
       }
     }
@@ -487,12 +542,8 @@ const defaultBuildTemplateContent = `pipeline {
             sh '''
               set -eu
               . report/build-env.sh
-              primary_commit="$(cat report/source-{{ $.PrimarySourceKey }}-commit.txt 2>/dev/null || true)"
-              image_tag_commit="$(printf '%s' "$primary_commit" | cut -c1-8)"
-              if [ -z "$image_tag_commit" ]; then
-                image_tag_commit='{{ $.ImageTagFallback }}'
-              fi
-              image_uri='{{ .ImageRepository }}:{{ $.ImageTagDate }}-'"${image_tag_commit}"'-{{ $.ImageTagVersion }}'
+              image_tag_branch='{{ $.ImageTagBranch }}'
+              image_uri='{{ .ImageRepository }}:{{ $.ImageTagDate }}-'"${image_tag_branch}"'-{{ $.ImageTagVersion }}'
               job_name=$(printf '%s' "${JOB_NAME:-paas}" | tr '/ ' '--')
               cache_dir="/backup_data/buildx-cache/${job_name}/{{ .Key }}"
               cache_next="${cache_dir}.next"
@@ -879,7 +930,22 @@ func shouldRefreshDefaultBuildTemplate(template BuildTemplate) bool {
 	if template.Version <= 2 && strings.Contains(content, "artifacts: artifacts") && strings.Contains(content, "JsonSlurperClassic") {
 		return true
 	}
-	return template.Version <= 3 && strings.Contains(content, "artifacts: artifacts") && strings.Contains(content, "image_tag_commit") && strings.Contains(content, "-{{ .Key }}") && !strings.Contains(content, "ImageTagVersion")
+	if template.Version <= 3 && strings.Contains(content, "artifacts: artifacts") && strings.Contains(content, "image_tag_commit") && strings.Contains(content, "-{{ .Key }}") && !strings.Contains(content, "ImageTagVersion") {
+		return true
+	}
+	if template.Version <= 4 && strings.Contains(content, "image_tag_commit") && strings.Contains(content, "ImageTagVersion") {
+		return true
+	}
+	if template.Version <= 5 &&
+		!strings.Contains(content, defaultSVNCredentialsID) &&
+		strings.Contains(content, "checkout {{ .Key }}") &&
+		strings.Contains(content, "ImageTagBranch") {
+		return true
+	}
+	return template.Version <= 6 &&
+		!strings.Contains(content, "PAAS_GIT_USER") &&
+		strings.Contains(content, "checkout {{ .Key }}") &&
+		strings.Contains(content, "git clone --no-checkout")
 }
 
 func (s *Service) EnsureDefaultJenkinsJobTemplate(ctx context.Context, actorID shared.ID) error {
@@ -991,6 +1057,37 @@ func (s *Service) GetBuildPipeline(ctx context.Context, pipelineID shared.ID) (B
 
 func (s *Service) ListBuildPipelineSources(ctx context.Context, pipelineID shared.ID) ([]BuildPipelineSource, error) {
 	return s.repo.ListPipelineSources(ctx, pipelineID)
+}
+
+func (s *Service) PreviewGitBranches(ctx context.Context, input ListGitBranchesInput) ([]SourceBranch, error) {
+	if input.Actor.ID.IsZero() {
+		return nil, shared.NewError(shared.CodeUnauthenticated, "actor is required")
+	}
+	if input.ProjectID.IsZero() {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "project_id is required")
+	}
+	if s.gitSources == nil {
+		return nil, shared.NewError(shared.CodeFailedPrecondition, "git source query port is required")
+	}
+	sourceURL := strings.TrimSpace(input.SourceURL)
+	if sourceURL == "" {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "source_url is required")
+	}
+	project, err := s.gitSources.ResolveProjectByHTTPURL(ctx, sourceURL)
+	if err != nil {
+		return nil, err
+	}
+	branches, err := s.gitSources.ListBranches(ctx, project.ID)
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(branches, func(i, j int) bool {
+		if branches[i].Default != branches[j].Default {
+			return branches[i].Default
+		}
+		return branches[i].Name < branches[j].Name
+	})
+	return branches, nil
 }
 
 func (s *Service) UpdateBuildPipeline(ctx context.Context, input UpdateBuildPipelineInput) (BuildPipeline, error) {
@@ -1106,7 +1203,7 @@ func (s *Service) deletePipeline(ctx context.Context, pipeline BuildPipeline, ac
 }
 
 func (s *Service) TriggerBuild(ctx context.Context, input TriggerBuildInput) (BuildRun, error) {
-	app, pipeline, sources, sourceRepos, err := s.loadPipelineBuildContext(ctx, input.PipelineID)
+	app, pipeline, sources, err := s.loadPipelineBuildContext(ctx, input.PipelineID)
 	if err != nil {
 		return BuildRun{}, err
 	}
@@ -1139,8 +1236,9 @@ func (s *Service) TriggerBuild(ctx context.Context, input TriggerBuildInput) (Bu
 		ApplicationID:       app.ID,
 		PipelineName:        pipeline.Name,
 		PipelineDisplayName: pipeline.DisplayName,
-		SourceRepositoryID:  primary.SourceRepositoryID,
-		GitRef:              primary.GitRef,
+		SourceType:          primary.SourceType,
+		SourceURL:           primary.SourceURL,
+		SourceRef:           primary.SourceRef,
 		CommitSHA:           primary.CommitSHA,
 		Version:             normalizeBuildVersion(input.Version),
 		Status:              BuildRunQueued,
@@ -1148,7 +1246,7 @@ func (s *Service) TriggerBuild(ctx context.Context, input TriggerBuildInput) (Bu
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
-	pipeline, err = s.ensurePipeline(ctx, app, pipeline, sources, sourceRepos, runSources, run)
+	pipeline, err = s.ensurePipeline(ctx, app, pipeline, sources, runSources, run)
 	if err != nil {
 		return BuildRun{}, err
 	}
@@ -1586,7 +1684,7 @@ func workloadIDsFromTargets(targets []WorkloadTarget) []shared.ID {
 	return out
 }
 
-func (s *Service) ensurePipeline(ctx context.Context, app ApplicationRef, pipeline BuildPipeline, sources []ApplicationSourceRef, repos map[string]SourceRepositoryRef, runSources []BuildRunSource, run BuildRun) (BuildPipeline, error) {
+func (s *Service) ensurePipeline(ctx context.Context, app ApplicationRef, pipeline BuildPipeline, sources []ApplicationSourceRef, runSources []BuildRunSource, run BuildRun) (BuildPipeline, error) {
 	if len(sources) == 0 {
 		return BuildPipeline{}, shared.NewError(shared.CodeNotFound, "build pipeline source not found")
 	}
@@ -1597,7 +1695,7 @@ func (s *Service) ensurePipeline(ctx context.Context, app ApplicationRef, pipeli
 		}
 		template = BuildTemplate{ID: "global-build-template", Name: "global-build-template", Version: 1, Content: defaultBuildTemplateContent}
 	}
-	jenkinsfile, err := s.renderBuildTemplate(ctx, template.Content, app, pipeline, sources, repos, runSources, run)
+	jenkinsfile, err := s.renderBuildTemplate(ctx, template.Content, app, pipeline, sources, runSources, run)
 	if err != nil {
 		return BuildPipeline{}, err
 	}
@@ -1627,7 +1725,7 @@ type buildTemplateView struct {
 	PrimarySourceKey     string
 	ImageTargets         []buildTemplateImageTargetView
 	ImageTagDate         string
-	ImageTagFallback     string
+	ImageTagBranch       string
 	ImageTagVersion      string
 }
 
@@ -1640,9 +1738,12 @@ type buildTemplateDockerfileRepositoryView struct {
 type buildTemplateSourceView struct {
 	Key            string
 	StageName      string
+	SourceType     string
 	RepoURL        string
-	GitRef         string
-	DefaultGitRef  string
+	SourceRef      string
+	GitCredentials string
+	SVNRevision    string
+	SVNCredentials string
 	CheckoutDir    string
 	WorkDir        string
 	BuildImage     string
@@ -1666,7 +1767,7 @@ type buildTemplateImageTargetView struct {
 	IsPrimary          bool
 }
 
-func (s *Service) renderBuildTemplate(ctx context.Context, content string, app ApplicationRef, pipeline BuildPipeline, sources []ApplicationSourceRef, repos map[string]SourceRepositoryRef, runSources []BuildRunSource, run BuildRun) (string, error) {
+func (s *Service) renderBuildTemplate(ctx context.Context, content string, app ApplicationRef, pipeline BuildPipeline, sources []ApplicationSourceRef, runSources []BuildRunSource, run BuildRun) (string, error) {
 	if strings.TrimSpace(content) == "" {
 		content = defaultBuildTemplateContent
 	}
@@ -1676,7 +1777,7 @@ func (s *Service) renderBuildTemplate(ctx context.Context, content string, app A
 	}
 	runtimePayload := buildRuntimePayload(pipeline.RuntimeEnvironments, sources)
 	imageTargets := s.buildTemplateImageTargets(app, pipeline.RuntimeEnvironments, sources, runSources, run)
-	imageTagDate, imageTagFallback := buildImageTagParts(runSources, run)
+	imageTagDate, imageTagBranch := buildImageTagParts(runSources, run)
 	view := buildTemplateView{
 		AgentLabel:           "any",
 		Sources:              make([]buildTemplateSourceView, 0, len(sources)),
@@ -1687,7 +1788,7 @@ func (s *Service) renderBuildTemplate(ctx context.Context, content string, app A
 		PrimarySourceKey:     shellSingleQuoted(primaryBuildSourceKey(sources, runSources)),
 		ImageTargets:         imageTargets,
 		ImageTagDate:         shellSingleQuoted(imageTagDate),
-		ImageTagFallback:     shellSingleQuoted(imageTagFallback),
+		ImageTagBranch:       shellSingleQuoted(imageTagBranch),
 		ImageTagVersion:      shellSingleQuoted(buildVersionTag(run.Version)),
 	}
 	if len(imageTargets) > 0 {
@@ -1730,16 +1831,20 @@ func (s *Service) renderBuildTemplate(ctx context.Context, content string, app A
 		}
 		collectCommand := strings.TrimSpace(spec.ArtifactCopyCommand)
 		collectCommand = indentShell(collectCommand, "                ")
-		gitRef := firstNonEmpty(spec.DefaultRef, "main")
-		if runSource, ok := runSourceByKey[source.Key]; ok && strings.TrimSpace(runSource.GitRef) != "" {
-			gitRef = runSource.GitRef
+		sourceType := normalizeSourceType(source.SourceType)
+		sourceRef := firstNonEmpty(source.SourceRef, spec.DefaultRef, defaultSourceRef(sourceType, source.SourceURL))
+		if runSource, ok := runSourceByKey[source.Key]; ok && strings.TrimSpace(runSource.SourceRef) != "" {
+			sourceRef = runSource.SourceRef
 		}
 		view.Sources = append(view.Sources, buildTemplateSourceView{
 			Key:            shellToken(source.Key),
 			StageName:      groovyStageName(firstNonEmpty(source.DisplayName, source.Key)),
-			RepoURL:        shellSingleQuoted(repoCloneURL(repos[source.Key])),
-			GitRef:         shellSingleQuoted(gitRef),
-			DefaultGitRef:  groovySingleQuoted(firstNonEmpty(spec.DefaultRef, "main")),
+			SourceType:     string(sourceType),
+			RepoURL:        shellSingleQuoted(source.SourceURL),
+			SourceRef:      shellSingleQuoted(sourceRef),
+			GitCredentials: groovySingleQuoted(defaultGitCredentialsID),
+			SVNRevision:    shellSingleQuoted(firstNonEmpty(source.SVNRevision, "HEAD")),
+			SVNCredentials: groovySingleQuoted(defaultSVNCredentialsID),
 			CheckoutDir:    groovySingleQuoted(checkoutDir),
 			WorkDir:        groovySingleQuoted(workDir),
 			BuildImage:     groovySingleQuoted(buildImage),
@@ -1862,27 +1967,22 @@ func runtimeTargetPlatforms(name string) string {
 }
 
 func buildImageBaseTag(runSources []BuildRunSource, run BuildRun) string {
-	date, commit := buildImageTagParts(runSources, run)
-	return date + "-" + commit + "-" + buildVersionTag(run.Version)
+	date, branch := buildImageTagParts(runSources, run)
+	return date + "-" + branch + "-" + buildVersionTag(run.Version)
 }
 
 func buildImageTagParts(runSources []BuildRunSource, run BuildRun) (string, string) {
 	source := primaryRunSource(runSources)
-	commit := strings.TrimSpace(source.CommitSHA)
-	if commit == "" {
-		commit = strings.TrimSpace(run.CommitSHA)
+	ref := firstNonEmpty(source.SourceRef, run.SourceRef)
+	if normalizeSourceType(firstNonEmptySourceType(source.SourceType, run.SourceType)) == SourceTypeSVN {
+		ref = firstNonEmpty(ref, svnTagRefFromURL(firstNonEmpty(source.SourceURL, run.SourceURL)))
 	}
-	if len(commit) > 8 {
-		commit = commit[:8]
-	}
-	if commit == "" {
-		commit = imageTagToken(source.GitRef)
-	}
+	branch := imageTagToken(ref)
 	date := run.CreatedAt
 	if date.IsZero() {
 		date = time.Now()
 	}
-	return date.Format("20060102"), commit
+	return date.Format("20060102"), branch
 }
 
 func imageTagToken(value string) string {
@@ -1913,6 +2013,59 @@ func normalizeBuildVersion(value string) string {
 
 func buildVersionTag(value string) string {
 	return imageTagToken(firstNonEmpty(normalizeBuildVersion(value), "v0.0.0"))
+}
+
+func normalizeSourceType(value SourceType) SourceType {
+	switch SourceType(strings.ToLower(strings.TrimSpace(string(value)))) {
+	case SourceTypeSVN:
+		return SourceTypeSVN
+	default:
+		return SourceTypeGit
+	}
+}
+
+func firstNonEmptySourceType(values ...SourceType) SourceType {
+	for _, value := range values {
+		if strings.TrimSpace(string(value)) != "" {
+			return value
+		}
+	}
+	return SourceTypeGit
+}
+
+func defaultSourceRef(sourceType SourceType, sourceURL string) string {
+	if normalizeSourceType(sourceType) == SourceTypeSVN {
+		return svnTagRefFromURL(sourceURL)
+	}
+	return "main"
+}
+
+func svnTagRefFromURL(sourceURL string) string {
+	value := strings.Trim(strings.TrimSpace(sourceURL), "/")
+	if value == "" {
+		return "svn"
+	}
+	parts := strings.Split(value, "/")
+	for i, part := range parts {
+		switch part {
+		case "trunk":
+			return "trunk"
+		case "branches":
+			if i+1 < len(parts) && strings.TrimSpace(parts[i+1]) != "" {
+				return parts[i+1]
+			}
+		case "tags":
+			if i+1 < len(parts) && strings.TrimSpace(parts[i+1]) != "" {
+				return "tag-" + parts[i+1]
+			}
+		}
+	}
+	for i := len(parts) - 1; i >= 0; i-- {
+		if strings.TrimSpace(parts[i]) != "" {
+			return parts[i]
+		}
+	}
+	return "svn"
 }
 
 func validateBuildVersion(value string) error {
@@ -2069,7 +2222,7 @@ func (s *Service) createBuildArtifacts(ctx context.Context, run BuildRun, input 
 			name = source.SourceKey
 		}
 		containerName := normalizeContainerName(item.ContainerName)
-		metadata := map[string]string{"commit_sha": source.CommitSHA, "git_ref": source.GitRef, "container_name": containerName}
+		metadata := map[string]string{"commit_sha": source.CommitSHA, "source_type": string(source.SourceType), "source_ref": source.SourceRef, "source_url": source.SourceURL, "container_name": containerName}
 		for k, v := range item.Metadata {
 			metadata[k] = v
 		}
@@ -2262,10 +2415,10 @@ func (input TriggerBuildInput) normalizedSourceOverrides(primaryKey string) []Tr
 	if len(input.Sources) > 0 {
 		return input.Sources
 	}
-	if strings.TrimSpace(input.GitRef) == "" && strings.TrimSpace(input.CommitSHA) == "" {
+	if strings.TrimSpace(input.SourceRef) == "" && strings.TrimSpace(input.CommitSHA) == "" {
 		return nil
 	}
-	return []TriggerBuildSourceInput{{Key: primaryKey, GitRef: input.GitRef, CommitSHA: input.CommitSHA}}
+	return []TriggerBuildSourceInput{{Key: primaryKey, SourceRef: input.SourceRef, CommitSHA: input.CommitSHA}}
 }
 
 func (s *Service) newBuildRunSources(ctx context.Context, runID shared.ID, app ApplicationRef, sources []ApplicationSourceRef, overrides map[string]TriggerBuildSourceInput, now time.Time) ([]BuildRunSource, error) {
@@ -2281,61 +2434,58 @@ func (s *Service) newBuildRunSources(ctx context.Context, runID shared.ID, app A
 	}
 	for _, source := range sources {
 		override := overrides[source.Key]
-		gitRef := strings.TrimSpace(override.GitRef)
-		if gitRef == "" {
-			gitRef = strings.TrimSpace(source.BuildSpec.DefaultRef)
+		sourceRef := strings.TrimSpace(override.SourceRef)
+		if sourceRef == "" {
+			sourceRef = strings.TrimSpace(source.SourceRef)
 		}
-		if gitRef == "" {
-			gitRef = "main"
+		if sourceRef == "" {
+			sourceRef = defaultSourceRef(source.SourceType, source.SourceURL)
 		}
 		id, err := s.ids.NewID("build_run_source")
 		if err != nil {
 			return nil, err
 		}
 		items = append(items, BuildRunSource{
-			ID:                 id,
-			TenantID:           app.TenantID,
-			ProjectID:          app.ProjectID,
-			BuildRunID:         runID,
-			ApplicationID:      app.ID,
-			SourceKey:          source.Key,
-			SourceRepositoryID: source.SourceRepositoryID,
-			GitRef:             gitRef,
-			CommitSHA:          strings.TrimSpace(override.CommitSHA),
-			SourcePath:         source.BuildSpec.SourcePath,
-			IsPrimary:          source.IsPrimary,
-			CreatedAt:          now,
+			ID:            id,
+			TenantID:      app.TenantID,
+			ProjectID:     app.ProjectID,
+			BuildRunID:    runID,
+			ApplicationID: app.ID,
+			SourceKey:     source.Key,
+			SourceType:    normalizeSourceType(source.SourceType),
+			SourceURL:     source.SourceURL,
+			SourceRef:     sourceRef,
+			CommitSHA:     strings.TrimSpace(override.CommitSHA),
+			SourcePath:    source.BuildSpec.SourcePath,
+			IsPrimary:     source.IsPrimary,
+			CreatedAt:     now,
 		})
 	}
 	return items, nil
 }
 
-func (s *Service) loadBuildContext(ctx context.Context, applicationID shared.ID) (ApplicationRef, []ApplicationSourceRef, map[string]SourceRepositoryRef, error) {
+func (s *Service) loadBuildContext(ctx context.Context, applicationID shared.ID) (ApplicationRef, []ApplicationSourceRef, error) {
 	app, err := s.requireApplication(ctx, applicationID)
 	if err != nil {
-		return ApplicationRef{}, nil, nil, err
+		return ApplicationRef{}, nil, err
 	}
 	if s.apps == nil {
-		return ApplicationRef{}, nil, nil, shared.NewError(shared.CodeFailedPrecondition, "application query port is required")
+		return ApplicationRef{}, nil, shared.NewError(shared.CodeFailedPrecondition, "application query port is required")
 	}
 	sources, err := s.apps.ListApplicationSources(ctx, applicationID)
 	if err != nil {
 		if shared.CodeOf(err) != shared.CodeNotFound {
-			return ApplicationRef{}, nil, nil, err
+			return ApplicationRef{}, nil, err
 		}
 		source, sourceErr := s.apps.GetApplicationSource(ctx, applicationID)
 		if sourceErr != nil {
-			return ApplicationRef{}, nil, nil, sourceErr
+			return ApplicationRef{}, nil, sourceErr
 		}
 		sources = []ApplicationSourceRef{source}
 	}
 	if len(sources) == 0 {
-		return ApplicationRef{}, nil, nil, shared.NewError(shared.CodeNotFound, "application source not found")
+		return ApplicationRef{}, nil, shared.NewError(shared.CodeNotFound, "application source not found")
 	}
-	if s.sourceRepos == nil {
-		return ApplicationRef{}, nil, nil, shared.NewError(shared.CodeFailedPrecondition, "source repository query port is required")
-	}
-	repos := map[string]SourceRepositoryRef{}
 	for i := range sources {
 		if sources[i].Key == "" {
 			sources[i].Key = "main"
@@ -2346,39 +2496,33 @@ func (s *Service) loadBuildContext(ctx context.Context, applicationID shared.ID)
 		if !sources[i].IsPrimary && i == 0 {
 			sources[i].IsPrimary = true
 		}
-		sourceRepo, err := s.sourceRepos.GetSourceRepository(ctx, sources[i].SourceRepositoryID)
-		if err != nil {
-			return ApplicationRef{}, nil, nil, err
-		}
-		repos[sources[i].Key] = sourceRepo
 	}
-	return app, sources, repos, nil
+	return app, sources, nil
 }
 
-func (s *Service) loadPipelineBuildContext(ctx context.Context, pipelineID shared.ID) (ApplicationRef, BuildPipeline, []ApplicationSourceRef, map[string]SourceRepositoryRef, error) {
+func (s *Service) loadPipelineBuildContext(ctx context.Context, pipelineID shared.ID) (ApplicationRef, BuildPipeline, []ApplicationSourceRef, error) {
 	if pipelineID.IsZero() {
-		return ApplicationRef{}, BuildPipeline{}, nil, nil, shared.NewError(shared.CodeInvalidArgument, "pipeline_id is required")
+		return ApplicationRef{}, BuildPipeline{}, nil, shared.NewError(shared.CodeInvalidArgument, "pipeline_id is required")
 	}
 	pipeline, err := s.repo.GetPipeline(ctx, pipelineID)
 	if err != nil {
-		return ApplicationRef{}, BuildPipeline{}, nil, nil, err
+		return ApplicationRef{}, BuildPipeline{}, nil, err
 	}
 	if pipeline.Status != BuildPipelineStatusActive {
-		return ApplicationRef{}, BuildPipeline{}, nil, nil, shared.NewError(shared.CodeFailedPrecondition, "build pipeline is disabled")
+		return ApplicationRef{}, BuildPipeline{}, nil, shared.NewError(shared.CodeFailedPrecondition, "build pipeline is disabled")
 	}
 	app, err := s.requireApplication(ctx, pipeline.ApplicationID)
 	if err != nil {
-		return ApplicationRef{}, BuildPipeline{}, nil, nil, err
+		return ApplicationRef{}, BuildPipeline{}, nil, err
 	}
 	pipelineSources, err := s.repo.ListPipelineSources(ctx, pipeline.ID)
 	if err != nil {
-		return ApplicationRef{}, BuildPipeline{}, nil, nil, err
+		return ApplicationRef{}, BuildPipeline{}, nil, err
 	}
 	if len(pipelineSources) == 0 {
-		return ApplicationRef{}, BuildPipeline{}, nil, nil, shared.NewError(shared.CodeNotFound, "build pipeline source not found")
+		return ApplicationRef{}, BuildPipeline{}, nil, shared.NewError(shared.CodeNotFound, "build pipeline source not found")
 	}
 	sources := make([]ApplicationSourceRef, 0, len(pipelineSources))
-	repos := map[string]SourceRepositoryRef{}
 	for i, source := range pipelineSources {
 		key := strings.TrimSpace(source.Key)
 		if key == "" {
@@ -2395,23 +2539,17 @@ func (s *Service) loadPipelineBuildContext(ctx context.Context, pipelineID share
 			ApplicationID:      source.ApplicationID,
 			Key:                key,
 			DisplayName:        source.DisplayName,
-			SourceRepositoryID: source.SourceRepositoryID,
 			BuildEnvironmentID: source.BuildEnvironmentID,
+			SourceType:         source.SourceType,
+			SourceURL:          source.SourceURL,
+			SourceRef:          source.SourceRef,
+			SVNRevision:        source.SVNRevision,
 			SourcePath:         source.SourcePath,
 			BuildSpec:          spec,
 			IsPrimary:          source.IsPrimary,
 		})
-		sourceRepos, err := s.sourceReposOrError()
-		if err != nil {
-			return ApplicationRef{}, BuildPipeline{}, nil, nil, err
-		}
-		repo, err := sourceRepos.GetSourceRepository(ctx, source.SourceRepositoryID)
-		if err != nil {
-			return ApplicationRef{}, BuildPipeline{}, nil, nil, err
-		}
-		repos[key] = repo
 	}
-	return app, pipeline, sources, repos, nil
+	return app, pipeline, sources, nil
 }
 
 func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef, pipelineID shared.ID, inputs []BuildPipelineSourceInput, runtimes []RuntimeEnvironmentRef) ([]BuildPipelineSource, error) {
@@ -2436,17 +2574,12 @@ func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef
 			return nil, shared.NewError(shared.CodeConflict, "pipeline source key already exists")
 		}
 		seen[key] = struct{}{}
-		if input.SourceRepositoryID.IsZero() {
-			return nil, shared.NewError(shared.CodeInvalidArgument, "source_repository_id is required")
+		sourceType := normalizeSourceType(input.SourceType)
+		sourceURL := strings.TrimSpace(input.SourceURL)
+		if sourceURL == "" {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "source_url is required")
 		}
-		sourceRepos, err := s.sourceReposOrError()
-		if err != nil {
-			return nil, err
-		}
-		repo, err := sourceRepos.GetSourceRepository(ctx, input.SourceRepositoryID)
-		if err != nil {
-			return nil, err
-		}
+		sourceRef := strings.TrimSpace(input.SourceRef)
 		spec := input.BuildSpec
 		if strings.TrimSpace(spec.SourcePath) == "" {
 			spec.SourcePath = input.SourcePath
@@ -2454,13 +2587,18 @@ func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef
 		if strings.TrimSpace(input.DefaultRef) != "" {
 			spec.DefaultRef = strings.TrimSpace(input.DefaultRef)
 		}
-		if strings.TrimSpace(spec.DefaultRef) == "" {
-			spec.DefaultRef = "main"
+		if sourceRef == "" {
+			sourceRef = strings.TrimSpace(spec.DefaultRef)
 		}
+		if sourceRef == "" {
+			sourceRef = defaultSourceRef(sourceType, sourceURL)
+		}
+		spec.DefaultRef = sourceRef
 		applyPipelineRuntime(runtimes[0], &spec)
 		if err := validateBuildSpec(spec); err != nil {
 			return nil, err
 		}
+		svnRevision := strings.TrimSpace(input.SVNRevision)
 		sourceID, err := s.ids.NewID("build_pipeline_source")
 		if err != nil {
 			return nil, err
@@ -2473,7 +2611,6 @@ func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef
 			}
 			primaryIndex = i
 		}
-		_ = repo
 		sources = append(sources, BuildPipelineSource{
 			ID:                 sourceID,
 			TenantID:           app.TenantID,
@@ -2482,7 +2619,10 @@ func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef
 			PipelineID:         pipelineID,
 			Key:                key,
 			DisplayName:        normalizeDisplayName(input.DisplayName, key),
-			SourceRepositoryID: input.SourceRepositoryID,
+			SourceType:         sourceType,
+			SourceURL:          sourceURL,
+			SourceRef:          sourceRef,
+			SVNRevision:        svnRevision,
 			BuildEnvironmentID: input.BuildEnvironmentID,
 			SourcePath:         sourcePath,
 			BuildSpec:          spec,
@@ -2573,13 +2713,6 @@ func (s *Service) requireApplication(ctx context.Context, applicationID shared.I
 	return s.apps.GetApplication(ctx, applicationID)
 }
 
-func (s *Service) sourceReposOrError() (SourceRepositoryQuery, error) {
-	if s.sourceRepos == nil {
-		return nil, shared.NewError(shared.CodeFailedPrecondition, "source repository query port is required")
-	}
-	return s.sourceRepos, nil
-}
-
 func (s *Service) resolveJenkinsJobTemplate(ctx context.Context, templateID shared.ID) (JenkinsJobTemplate, error) {
 	var (
 		template JenkinsJobTemplate
@@ -2656,13 +2789,6 @@ func buildSpecAuditDetails(spec BuildSpec) map[string]string {
 		"runtime_base_image":    spec.RuntimeBaseImage,
 		"artifact_deploy_path":  spec.ArtifactDeployPath,
 	}
-}
-
-func repoCloneURL(repo SourceRepositoryRef) string {
-	if strings.TrimSpace(repo.SSHURL) != "" {
-		return strings.TrimSpace(repo.SSHURL)
-	}
-	return strings.TrimSpace(repo.HTTPURL)
 }
 
 func normalizeTemplateName(value string) string {
@@ -2993,9 +3119,11 @@ func sampleBuildTemplateView() buildTemplateView {
 		Sources: []buildTemplateSourceView{{
 			Key:            "main",
 			StageName:      "main",
+			SourceType:     "git",
 			RepoURL:        "git@example.com:sample/repo.git",
-			GitRef:         "main",
-			DefaultGitRef:  "main",
+			SourceRef:      "main",
+			SVNRevision:    "HEAD",
+			SVNCredentials: defaultSVNCredentialsID,
 			CheckoutDir:    "source/main",
 			WorkDir:        "source/main",
 			BuildImage:     "maven:3.9.9-eclipse-temurin-17",

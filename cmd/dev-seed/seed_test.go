@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestSeedCreatesDevDataInOrderAndRegistersSourceURL(t *testing.T) {
+func TestSeedCreatesDevDataInOrderAndUsesSourceURLInPipeline(t *testing.T) {
 	var calls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
@@ -25,18 +25,6 @@ func TestSeedCreatesDevDataInOrderAndRegistersSourceURL(t *testing.T) {
 		case "POST /api/projects":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "project_macc", "tenant_id": "tenant_sbg", "name": "macc"})
-		case "GET /api/projects/project_macc/source-repositories":
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
-		case "POST /api/source-repositories":
-			var payload map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatalf("decode source repository payload: %v", err)
-			}
-			if payload["http_url"] != defaultSourceURL || payload["default_branch"] != "main" {
-				t.Fatalf("source repository payload = %#v", payload)
-			}
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "repo_log_receiver", "name": "log-receiver"})
 		case "GET /api/projects/project_macc/applications":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
 		case "POST /api/applications":
@@ -59,6 +47,15 @@ func TestSeedCreatesDevDataInOrderAndRegistersSourceURL(t *testing.T) {
 		case "GET /api/apps/app_log_receiver/build-pipelines":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
 		case "POST /api/apps/app_log_receiver/build-pipelines":
+			var payload struct {
+				Sources []map[string]any `json:"sources"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode build pipeline payload: %v", err)
+			}
+			if len(payload.Sources) != 1 || payload.Sources[0]["source_type"] != "git" || payload.Sources[0]["source_url"] != defaultSourceURL || payload.Sources[0]["source_ref"] != "main" {
+				t.Fatalf("build pipeline sources = %#v", payload.Sources)
+			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "pipeline_main", "name": "main"})
 		default:
@@ -76,8 +73,6 @@ func TestSeedCreatesDevDataInOrderAndRegistersSourceURL(t *testing.T) {
 		"POST /api/tenants",
 		"GET /api/projects",
 		"POST /api/projects",
-		"GET /api/projects/project_macc/source-repositories",
-		"POST /api/source-repositories",
 		"GET /api/projects/project_macc/applications",
 		"POST /api/applications",
 		"GET /api/applications/app_log_receiver/workloads",
@@ -92,7 +87,7 @@ func TestSeedCreatesDevDataInOrderAndRegistersSourceURL(t *testing.T) {
 	}
 }
 
-func TestSeedReturnsSourceRepositoryCreateFailure(t *testing.T) {
+func TestSeedReturnsBuildPipelineCreateFailure(t *testing.T) {
 	var calls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
@@ -102,13 +97,19 @@ func TestSeedReturnsSourceRepositoryCreateFailure(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "tenant_sbg", "name": "sbg"}}, "total": 1})
 		case "GET /api/projects":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "project_macc", "tenant_id": "tenant_sbg", "name": "macc"}}, "total": 1})
-		case "GET /api/projects/project_macc/source-repositories":
+		case "GET /api/projects/project_macc/applications":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "app_log_receiver", "name": "log-receiver"}}, "total": 1})
+		case "GET /api/applications/app_log_receiver/workloads":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "workload_log_receiver", "name": "log-receiver", "status": "enabled"}}})
+		case "GET /api/runtime-environments":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "runtime_env_java17", "name": "java17", "status": "enabled"}}, "total": 1})
+		case "GET /api/build-environments":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "build_env_gradle7_jdk11", "name": "gradle7-jdk11", "status": "enabled"}}, "total": 1})
+		case "GET /api/apps/app_log_receiver/build-pipelines":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "total": 0})
-		case "POST /api/source-repositories":
+		case "POST /api/apps/app_log_receiver/build-pipelines":
 			w.WriteHeader(http.StatusPreconditionFailed)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "failed_precondition", "message": "请求处理失败"}})
-		case "POST /api/repository-migrations":
-			t.Fatalf("repository migration should not be called")
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -116,14 +117,18 @@ func TestSeedReturnsSourceRepositoryCreateFailure(t *testing.T) {
 	defer server.Close()
 
 	if err := runSeed(context.Background(), seedOptions{APIBase: server.URL, SourceURL: defaultSourceURL}); err == nil {
-		t.Fatalf("runSeed() should return source repository create error")
+		t.Fatalf("runSeed() should return build pipeline create error")
 	}
 
 	want := []string{
 		"GET /api/tenants",
 		"GET /api/projects",
-		"GET /api/projects/project_macc/source-repositories",
-		"POST /api/source-repositories",
+		"GET /api/projects/project_macc/applications",
+		"GET /api/applications/app_log_receiver/workloads",
+		"GET /api/runtime-environments",
+		"GET /api/build-environments",
+		"GET /api/apps/app_log_receiver/build-pipelines",
+		"POST /api/apps/app_log_receiver/build-pipelines",
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("request order mismatch\nwant: %#v\n got: %#v", want, calls)
@@ -140,8 +145,6 @@ func TestSeedSkipsExistingDevData(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "tenant_sbg", "name": "sbg"}}, "total": 1})
 		case "GET /api/projects":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "project_macc", "tenantId": "tenant_sbg", "name": "macc"}}, "total": 1})
-		case "GET /api/projects/project_macc/source-repositories":
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "repo_log_receiver", "name": "log-receiver"}}, "total": 1})
 		case "GET /api/projects/project_macc/applications":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"id": "app_log_receiver", "name": "log-receiver"}}, "total": 1})
 		case "GET /api/applications/app_log_receiver/workloads":

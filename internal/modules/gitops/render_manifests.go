@@ -98,10 +98,10 @@ func truncate63(s string) string {
 
 func buildLabels(workloadName, resourceName, appName, appID, stageKey, deploymentID string) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":         workloadName,
-		"app.kubernetes.io/instance":     resourceName,
-		"app.kubernetes.io/managed-by":   "paas",
-		"app.kubernetes.io/part-of":      appName,
+		"app.kubernetes.io/name":            workloadName,
+		"app.kubernetes.io/instance":        resourceName,
+		"app.kubernetes.io/managed-by":      "paas",
+		"app.kubernetes.io/part-of":         appName,
 		"paas.shareinto.com/application-id": appID,
 		"paas.shareinto.com/stage-key":      stageKey,
 		"paas.shareinto.com/deployment-id":  deploymentID,
@@ -447,7 +447,7 @@ func renderIngress(resourceName, namespace string, labels map[string]string, hos
 	}
 
 	fmt.Fprintf(&b, "spec:\n")
-	fmt.Fprintf(&b, "  ingressClassName: nginx\n")
+	fmt.Fprintf(&b, "  ingressClassName: higress\n")
 
 	// TLS
 	var tlsHosts []string

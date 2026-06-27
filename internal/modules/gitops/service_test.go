@@ -336,7 +336,45 @@ func TestApplyPromotionWritesRenderedManifests(t *testing.T) {
 	}
 }
 
-func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t *testing.T) {
+func TestPreviewPromotionManifestRendersYamlDiffInputsWithoutCommitting(t *testing.T) {
+	svc, manifest, _ := newTestService(t, []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform",
+		"deployment_1", "manifest_revision_1", "deployment_event_1",
+	})
+	svc.workloads = workloadQuery{
+		workloads: map[shared.ID]WorkloadRef{
+			"workload_api": {ID: "workload_api", ApplicationID: "app_1", Name: "user-api", WorkloadType: "Deployment"},
+		},
+		configs: map[string]WorkloadStageConfigRef{
+			"workload_api|dev": {
+				ServicePorts: []WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
+			},
+		},
+	}
+
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"),
+		Artifacts: []delivery.GitOpsArtifactSpec{{WorkloadID: "workload_api", URI: "registry/user-api:v1", Repository: "registry/user-api", Tag: "v1", Digest: "sha256:old", IsPrimary: true}},
+	}); err != nil {
+		t.Fatalf("ApplyPromotion() error = %v", err)
+	}
+
+	expected, current, err := svc.PreviewPromotionManifest(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_preview", FreightID: "freight_2", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"),
+		Artifacts: []delivery.GitOpsArtifactSpec{{WorkloadID: "workload_api", URI: "registry/user-api:v2", Repository: "registry/user-api", Tag: "v2", Digest: "sha256:new", IsPrimary: true}},
+	})
+	if err != nil {
+		t.Fatalf("PreviewPromotionManifest() error = %v", err)
+	}
+	if !strings.Contains(current, "image: registry/user-api:v1@sha256:old") || !strings.Contains(expected, "image: registry/user-api:v2@sha256:new") {
+		t.Fatalf("preview should compare rendered manifests, current:\n%s\nexpected:\n%s", current, expected)
+	}
+	if len(manifest.Commits) != 1 {
+		t.Fatalf("preview should not commit manifests, commits=%+v", manifest.Commits)
+	}
+}
+
+func TestApplyPromotionCommitsAllStagesAndUpdatesDeploymentFromAgent(t *testing.T) {
 	ids := []shared.ID{
 		"deployment_template_platform", "deployment_template_revision_platform",
 		"deployment_1", "manifest_revision_1", "deployment_event_1",
@@ -369,7 +407,7 @@ func TestApplyPromotionCommitsDevCreatesMRForProdAndUpdatesDeploymentFromAgent(t
 	if err != nil {
 		t.Fatalf("apply prod: %v", err)
 	}
-	if dev.ManifestRevision == "" || testEnv.ManifestRevision == "" || staging.ManifestRevision == "" || prod.ManifestRevision == "" || len(manifest.Commits) != 2 || len(manifest.MRs) != 2 {
+	if dev.ManifestRevision == "" || testEnv.ManifestRevision == "" || staging.ManifestRevision == "" || prod.ManifestRevision == "" || len(manifest.Commits) != 4 || len(manifest.MRs) != 0 {
 		t.Fatalf("unexpected manifest operations: commits=%d mrs=%d", len(manifest.Commits), len(manifest.MRs))
 	}
 	if !strings.Contains(manifest.Files["apps/order-api/dev/manifests.yaml"], "sha256:old") || !strings.Contains(manifest.Files["apps/order-api/test/manifests.yaml"], "sha256:test") || !strings.Contains(manifest.Files["apps/order-api/staging/manifests.yaml"], "sha256:staging") || !strings.Contains(manifest.Files["apps/order-api/prod/manifests.yaml"], "sha256:rollback") {
@@ -779,6 +817,7 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 		"memory: \"512Mi\"",
 		"path: /ready",
 		"host: api.dev.example.com",
+		"ingressClassName: higress",
 		"name: DB_PASSWORD",
 		"name: secret/db-password",
 		"mountPath: /etc/app",
@@ -792,6 +831,9 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 		if !strings.Contains(values, want) {
 			t.Fatalf("values missing %q:\n%s", want, values)
 		}
+	}
+	if strings.Contains(values, "ingressClassName: nginx") {
+		t.Fatalf("values should not contain nginx ingress class:\n%s", values)
 	}
 	deployment, err := svc.GetDeployment(context.Background(), "deployment_1")
 	if err != nil {
@@ -821,8 +863,8 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 	}
 }
 
-func TestApplyPromotionRecordsFailedDeploymentWhenMergeRequestCreationFails(t *testing.T) {
-	errBoom := shared.NewError(shared.CodeInternal, "gitlab mr failed")
+func TestApplyPromotionRecordsFailedDeploymentWhenProdCommitFails(t *testing.T) {
+	errBoom := shared.NewError(shared.CodeInternal, "gitlab commit failed")
 	repo := newTestRepository(t)
 	svc := NewService(Options{
 		Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom},
@@ -833,21 +875,21 @@ func TestApplyPromotionRecordsFailedDeploymentWhenMergeRequestCreationFails(t *t
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers: []")
 	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
 	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "prod", TargetClusters: targetClusters("prod"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
-		t.Fatalf("expected MR error, got %v", err)
+		t.Fatalf("expected commit error, got %v", err)
 	}
 	deployment, err := repo.FindDeploymentByPromotion(context.Background(), "promotion_prod")
 	if err != nil {
 		t.Fatalf("failed deployment should be recorded: %v", err)
 	}
-	if deployment.Status != DeploymentFailed || !strings.Contains(deployment.Message, "创建合并请求失败") {
-		t.Fatalf("failed deployment should contain Chinese MR failure reason: %#v", deployment)
+	if deployment.Status != DeploymentFailed || !strings.Contains(deployment.Message, "提交部署清单失败") {
+		t.Fatalf("failed deployment should contain Chinese commit failure reason: %#v", deployment)
 	}
 	if !deployment.ManifestRevisionID.IsZero() {
 		t.Fatalf("failed deployment should not reference unsaved manifest revision: %#v", deployment)
 	}
 	events := listDeploymentEventsForTest(t, repo, deployment.ID)
-	if len(events) != 1 || events[0].Status != DeploymentFailed || !strings.Contains(events[0].Message, "创建合并请求失败") {
-		t.Fatalf("failed deployment event should contain Chinese MR failure reason: %#v", events)
+	if len(events) != 1 || events[0].Status != DeploymentFailed || !strings.Contains(events[0].Message, "提交部署清单失败") {
+		t.Fatalf("failed deployment event should contain Chinese commit failure reason: %#v", events)
 	}
 }
 
@@ -1135,9 +1177,9 @@ func TestGitOpsServicePropagatesPromotionAndAgentUpdateErrors(t *testing.T) {
 	if _, err := commitErrSvc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
 		t.Fatalf("manifest commit error should propagate, got %v", err)
 	}
-	mrErrSvc := NewService(Options{Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom}, Application: svc.apps, IDGenerator: &staticIDs{ids: []shared.ID{"deployment_bad2", "manifest_bad2", "event_bad2"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
-	if _, err := mrErrSvc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "prod", TargetClusters: targetClusters("prod"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
-		t.Fatalf("manifest MR error should propagate, got %v", err)
+	prodCommitErrSvc := NewService(Options{Repository: repo, ManifestRepo: gitopsErrManifest{err: errBoom}, Application: svc.apps, IDGenerator: &staticIDs{ids: []shared.ID{"deployment_bad2", "manifest_bad2", "event_bad2"}}, Clock: fixedClock{now: time.Date(2026, 5, 30, 13, 0, 0, 0, time.UTC)}})
+	if _, err := prodCommitErrSvc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_prod", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "prod", TargetClusters: targetClusters("prod"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {
+		t.Fatalf("manifest prod commit error should propagate, got %v", err)
 	}
 	repo.createDeploymentErr = errBoom
 	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"), ImageURI: "repo:v1"}); shared.CodeOf(err) != shared.CodeInternal {

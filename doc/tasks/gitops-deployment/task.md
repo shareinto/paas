@@ -19,8 +19,8 @@
 - [x] 实现环境清单目录生成规则：`apps/{app}/{env}/values.yaml`。
 - [x] 实现 Argo CD Application 清单生成，按 StageClusterBinding 创建。
 - [x] 实现发布时修改 values 中的镜像 repository、tag、digest。
-- [x] dev/test 默认直接 commit 到清单仓库。
-- [x] staging/prod 默认创建 Merge Request，并与 PaaS 审批流关联。
+- [x] 所有 Stage 在 PaaS 审批/验证门禁满足后，由 PaaS 直接 commit 到清单仓库。
+- [x] staging/prod 等高风险环境的准入由 PaaS Promotion 审批流控制，不再依赖 GitLab Merge Request 作为发布门禁。
 - [x] 每次模板变更记录 DeploymentTemplateRevision 和审计日志。
 - [x] 每次清单变更记录 ManifestRevision，并关联使用的 DeploymentTemplateRevision。
 - [x] 创建 Deployment 并绑定 Promotion、Stage、ClusterBinding。
@@ -30,7 +30,7 @@
 - [x] 编写测试：应用级模板副本不影响平台基础模板和其他应用模板。
 - [x] 编写测试：initContainer mkdir/chmod 场景可以通过模板校验并渲染到清单。
 - [x] 编写测试：模板语法错误或策略违规时拒绝发布。
-- [x] 编写测试：values.yaml 更新、dev/test commit、staging/prod MR、ManifestRevision 记录、回滚 digest、Agent 状态映射。
+- [x] 编写测试：values.yaml 更新、所有 Stage commit、ManifestRevision 记录、回滚 digest、Agent 状态映射。
 
 ## 完成标准
 
@@ -38,6 +38,6 @@
 - [x] 用户可以通过 PaaS 定制自己应用的部署模板。
 - [x] 用户模板变更不会影响平台基础模板或其他用户模板。
 - [x] 不直接调用 Kubernetes API Server。
-- [x] 每次清单变更可审计、可追踪 commit 或 MR。
+- [x] 每次清单变更可审计、可追踪 commit。
 - [x] Agent 上报能驱动 Deployment 终态。
 - [x] 测试通过。

@@ -530,10 +530,10 @@ func (r *MySQLRepository) CreateRunWithSources(ctx context.Context, run BuildRun
 
 func (r *MySQLRepository) insertRun(ctx context.Context, run BuildRun) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-	INSERT INTO build_runs (id, tenant_id, project_id, pipeline_id, pipeline_name, pipeline_display_name, application_id, workload_id, source_repository_id, git_ref, commit_sha, version, status, jenkins_queue_id, jenkins_build_number, primary_artifact_id, log_offset, error_message, requested_by, created_at, updated_at, started_at, finished_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	INSERT INTO build_runs (id, tenant_id, project_id, pipeline_id, pipeline_name, pipeline_display_name, application_id, workload_id, source_type, source_url, source_ref, commit_sha, version, status, jenkins_queue_id, jenkins_build_number, primary_artifact_id, log_offset, error_message, requested_by, created_at, updated_at, started_at, finished_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.ID, run.TenantID, run.ProjectID, run.PipelineID, run.PipelineName, run.PipelineDisplayName,
-		run.ApplicationID, run.WorkloadID, run.SourceRepositoryID, run.GitRef, run.CommitSHA, run.Version, run.Status, run.JenkinsQueueID,
+		run.ApplicationID, run.WorkloadID, run.SourceType, run.SourceURL, run.SourceRef, run.CommitSHA, run.Version, run.Status, run.JenkinsQueueID,
 		run.JenkinsBuildNumber, run.PrimaryArtifactID, run.LogOffset, run.ErrorMessage, run.RequestedBy,
 		mysqlTime(run.CreatedAt), mysqlTime(run.UpdatedAt), mysqlTimePtr(run.StartedAt), mysqlTimePtr(run.FinishedAt))
 	return database.ConflictOrUnavailable(err, "build run already exists", "create build run failed")
@@ -549,11 +549,11 @@ func (r *MySQLRepository) UpdateRun(ctx context.Context, run BuildRun) error {
 	}
 	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 UPDATE build_runs
-SET pipeline_name = ?, pipeline_display_name = ?, source_repository_id = ?, git_ref = ?, commit_sha = ?,
+SET pipeline_name = ?, pipeline_display_name = ?, source_type = ?, source_url = ?, source_ref = ?, commit_sha = ?,
     version = ?, status = ?, jenkins_queue_id = ?, jenkins_build_number = ?, primary_artifact_id = ?, log_offset = ?,
     error_message = ?, requested_by = ?, created_at = ?, updated_at = ?, started_at = ?, finished_at = ?
 WHERE id = ?`,
-		run.PipelineName, run.PipelineDisplayName, run.SourceRepositoryID, run.GitRef, run.CommitSHA,
+		run.PipelineName, run.PipelineDisplayName, run.SourceType, run.SourceURL, run.SourceRef, run.CommitSHA,
 		run.Version, run.Status, run.JenkinsQueueID, run.JenkinsBuildNumber, run.PrimaryArtifactID, run.LogOffset,
 		run.ErrorMessage, run.RequestedBy, mysqlTime(run.CreatedAt), mysqlTime(run.UpdatedAt), mysqlTimePtr(run.StartedAt), mysqlTimePtr(run.FinishedAt), run.ID)
 	if err != nil {
@@ -583,10 +583,10 @@ func (r *MySQLRepository) CreateRunSource(ctx context.Context, source BuildRunSo
 
 func (r *MySQLRepository) insertRunSource(ctx context.Context, source BuildRunSource) error {
 	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO build_run_sources (id, tenant_id, project_id, build_run_id, application_id, source_key, source_repository_id, git_ref, commit_sha, source_path, is_primary, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO build_run_sources (id, tenant_id, project_id, build_run_id, application_id, source_key, source_type, source_url, source_ref, commit_sha, source_path, is_primary, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		source.ID, source.TenantID, source.ProjectID, source.BuildRunID, source.ApplicationID, source.SourceKey,
-		source.SourceRepositoryID, source.GitRef, source.CommitSHA, source.SourcePath, source.IsPrimary, mysqlTime(source.CreatedAt))
+		source.SourceType, source.SourceURL, source.SourceRef, source.CommitSHA, source.SourcePath, source.IsPrimary, mysqlTime(source.CreatedAt))
 	return database.ConflictOrUnavailable(err, "build run source already exists", "create build run source failed")
 }
 
@@ -735,10 +735,10 @@ func (r *MySQLRepository) insertPipelineSource(ctx context.Context, source Build
 		return err
 	}
 	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO build_pipeline_sources (id, tenant_id, project_id, application_id, pipeline_id, source_key, display_name, source_repository_id, build_environment_id, source_path, build_spec, is_primary, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO build_pipeline_sources (id, tenant_id, project_id, application_id, pipeline_id, source_key, display_name, source_type, source_url, source_ref, svn_revision, build_environment_id, source_path, build_spec, is_primary, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		source.ID, source.TenantID, source.ProjectID, source.ApplicationID, source.PipelineID, strings.TrimSpace(source.Key),
-		source.DisplayName, source.SourceRepositoryID, source.BuildEnvironmentID, source.SourcePath, string(buildSpec),
+		source.DisplayName, source.SourceType, source.SourceURL, source.SourceRef, source.SVNRevision, source.BuildEnvironmentID, source.SourcePath, string(buildSpec),
 		source.IsPrimary, mysqlTime(source.CreatedAt), mysqlTime(source.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "build pipeline source already exists", "create build pipeline source failed")
 }
@@ -854,13 +854,13 @@ func scanBuildPipeline(scanner buildScanner) (BuildPipeline, error) {
 }
 
 func buildPipelineSourceSelect() string {
-	return "SELECT id, tenant_id, project_id, application_id, pipeline_id, source_key, display_name, source_repository_id, build_environment_id, source_path, build_spec, is_primary, created_at, updated_at FROM build_pipeline_sources"
+	return "SELECT id, tenant_id, project_id, application_id, pipeline_id, source_key, display_name, source_type, source_url, source_ref, svn_revision, build_environment_id, source_path, build_spec, is_primary, created_at, updated_at FROM build_pipeline_sources"
 }
 
 func scanBuildPipelineSource(scanner buildScanner) (BuildPipelineSource, error) {
 	var source BuildPipelineSource
 	var buildSpec []byte
-	if err := scanner.Scan(&source.ID, &source.TenantID, &source.ProjectID, &source.ApplicationID, &source.PipelineID, &source.Key, &source.DisplayName, &source.SourceRepositoryID, &source.BuildEnvironmentID, &source.SourcePath, &buildSpec, &source.IsPrimary, &source.CreatedAt, &source.UpdatedAt); err != nil {
+	if err := scanner.Scan(&source.ID, &source.TenantID, &source.ProjectID, &source.ApplicationID, &source.PipelineID, &source.Key, &source.DisplayName, &source.SourceType, &source.SourceURL, &source.SourceRef, &source.SVNRevision, &source.BuildEnvironmentID, &source.SourcePath, &buildSpec, &source.IsPrimary, &source.CreatedAt, &source.UpdatedAt); err != nil {
 		return BuildPipelineSource{}, err
 	}
 	if err := database.UnmarshalJSON(buildSpec, &source.BuildSpec); err != nil {
@@ -870,22 +870,22 @@ func scanBuildPipelineSource(scanner buildScanner) (BuildPipelineSource, error) 
 }
 
 func buildRunSelect() string {
-	return "SELECT id, tenant_id, project_id, pipeline_id, pipeline_name, pipeline_display_name, application_id, workload_id, source_repository_id, git_ref, commit_sha, version, status, jenkins_queue_id, jenkins_build_number, primary_artifact_id, log_offset, error_message, requested_by, created_at, updated_at, started_at, finished_at FROM build_runs"
+	return "SELECT id, tenant_id, project_id, pipeline_id, pipeline_name, pipeline_display_name, application_id, workload_id, source_type, source_url, source_ref, commit_sha, version, status, jenkins_queue_id, jenkins_build_number, primary_artifact_id, log_offset, error_message, requested_by, created_at, updated_at, started_at, finished_at FROM build_runs"
 }
 
 func scanBuildRun(scanner buildScanner) (BuildRun, error) {
 	var run BuildRun
-	err := scanner.Scan(&run.ID, &run.TenantID, &run.ProjectID, &run.PipelineID, &run.PipelineName, &run.PipelineDisplayName, &run.ApplicationID, &run.WorkloadID, &run.SourceRepositoryID, &run.GitRef, &run.CommitSHA, &run.Version, &run.Status, &run.JenkinsQueueID, &run.JenkinsBuildNumber, &run.PrimaryArtifactID, &run.LogOffset, &run.ErrorMessage, &run.RequestedBy, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.FinishedAt)
+	err := scanner.Scan(&run.ID, &run.TenantID, &run.ProjectID, &run.PipelineID, &run.PipelineName, &run.PipelineDisplayName, &run.ApplicationID, &run.WorkloadID, &run.SourceType, &run.SourceURL, &run.SourceRef, &run.CommitSHA, &run.Version, &run.Status, &run.JenkinsQueueID, &run.JenkinsBuildNumber, &run.PrimaryArtifactID, &run.LogOffset, &run.ErrorMessage, &run.RequestedBy, &run.CreatedAt, &run.UpdatedAt, &run.StartedAt, &run.FinishedAt)
 	return run, err
 }
 
 func buildRunSourceSelect() string {
-	return "SELECT id, tenant_id, project_id, build_run_id, application_id, source_key, source_repository_id, git_ref, commit_sha, source_path, is_primary, created_at FROM build_run_sources"
+	return "SELECT id, tenant_id, project_id, build_run_id, application_id, source_key, source_type, source_url, source_ref, commit_sha, source_path, is_primary, created_at FROM build_run_sources"
 }
 
 func scanBuildRunSource(scanner buildScanner) (BuildRunSource, error) {
 	var source BuildRunSource
-	err := scanner.Scan(&source.ID, &source.TenantID, &source.ProjectID, &source.BuildRunID, &source.ApplicationID, &source.SourceKey, &source.SourceRepositoryID, &source.GitRef, &source.CommitSHA, &source.SourcePath, &source.IsPrimary, &source.CreatedAt)
+	err := scanner.Scan(&source.ID, &source.TenantID, &source.ProjectID, &source.BuildRunID, &source.ApplicationID, &source.SourceKey, &source.SourceType, &source.SourceURL, &source.SourceRef, &source.CommitSHA, &source.SourcePath, &source.IsPrimary, &source.CreatedAt)
 	return source, err
 }
 

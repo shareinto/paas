@@ -19,6 +19,11 @@ export type PipelineFormOptionsResult = {
   error?: string;
 };
 
+export type SourceBranchOption = {
+  name: string;
+  default?: boolean;
+};
+
 export type BackendBuildPipeline = {
   id: string;
   application_id?: string;
@@ -48,8 +53,14 @@ export type BackendBuildPipelineSource = {
   key?: string;
   display_name?: string;
   displayName?: string;
-  source_repository_id?: string;
-  sourceRepositoryId?: string;
+  source_type?: string;
+  sourceType?: string;
+  source_url?: string;
+  sourceUrl?: string;
+  source_ref?: string;
+  sourceRef?: string;
+  svn_revision?: string;
+  svnRevision?: string;
   build_environment_id?: string;
   buildEnvironmentId?: string;
   source_path?: string;
@@ -83,8 +94,12 @@ export type BackendBuildRun = {
   pipelineName?: string;
   pipeline_display_name?: string;
   pipelineDisplayName?: string;
-  git_ref?: string;
-  gitRef?: string;
+  source_type?: string;
+  sourceType?: string;
+  source_url?: string;
+  sourceUrl?: string;
+  source_ref?: string;
+  sourceRef?: string;
   commit_sha?: string;
   commitSha?: string;
   version?: string;
@@ -95,19 +110,6 @@ export type BackendBuildRun = {
   startedAt?: string;
   finished_at?: string;
   finishedAt?: string;
-};
-
-type BackendRepository = {
-  id: string;
-  name?: string;
-  display_name?: string;
-  displayName?: string;
-  http_url?: string;
-  httpUrl?: string;
-  ssh_url?: string;
-  sshUrl?: string;
-  default_branch?: string;
-  defaultBranch?: string;
 };
 
 export type BackendBuildEnvironment = {
@@ -152,6 +154,17 @@ export async function loadPipelineFormOptions(): Promise<PipelineFormOptionsResu
     runtimeOptions: mapEnvironmentOptions(runtimePage.items || []),
     buildEnvironmentOptions: mapEnvironmentOptions(buildPage.items || [])
   };
+}
+
+export async function previewGitSourceBranches(projectId: string, sourceUrl: string): Promise<SourceBranchOption[]> {
+  if (!hasAPIBaseURL() || !projectId || !sourceUrl.trim()) {
+    return [{ name: 'main', default: true }];
+  }
+  const data = await request<{ items?: SourceBranchOption[] } | SourceBranchOption[]>(`/api/projects/${encodeURIComponent(projectId)}/build-source-branches/preview`, {
+    method: 'POST',
+    body: JSON.stringify({ actor: actorBody(), source_url: sourceUrl.trim() })
+  });
+  return Array.isArray(data) ? data : (data.items || []);
 }
 
 export function mapVersionSourcePipelinesFromWorkspace(
@@ -205,16 +218,16 @@ export async function deleteVersionSourcePipeline(pipelineId: string) {
   });
 }
 
-export async function triggerVersionSourcePipelineBuild(applicationId: string, pipeline: VersionSourcePipeline, gitRef: string, buildCommand: string, version: string) {
+export async function triggerVersionSourcePipelineBuild(applicationId: string, pipeline: VersionSourcePipeline, sourceRef: string, buildCommand: string, version: string) {
   await updateVersionSourcePipeline('', {
     ...pipeline,
-    branch: gitRef || pipeline.branch,
+    branch: sourceRef || pipeline.branch,
     buildCommand,
-    sources: pipeline.sources.map((source, index) => index === 0 ? { ...source, branch: gitRef || source.branch, buildCommand } : source)
+    sources: pipeline.sources.map((source, index) => index === 0 ? { ...source, branch: sourceRef || source.branch, sourceRef: sourceRef || source.sourceRef || source.branch, buildCommand } : source)
   });
   const run = await request<BackendBuildRun>(`/api/build-pipelines/${encodeURIComponent(pipeline.id)}/builds`, {
     method: 'POST',
-    body: JSON.stringify({ actor: actorBody(), git_ref: gitRef || pipeline.branch, version })
+    body: JSON.stringify({ actor: actorBody(), source_ref: sourceRef || pipeline.branch, version })
   });
   const runs = await listApplicationBuildRuns(applicationId);
   return { run: mapBuildHistory(run), runs: runs.map(mapBuildHistory) };
@@ -306,15 +319,19 @@ async function pipelinePayload(projectId: string, pipeline: VersionSourcePipelin
   };
 }
 
-async function sourcePayload(projectId: string, source: VersionSourcePipeline['sources'][number], index: number) {
-  const repositoryId = await resolveSourceRepositoryId(projectId, source);
+async function sourcePayload(_projectId: string, source: VersionSourcePipeline['sources'][number], index: number) {
   const buildEnvironmentId = await resolveBuildEnvironmentId(source.buildEnvironment, source.buildEnvironmentId);
-  const defaultRef = source.branch || 'main';
+  const sourceType = normalizeSourceType(source.sourceType);
+  const sourceUrl = source.sourceUrl || source.repository || '';
+  const defaultRef = source.sourceRef || source.branch || (sourceType === 'svn' ? 'HEAD' : 'main');
   const sourcePath = source.sourcePath || '.';
   return {
     key: source.key || (index === 0 ? 'main' : `source-${index + 1}`),
     display_name: source.name || source.key || `代码源 ${index + 1}`,
-    source_repository_id: repositoryId,
+    source_type: sourceType,
+    source_url: sourceUrl,
+    source_ref: defaultRef,
+    svn_revision: sourceType === 'svn' ? (source.svnRevision || '') : '',
     build_environment_id: buildEnvironmentId,
     source_path: sourcePath,
     default_ref: defaultRef,
@@ -342,25 +359,6 @@ async function resolveBuildEnvironmentId(buildEnvironmentName: string, current?:
   const data = await request<PageResult<BackendBuildEnvironment>>('/api/build-environments?page=1&page_size=100');
   const items = data.items || [];
   return matchByName(items, buildEnvironmentName)?.id || items[0]?.id || '';
-}
-
-async function resolveSourceRepositoryId(projectId: string, source: VersionSourcePipeline['sources'][number]) {
-  if (source.sourceRepositoryId) return source.sourceRepositoryId;
-  if (!projectId) return source.repository;
-  const data = await request<PageResult<BackendRepository>>(`/api/projects/${encodeURIComponent(projectId)}/source-repositories?page=1&page_size=100`);
-  const items = data.items || [];
-  const needle = source.repository.trim().toLowerCase();
-  const matched = items.find((item) => [
-    item.id,
-    item.name,
-    item.display_name,
-    item.displayName,
-    item.http_url,
-    item.httpUrl,
-    item.ssh_url,
-    item.sshUrl
-  ].some((value) => value && value.toLowerCase().includes(needle)));
-  return matched?.id || items[0]?.id || source.repository;
 }
 
 function mapPipeline(pipeline: BackendBuildPipeline, sources: BackendBuildPipelineSource[], runs: BackendBuildRun[]): VersionSourcePipeline {
@@ -393,13 +391,19 @@ function mapPipeline(pipeline: BackendBuildPipeline, sources: BackendBuildPipeli
 
 function mapSource(source: BackendBuildPipelineSource): VersionSourcePipeline['sources'][number] {
   const spec = source.build_spec || source.buildSpec || {};
+  const sourceType = normalizeSourceType(source.source_type || source.sourceType);
+  const sourceRef = source.source_ref || source.sourceRef || spec.default_ref || spec.defaultRef || (sourceType === 'svn' ? 'HEAD' : 'main');
+  const sourceUrl = source.source_url || source.sourceUrl || '';
   return {
     id: source.id,
     key: source.key || 'main',
     name: source.display_name || source.displayName || source.key || '主代码源',
-    repository: source.source_repository_id || source.sourceRepositoryId || 'source-repository',
-    sourceRepositoryId: source.source_repository_id || source.sourceRepositoryId || '',
-    branch: spec.default_ref || spec.defaultRef || 'main',
+    sourceType,
+    repository: sourceUrl,
+    sourceUrl,
+    sourceRef,
+    svnRevision: source.svn_revision || source.svnRevision || '',
+    branch: sourceRef,
     sourcePath: spec.source_path || spec.sourcePath || source.source_path || source.sourcePath || '.',
     buildEnvironment: source.build_environment_id || source.buildEnvironmentId || '默认构建环境',
     buildEnvironmentId: source.build_environment_id || source.buildEnvironmentId || '',
@@ -415,7 +419,10 @@ function fallbackSource(): VersionSourcePipeline['sources'][number] {
     id: 'source-main',
     key: 'main',
     name: '主代码源',
+    sourceType: 'git',
     repository: '',
+    sourceUrl: '',
+    sourceRef: 'main',
     branch: 'main',
     sourcePath: '.',
     buildEnvironment: '',
@@ -427,7 +434,7 @@ function fallbackSource(): VersionSourcePipeline['sources'][number] {
 function mapBuildHistory(run: BackendBuildRun): VersionSourcePipeline['buildHistory'][number] {
   return {
     id: run.id,
-    branch: run.git_ref || run.gitRef || 'main',
+    branch: run.source_ref || run.sourceRef || 'main',
     status: statusOfRun(run.status || ''),
     version: versionOf(run),
     startedAt: formatDateTime(run.started_at || run.startedAt || run.created_at || run.createdAt),
@@ -490,7 +497,11 @@ function durationOf(run: BackendBuildRun) {
 function defaultRefOf(source?: BackendBuildPipelineSource) {
   if (!source) return '';
   const spec = source.build_spec || source.buildSpec || {};
-  return spec.default_ref || spec.defaultRef || '';
+  return source.source_ref || source.sourceRef || spec.default_ref || spec.defaultRef || '';
+}
+
+function normalizeSourceType(value?: string) {
+  return value === 'svn' ? 'svn' : 'git';
 }
 
 function sourcePathOf(source?: BackendBuildPipelineSource) {

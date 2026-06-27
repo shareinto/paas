@@ -88,9 +88,11 @@ import {
   cancelVersionSourcePipelineBuild,
   createVersionSourcePipeline,
   deleteVersionSourcePipeline,
+  previewGitSourceBranches,
   streamBuildRunLog,
   triggerVersionSourcePipelineBuild,
   updateVersionSourcePipeline,
+  type SourceBranchOption,
   type PipelineEnvironmentOption
 } from '../api/buildPipelines';
 import { saveVersionSourceWorkloads, loadWorkloadStageConfig, saveWorkloadStageConfig } from '../api/workloads';
@@ -878,19 +880,19 @@ function dropFreight(stage: Stage, freightId: string) {
     }
   }
 
-  async function submitPipelineBuild(pipeline: VersionSourcePipeline, gitRef: string, buildCommand: string, version: string) {
+  async function submitPipelineBuild(pipeline: VersionSourcePipeline, sourceRef: string, buildCommand: string, version: string) {
     if (pipelineSource === 'api') {
       try {
-        const result = await triggerVersionSourcePipelineBuild(currentApplication.id, pipeline, gitRef, buildCommand, version);
+        const result = await triggerVersionSourcePipelineBuild(currentApplication.id, pipeline, sourceRef, buildCommand, version);
         const runningRun = normalizeTriggeredBuildRun(result.run);
         setSourcePipelines((current) => current.map((item) => (
           item.id === pipeline.id
             ? {
                 ...item,
-                branch: gitRef || item.branch,
+                branch: sourceRef || item.branch,
                 buildCommand,
                 sourcePath: item.sources[0]?.sourcePath || item.sourcePath,
-                sources: item.sources.map((source, index) => index === 0 ? { ...source, branch: gitRef || source.branch, buildCommand } : source),
+                sources: item.sources.map((source, index) => index === 0 ? { ...source, branch: sourceRef || source.branch, buildCommand } : source),
                 buildHistory: [
                   runningRun,
                   ...item.buildHistory.filter((run) => run.id !== runningRun.id)
@@ -914,14 +916,14 @@ function dropFreight(stage: Stage, freightId: string) {
       item.id === pipeline.id
         ? {
             ...item,
-            branch: gitRef || item.branch,
+            branch: sourceRef || item.branch,
             buildCommand,
             sourcePath: item.sources[0]?.sourcePath || item.sourcePath,
-            sources: item.sources.map((source, index) => index === 0 ? { ...source, branch: gitRef || source.branch, buildCommand } : source),
+            sources: item.sources.map((source, index) => index === 0 ? { ...source, branch: sourceRef || source.branch, buildCommand } : source),
             buildHistory: [
               {
                 id: `build-${item.id}-${Date.now().toString(36)}`,
-                branch: gitRef || item.branch,
+                branch: sourceRef || item.branch,
                 status: 'running',
                 version,
                 startedAt: '刚刚',
@@ -931,7 +933,7 @@ function dropFreight(stage: Stage, freightId: string) {
             ],
             status: 'running',
             logs: [
-              `[刚刚] 拉取代码 ${item.sources[0]?.repository || '源码仓库'} ${gitRef || item.branch}`,
+              `[刚刚] 拉取代码 ${item.sources[0]?.repository || '源码仓库'} ${sourceRef || item.branch}`,
               `[刚刚] 执行构建命令 ${buildCommand}`,
               '[刚刚] 构建任务已提交，等待平台回写镜像候选',
               ...item.logs
@@ -1118,6 +1120,7 @@ function dropFreight(stage: Stage, freightId: string) {
       {pipelineDialogOpen && (
         <PipelineCreateDialog
           pipelines={sourcePipelines}
+          projectId={currentProject.id}
           runtimeOptions={runtimeEnvironmentOptions}
           buildEnvironmentOptions={buildEnvironmentOptions}
           onClose={() => setPipelineDialogOpen(false)}
@@ -1128,6 +1131,7 @@ function dropFreight(stage: Stage, freightId: string) {
       {configPipeline && (
         <PipelineConfigDialog
           pipeline={configPipeline}
+          projectId={currentProject.id}
           runtimeOptions={runtimeEnvironmentOptions}
           buildEnvironmentOptions={buildEnvironmentOptions}
           onClose={() => setPipelineConfigId(null)}
@@ -2114,12 +2118,13 @@ function StageCard({
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <StageHeaderAction
-            label={verificationDone ? "已验证" : "验证"}
+            label={verificationDone ? "已准出" : "准出"}
             icon={<ShieldCheck className="h-3.5 w-3.5" />}
             badge={needsVerification && verificationPending ? 1 : 0}
-            ariaLabel={`验证${stage.name}当前发布包`}
+            ariaLabel={`准出${stage.name}当前发布包`}
             onClick={onOpenVerification}
             disabled={!canVerify || verificationDone}
+            transparentWhenDisabled
           />
           <StageHeaderAction
             label="发布"
@@ -2259,7 +2264,8 @@ function StageHeaderAction({
   badge,
   ariaLabel,
   onClick,
-  disabled
+  disabled,
+  transparentWhenDisabled
 }: {
   label: string;
   icon: ReactNode;
@@ -2267,12 +2273,19 @@ function StageHeaderAction({
   ariaLabel: string;
   onClick: () => void;
   disabled?: boolean;
+  transparentWhenDisabled?: boolean;
 }) {
   return (
     <button
       type="button"
       disabled={disabled}
-      className={`nodrag nopan nowheel relative inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-white/35 bg-white/15 px-2 text-[11px] font-semibold text-white shadow-sm transition-colors ${disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-white/25'}`}
+      className={`nodrag nopan nowheel relative inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border px-2 text-[11px] font-semibold shadow-sm transition-colors ${
+        disabled
+          ? transparentWhenDisabled
+            ? 'cursor-not-allowed border-white/25 bg-transparent text-white/55 shadow-none'
+            : 'cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500 shadow-none'
+          : 'border-white/35 bg-white/15 text-white hover:bg-white/25'
+      }`}
       onPointerDownCapture={(event) => event.stopPropagation()}
       onMouseDownCapture={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
@@ -2838,7 +2851,7 @@ function CompareDeployReview({ detail }: { detail: ApprovalTaskDetail }) {
         )}
       </div>
       <div className="rounded-md border">
-        <div className="border-b bg-slate-50 px-4 py-3 text-sm font-semibold">Workload 配置变化</div>
+        <div className="border-b bg-slate-50 px-4 py-3 text-sm font-semibold">渲染 YAML 差异</div>
         {detail.configDiff ? (
           <pre className="max-h-[260px] overflow-auto bg-slate-950 p-4 text-xs leading-5 text-slate-100">
             {detail.configDiff.split('\n').map((line, index) => (
@@ -2848,7 +2861,7 @@ function CompareDeployReview({ detail }: { detail: ApprovalTaskDetail }) {
             ))}
           </pre>
         ) : (
-          <div className="p-4 text-sm text-muted-foreground">Workload 配置无变化</div>
+          <div className="p-4 text-sm text-muted-foreground">渲染 YAML 无变化</div>
         )}
       </div>
     </div>
@@ -3752,7 +3765,10 @@ function nextPipelineSource(index: number, buildOptions: PipelineEnvironmentOpti
     id: `src-${Date.now().toString(36)}-${index}`,
     key: index === 0 ? 'main' : `source-${index + 1}`,
     name: index === 0 ? '主代码源' : `代码源 ${index + 1}`,
-    repository: 'gitlab.internal/retail/order-platform',
+    sourceType: 'git',
+    repository: 'https://gitlab.internal/retail/order-platform.git',
+    sourceUrl: 'https://gitlab.internal/retail/order-platform.git',
+    sourceRef: 'main',
     branch: 'main',
     sourcePath: '.',
     buildEnvironment: buildEnvironment.name,
@@ -3772,7 +3788,7 @@ function pipelineFromForm(pipeline: VersionSourcePipeline | null, input: {
   return {
     id: pipeline?.id || `pipe-custom-${Date.now().toString(36)}`,
     name: input.name,
-    branch: primarySource.branch,
+    branch: primarySource.sourceRef || primarySource.branch,
     runtime: input.runtime,
     runtimeEnvironmentIds: input.runtimeEnvironmentId ? [input.runtimeEnvironmentId] : [],
     sourcePath: primarySource.sourcePath,
@@ -3797,12 +3813,14 @@ function optionByName(options: PipelineEnvironmentOption[], name: string) {
 
 function PipelineCreateDialog({
   pipelines,
+  projectId,
   runtimeOptions,
   buildEnvironmentOptions,
   onClose,
   onCreate
 }: {
   pipelines: VersionSourcePipeline[];
+  projectId: string;
   runtimeOptions: PipelineEnvironmentOption[];
   buildEnvironmentOptions: PipelineEnvironmentOption[];
   onClose: () => void;
@@ -3845,7 +3863,7 @@ function PipelineCreateDialog({
               {runtimeOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
             </select>
           </InlineField>
-          <PipelineSourcesEditor sources={sources} buildEnvironmentOptions={buildEnvironmentOptions} onChange={setSources} />
+          <PipelineSourcesEditor projectId={projectId} sources={sources} buildEnvironmentOptions={buildEnvironmentOptions} onChange={setSources} />
         </div>
         <div className="flex justify-end gap-2 border-t bg-slate-50 px-5 py-4">
           <Button variant="outline" onClick={onClose}>取消</Button>
@@ -3861,12 +3879,14 @@ function PipelineCreateDialog({
 
 function PipelineConfigDialog({
   pipeline,
+  projectId,
   runtimeOptions,
   buildEnvironmentOptions,
   onClose,
   onSave
 }: {
   pipeline: VersionSourcePipeline;
+  projectId: string;
   runtimeOptions: PipelineEnvironmentOption[];
   buildEnvironmentOptions: PipelineEnvironmentOption[];
   onClose: () => void;
@@ -3910,7 +3930,7 @@ function PipelineConfigDialog({
               {runtimeOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
             </select>
           </InlineField>
-          <PipelineSourcesEditor sources={sources} buildEnvironmentOptions={buildEnvironmentOptions} onChange={setSources} />
+          <PipelineSourcesEditor projectId={projectId} sources={sources} buildEnvironmentOptions={buildEnvironmentOptions} onChange={setSources} />
         </div>
         <div className="flex justify-end gap-2 border-t bg-slate-50 px-5 py-4">
           <Button variant="outline" onClick={onClose}>取消</Button>
@@ -3934,7 +3954,7 @@ function PipelineBuildDialog({
 }: {
   pipeline: VersionSourcePipeline;
   onClose: () => void;
-  onSubmit: (pipeline: VersionSourcePipeline, gitRef: string, buildCommand: string, version: string) => Promise<void> | void;
+  onSubmit: (pipeline: VersionSourcePipeline, sourceRef: string, buildCommand: string, version: string) => Promise<void> | void;
   onCancelBuild: (pipeline: VersionSourcePipeline, buildRunId: string) => Promise<void> | void;
   onStreamLog: (
     buildRunId: string,
@@ -3944,7 +3964,7 @@ function PipelineBuildDialog({
   ) => () => void;
   onBuildStatusChange: (buildRunId: string, status: Status) => void;
 }) {
-  const [gitRef, setGitRef] = useState(pipeline.branch);
+  const [sourceRef, setSourceRef] = useState(pipeline.branch);
   const [buildVersion, setBuildVersion] = useState(nextBuildSemver(pipeline.buildHistory));
   const [selectedBuildId, setSelectedBuildId] = useState(pipeline.buildHistory[0]?.id || '');
   const [buildLogsById, setBuildLogsById] = useState<Record<string, string[]>>({});
@@ -3983,7 +4003,7 @@ function PipelineBuildDialog({
   }, [onBuildStatusChange, onStreamLog]);
 
   useEffect(() => {
-    setGitRef(pipeline.branch);
+    setSourceRef(pipeline.branch);
     setBuildCommand(pipeline.buildCommand);
     setBuildVersion(nextBuildSemver(pipeline.buildHistory));
     setLocalBuildHistory(pipeline.buildHistory);
@@ -4033,10 +4053,10 @@ function PipelineBuildDialog({
   }, [paused, visibleLogLines]);
 
   const triggerBuild = async () => {
-    if (activeBuild || buildSubmitting || !gitRef.trim() || !buildCommand.trim() || !isBuildSemver(buildVersion)) return;
+    if (activeBuild || buildSubmitting || !sourceRef.trim() || !buildCommand.trim() || !isBuildSemver(buildVersion)) return;
     setBuildSubmitting(true);
     try {
-      await onSubmit(pipeline, gitRef, buildCommand, buildVersion);
+      await onSubmit(pipeline, sourceRef, buildCommand, buildVersion);
     } finally {
       setBuildSubmitting(false);
     }
@@ -4072,7 +4092,7 @@ function PipelineBuildDialog({
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="border-b bg-slate-50 px-5 py-4">
             <div className="grid items-center gap-3 lg:grid-cols-[180px_150px_minmax(0,1fr)_140px]">
-              <Input value={gitRef} onChange={(event) => setGitRef(event.target.value)} placeholder="分支" />
+              <Input value={sourceRef} onChange={(event) => setSourceRef(event.target.value)} placeholder="源码引用" />
               <Input
                 className="font-mono text-xs"
                 value={buildVersion}
@@ -4088,7 +4108,7 @@ function PipelineBuildDialog({
               <Button
                 variant="outline"
                 onClick={triggerBuild}
-                disabled={!!activeBuild || buildSubmitting || !gitRef.trim() || !buildCommand.trim() || !isBuildSemver(buildVersion)}
+                disabled={!!activeBuild || buildSubmitting || !sourceRef.trim() || !buildCommand.trim() || !isBuildSemver(buildVersion)}
               >
                 <Rocket className="h-4 w-4" />
                 {buildSubmitting ? '提交中' : '触发构建'}
@@ -4361,16 +4381,44 @@ function stripAnsi(text: string) {
 }
 
 function PipelineSourcesEditor({
+  projectId,
   sources,
   buildEnvironmentOptions,
   onChange
 }: {
+  projectId: string;
   sources: PipelineSourceConfig[];
   buildEnvironmentOptions: PipelineEnvironmentOption[];
   onChange: (sources: PipelineSourceConfig[]) => void;
 }) {
+  const [branchOptions, setBranchOptions] = useState<Record<string, SourceBranchOption[]>>({});
+  const [branchLoading, setBranchLoading] = useState<Record<string, boolean>>({});
+  const [branchError, setBranchError] = useState<Record<string, string>>({});
+
   function updateSource(id: string, patch: Partial<PipelineSourceConfig>) {
     onChange(sources.map((source) => source.id === id ? { ...source, ...patch } : source));
+  }
+
+  async function refreshBranches(source: PipelineSourceConfig) {
+    const sourceUrl = source.sourceUrl || source.repository;
+    if (!sourceUrl.trim()) {
+      setBranchError((current) => ({ ...current, [source.id]: '请先填写 Git 仓库地址' }));
+      return;
+    }
+    setBranchLoading((current) => ({ ...current, [source.id]: true }));
+    setBranchError((current) => ({ ...current, [source.id]: '' }));
+    try {
+      const branches = await previewGitSourceBranches(projectId, sourceUrl);
+      setBranchOptions((current) => ({ ...current, [source.id]: branches }));
+      const selected = branches.find((branch) => branch.default) || branches[0];
+      if (selected && !branches.some((branch) => branch.name === (source.sourceRef || source.branch))) {
+        updateSource(source.id, { sourceRef: selected.name, branch: selected.name });
+      }
+    } catch (error) {
+      setBranchError((current) => ({ ...current, [source.id]: error instanceof Error ? error.message : '刷新分支失败' }));
+    } finally {
+      setBranchLoading((current) => ({ ...current, [source.id]: false }));
+    }
   }
 
   return (
@@ -4402,11 +4450,65 @@ function PipelineSourcesEditor({
               <InlineField label="显示名称">
                 <Input value={source.name} onChange={(event) => updateSource(source.id, { name: event.target.value })} />
               </InlineField>
-              <InlineField label="源码仓库">
-                <Input value={source.repository} onChange={(event) => updateSource(source.id, { repository: event.target.value })} />
+              <InlineField label="源码类型">
+                <select
+                  value={source.sourceType || 'git'}
+                  onChange={(event) => {
+                    const nextType = event.target.value === 'svn' ? 'svn' : 'git';
+                    updateSource(source.id, {
+                      sourceType: nextType,
+                      sourceRef: nextType === 'svn' ? (source.sourceRef || 'HEAD') : (source.sourceRef === 'HEAD' ? 'main' : source.sourceRef || source.branch || 'main'),
+                      branch: nextType === 'svn' ? (source.sourceRef || 'HEAD') : (source.sourceRef === 'HEAD' ? 'main' : source.sourceRef || source.branch || 'main')
+                    });
+                  }}
+                  className="h-10 w-full rounded-md border bg-card px-3 text-sm"
+                >
+                  <option value="git">Git</option>
+                  <option value="svn">SVN</option>
+                </select>
               </InlineField>
-              <InlineField label="默认分支">
-                <Input value={source.branch} onChange={(event) => updateSource(source.id, { branch: event.target.value })} />
+              <InlineField label={source.sourceType === 'svn' ? 'SVN 地址' : 'Git 仓库地址'}>
+                <div className="flex gap-2">
+                  <Input
+                    value={source.sourceUrl || source.repository}
+                    onChange={(event) => updateSource(source.id, { repository: event.target.value, sourceUrl: event.target.value })}
+                    placeholder={source.sourceType === 'svn' ? 'svn://repo.company.com/project/trunk/app' : 'https://gitlab.example/group/project.git'}
+                  />
+                  {(source.sourceType || 'git') === 'git' && (
+                    <Button variant="outline" type="button" onClick={() => void refreshBranches(source)} disabled={!!branchLoading[source.id]}>
+                      {branchLoading[source.id] ? '刷新中' : '刷新'}
+                    </Button>
+                  )}
+                </div>
+                {branchError[source.id] && <div className="mt-1 text-xs text-red-600">{branchError[source.id]}</div>}
+              </InlineField>
+              {(source.sourceType || 'git') === 'git' ? (
+                <InlineField label="分支">
+                  <select
+                    value={source.sourceRef || source.branch}
+                    onChange={(event) => updateSource(source.id, { sourceRef: event.target.value, branch: event.target.value })}
+                    className="h-10 w-full rounded-md border bg-card px-3 text-sm"
+                  >
+                    {Array.from(new Set([source.sourceRef || source.branch || 'main', ...(branchOptions[source.id] || []).map((branch) => branch.name)]))
+                      .filter(Boolean)
+                      .map((branch) => <option key={branch} value={branch}>{branch}</option>)}
+                  </select>
+                </InlineField>
+              ) : (
+                <InlineField label="SVN revision">
+                  <Input
+                    value={source.svnRevision || ''}
+                    onChange={(event) => updateSource(source.id, { svnRevision: event.target.value })}
+                    placeholder="可选，默认 HEAD"
+                  />
+                </InlineField>
+              )}
+              <InlineField label={source.sourceType === 'svn' ? 'SVN 引用' : '默认引用'}>
+                <Input
+                  value={source.sourceRef || source.branch}
+                  onChange={(event) => updateSource(source.id, { sourceRef: event.target.value, branch: event.target.value })}
+                  placeholder={source.sourceType === 'svn' ? 'HEAD / trunk / release-1.0' : 'main'}
+                />
               </InlineField>
               <InlineField label="源码子目录 source_path">
                 <Input value={source.sourcePath} onChange={(event) => updateSource(source.id, { sourcePath: event.target.value })} />

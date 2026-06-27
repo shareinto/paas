@@ -389,8 +389,11 @@ export type VersionSourcePipeline = {
     id: string;
     key: string;
     name: string;
+    sourceType?: 'git' | 'svn';
     repository: string;
-    sourceRepositoryId?: string;
+    sourceUrl?: string;
+    sourceRef?: string;
+    svnRevision?: string;
     branch: string;
     sourcePath: string;
     buildEnvironment: string;

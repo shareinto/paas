@@ -74,8 +74,9 @@ CREATE TABLE build_runs (
   pipeline_display_name VARCHAR(128) NOT NULL DEFAULT '',
   application_id VARCHAR(64) NOT NULL,
   workload_id VARCHAR(64) NOT NULL DEFAULT '',
-  source_repository_id VARCHAR(64) NOT NULL,
-  git_ref VARCHAR(128) NOT NULL,
+  source_type VARCHAR(16) NOT NULL DEFAULT 'git',
+  source_url VARCHAR(1024) NOT NULL,
+  source_ref VARCHAR(256) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
   version VARCHAR(64) NOT NULL DEFAULT '',
   status VARCHAR(64) NOT NULL,
@@ -101,8 +102,9 @@ CREATE TABLE build_run_sources (
   build_run_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
   source_key VARCHAR(64) NOT NULL,
-  source_repository_id VARCHAR(64) NOT NULL,
-  git_ref VARCHAR(128) NOT NULL,
+  source_type VARCHAR(16) NOT NULL DEFAULT 'git',
+  source_url VARCHAR(1024) NOT NULL,
+  source_ref VARCHAR(256) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
   source_path VARCHAR(512) NOT NULL,
   is_primary TINYINT(1) NOT NULL DEFAULT 0,
@@ -134,7 +136,10 @@ CREATE TABLE build_pipeline_sources (
   pipeline_id VARCHAR(64) NOT NULL,
   source_key VARCHAR(64) NOT NULL,
   display_name VARCHAR(128) NOT NULL DEFAULT '',
-  source_repository_id VARCHAR(64) NOT NULL,
+  source_type VARCHAR(16) NOT NULL DEFAULT 'git',
+  source_url VARCHAR(1024) NOT NULL,
+  source_ref VARCHAR(256) NOT NULL,
+  svn_revision VARCHAR(64) NOT NULL DEFAULT '',
   build_environment_id VARCHAR(64) NOT NULL DEFAULT '',
   source_path VARCHAR(512) NOT NULL,
   build_spec JSON NOT NULL,
@@ -331,7 +336,10 @@ CREATE TABLE IF NOT EXISTS build_pipeline_sources (
   pipeline_id VARCHAR(64) NOT NULL,
   source_key VARCHAR(64) NOT NULL,
   display_name VARCHAR(128) NOT NULL DEFAULT '',
-  source_repository_id VARCHAR(64) NOT NULL,
+  source_type VARCHAR(16) NOT NULL DEFAULT 'git',
+  source_url VARCHAR(1024) NOT NULL,
+  source_ref VARCHAR(256) NOT NULL,
+  svn_revision VARCHAR(64) NOT NULL DEFAULT '',
   build_environment_id VARCHAR(64) NOT NULL DEFAULT '',
   source_path VARCHAR(512) NOT NULL,
   build_spec JSON NOT NULL,
@@ -410,7 +418,7 @@ SET @build_pipeline_sources_build_environment_id_missing := (
     AND table_name = 'build_pipeline_sources'
     AND column_name = 'build_environment_id'
 );
-SET @build_pipeline_sources_build_environment_id_ddl := IF(@build_pipeline_sources_build_environment_id_missing, 'ALTER TABLE build_pipeline_sources ADD COLUMN build_environment_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER source_repository_id', 'SELECT 1');
+SET @build_pipeline_sources_build_environment_id_ddl := IF(@build_pipeline_sources_build_environment_id_missing, 'ALTER TABLE build_pipeline_sources ADD COLUMN build_environment_id VARCHAR(64) NOT NULL DEFAULT '''' AFTER svn_revision', 'SELECT 1');
 PREPARE build_pipeline_sources_build_environment_id_stmt FROM @build_pipeline_sources_build_environment_id_ddl;
 EXECUTE build_pipeline_sources_build_environment_id_stmt;
 DEALLOCATE PREPARE build_pipeline_sources_build_environment_id_stmt;
@@ -456,8 +464,9 @@ CREATE TABLE IF NOT EXISTS build_run_sources (
   build_run_id VARCHAR(64) NOT NULL,
   application_id VARCHAR(64) NOT NULL,
   source_key VARCHAR(64) NOT NULL,
-  source_repository_id VARCHAR(64) NOT NULL,
-  git_ref VARCHAR(128) NOT NULL,
+  source_type VARCHAR(16) NOT NULL DEFAULT 'git',
+  source_url VARCHAR(1024) NOT NULL,
+  source_ref VARCHAR(256) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
   source_path VARCHAR(512) NOT NULL,
   is_primary TINYINT(1) NOT NULL DEFAULT 0,

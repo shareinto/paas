@@ -229,34 +229,17 @@ func (s *Service) ApplyPromotion(ctx context.Context, spec delivery.GitOpsPromot
 		deployment := Deployment{ID: deploymentID, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID, StageKey: stageKey, ClusterBindingID: binding.ID, PromotionID: spec.PromotionID, FreightID: spec.FreightID, ManifestRevisionID: manifestRevision.ID, ImageRepository: repository, ImageTag: tag, ImageDigest: resolvedPrimary.Digest, WorkloadSummary: workloadSummary, ConfigHash: configHash, Status: DeploymentPending, CreatedAt: now, UpdatedAt: now}
 		records = append(records, targetRecord{binding: binding, deployment: deployment, manifestRevision: manifestRevision, eventID: eventID, valuesPath: valuesPath})
 	}
-	var manifestRef string
-	if commitDirectly(stageKey) {
-		result, err := s.manifest.CommitFiles(ctx, CommitSpec{Branch: "main", Message: message, Files: files})
-		if err != nil {
-			for _, record := range records {
-				record.deployment.ManifestRevisionID = ""
-				_ = s.recordFailedDeployment(ctx, record.deployment, record.eventID, "提交部署清单失败："+err.Error())
-			}
-			return delivery.GitOpsPromotionResult{}, err
+	result, err := s.manifest.CommitFiles(ctx, CommitSpec{Branch: "main", Message: message, Files: files})
+	if err != nil {
+		for _, record := range records {
+			record.deployment.ManifestRevisionID = ""
+			_ = s.recordFailedDeployment(ctx, record.deployment, record.eventID, "提交部署清单失败："+err.Error())
 		}
-		manifestRef = result.CommitSHA
-		for i := range records {
-			records[i].manifestRevision.CommitSHA = result.CommitSHA
-		}
-	} else {
-		mr, err := s.manifest.CreateMergeRequest(ctx, MergeRequestSpec{SourceBranch: "paas/" + string(spec.PromotionID), TargetBranch: "main", Title: message, Files: files})
-		if err != nil {
-			for _, record := range records {
-				record.deployment.ManifestRevisionID = ""
-				_ = s.recordFailedDeployment(ctx, record.deployment, record.eventID, "创建合并请求失败："+err.Error())
-			}
-			return delivery.GitOpsPromotionResult{}, err
-		}
-		manifestRef = firstNonEmpty(mr.CommitSHA, mr.ID)
-		for i := range records {
-			records[i].manifestRevision.MergeRequestID = mr.ID
-			records[i].manifestRevision.CommitSHA = mr.CommitSHA
-		}
+		return delivery.GitOpsPromotionResult{}, err
+	}
+	manifestRef := result.CommitSHA
+	for i := range records {
+		records[i].manifestRevision.CommitSHA = result.CommitSHA
 	}
 	for _, record := range records {
 		if err := s.repo.CreateDeployment(ctx, record.deployment); err != nil {
@@ -652,7 +635,7 @@ func (s *Service) GetLatestDeploymentForStage(ctx context.Context, appID shared.
 
 func ComputeStageConfigHash(templateRevisionID shared.ID, workloadConfigs []WorkloadStageConfigRef) string {
 	raw, _ := json.Marshal(struct {
-		TemplateRevisionID shared.ID              `json:"t"`
+		TemplateRevisionID shared.ID                `json:"t"`
 		Configs            []WorkloadStageConfigRef `json:"c"`
 	}{templateRevisionID, workloadConfigs})
 	sum := sha256.Sum256(raw)
@@ -702,6 +685,66 @@ func (s *Service) RenderExpectedManifest(ctx context.Context, appID shared.ID, s
 		return "", "", err
 	}
 	return expected, currentManifest, nil
+}
+
+func (s *Service) PreviewPromotionManifest(ctx context.Context, spec delivery.GitOpsPromotionSpec) (expected string, currentManifest string, err error) {
+	app, err := s.apps.GetApplication(ctx, spec.ApplicationID)
+	if err != nil {
+		return "", "", err
+	}
+	stageKey := normalizeStageKey(spec.StageKey)
+	if stageKey == "" {
+		return "", "", shared.NewError(shared.CodeInvalidArgument, "target_stage_key is required")
+	}
+	bindings, err := s.promotionTargetBindings(stageKey, spec.TargetClusters)
+	if err != nil {
+		return "", "", err
+	}
+	template, err := s.repo.FindPlatformTemplate(ctx, defaultPlatformTemplateName)
+	if err != nil {
+		if shared.CodeOf(err) == shared.CodeNotFound {
+			template, err = s.EnsurePlatformTemplate(ctx, defaultPlatformTemplateName, defaultPlatformTemplateContent)
+		}
+		if err != nil {
+			return "", "", err
+		}
+	}
+	validation := validateTemplate(template.Content)
+	if !validation.Valid {
+		return "", "", shared.NewError(shared.CodeFailedPrecondition, strings.Join(validation.Errors, "; "))
+	}
+	artifacts := normalizePromotionArtifacts(spec)
+	if len(artifacts) == 0 && strings.TrimSpace(spec.ImageURI) != "" {
+		repository, tag := splitImage(spec.ImageURI)
+		artifacts = []delivery.GitOpsArtifactSpec{{URI: strings.TrimSpace(spec.ImageURI), Repository: repository, Tag: tag, Digest: strings.TrimSpace(spec.ImageDigest), IsPrimary: true}}
+	}
+	if len(artifacts) == 0 {
+		return "", "", shared.NewError(shared.CodeInvalidArgument, "promotion artifacts is required")
+	}
+	deploymentID := spec.PromotionID
+	if latest, latestErr := s.repo.GetLatestDeploymentForStage(ctx, spec.ApplicationID, stageKey); latestErr == nil && !latest.ID.IsZero() {
+		deploymentID = latest.ID
+	}
+	var expectedFiles []string
+	var currentFiles []string
+	for _, binding := range bindings {
+		resolvedArtifacts, err := resolvePromotionArtifactsForBinding(artifacts, binding)
+		if err != nil {
+			return "", "", err
+		}
+		manifests, _, err := s.renderK8sManifests(ctx, app, stageKey, binding, deploymentID, resolvedArtifacts)
+		if err != nil {
+			return "", "", err
+		}
+		expectedFiles = append(expectedFiles, manifests)
+		path := manifestPathForBinding(app.Name, stageKey, binding)
+		current, readErr := s.manifest.ReadFile(ctx, path, "main")
+		if readErr != nil && shared.CodeOf(readErr) != shared.CodeNotFound {
+			return "", "", readErr
+		}
+		currentFiles = append(currentFiles, current)
+	}
+	return strings.Join(expectedFiles, "\n---\n"), strings.Join(currentFiles, "\n---\n"), nil
 }
 
 func (s *Service) collectStageConfigs(ctx context.Context, appID shared.ID, artifacts []delivery.GitOpsArtifactSpec, stageKey string) []WorkloadStageConfigRef {

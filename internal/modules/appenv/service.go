@@ -14,7 +14,6 @@ import (
 type Service struct {
 	repo                Repository
 	projects            ProjectQuery
-	sourceRepos         SourceRepositoryQuery
 	jenkinsTemplates    JenkinsTemplateQuery
 	buildEnvironments   BuildEnvironmentQuery
 	runtimeEnvironments RuntimeEnvironmentQuery
@@ -32,7 +31,6 @@ type Service struct {
 type Options struct {
 	Repository               Repository
 	ProjectQuery             ProjectQuery
-	SourceRepositoryQuery    SourceRepositoryQuery
 	JenkinsTemplateQuery     JenkinsTemplateQuery
 	BuildEnvironmentQuery    BuildEnvironmentQuery
 	RuntimeEnvironmentQuery  RuntimeEnvironmentQuery
@@ -67,7 +65,6 @@ func NewService(opts Options) *Service {
 	return &Service{
 		repo:                opts.Repository,
 		projects:            opts.ProjectQuery,
-		sourceRepos:         opts.SourceRepositoryQuery,
 		jenkinsTemplates:    opts.JenkinsTemplateQuery,
 		buildEnvironments:   opts.BuildEnvironmentQuery,
 		runtimeEnvironments: opts.RuntimeEnvironmentQuery,
@@ -94,7 +91,6 @@ type CreateApplicationInput struct {
 	DisplayName           string                         `json:"display_name"`
 	Description           string                         `json:"description"`
 	Sources               []CreateApplicationSourceInput `json:"sources"`
-	SourceRepositoryID    shared.ID                      `json:"source_repository_id,omitempty"`
 	JenkinsTemplateID     shared.ID                      `json:"jenkins_template_id,omitempty"`
 	RuntimeEnvironmentID  shared.ID                      `json:"runtime_environment_id,omitempty"`
 	RuntimeEnvironmentIDs []shared.ID                    `json:"runtime_environment_ids,omitempty"`
@@ -105,7 +101,10 @@ type CreateApplicationInput struct {
 type CreateApplicationSourceInput struct {
 	Key                string    `json:"key"`
 	DisplayName        string    `json:"display_name"`
-	SourceRepositoryID shared.ID `json:"source_repository_id"`
+	SourceType         string    `json:"source_type"`
+	SourceURL          string    `json:"source_url"`
+	SourceRef          string    `json:"source_ref"`
+	SVNRevision        string    `json:"svn_revision,omitempty"`
 	JenkinsTemplateID  shared.ID `json:"jenkins_template_id"`
 	BuildEnvironmentID shared.ID `json:"build_environment_id"`
 	SourcePath         string    `json:"source_path"`
@@ -274,11 +273,7 @@ func (s *Service) CreateApplication(ctx context.Context, input CreateApplication
 			return Application{}, err
 		}
 	}
-	sourceRepositoryID := shared.ID("")
-	if len(sources) > 0 {
-		sourceRepositoryID = sources[0].SourceRepositoryID
-	}
-	if err := s.publish(ctx, "ApplicationCreated", now, ApplicationCreatedPayload{ApplicationID: app.ID, TenantID: app.TenantID, ProjectID: app.ProjectID, SourceRepositoryID: sourceRepositoryID, SourceKeys: sourceKeys, Name: app.Name}); err != nil {
+	if err := s.publish(ctx, "ApplicationCreated", now, ApplicationCreatedPayload{ApplicationID: app.ID, TenantID: app.TenantID, ProjectID: app.ProjectID, SourceKeys: sourceKeys, Name: app.Name}); err != nil {
 		_ = s.repo.DeleteApplicationData(ctx, app.ID)
 		return Application{}, err
 	}
@@ -305,16 +300,21 @@ func (s *Service) prepareApplicationSources(ctx context.Context, project tenantp
 			return nil, shared.NewError(shared.CodeConflict, "source key already exists")
 		}
 		seen[key] = struct{}{}
-		sourceRepo, err := s.requireSourceRepository(ctx, project, input.SourceRepositoryID)
-		if err != nil {
-			return nil, err
+		sourceType := normalizeApplicationSourceType(input.SourceType)
+		sourceURL := strings.TrimSpace(input.SourceURL)
+		if sourceURL == "" {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "source_url is required")
 		}
+		sourceRef := strings.TrimSpace(input.SourceRef)
 		spec := input.BuildSpec
 		if strings.TrimSpace(spec.SourcePath) == "" {
 			spec.SourcePath = input.SourcePath
 		}
 		if strings.TrimSpace(input.DefaultRef) != "" {
 			spec.DefaultRef = strings.TrimSpace(input.DefaultRef)
+		}
+		if strings.TrimSpace(spec.DefaultRef) == "" {
+			spec.DefaultRef = sourceRef
 		}
 		buildEnvironmentID, err := s.applyBuildEnvironment(ctx, input.BuildEnvironmentID, &spec)
 		if err != nil {
@@ -323,9 +323,12 @@ func (s *Service) prepareApplicationSources(ctx context.Context, project tenantp
 		if len(runtimeEnvironments) > 0 {
 			applyRuntimeEnvironment(runtimeEnvironments[0], runtimeOverrides, &spec)
 		}
-		spec, err = s.validateBuildSpec(spec, sourceRepo.DefaultBranch)
+		spec, err = s.validateBuildSpec(spec, defaultApplicationSourceRef(sourceType, sourceURL))
 		if err != nil {
 			return nil, err
+		}
+		if sourceRef == "" {
+			sourceRef = spec.DefaultRef
 		}
 		templateID := shared.ID("")
 		if buildEnvironmentID.IsZero() {
@@ -351,7 +354,10 @@ func (s *Service) prepareApplicationSources(ctx context.Context, project tenantp
 			ProjectID:          project.ID,
 			Key:                key,
 			DisplayName:        normalizeDisplayName(input.DisplayName, key),
-			SourceRepositoryID: sourceRepo.ID,
+			SourceType:         sourceType,
+			SourceURL:          sourceURL,
+			SourceRef:          sourceRef,
+			SVNRevision:        strings.TrimSpace(input.SVNRevision),
 			JenkinsTemplateID:  templateID,
 			BuildEnvironmentID: buildEnvironmentID,
 			SourcePath:         spec.SourcePath,
@@ -1062,26 +1068,6 @@ func (s *Service) requireProject(ctx context.Context, projectID shared.ID) (tena
 		return tenantproject.Project{}, shared.NewError(shared.CodeFailedPrecondition, "project query port is required")
 	}
 	return s.projects.GetProject(ctx, projectID)
-}
-
-func (s *Service) requireSourceRepository(ctx context.Context, project tenantproject.Project, sourceRepositoryID shared.ID) (SourceRepositoryRef, error) {
-	if sourceRepositoryID.IsZero() {
-		return SourceRepositoryRef{}, shared.NewError(shared.CodeInvalidArgument, "source_repository_id is required")
-	}
-	if s.sourceRepos == nil {
-		return SourceRepositoryRef{}, shared.NewError(shared.CodeFailedPrecondition, "source repository query port is required")
-	}
-	repository, err := s.sourceRepos.GetSourceRepository(ctx, sourceRepositoryID)
-	if err != nil {
-		return SourceRepositoryRef{}, err
-	}
-	if repository.TenantID != project.TenantID || repository.ProjectID != project.ID {
-		return SourceRepositoryRef{}, shared.NewError(shared.CodeInvalidArgument, "source repository does not belong to project")
-	}
-	if strings.TrimSpace(repository.Status) != "" && repository.Status != "ready" {
-		return SourceRepositoryRef{}, shared.NewError(shared.CodeFailedPrecondition, "source repository is not ready")
-	}
-	return repository, nil
 }
 
 func (s *Service) requireEnabledJenkinsTemplate(ctx context.Context, templateID shared.ID) (shared.ID, error) {

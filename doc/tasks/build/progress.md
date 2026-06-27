@@ -35,3 +35,5 @@
 - 2026-06-02 更新：构建 Job 改为使用单个全局模板，多个代码源会渲染多个检出、构建和收集产物阶段；Dockerfile 从平台专用 Git 仓库检出，不放入用户源码仓库。
 - 2026-06-04 更新：默认 Jenkinsfile 模板不再依赖 `paas-ci-helper`，改为直接使用 `docker buildx` 按 PaaS 渲染出的镜像目标构建镜像，并通过 `curl` 回调 PaaS 控制面。
 - 2026-06-04 更新：触发 Jenkins 时不再传递构建参数；PaaS 每次构建前按本次源码 ref、commit、运行时和回调地址重新渲染并更新固定 Job。
+- 2026-06-26 更新：Jenkins 镜像 tag 格式改为 `yyyyMMdd-分支名-semver`，分支名使用本次主代码源 ref 的镜像 tag 安全化结果；commit SHA 仅作为构建元数据保留，不再参与 tag 组成。
+- 2026-06-26 更新：流水线源码配置去掉 SourceRepository 前置依赖，BuildPipelineSource 直接保存 `source_type/source_url/source_ref/svn_revision`。Git 模式支持按 GitLab 地址刷新分支；Git/SVN checkout 均使用固定 Jenkins 凭据 `aea4ebeb-2858-4850-b3e0-268e9aff9726`。SVN 模式使用完整 checkout 地址和可选 revision，SVN 镜像 tag 使用 `yyyyMMdd-svnRef-semver`。

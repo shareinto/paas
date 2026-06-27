@@ -28,7 +28,7 @@ type seedOptions struct {
 func main() {
 	var opts seedOptions
 	flag.StringVar(&opts.APIBase, "api-base", firstNonEmpty(os.Getenv("PAAS_DEV_SEED_API_BASE"), defaultAPIBase), "PaaS control plane API base URL")
-	flag.StringVar(&opts.SourceURL, "source-url", firstNonEmpty(os.Getenv("PAAS_DEV_SEED_SOURCE_URL"), defaultSourceURL), "source repository HTTP URL to register")
+	flag.StringVar(&opts.SourceURL, "source-url", firstNonEmpty(os.Getenv("PAAS_DEV_SEED_SOURCE_URL"), defaultSourceURL), "source HTTP URL for the default build pipeline")
 	flag.BoolVar(&opts.DryRun, "dry-run", false, "print planned seed data without calling API or MySQL")
 	flag.Parse()
 
@@ -44,7 +44,7 @@ func runSeed(ctx context.Context, opts seedOptions) error {
 	opts.APIBase = strings.TrimRight(firstNonEmpty(opts.APIBase, defaultAPIBase), "/")
 	opts.SourceURL = firstNonEmpty(strings.TrimSpace(opts.SourceURL), defaultSourceURL)
 	if opts.DryRun {
-		fmt.Printf("dry-run: seed tenant=sbg project=macc repository=log-receiver application=log-receiver workload=log-receiver pipeline=main api_base=%s source_url=%s\n", opts.APIBase, opts.SourceURL)
+		fmt.Printf("dry-run: seed tenant=sbg project=macc application=log-receiver workload=log-receiver pipeline=main api_base=%s source_url=%s\n", opts.APIBase, opts.SourceURL)
 		return nil
 	}
 	client := seedClient{base: opts.APIBase, http: opts.Client}
@@ -69,10 +69,6 @@ func runSeed(ctx context.Context, opts seedOptions) error {
 		"display_name": "macc",
 		"description":  "MACC 测试项目",
 	})
-	if err != nil {
-		return err
-	}
-	repositoryID, err := client.ensureSourceRepository(ctx, projectID, actor, opts.SourceURL)
 	if err != nil {
 		return err
 	}
@@ -114,7 +110,9 @@ func runSeed(ctx context.Context, opts seedOptions) error {
 		"sources": []map[string]any{{
 			"key":                  "main",
 			"display_name":         "主代码源",
-			"source_repository_id": repositoryID,
+			"source_type":          "git",
+			"source_url":           opts.SourceURL,
+			"source_ref":           "main",
 			"build_environment_id": buildEnvironmentID,
 			"source_path":          ".",
 			"default_ref":          "main",
@@ -146,34 +144,6 @@ type httpStatusError struct {
 
 func (e httpStatusError) Error() string {
 	return fmt.Sprintf("%s %s returned %d: %s", e.Method, e.Path, e.StatusCode, strings.TrimSpace(e.Body))
-}
-
-func (c seedClient) ensureSourceRepository(ctx context.Context, projectID string, actor map[string]string, sourceURL string) (string, error) {
-	items, err := c.list(ctx, "GET", "/api/projects/"+projectID+"/source-repositories?page=1&page_size=100")
-	if err != nil {
-		return "", err
-	}
-	if id := findIDByName(items, "log-receiver"); id != "" {
-		return id, nil
-	}
-	createPayload := map[string]any{
-		"actor":          actor,
-		"project_id":     projectID,
-		"name":           "log-receiver",
-		"display_name":   "log-receiver",
-		"description":    "日志接收服务源码仓库",
-		"http_url":       sourceURL,
-		"default_branch": "main",
-	}
-	var created map[string]any
-	if err := c.doJSON(ctx, "POST", "/api/source-repositories", createPayload, &created); err != nil {
-		return "", err
-	}
-	id, _ := created["id"].(string)
-	if strings.TrimSpace(id) == "" {
-		return "", fmt.Errorf("POST /api/source-repositories response missing id")
-	}
-	return id, nil
 }
 
 func (c seedClient) ensureByName(ctx context.Context, listMethod, listPath, createMethod, createPath, name string, payload map[string]any) (string, error) {

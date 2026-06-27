@@ -43,7 +43,7 @@
 - Freight 只携带镜像版本组合。
 - 环境变量、域名、配置文件、可写目录等差异来自 WorkloadStageConfig 或环境 values。
 - 发布 Freight 到环境时，只更新该环境下各 Workload 的镜像版本和必要部署 values。
-- dev/test 可以直接 commit，staging/prod 按现有策略创建 MR。
+- 所有 Stage 在 PaaS 审批/验证门禁满足后直接 commit 到清单仓库。
 - 回滚通过修改 Git 期望状态完成，不直接操作 Kubernetes。
 
 ## 推荐实现顺序
@@ -63,10 +63,10 @@
 - 一个 Freight 含两个 FreightItem 时，两个 Workload 的 values 都更新。
 - Deployment 类型 Workload 渲染正确。
 - StatefulSet 类型 Workload 渲染正确。
-- dev/test 直接 commit 策略仍可用。
-- staging/prod MR 策略仍可用。
+- 所有 Stage 直接 commit 策略仍可用。
+- staging/prod 等高风险环境的准入由 PaaS Promotion 审批流控制。
 - 回滚写回历史 FreightItem 镜像。
-- GitLab commit 或 MR 失败时 Deployment 进入失败状态并展示中文原因。
+- GitLab commit 失败时 Deployment 进入失败状态并展示中文原因。
 
 ## 验证命令
 
