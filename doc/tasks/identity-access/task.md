@@ -14,16 +14,18 @@
 - [x] 定义权限格式 `resource:action`，实现权限字符串校验。
 - [x] 定义作用域枚举：`platform`、`tenant`、`project`、`application`、`environment`。
 - [x] 定义内置角色：`platform_admin`、`tenant_owner`、`tenant_admin`、`project_admin`、`developer`、`viewer`、`operator`、`prod_approver`、`security_auditor`。
+- [x] 支持动态角色管理：角色可新增、编辑、停用和删除；权限点仍由系统内置目录提供。
 - [x] 建立最小 repository 接口和数据表迁移草案。
 - [x] 建立 MySQL 迁移草案：`users`、`identities`、`local_credentials`、`oidc_providers`、`access_tokens`、RBAC 相关表。
 - [x] 实现管理员创建本地用户、禁用用户和重置密码用例。
 - [x] 实现本地账号密码登录，登录成功后签发 AccessToken/RefreshToken。
 - [x] 实现 OIDC 登录发起、callback 校验、User/Identity 查找或创建、Token 签发。
 - [x] 实现用户直接 RoleBinding 查询和 Group RoleBinding 查询。
+- [x] 实现 RoleBinding 管理接口，支持按作用域或主体查询、替换同一主体同一作用域下的角色、移除授权关系。
 - [x] 实现权限合并逻辑，支持作用域覆盖判断。
 - [x] 实现 `PermissionChecker`，输入 subject、resource scope、action，输出允许或拒绝。
 - [x] 实现 AccessToken 创建、哈希存储、校验和撤销。
-- [x] 提供 HTTP API：本地登录、OIDC 登录发起、OIDC callback、登出、刷新令牌、当前用户、用户管理、角色查询、RoleBinding 管理。
+- [x] 提供 HTTP API：本地登录、OIDC 登录发起、OIDC callback、登出、刷新令牌、当前用户、用户管理、角色 CRUD、角色权限维护、RoleBinding 管理。
 - [x] 为其他模块暴露 `AuthService`、`PermissionChecker`、`SubjectQuery` port。
 - [x] 编写单元测试：本地密码校验、OIDC state/nonce 校验、OIDC identity 映射、作用域继承、Group 权限合并、ServiceAccount 权限、无权限拒绝。
 - [x] 编写契约测试，确保 OIDC client_secret、平台 token、密码哈希不会返回前端或写入日志。
@@ -31,6 +33,7 @@
 ## 完成标准
 
 - [x] 其他模块可以调用 `PermissionChecker` 做权限前置校验。
+- [x] 内置角色受保护，不允许停用或删除；已有授权引用的自定义角色不允许删除。
 - [x] 用户、Group、ServiceAccount 权限路径均可测试。
 - [x] 本地用户创建和登录可测试。
 - [x] OIDC mock provider 登录可测试。

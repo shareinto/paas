@@ -57,6 +57,7 @@ CREATE TABLE build_pipelines (
   external_job_name VARCHAR(255) NOT NULL,
   template_id VARCHAR(128) NOT NULL,
   config_hash VARCHAR(64) NOT NULL DEFAULT '',
+  image_repository VARCHAR(512) NOT NULL DEFAULT '',
   status VARCHAR(64) NOT NULL,
   managed_by_platform TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME(6) NOT NULL,
@@ -106,6 +107,7 @@ CREATE TABLE build_run_sources (
   source_url VARCHAR(1024) NOT NULL,
   source_ref VARCHAR(256) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
+  svn_checkout_paths JSON NULL,
   source_path VARCHAR(512) NOT NULL,
   is_primary TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME(6) NOT NULL,
@@ -140,6 +142,7 @@ CREATE TABLE build_pipeline_sources (
   source_url VARCHAR(1024) NOT NULL,
   source_ref VARCHAR(256) NOT NULL,
   svn_revision VARCHAR(64) NOT NULL DEFAULT '',
+  svn_checkout_paths JSON NULL,
   build_environment_id VARCHAR(64) NOT NULL DEFAULT '',
   source_path VARCHAR(512) NOT NULL,
   build_spec JSON NOT NULL,
@@ -340,6 +343,7 @@ CREATE TABLE IF NOT EXISTS build_pipeline_sources (
   source_url VARCHAR(1024) NOT NULL,
   source_ref VARCHAR(256) NOT NULL,
   svn_revision VARCHAR(64) NOT NULL DEFAULT '',
+  svn_checkout_paths JSON NULL,
   build_environment_id VARCHAR(64) NOT NULL DEFAULT '',
   source_path VARCHAR(512) NOT NULL,
   build_spec JSON NOT NULL,
@@ -468,6 +472,7 @@ CREATE TABLE IF NOT EXISTS build_run_sources (
   source_url VARCHAR(1024) NOT NULL,
   source_ref VARCHAR(256) NOT NULL,
   commit_sha VARCHAR(128) NOT NULL DEFAULT '',
+  svn_checkout_paths JSON NULL,
   source_path VARCHAR(512) NOT NULL,
   is_primary TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME(6) NOT NULL,
@@ -577,6 +582,54 @@ SET @build_pipelines_workload_drop_ddl := IF(@build_pipelines_workload_exists, '
 PREPARE build_pipelines_workload_drop_stmt FROM @build_pipelines_workload_drop_ddl;
 EXECUTE build_pipelines_workload_drop_stmt;
 DEALLOCATE PREPARE build_pipelines_workload_drop_stmt;
+`,
+		Down: `SELECT 1;`,
+	},
+	{
+		Version: 202606270901,
+		Name:    "add_svn_checkout_paths",
+		Up: `
+SET @build_pipeline_sources_svn_paths_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipeline_sources'
+    AND column_name = 'svn_checkout_paths'
+);
+SET @build_pipeline_sources_svn_paths_ddl := IF(@build_pipeline_sources_svn_paths_missing, 'ALTER TABLE build_pipeline_sources ADD COLUMN svn_checkout_paths JSON NULL AFTER svn_revision', 'SELECT 1');
+PREPARE build_pipeline_sources_svn_paths_stmt FROM @build_pipeline_sources_svn_paths_ddl;
+EXECUTE build_pipeline_sources_svn_paths_stmt;
+DEALLOCATE PREPARE build_pipeline_sources_svn_paths_stmt;
+
+SET @build_run_sources_svn_paths_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_run_sources'
+    AND column_name = 'svn_checkout_paths'
+);
+SET @build_run_sources_svn_paths_ddl := IF(@build_run_sources_svn_paths_missing, 'ALTER TABLE build_run_sources ADD COLUMN svn_checkout_paths JSON NULL AFTER commit_sha', 'SELECT 1');
+PREPARE build_run_sources_svn_paths_stmt FROM @build_run_sources_svn_paths_ddl;
+EXECUTE build_run_sources_svn_paths_stmt;
+DEALLOCATE PREPARE build_run_sources_svn_paths_stmt;
+`,
+		Down: `SELECT 1;`,
+	},
+	{
+		Version: 202606281430,
+		Name:    "add_build_pipeline_image_repository",
+		Up: `
+SET @build_pipelines_image_repository_missing := (
+  SELECT COUNT(*) = 0
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE()
+    AND table_name = 'build_pipelines'
+    AND column_name = 'image_repository'
+);
+SET @build_pipelines_image_repository_ddl := IF(@build_pipelines_image_repository_missing, 'ALTER TABLE build_pipelines ADD COLUMN image_repository VARCHAR(512) NOT NULL DEFAULT '''' AFTER config_hash', 'SELECT 1');
+PREPARE build_pipelines_image_repository_stmt FROM @build_pipelines_image_repository_ddl;
+EXECUTE build_pipelines_image_repository_stmt;
+DEALLOCATE PREPARE build_pipelines_image_repository_stmt;
 `,
 		Down: `SELECT 1;`,
 	},

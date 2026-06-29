@@ -33,6 +33,18 @@ type Application struct {
 	UpdatedAt            time.Time                       `json:"updated_at"`
 }
 
+type ApplicationListScope string
+
+const (
+	ApplicationListScopeJoined     ApplicationListScope = "joined"
+	ApplicationListScopeAccessible ApplicationListScope = "accessible"
+)
+
+type ApplicationSummary struct {
+	Application
+	MyRoleID string `json:"my_role_id,omitempty"`
+}
+
 type ApplicationRuntimeEnvironment struct {
 	ID                 shared.ID         `json:"id"`
 	Name               string            `json:"name"`
@@ -43,23 +55,30 @@ type ApplicationRuntimeEnvironment struct {
 }
 
 type ApplicationSource struct {
-	ID                 shared.ID `json:"id"`
-	TenantID           shared.ID `json:"tenant_id"`
-	ProjectID          shared.ID `json:"project_id"`
-	ApplicationID      shared.ID `json:"application_id"`
-	Key                string    `json:"key"`
-	DisplayName        string    `json:"display_name"`
-	SourceType         string    `json:"source_type"`
-	SourceURL          string    `json:"source_url"`
-	SourceRef          string    `json:"source_ref"`
-	SVNRevision        string    `json:"svn_revision,omitempty"`
-	JenkinsTemplateID  shared.ID `json:"jenkins_template_id"`
-	BuildEnvironmentID shared.ID `json:"build_environment_id"`
-	SourcePath         string    `json:"source_path"`
-	BuildSpec          BuildSpec `json:"build_spec"`
-	IsPrimary          bool      `json:"is_primary"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                 shared.ID         `json:"id"`
+	TenantID           shared.ID         `json:"tenant_id"`
+	ProjectID          shared.ID         `json:"project_id"`
+	ApplicationID      shared.ID         `json:"application_id"`
+	Key                string            `json:"key"`
+	DisplayName        string            `json:"display_name"`
+	SourceType         string            `json:"source_type"`
+	SourceURL          string            `json:"source_url"`
+	SourceRef          string            `json:"source_ref"`
+	SVNRevision        string            `json:"svn_revision,omitempty"`
+	SVNCheckoutPaths   []SVNCheckoutPath `json:"svn_checkout_paths,omitempty"`
+	JenkinsTemplateID  shared.ID         `json:"jenkins_template_id"`
+	BuildEnvironmentID shared.ID         `json:"build_environment_id"`
+	SourcePath         string            `json:"source_path"`
+	BuildSpec          BuildSpec         `json:"build_spec"`
+	IsPrimary          bool              `json:"is_primary"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
+}
+
+type SVNCheckoutPath struct {
+	Local string `json:"local"`
+	Path  string `json:"path"`
+	Depth string `json:"depth"`
 }
 
 type WorkloadType string

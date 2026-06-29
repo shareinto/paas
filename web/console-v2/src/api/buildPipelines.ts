@@ -19,11 +19,6 @@ export type PipelineFormOptionsResult = {
   error?: string;
 };
 
-export type SourceBranchOption = {
-  name: string;
-  default?: boolean;
-};
-
 export type BackendBuildPipeline = {
   id: string;
   application_id?: string;
@@ -32,6 +27,8 @@ export type BackendBuildPipeline = {
   display_name?: string;
   displayName?: string;
   description?: string;
+  image_repository?: string;
+  imageRepository?: string;
   status?: string;
   runtime_environments?: BackendRuntimeEnvironment[];
   runtimeEnvironments?: BackendRuntimeEnvironment[];
@@ -61,6 +58,8 @@ export type BackendBuildPipelineSource = {
   sourceRef?: string;
   svn_revision?: string;
   svnRevision?: string;
+  svn_checkout_paths?: Array<{ local: string; path: string; depth: string }>;
+  svnCheckoutPaths?: Array<{ local: string; path: string; depth: string }>;
   build_environment_id?: string;
   buildEnvironmentId?: string;
   source_path?: string;
@@ -154,17 +153,6 @@ export async function loadPipelineFormOptions(): Promise<PipelineFormOptionsResu
     runtimeOptions: mapEnvironmentOptions(runtimePage.items || []),
     buildEnvironmentOptions: mapEnvironmentOptions(buildPage.items || [])
   };
-}
-
-export async function previewGitSourceBranches(projectId: string, sourceUrl: string): Promise<SourceBranchOption[]> {
-  if (!hasAPIBaseURL() || !projectId || !sourceUrl.trim()) {
-    return [{ name: 'main', default: true }];
-  }
-  const data = await request<{ items?: SourceBranchOption[] } | SourceBranchOption[]>(`/api/projects/${encodeURIComponent(projectId)}/build-source-branches/preview`, {
-    method: 'POST',
-    body: JSON.stringify({ actor: actorBody(), source_url: sourceUrl.trim() })
-  });
-  return Array.isArray(data) ? data : (data.items || []);
 }
 
 export function mapVersionSourcePipelinesFromWorkspace(
@@ -314,6 +302,7 @@ async function pipelinePayload(projectId: string, pipeline: VersionSourcePipelin
     ...(includeName ? { name: slugOf(pipeline.name || pipeline.id) } : {}),
     display_name: pipeline.name,
     description: pipeline.description || '',
+    image_repository: pipeline.imageRepository || '',
     runtime_environment_ids: [runtimeId].filter(Boolean),
     sources: await Promise.all(pipeline.sources.map((source, index) => sourcePayload(projectId, source, index)))
   };
@@ -332,6 +321,7 @@ async function sourcePayload(_projectId: string, source: VersionSourcePipeline['
     source_url: sourceUrl,
     source_ref: defaultRef,
     svn_revision: sourceType === 'svn' ? (source.svnRevision || '') : '',
+    svn_checkout_paths: sourceType === 'svn' ? normalizeSVNCheckoutPaths(source.svnCheckoutPaths) : [],
     build_environment_id: buildEnvironmentId,
     source_path: sourcePath,
     default_ref: defaultRef,
@@ -375,6 +365,7 @@ function mapPipeline(pipeline: BackendBuildPipeline, sources: BackendBuildPipeli
     id: pipeline.id,
     name: pipeline.display_name || pipeline.displayName || pipeline.name || pipeline.id,
     description: pipeline.description || '',
+    imageRepository: pipeline.image_repository || pipeline.imageRepository || '',
     branch: defaultRefOf(primarySource) || 'main',
     runtime,
     runtimeEnvironmentIds: runtimeEnvironments.map((item) => item.id || '').filter(Boolean),
@@ -403,6 +394,7 @@ function mapSource(source: BackendBuildPipelineSource): VersionSourcePipeline['s
     sourceUrl,
     sourceRef,
     svnRevision: source.svn_revision || source.svnRevision || '',
+    svnCheckoutPaths: normalizeSVNCheckoutPaths(source.svn_checkout_paths || source.svnCheckoutPaths || []),
     branch: sourceRef,
     sourcePath: spec.source_path || spec.sourcePath || source.source_path || source.sourcePath || '.',
     buildEnvironment: source.build_environment_id || source.buildEnvironmentId || '默认构建环境',
@@ -502,6 +494,17 @@ function defaultRefOf(source?: BackendBuildPipelineSource) {
 
 function normalizeSourceType(value?: string) {
   return value === 'svn' ? 'svn' : 'git';
+}
+
+function normalizeSVNCheckoutPaths(paths?: Array<{ local?: string; path?: string; depth?: string }>) {
+  const cleaned = (paths || [])
+    .map((item) => ({
+      local: (item.local || '.').trim() || '.',
+      path: (item.path || '').trim(),
+      depth: (item.depth || 'infinity').trim() || 'infinity'
+    }))
+    .filter((item) => item.local || item.path);
+  return cleaned.length ? cleaned : [{ local: '.', path: '', depth: 'infinity' }];
 }
 
 function sourcePathOf(source?: BackendBuildPipelineSource) {

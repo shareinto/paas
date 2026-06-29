@@ -255,6 +255,7 @@ func newApplication(ctx context.Context) (*application, error) {
 		BuildPipelineQuery:       buildPipelineForAppEnv{service: buildSvc},
 		Audit:                    audit.ApplicationEnvironmentLogger{Logger: auditSvc},
 		EventPublisher:           appEvents,
+		RoleBindings:             identitySvc,
 		IDGenerator:              ids,
 		Clock:                    clock,
 	})
@@ -270,7 +271,7 @@ func newApplication(ctx context.Context) (*application, error) {
 		Repository:      gitopsRepo,
 		ManifestRepo:    manifestRepo,
 		ManifestRepoURL: manifestRepoURL,
-		Application:     appForGitOps{service: appSvc},
+		Application:     appForGitOps{service: appSvc, projects: tenantSvc},
 		Workload:        workloadForGitOps{service: appSvc},
 		Audit:           audit.GitOpsLogger{Logger: auditSvc},
 		IDGenerator:     ids,
@@ -1069,6 +1070,7 @@ func toBuildPipelineSourceInputs(inputs []appenv.BuildPipelineSourceInput) []bui
 			SourceURL:          input.SourceURL,
 			SourceRef:          input.SourceRef,
 			SVNRevision:        input.SVNRevision,
+			SVNCheckoutPaths:   toBuildSVNCheckoutPaths(input.SVNCheckoutPaths),
 			BuildEnvironmentID: input.BuildEnvironmentID,
 			SourcePath:         input.SourcePath,
 			BuildSpec:          toBuildSpec(input.BuildSpec),
@@ -1328,14 +1330,25 @@ func (q buildForDelivery) ListBuildArtifacts(ctx context.Context, buildRunID sha
 	return out, nil
 }
 
-type appForGitOps struct{ service *appenv.Service }
+type appForGitOps struct {
+	service  *appenv.Service
+	projects *tenantproject.Service
+}
 
 func (q appForGitOps) GetApplication(ctx context.Context, id shared.ID) (gitops.ApplicationRef, error) {
 	app, err := q.service.GetApplication(ctx, id)
 	if err != nil {
 		return gitops.ApplicationRef{}, err
 	}
-	return gitops.ApplicationRef{ID: app.ID, TenantID: app.TenantID, ProjectID: app.ProjectID, Name: app.Name}, nil
+	ref := gitops.ApplicationRef{ID: app.ID, TenantID: app.TenantID, ProjectID: app.ProjectID, Name: app.Name}
+	if q.projects != nil {
+		project, err := q.projects.GetProject(ctx, app.ProjectID)
+		if err != nil {
+			return gitops.ApplicationRef{}, err
+		}
+		ref.ProjectName = project.Name
+	}
+	return ref, nil
 }
 
 type workloadForGitOps struct{ service *appenv.Service }
@@ -1381,7 +1394,15 @@ func toGitOpsWorkloadStageConfig(config appenv.WorkloadStageConfig) gitops.Workl
 		out.EnvVars = append(out.EnvVars, gitops.WorkloadEnvVarRef{Name: env.Name, Value: env.Value})
 	}
 	for _, host := range config.IngressHosts {
-		out.IngressHosts = append(out.IngressHosts, gitops.WorkloadIngressHostRef{Host: host.Host, Path: host.Path})
+		out.IngressHosts = append(out.IngressHosts, gitops.WorkloadIngressHostRef{
+			Host:        host.Host,
+			Path:        host.Path,
+			ServerName:  host.ServerName,
+			ServicePort: host.ServicePort,
+			PathType:    host.PathType,
+			TLS:         host.TLS,
+			TLSRedirect: host.TLSRedirect,
+		})
 	}
 	for _, secret := range config.SecretRefs {
 		out.SecretRefs = append(out.SecretRefs, gitops.WorkloadSecretRef{Name: secret.Name, SecretRef: secret.SecretRef})
@@ -1433,7 +1454,18 @@ func toBuildSpec(spec appenv.BuildSpec) build.BuildSpec {
 }
 
 func toBuildApplicationSourceRef(source appenv.ApplicationSource) build.ApplicationSourceRef {
-	return build.ApplicationSourceRef{ApplicationID: source.ApplicationID, Key: source.Key, DisplayName: source.DisplayName, SourceType: build.SourceType(source.SourceType), SourceURL: source.SourceURL, SourceRef: source.SourceRef, SVNRevision: source.SVNRevision, JenkinsTemplateID: source.JenkinsTemplateID, BuildEnvironmentID: source.BuildEnvironmentID, SourcePath: source.SourcePath, BuildSpec: toBuildSpec(source.BuildSpec), IsPrimary: source.IsPrimary}
+	return build.ApplicationSourceRef{ApplicationID: source.ApplicationID, Key: source.Key, DisplayName: source.DisplayName, SourceType: build.SourceType(source.SourceType), SourceURL: source.SourceURL, SourceRef: source.SourceRef, SVNRevision: source.SVNRevision, SVNCheckoutPaths: toBuildSVNCheckoutPaths(source.SVNCheckoutPaths), JenkinsTemplateID: source.JenkinsTemplateID, BuildEnvironmentID: source.BuildEnvironmentID, SourcePath: source.SourcePath, BuildSpec: toBuildSpec(source.BuildSpec), IsPrimary: source.IsPrimary}
+}
+
+func toBuildSVNCheckoutPaths(paths []appenv.SVNCheckoutPath) []build.SVNCheckoutPath {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]build.SVNCheckoutPath, 0, len(paths))
+	for _, item := range paths {
+		out = append(out, build.SVNCheckoutPath{Local: item.Local, Path: item.Path, Depth: item.Depth})
+	}
+	return out
 }
 
 func toBuildRuntimeEnvironments(environments []appenv.ApplicationRuntimeEnvironment) []build.RuntimeEnvironmentRef {

@@ -245,7 +245,7 @@ SELECT id, name, disabled, created_at FROM service_accounts WHERE id = ?`, id).
 
 func (r *MySQLRepository) ListRoles(ctx context.Context) ([]Role, error) {
 	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
-SELECT r.id, r.name, rp.permission_id
+SELECT r.id, r.name, r.description, r.built_in, r.disabled, r.suggested_scope_kinds, rp.permission_id
 FROM roles r
 LEFT JOIN role_permissions rp ON rp.role_id = r.id
 ORDER BY r.id ASC, rp.permission_id ASC`)
@@ -258,13 +258,23 @@ ORDER BY r.id ASC, rp.permission_id ASC`)
 	for rows.Next() {
 		var roleID RoleID
 		var name string
+		var description string
+		var builtIn bool
+		var disabled bool
+		var suggestedScopesRaw []byte
 		var permission sql.NullString
-		if err := rows.Scan(&roleID, &name, &permission); err != nil {
+		if err := rows.Scan(&roleID, &name, &description, &builtIn, &disabled, &suggestedScopesRaw, &permission); err != nil {
 			return nil, err
 		}
 		index, ok := indexByID[roleID]
 		if !ok {
-			roles = append(roles, Role{ID: roleID, Name: name, Permissions: []Permission{}})
+			var suggestedScopes []ScopeKind
+			if len(suggestedScopesRaw) > 0 {
+				if err := database.UnmarshalJSON(suggestedScopesRaw, &suggestedScopes); err != nil {
+					return nil, err
+				}
+			}
+			roles = append(roles, Role{ID: roleID, Name: name, Description: description, BuiltIn: builtIn, Disabled: disabled, SuggestedScopes: suggestedScopes, Permissions: []Permission{}})
 			index = len(roles) - 1
 			indexByID[roleID] = index
 		}
@@ -279,10 +289,45 @@ ORDER BY r.id ASC, rp.permission_id ASC`)
 }
 
 func (r *MySQLRepository) UpsertRole(ctx context.Context, role Role) error {
-	_, err := database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
-INSERT INTO roles (id, name) VALUES (?, ?)
-ON DUPLICATE KEY UPDATE name = VALUES(name)`, role.ID, role.Name)
+	suggestedScopes, err := database.MarshalJSON(role.SuggestedScopes)
+	if err != nil {
+		return err
+	}
+	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
+INSERT INTO roles (id, name, description, built_in, disabled, suggested_scope_kinds) VALUES (?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description), built_in = VALUES(built_in), disabled = VALUES(disabled), suggested_scope_kinds = VALUES(suggested_scope_kinds)`,
+		role.ID, role.Name, role.Description, role.BuiltIn, role.Disabled, string(suggestedScopes))
 	return database.WrapUnavailable(err, "upsert role failed")
+}
+
+func (r *MySQLRepository) DeleteRole(ctx context.Context, roleID RoleID) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return database.WrapUnavailable(err, "delete role failed")
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM role_permissions WHERE role_id = ?", roleID); err != nil {
+		return database.WrapUnavailable(err, "delete role failed")
+	}
+	result, err := tx.ExecContext(ctx, "DELETE FROM roles WHERE id = ?", roleID)
+	if err != nil {
+		return database.WrapUnavailable(err, "delete role failed")
+	}
+	if err := database.RequireAffected(result, "role not found"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return database.WrapUnavailable(err, "delete role failed")
+	}
+	return nil
+}
+
+func (r *MySQLRepository) RoleBindingCountByRole(ctx context.Context, roleID RoleID) (int64, error) {
+	var total int64
+	if err := database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, "SELECT COUNT(*) FROM role_bindings WHERE role_id = ?", roleID).Scan(&total); err != nil {
+		return 0, database.WrapUnavailable(err, "count role bindings failed")
+	}
+	return total, nil
 }
 
 func (r *MySQLRepository) ReplaceRolePermissions(ctx context.Context, roleID RoleID, permissions []Permission) error {

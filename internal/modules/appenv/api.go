@@ -20,6 +20,7 @@ func NewHandler(service *Service) *Handler {
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/applications", h.handleCreateApplication)
+	mux.HandleFunc("GET /api/me/applications", h.handleListMyApplications)
 	mux.HandleFunc("GET /api/applications/{applicationId}", h.handleGetApplication)
 	mux.HandleFunc("PATCH /api/applications/{applicationId}", h.handleUpdateApplication)
 	mux.HandleFunc("DELETE /api/applications/{applicationId}", h.handleDeleteApplication)
@@ -50,6 +51,28 @@ func (h *Handler) handleCreateApplication(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusCreated, app)
+}
+
+func (h *Handler) handleListMyApplications(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	actorID := shared.ID(strings.TrimSpace(q.Get("actor_id")))
+	if actorID.IsZero() {
+		actorID = "usr_admin"
+	}
+	scope := ApplicationListScope(strings.TrimSpace(q.Get("scope")))
+	projectID := shared.ID(strings.TrimSpace(q.Get("project_id")))
+	result, err := h.service.ListApplicationsForActor(
+		r.Context(),
+		identityaccess.Subject{Type: identityaccess.SubjectUser, ID: actorID},
+		scope,
+		projectID,
+		pageFromQuery(r),
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) handleGetApplication(w http.ResponseWriter, r *http.Request) {

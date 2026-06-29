@@ -93,6 +93,7 @@ type ApplicationSourceRef struct {
 	SourceURL          string
 	SourceRef          string
 	SVNRevision        string
+	SVNCheckoutPaths   []SVNCheckoutPath
 	SourcePath         string
 	BuildSpec          BuildSpec
 	IsPrimary          bool

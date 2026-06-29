@@ -15,7 +15,7 @@
 - 新增租户级 DeliveryFlowTemplate、DeliveryFlowTemplateStage、StageClusterBinding、AppStage、FreightApproval 和 StageVerification。
 - Stage key 创建后保持稳定；删除 Stage 会物理删除模板项和该 Stage 的集群绑定。
 - 集群绑定调整为租户 Stage 级绑定，支持一个 Stage 最多绑定一个集群、一个集群绑定多个 Stage。
-- Promotion 支持 `target_stage_key`、Stage 唯一绑定集群和 `namespace_override`，并为目标集群生成部署记录。
+- Promotion 支持 `target_stage_key`、Stage 唯一绑定集群和 `namespace_override`，默认 Namespace 按“项目名-StageKey”生成，并为目标集群生成部署记录。
 - GitOps 部署清单路径按 Stage 维度保存：`apps/<app>/<stage>/values.yaml`。由于一个 Stage 最多绑定一个集群，不再生成 `apps/<app>/<stage>/<cluster>/values.yaml`。
 - Web Console 新增“租户交付流模板”页；发布晋级页改为应用 Stage DAG，拖拽 Freight 到 Stage 后在卡片内确认发布，保留 Freight 审批弹窗和 Stage 人工验证弹窗。
 - 新增 DeliveryFlowTemplateEdge，将租户交付流模板从线性顺序扩展为 DAG；默认仍生成 `dev -> test -> staging -> prod`，保存时校验无环，允许多个根 Stage，Fan-in 要求 Freight 通过全部直接上游 Stage。

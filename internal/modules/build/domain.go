@@ -119,6 +119,12 @@ const (
 	SourceTypeSVN SourceType = "svn"
 )
 
+type SVNCheckoutPath struct {
+	Local string `json:"local"`
+	Path  string `json:"path"`
+	Depth string `json:"depth"`
+}
+
 type BuildPipeline struct {
 	ID                  shared.ID               `json:"id"`
 	TenantID            shared.ID               `json:"tenant_id"`
@@ -131,6 +137,7 @@ type BuildPipeline struct {
 	ExternalJobName     string                  `json:"external_job_name"`
 	TemplateID          string                  `json:"template_id"`
 	ConfigHash          string                  `json:"config_hash"`
+	ImageRepository     string                  `json:"image_repository,omitempty"`
 	Status              BuildPipelineStatus     `json:"status"`
 	ManagedByPlatform   bool                    `json:"managed_by_platform"`
 	RuntimeEnvironments []RuntimeEnvironmentRef `json:"runtime_environments"`
@@ -139,23 +146,24 @@ type BuildPipeline struct {
 }
 
 type BuildPipelineSource struct {
-	ID                 shared.ID  `json:"id"`
-	TenantID           shared.ID  `json:"tenant_id"`
-	ProjectID          shared.ID  `json:"project_id"`
-	ApplicationID      shared.ID  `json:"application_id"`
-	PipelineID         shared.ID  `json:"pipeline_id"`
-	Key                string     `json:"key"`
-	DisplayName        string     `json:"display_name"`
-	SourceType         SourceType `json:"source_type"`
-	SourceURL          string     `json:"source_url"`
-	SourceRef          string     `json:"source_ref"`
-	SVNRevision        string     `json:"svn_revision,omitempty"`
-	BuildEnvironmentID shared.ID  `json:"build_environment_id"`
-	SourcePath         string     `json:"source_path"`
-	BuildSpec          BuildSpec  `json:"build_spec"`
-	IsPrimary          bool       `json:"is_primary"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	ID                 shared.ID         `json:"id"`
+	TenantID           shared.ID         `json:"tenant_id"`
+	ProjectID          shared.ID         `json:"project_id"`
+	ApplicationID      shared.ID         `json:"application_id"`
+	PipelineID         shared.ID         `json:"pipeline_id"`
+	Key                string            `json:"key"`
+	DisplayName        string            `json:"display_name"`
+	SourceType         SourceType        `json:"source_type"`
+	SourceURL          string            `json:"source_url"`
+	SourceRef          string            `json:"source_ref"`
+	SVNRevision        string            `json:"svn_revision,omitempty"`
+	SVNCheckoutPaths   []SVNCheckoutPath `json:"svn_checkout_paths,omitempty"`
+	BuildEnvironmentID shared.ID         `json:"build_environment_id"`
+	SourcePath         string            `json:"source_path"`
+	BuildSpec          BuildSpec         `json:"build_spec"`
+	IsPrimary          bool              `json:"is_primary"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
 }
 
 type BuildRunStatus string
@@ -208,19 +216,20 @@ type BuildRun struct {
 }
 
 type BuildRunSource struct {
-	ID            shared.ID  `json:"id"`
-	TenantID      shared.ID  `json:"tenant_id"`
-	ProjectID     shared.ID  `json:"project_id"`
-	BuildRunID    shared.ID  `json:"build_run_id"`
-	ApplicationID shared.ID  `json:"application_id"`
-	SourceKey     string     `json:"source_key"`
-	SourceType    SourceType `json:"source_type"`
-	SourceURL     string     `json:"source_url"`
-	SourceRef     string     `json:"source_ref"`
-	CommitSHA     string     `json:"commit_sha"`
-	SourcePath    string     `json:"source_path"`
-	IsPrimary     bool       `json:"is_primary"`
-	CreatedAt     time.Time  `json:"created_at"`
+	ID               shared.ID         `json:"id"`
+	TenantID         shared.ID         `json:"tenant_id"`
+	ProjectID        shared.ID         `json:"project_id"`
+	BuildRunID       shared.ID         `json:"build_run_id"`
+	ApplicationID    shared.ID         `json:"application_id"`
+	SourceKey        string            `json:"source_key"`
+	SourceType       SourceType        `json:"source_type"`
+	SourceURL        string            `json:"source_url"`
+	SourceRef        string            `json:"source_ref"`
+	SVNCheckoutPaths []SVNCheckoutPath `json:"svn_checkout_paths,omitempty"`
+	CommitSHA        string            `json:"commit_sha"`
+	SourcePath       string            `json:"source_path"`
+	IsPrimary        bool              `json:"is_primary"`
+	CreatedAt        time.Time         `json:"created_at"`
 }
 
 type BuildArtifactType string

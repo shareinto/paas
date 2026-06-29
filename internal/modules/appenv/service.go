@@ -21,6 +21,7 @@ type Service struct {
 	buildPipelineCmd    BuildPipelineCommand
 	buildPipelineQuery  BuildPipelineQuery
 	manifestCleaner     ApplicationManifestCleaner
+	roleBindings        RoleBindingManager
 	permission          PermissionChecker
 	audit               AuditLogger
 	events              EventPublisher
@@ -38,6 +39,7 @@ type Options struct {
 	BuildPipelineCommand     BuildPipelineCommand
 	BuildPipelineQuery       BuildPipelineQuery
 	ManifestCleaner          ApplicationManifestCleaner
+	RoleBindings             RoleBindingManager
 	PermissionChecker        PermissionChecker
 	Audit                    AuditLogger
 	EventPublisher           EventPublisher
@@ -72,6 +74,7 @@ func NewService(opts Options) *Service {
 		buildPipelineCmd:    opts.BuildPipelineCommand,
 		buildPipelineQuery:  opts.BuildPipelineQuery,
 		manifestCleaner:     opts.ManifestCleaner,
+		roleBindings:        opts.RoleBindings,
 		permission:          opts.PermissionChecker,
 		audit:               audit,
 		events:              events,
@@ -99,18 +102,19 @@ type CreateApplicationInput struct {
 }
 
 type CreateApplicationSourceInput struct {
-	Key                string    `json:"key"`
-	DisplayName        string    `json:"display_name"`
-	SourceType         string    `json:"source_type"`
-	SourceURL          string    `json:"source_url"`
-	SourceRef          string    `json:"source_ref"`
-	SVNRevision        string    `json:"svn_revision,omitempty"`
-	JenkinsTemplateID  shared.ID `json:"jenkins_template_id"`
-	BuildEnvironmentID shared.ID `json:"build_environment_id"`
-	SourcePath         string    `json:"source_path"`
-	BuildSpec          BuildSpec `json:"build_spec"`
-	DefaultRef         string    `json:"default_ref"`
-	IsPrimary          bool      `json:"is_primary"`
+	Key                string            `json:"key"`
+	DisplayName        string            `json:"display_name"`
+	SourceType         string            `json:"source_type"`
+	SourceURL          string            `json:"source_url"`
+	SourceRef          string            `json:"source_ref"`
+	SVNRevision        string            `json:"svn_revision,omitempty"`
+	SVNCheckoutPaths   []SVNCheckoutPath `json:"svn_checkout_paths,omitempty"`
+	JenkinsTemplateID  shared.ID         `json:"jenkins_template_id"`
+	BuildEnvironmentID shared.ID         `json:"build_environment_id"`
+	SourcePath         string            `json:"source_path"`
+	BuildSpec          BuildSpec         `json:"build_spec"`
+	DefaultRef         string            `json:"default_ref"`
+	IsPrimary          bool              `json:"is_primary"`
 }
 
 type UpdateApplicationInput struct {
@@ -277,8 +281,30 @@ func (s *Service) CreateApplication(ctx context.Context, input CreateApplication
 		_ = s.repo.DeleteApplicationData(ctx, app.ID)
 		return Application{}, err
 	}
+	if err := s.assignCreatorApplicationRole(ctx, input.Actor, app); err != nil {
+		_ = s.repo.DeleteApplicationData(ctx, app.ID)
+		return Application{}, err
+	}
 	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "application.create", ResourceType: "application", ResourceID: app.ID, Result: "succeeded", Summary: "创建应用", OccurredAt: now})
 	return app, nil
+}
+
+func (s *Service) assignCreatorApplicationRole(ctx context.Context, actor identityaccess.Subject, app Application) error {
+	if s.roleBindings == nil || actor.ID.IsZero() {
+		return nil
+	}
+	subjectType := actor.Type
+	if subjectType == "" {
+		subjectType = identityaccess.SubjectUser
+	}
+	_, err := s.roleBindings.ReplaceRoleBindingForSubjectScope(ctx, identityaccess.RoleBinding{
+		SubjectType: subjectType,
+		SubjectID:   actor.ID,
+		RoleID:      identityaccess.RoleApplicationAdmin,
+		ScopeKind:   identityaccess.ScopeApplication,
+		ScopeID:     app.ID,
+	})
+	return err
 }
 
 func (s *Service) prepareApplicationSources(ctx context.Context, project tenantproject.Project, inputs []CreateApplicationSourceInput, runtimeEnvironments []RuntimeEnvironmentRef, runtimeOverrides BuildSpec) ([]ApplicationSource, error) {
@@ -358,6 +384,7 @@ func (s *Service) prepareApplicationSources(ctx context.Context, project tenantp
 			SourceURL:          sourceURL,
 			SourceRef:          sourceRef,
 			SVNRevision:        strings.TrimSpace(input.SVNRevision),
+			SVNCheckoutPaths:   append([]SVNCheckoutPath(nil), input.SVNCheckoutPaths...),
 			JenkinsTemplateID:  templateID,
 			BuildEnvironmentID: buildEnvironmentID,
 			SourcePath:         spec.SourcePath,
@@ -483,6 +510,81 @@ func (s *Service) ListApplicationsByProject(ctx context.Context, projectID share
 		return shared.PageResult[Application]{}, err
 	}
 	return s.repo.ListApplicationsByProject(ctx, projectID, page)
+}
+
+func (s *Service) ListApplicationsForActor(ctx context.Context, actor identityaccess.Subject, scope ApplicationListScope, projectID shared.ID, page shared.PageRequest) (shared.PageResult[ApplicationSummary], error) {
+	if actor.ID.IsZero() {
+		return shared.PageResult[ApplicationSummary]{}, shared.NewError(shared.CodeUnauthenticated, "actor is required")
+	}
+	if actor.Type == "" {
+		actor.Type = identityaccess.SubjectUser
+	}
+	switch scope {
+	case "", ApplicationListScopeJoined:
+		if s.roleBindings == nil {
+			return shared.PageResult[ApplicationSummary]{}, shared.NewError(shared.CodeFailedPrecondition, "role binding manager is required")
+		}
+		bindings, err := s.roleBindings.ListRoleBindingsForSubject(ctx, actor)
+		if err != nil {
+			return shared.PageResult[ApplicationSummary]{}, err
+		}
+		items := make([]ApplicationSummary, 0, len(bindings))
+		for _, binding := range bindings {
+			if binding.ScopeKind != identityaccess.ScopeApplication {
+				continue
+			}
+			app, err := s.repo.GetApplication(ctx, binding.ScopeID)
+			if err != nil {
+				if shared.CodeOf(err) == shared.CodeNotFound {
+					continue
+				}
+				return shared.PageResult[ApplicationSummary]{}, err
+			}
+			if !projectID.IsZero() && app.ProjectID != projectID {
+				continue
+			}
+			if err := s.check(ctx, actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeApplication, TenantID: app.TenantID, ProjectID: app.ProjectID, ApplicationID: app.ID}, "application:read"); err != nil {
+				continue
+			}
+			items = append(items, ApplicationSummary{Application: app, MyRoleID: string(binding.RoleID)})
+		}
+		return pageApplicationSummaries(items, page), nil
+	case ApplicationListScopeAccessible:
+		if projectID.IsZero() {
+			return shared.PageResult[ApplicationSummary]{}, shared.NewError(shared.CodeInvalidArgument, "project_id is required for accessible scope")
+		}
+		project, err := s.requireProject(ctx, projectID)
+		if err != nil {
+			return shared.PageResult[ApplicationSummary]{}, err
+		}
+		if err := s.check(ctx, actor, identityaccess.ResourceScope{Kind: identityaccess.ScopeProject, TenantID: project.TenantID, ProjectID: project.ID}, "application:read"); err != nil {
+			return shared.PageResult[ApplicationSummary]{}, err
+		}
+		result, err := s.repo.ListApplicationsByProject(ctx, projectID, page)
+		if err != nil {
+			return shared.PageResult[ApplicationSummary]{}, err
+		}
+		items := make([]ApplicationSummary, 0, len(result.Items))
+		for _, app := range result.Items {
+			items = append(items, ApplicationSummary{Application: app})
+		}
+		return shared.NewPageResult(items, result.Total, page), nil
+	default:
+		return shared.PageResult[ApplicationSummary]{}, shared.NewError(shared.CodeInvalidArgument, "unsupported application list scope")
+	}
+}
+
+func pageApplicationSummaries(items []ApplicationSummary, page shared.PageRequest) shared.PageResult[ApplicationSummary] {
+	req := page.Normalize()
+	offset := req.Offset()
+	if offset >= len(items) {
+		return shared.NewPageResult([]ApplicationSummary{}, int64(len(items)), req)
+	}
+	end := offset + req.PageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	return shared.NewPageResult(items[offset:end], int64(len(items)), req)
 }
 
 func (s *Service) SyncRuntimeEnvironmentSnapshot(ctx context.Context, input RuntimeEnvironmentSnapshotInput) (int, error) {

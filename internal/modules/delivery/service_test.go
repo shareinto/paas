@@ -846,7 +846,7 @@ func TestCreatePromotionWithSingleBoundStageCluster(t *testing.T) {
 	if inferred.Status != PromotionManifestUpdated || len(env.gitops.specs) != 1 || len(env.gitops.specs[0].TargetClusters) != 1 || env.gitops.specs[0].TargetClusters[0].ClusterID != "cluster_shanghai" {
 		t.Fatalf("stage promotion should use the single bound cluster, promotion=%+v specs=%+v", inferred, env.gitops.specs)
 	}
-	if got := env.gitops.specs[0].TargetClusters[0].Namespace; got != "payment" {
+	if got := env.gitops.specs[0].TargetClusters[0].Namespace; got != "payment-dev" {
 		t.Fatalf("default namespace should be Kubernetes-compatible, got %q", got)
 	}
 	if _, err := env.svc.CreatePromotion(ctx, CreatePromotionInput{Actor: actor("usr_dev"), FreightID: freight.ID, TargetStageKey: "dev", TargetClusterIDs: []shared.ID{"cluster_missing"}}); shared.CodeOf(err) != shared.CodeInvalidArgument {
@@ -1810,6 +1810,52 @@ func TestFreightCreationContextBackfillsMissingReleaseFromSucceededBuild(t *test
 	}
 	if artifact := contextOut.LatestArtifactsByWorkload["workload_api"]; artifact.ID != "artifact_2" {
 		t.Fatalf("creation context should expose backfilled artifact, got %+v", contextOut.LatestArtifactsByWorkload)
+	}
+}
+
+func TestFreightCreationContextBackfillsContainerTargetsFromPipelineBindings(t *testing.T) {
+	env := newDeliveryEnv(t)
+	ctx := context.Background()
+	env.svc.workloads = fakeWorkloadQuery{workloads: map[shared.ID][]WorkloadRef{"app_user": {
+		{
+			ID:            "workload_frontend",
+			TenantID:      "tenant_a",
+			ProjectID:     "project_payment",
+			ApplicationID: "app_user",
+			Name:          "macc-frontend",
+			DisplayName:   "macc-frontend",
+			Status:        "enabled",
+			Containers: []WorkloadContainerRef{
+				{Name: "frontend", PipelineID: "pipeline_frontend"},
+				{Name: "backend", PipelineID: "pipeline_webbase"},
+			},
+		},
+	}}}
+	env.svc.builds = fakeBuildQuery{
+		runs: map[shared.ID]BuildRunRef{
+			"build_frontend": {ID: "build_frontend", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: "pipeline_frontend", PipelineName: "frontend", PipelineDisplayName: "frontend", Status: "succeeded"},
+			"build_webbase":  {ID: "build_webbase", TenantID: "tenant_a", ProjectID: "project_payment", ApplicationID: "app_user", PipelineID: "pipeline_webbase", PipelineName: "webbase", PipelineDisplayName: "webbase", Status: "succeeded"},
+		},
+		artifacts: map[shared.ID]BuildArtifactRef{
+			"artifact_frontend": {ID: "artifact_frontend", BuildRunID: "build_frontend", ApplicationID: "app_user", URI: "registry.example/sbg/frontend:v1", IsPrimary: true},
+			"artifact_webbase":  {ID: "artifact_webbase", BuildRunID: "build_webbase", ApplicationID: "app_user", URI: "registry.example/sbg/macc-webbase:v1", IsPrimary: true},
+		},
+	}
+
+	contextOut, err := env.svc.GetFreightCreationContext(ctx, "app_user")
+	if err != nil {
+		t.Fatalf("GetFreightCreationContext() error = %v", err)
+	}
+	frontendKey := freightTargetKey("workload_frontend", "frontend")
+	backendKey := freightTargetKey("workload_frontend", "backend")
+	if release := contextOut.LatestReleasesByWorkloadContainer[frontendKey]; release.ID.IsZero() || release.BuildRunID != "build_frontend" || release.ContainerName != "frontend" {
+		t.Fatalf("creation context should backfill frontend container release, got %+v", release)
+	}
+	if release := contextOut.LatestReleasesByWorkloadContainer[backendKey]; release.ID.IsZero() || release.BuildRunID != "build_webbase" || release.ContainerName != "backend" {
+		t.Fatalf("creation context should backfill backend container release, got %+v", release)
+	}
+	if artifact := contextOut.LatestArtifactsByWorkloadContainer[backendKey]; artifact.ID != "artifact_webbase" {
+		t.Fatalf("creation context should expose backend pipeline artifact, got %+v", contextOut.LatestArtifactsByWorkloadContainer)
 	}
 }
 

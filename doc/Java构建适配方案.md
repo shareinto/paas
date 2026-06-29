@@ -84,8 +84,9 @@ default_ref
 运行时环境：springboot-jdk11 / tomcat-jdk11 / nginx1221
 构建环境：gradle7-jdk11 / node22
 源码类型：Git / SVN
-源码地址：GitLab HTTP 地址或完整 SVN checkout 地址
+源码地址：GitLab HTTP 地址或 SVN 基础 checkout 地址
 构建引用：Git 分支；SVN 默认 HEAD，可选 revision
+SVN 检出目录：可选，本地目录 / SVN 子路径 / 检出深度
 源码子目录：source_path
 构建命令：build_command
 产物拷贝命令：artifact_copy_command
@@ -108,8 +109,8 @@ Tomcat:
 PaaS 校验：
 
 - `source_path` 必须存在或可被 GitLab 仓库 API 验证。
-- Git 源码支持按仓库地址刷新分支列表；刷新只用于预览和选择分支，不要求先登记 SourceRepository。
-- Git 与 SVN 源码 checkout 均使用 Jenkins 固定凭据 `aea4ebeb-2858-4850-b3e0-268e9aff9726`；Git 通过 `GIT_ASKPASS` 注入用户名/密码，SVN 通过 `svn checkout --username/--password` 注入。SVN revision 可选，不填时使用 HEAD。
+- Git 源码由用户手动填写仓库地址和分支，不要求先登记 SourceRepository。
+- Git 与 SVN 源码 checkout 均使用 Jenkins 固定凭据 `aea4ebeb-2858-4850-b3e0-268e9aff9726`；Git 通过 `GIT_ASKPASS` 注入用户名/密码，SVN 通过 `svn checkout --username/--password` 注入。SVN revision 可选，不填时使用 HEAD；SVN 支持基础 URL + 多个相对目录检出，每条目录包含本地目录、SVN 子路径和检出深度。
 - 每个代码源必须选择已启用的构建环境，构建环境提供构建镜像。
 - 每条构建流水线必须且只能选择一个已启用的逻辑运行时环境；该运行时环境下的后台镜像目标由平台管理员维护，对用户无感知。
 - `build_command` 不能为空。
@@ -169,7 +170,7 @@ Jenkins Job 渲染：
 ```
 
 运行时环境、源码 ref、commit、镜像仓库、应用名、Dockerfile 路径、产物放置路径和回调地址都由 PaaS 渲染进 Jenkinsfile。模板本身只遍历 PaaS 渲染出的镜像目标，不写死 ACK/AWS 名称。
-镜像 tag 由 Jenkins 统一模板生成。Git 源码格式为 `yyyyMMdd-分支名-semver`，其中分支名使用主代码源本次构建 ref 的镜像 tag 安全化结果（例如 `feature/log-receiver` 生成 `feature-log-receiver`）。SVN 源码格式为 `yyyyMMdd-svnRef-semver`，其中 `svnRef` 从 checkout 地址解析：`trunk` 使用 `trunk`，`branches/release-1.0` 使用 `release-1.0`，`tags/v1.2.0` 使用 `tag-v1.2.0`，非标准布局取最后一级路径。SemVer 使用构建弹窗提交的版本号。Git commit SHA 或 SVN revision 仍作为构建元数据上报和审计字段保存，但不参与镜像 tag 组成。
+镜像 tag 由 Jenkins 统一模板生成。Git 源码格式为 `yyyyMMdd-分支名-semver`，其中分支名使用主代码源本次构建 ref 的镜像 tag 安全化结果（例如 `feature/log-receiver` 生成 `feature-log-receiver`）。SVN 源码格式为 `yyyyMMdd-svnRef-semver`，其中 `svnRef` 从基础 checkout 地址解析：`trunk` 使用 `trunk`，`branches/release-1.0` 使用 `release-1.0`，`tags/v1.2.0` 使用 `tag-v1.2.0`，非标准布局取最后一级路径；多目录稀疏检出时仍只使用基础地址解析 tag，不使用子目录。SemVer 使用构建弹窗提交的版本号。Git commit SHA 或 SVN revision 仍作为构建元数据上报和审计字段保存，但不参与镜像 tag 组成。
 平台 Dockerfile 仓库应提供 `java/jar/Dockerfile` 和 `java/tomcat/Dockerfile`，参考样例见 `doc/dockerfiles/java/jar/Dockerfile` 和 `doc/dockerfiles/java/tomcat/Dockerfile`。
 
 Spring Boot jar 场景约定 `artifact_copy_command` 把主 jar 写为 `$PAAS_ARTIFACT_OUTPUT/app.jar`。Tomcat war 场景约定写为 `$PAAS_ARTIFACT_OUTPUT/app.war`，并使用运行时环境的 `artifact_deploy_path` 作为放置目录。镜像上下文准备阶段会把完整 `artifact/` 目录复制到每个 `image-context/{runtime_key}/`。

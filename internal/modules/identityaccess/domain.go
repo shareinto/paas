@@ -100,69 +100,109 @@ func ValidateGrantedPermission(permission Permission) error {
 type RoleID string
 
 const (
-	RolePlatformAdmin   RoleID = "platform_admin"
-	RoleTenantOwner     RoleID = "tenant_owner"
-	RoleTenantAdmin     RoleID = "tenant_admin"
-	RoleProjectAdmin    RoleID = "project_admin"
-	RoleDeveloper       RoleID = "developer"
-	RoleViewer          RoleID = "viewer"
-	RoleOperator        RoleID = "operator"
-	RoleProdApprover    RoleID = "prod_approver"
-	RoleSecurityAuditor RoleID = "security_auditor"
+	RolePlatformAdmin    RoleID = "platform_admin"
+	RoleTenantOwner      RoleID = "tenant_owner"
+	RoleTenantAdmin      RoleID = "tenant_admin"
+	RoleProjectAdmin     RoleID = "project_admin"
+	RoleApplicationAdmin RoleID = "application_admin"
+	RoleDeveloper        RoleID = "developer"
+	RoleViewer           RoleID = "viewer"
+	RoleOperator         RoleID = "operator"
+	RoleProdApprover     RoleID = "prod_approver"
+	RoleSecurityAuditor  RoleID = "security_auditor"
 )
 
 type Role struct {
-	ID          RoleID
-	Name        string
-	Permissions []Permission
+	ID              RoleID
+	Name            string
+	Description     string
+	BuiltIn         bool
+	Disabled        bool
+	SuggestedScopes []ScopeKind
+	Permissions     []Permission
 }
 
 func BuiltInRoles() map[RoleID]Role {
 	return map[RoleID]Role{
 		RolePlatformAdmin: {
-			ID:          RolePlatformAdmin,
-			Name:        "平台管理员",
-			Permissions: []Permission{"*:*"},
+			ID:              RolePlatformAdmin,
+			Name:            "平台管理员",
+			Description:     "平台全局最高权限，负责租户、项目、应用和平台配置。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopePlatform},
+			Permissions:     []Permission{"*:*"},
 		},
 		RoleTenantOwner: {
-			ID:          RoleTenantOwner,
-			Name:        "租户所有者",
-			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "deployment:approve", "runtime:read", "runtime:restart", "audit:read"},
+			ID:              RoleTenantOwner,
+			Name:            "租户所有者",
+			Description:     "租户内最高权限，负责租户配置、项目和应用管理。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopeTenant},
+			Permissions:     []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "deployment:approve", "runtime:read", "runtime:restart", "audit:read"},
 		},
 		RoleTenantAdmin: {
-			ID:          RoleTenantAdmin,
-			Name:        "租户管理员",
-			Permissions: []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "runtime:read", "runtime:restart"},
+			ID:              RoleTenantAdmin,
+			Name:            "租户管理员",
+			Description:     "租户管理角色，可管理项目、应用和集群配置。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopeTenant},
+			Permissions:     []Permission{"tenant:update", "project:update", "cluster:read", "cluster:manage", "application:create", "application:read", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "runtime:read", "runtime:restart"},
 		},
 		RoleProjectAdmin: {
-			ID:          RoleProjectAdmin,
-			Name:        "项目管理员",
-			Permissions: []Permission{"project:update", "application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "runtime:read", "runtime:restart"},
+			ID:              RoleProjectAdmin,
+			Name:            "项目管理员",
+			Description:     "项目内应用创建、应用配置和发布管理角色。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopeProject},
+			Permissions:     []Permission{"project:update", "application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "runtime:read", "runtime:restart"},
+		},
+		RoleApplicationAdmin: {
+			ID:              RoleApplicationAdmin,
+			Name:            "应用管理员",
+			Description:     "应用内最高权限，负责应用、构建、发布、准出和运行态管理。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopeApplication},
+			Permissions:     []Permission{"application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "deployment:approve", "runtime:read", "runtime:restart"},
 		},
 		RoleDeveloper: {
-			ID:          RoleDeveloper,
-			Name:        "开发者",
-			Permissions: []Permission{"application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "runtime:read"},
+			ID:              RoleDeveloper,
+			Name:            "开发者",
+			Description:     "开发成员，可配置应用、触发构建并发起发布。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopeProject, ScopeApplication},
+			Permissions:     []Permission{"application:create", "application:read", "application:update", "build:create", "build:read", "build:cancel", "freight:create", "freight:delete", "deployment:create", "runtime:read"},
 		},
 		RoleViewer: {
-			ID:          RoleViewer,
-			Name:        "只读成员",
-			Permissions: []Permission{"application:read", "stage:read", "build:read", "deployment:read", "runtime:read"},
+			ID:              RoleViewer,
+			Name:            "只读成员",
+			Description:     "只读查看应用、构建、发布和运行态信息。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopeTenant, ScopeProject, ScopeApplication},
+			Permissions:     []Permission{"application:read", "stage:read", "build:read", "deployment:read", "runtime:read"},
 		},
 		RoleOperator: {
-			ID:          RoleOperator,
-			Name:        "运维人员",
-			Permissions: []Permission{"stage:read", "stage:update", "deployment:create", "deployment:rollback", "build:read", "runtime:read", "runtime:restart", "runtime:terminal"},
+			ID:              RoleOperator,
+			Name:            "运维人员",
+			Description:     "应用运行态运维角色，可查看运行态、重启和进入终端。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopeApplication, ScopeStage},
+			Permissions:     []Permission{"stage:read", "stage:update", "deployment:create", "deployment:rollback", "build:read", "runtime:read", "runtime:restart", "runtime:terminal"},
 		},
 		RoleProdApprover: {
-			ID:          RoleProdApprover,
-			Name:        "生产审批人",
-			Permissions: []Permission{"deployment:approve", "deployment:read", "runtime:read"},
+			ID:              RoleProdApprover,
+			Name:            "生产审批人",
+			Description:     "生产发布前审批或准出负责人。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopeStage},
+			Permissions:     []Permission{"deployment:approve", "deployment:read", "runtime:read"},
 		},
 		RoleSecurityAuditor: {
-			ID:          RoleSecurityAuditor,
-			Name:        "安全审计员",
-			Permissions: []Permission{"audit:read", "application:read", "deployment:read", "runtime:read"},
+			ID:              RoleSecurityAuditor,
+			Name:            "安全审计员",
+			Description:     "安全和审计查看角色。",
+			BuiltIn:         true,
+			SuggestedScopes: []ScopeKind{ScopePlatform, ScopeTenant},
+			Permissions:     []Permission{"audit:read", "application:read", "deployment:read", "runtime:read"},
 		},
 	}
 }

@@ -88,11 +88,9 @@ import {
   cancelVersionSourcePipelineBuild,
   createVersionSourcePipeline,
   deleteVersionSourcePipeline,
-  previewGitSourceBranches,
   streamBuildRunLog,
   triggerVersionSourcePipelineBuild,
   updateVersionSourcePipeline,
-  type SourceBranchOption,
   type PipelineEnvironmentOption
 } from '../api/buildPipelines';
 import { saveVersionSourceWorkloads, loadWorkloadStageConfig, saveWorkloadStageConfig } from '../api/workloads';
@@ -741,7 +739,7 @@ function beginDrag(freight: Freight, event: DragEvent<HTMLElement>) {
     return freight.eligibleStages.includes(stage.id);
   }
 
-function dropFreight(stage: Stage, freightId: string) {
+  function dropFreight(stage: Stage, freightId: string) {
     const freight = freightItems.find((item) => item.id === freightId);
     if (!canDropFreight(stage, freight || null)) {
       if (!stageHasBoundCluster(stage)) {
@@ -752,7 +750,6 @@ function dropFreight(stage: Stage, freightId: string) {
     }
     setActiveFreightId(freightId);
     setConfirmTargetId(stage.id);
-    setRuntimeStageId(stage.id);
     setPromotionAutoPublish(true);
     setDragOverStageId(null);
   }
@@ -1120,7 +1117,6 @@ function dropFreight(stage: Stage, freightId: string) {
       {pipelineDialogOpen && (
         <PipelineCreateDialog
           pipelines={sourcePipelines}
-          projectId={currentProject.id}
           runtimeOptions={runtimeEnvironmentOptions}
           buildEnvironmentOptions={buildEnvironmentOptions}
           onClose={() => setPipelineDialogOpen(false)}
@@ -1131,7 +1127,6 @@ function dropFreight(stage: Stage, freightId: string) {
       {configPipeline && (
         <PipelineConfigDialog
           pipeline={configPipeline}
-          projectId={currentProject.id}
           runtimeOptions={runtimeEnvironmentOptions}
           buildEnvironmentOptions={buildEnvironmentOptions}
           onClose={() => setPipelineConfigId(null)}
@@ -3769,6 +3764,7 @@ function nextPipelineSource(index: number, buildOptions: PipelineEnvironmentOpti
     repository: 'https://gitlab.internal/retail/order-platform.git',
     sourceUrl: 'https://gitlab.internal/retail/order-platform.git',
     sourceRef: 'main',
+    svnCheckoutPaths: [{ local: '.', path: '', depth: 'infinity' }],
     branch: 'main',
     sourcePath: '.',
     buildEnvironment: buildEnvironment.name,
@@ -3780,6 +3776,7 @@ function nextPipelineSource(index: number, buildOptions: PipelineEnvironmentOpti
 
 function pipelineFromForm(pipeline: VersionSourcePipeline | null, input: {
   name: string;
+  imageRepository: string;
   runtime: string;
   runtimeEnvironmentId: string;
   sources: PipelineSourceConfig[];
@@ -3788,6 +3785,7 @@ function pipelineFromForm(pipeline: VersionSourcePipeline | null, input: {
   return {
     id: pipeline?.id || `pipe-custom-${Date.now().toString(36)}`,
     name: input.name,
+    imageRepository: input.imageRepository.trim(),
     branch: primarySource.sourceRef || primarySource.branch,
     runtime: input.runtime,
     runtimeEnvironmentIds: input.runtimeEnvironmentId ? [input.runtimeEnvironmentId] : [],
@@ -3813,14 +3811,12 @@ function optionByName(options: PipelineEnvironmentOption[], name: string) {
 
 function PipelineCreateDialog({
   pipelines,
-  projectId,
   runtimeOptions,
   buildEnvironmentOptions,
   onClose,
   onCreate
 }: {
   pipelines: VersionSourcePipeline[];
-  projectId: string;
   runtimeOptions: PipelineEnvironmentOption[];
   buildEnvironmentOptions: PipelineEnvironmentOption[];
   onClose: () => void;
@@ -3828,6 +3824,7 @@ function PipelineCreateDialog({
 }) {
   const index = pipelines.length + 1;
   const [name, setName] = useState(`新增流水线 ${index}`);
+  const [imageRepository, setImageRepository] = useState('');
   const [runtimeId, setRuntimeId] = useState(runtimeOptions[0]?.id || '');
   const [sources, setSources] = useState<PipelineSourceConfig[]>([nextPipelineSource(0, buildEnvironmentOptions)]);
   const selectedRuntime = optionById(runtimeOptions, runtimeId) || runtimeOptions[0] || fallbackRuntimeEnvironmentOptions[0];
@@ -3835,6 +3832,7 @@ function PipelineCreateDialog({
   function submit() {
     onCreate(pipelineFromForm(null, {
       name,
+      imageRepository,
       runtime: selectedRuntime.name,
       runtimeEnvironmentId: selectedRuntime.id,
       sources
@@ -3858,12 +3856,15 @@ function PipelineCreateDialog({
           <InlineField label="显示名称">
             <Input value={name} onChange={(event) => setName(event.target.value)} />
           </InlineField>
+          <InlineField label="镜像仓库">
+            <Input value={imageRepository} onChange={(event) => setImageRepository(event.target.value)} placeholder="可选，例如 registry.example/sbg/macc-webbase；为空时使用默认应用仓库" />
+          </InlineField>
           <InlineField label="运行时环境">
             <select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)} className="h-10 w-full rounded-md border bg-card px-3 text-sm">
               {runtimeOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
             </select>
           </InlineField>
-          <PipelineSourcesEditor projectId={projectId} sources={sources} buildEnvironmentOptions={buildEnvironmentOptions} onChange={setSources} />
+          <PipelineSourcesEditor sources={sources} buildEnvironmentOptions={buildEnvironmentOptions} onChange={setSources} />
         </div>
         <div className="flex justify-end gap-2 border-t bg-slate-50 px-5 py-4">
           <Button variant="outline" onClick={onClose}>取消</Button>
@@ -3879,20 +3880,19 @@ function PipelineCreateDialog({
 
 function PipelineConfigDialog({
   pipeline,
-  projectId,
   runtimeOptions,
   buildEnvironmentOptions,
   onClose,
   onSave
 }: {
   pipeline: VersionSourcePipeline;
-  projectId: string;
   runtimeOptions: PipelineEnvironmentOption[];
   buildEnvironmentOptions: PipelineEnvironmentOption[];
   onClose: () => void;
   onSave: (pipeline: VersionSourcePipeline) => void;
 }) {
   const [name, setName] = useState(pipeline.name);
+  const [imageRepository, setImageRepository] = useState(pipeline.imageRepository || '');
   const [runtimeId, setRuntimeId] = useState(pipeline.runtimeEnvironmentIds?.[0] || optionByName(runtimeOptions, pipeline.runtime)?.id || runtimeOptions[0]?.id || '');
   const [sources, setSources] = useState<PipelineSourceConfig[]>(
     pipeline.sources?.length ? pipeline.sources : [nextPipelineSource(0, buildEnvironmentOptions)]
@@ -3902,6 +3902,7 @@ function PipelineConfigDialog({
   function submit() {
     onSave(pipelineFromForm(pipeline, {
       name,
+      imageRepository,
       runtime: selectedRuntime.name,
       runtimeEnvironmentId: selectedRuntime.id,
       sources
@@ -3925,12 +3926,15 @@ function PipelineConfigDialog({
           <InlineField label="显示名称">
             <Input value={name} onChange={(event) => setName(event.target.value)} />
           </InlineField>
+          <InlineField label="镜像仓库">
+            <Input value={imageRepository} onChange={(event) => setImageRepository(event.target.value)} placeholder="可选，例如 registry.example/sbg/macc-webbase；为空时使用默认应用仓库" />
+          </InlineField>
           <InlineField label="运行时环境">
             <select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)} className="h-10 w-full rounded-md border bg-card px-3 text-sm">
               {runtimeOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
             </select>
           </InlineField>
-          <PipelineSourcesEditor projectId={projectId} sources={sources} buildEnvironmentOptions={buildEnvironmentOptions} onChange={setSources} />
+          <PipelineSourcesEditor sources={sources} buildEnvironmentOptions={buildEnvironmentOptions} onChange={setSources} />
         </div>
         <div className="flex justify-end gap-2 border-t bg-slate-50 px-5 py-4">
           <Button variant="outline" onClick={onClose}>取消</Button>
@@ -4381,44 +4385,31 @@ function stripAnsi(text: string) {
 }
 
 function PipelineSourcesEditor({
-  projectId,
   sources,
   buildEnvironmentOptions,
   onChange
 }: {
-  projectId: string;
   sources: PipelineSourceConfig[];
   buildEnvironmentOptions: PipelineEnvironmentOption[];
   onChange: (sources: PipelineSourceConfig[]) => void;
 }) {
-  const [branchOptions, setBranchOptions] = useState<Record<string, SourceBranchOption[]>>({});
-  const [branchLoading, setBranchLoading] = useState<Record<string, boolean>>({});
-  const [branchError, setBranchError] = useState<Record<string, string>>({});
-
   function updateSource(id: string, patch: Partial<PipelineSourceConfig>) {
     onChange(sources.map((source) => source.id === id ? { ...source, ...patch } : source));
   }
-
-  async function refreshBranches(source: PipelineSourceConfig) {
-    const sourceUrl = source.sourceUrl || source.repository;
-    if (!sourceUrl.trim()) {
-      setBranchError((current) => ({ ...current, [source.id]: '请先填写 Git 仓库地址' }));
-      return;
-    }
-    setBranchLoading((current) => ({ ...current, [source.id]: true }));
-    setBranchError((current) => ({ ...current, [source.id]: '' }));
-    try {
-      const branches = await previewGitSourceBranches(projectId, sourceUrl);
-      setBranchOptions((current) => ({ ...current, [source.id]: branches }));
-      const selected = branches.find((branch) => branch.default) || branches[0];
-      if (selected && !branches.some((branch) => branch.name === (source.sourceRef || source.branch))) {
-        updateSource(source.id, { sourceRef: selected.name, branch: selected.name });
-      }
-    } catch (error) {
-      setBranchError((current) => ({ ...current, [source.id]: error instanceof Error ? error.message : '刷新分支失败' }));
-    } finally {
-      setBranchLoading((current) => ({ ...current, [source.id]: false }));
-    }
+  function updateSVNCheckoutPath(source: PipelineSourceConfig, pathIndex: number, patch: Partial<{ local: string; path: string; depth: string }>) {
+    const paths = normalizeEditorSVNCheckoutPaths(source.svnCheckoutPaths);
+    updateSource(source.id, {
+      svnCheckoutPaths: paths.map((item, index) => index === pathIndex ? { ...item, ...patch } : item)
+    });
+  }
+  function addSVNCheckoutPath(source: PipelineSourceConfig) {
+    updateSource(source.id, {
+      svnCheckoutPaths: [...normalizeEditorSVNCheckoutPaths(source.svnCheckoutPaths), { local: '', path: '', depth: 'infinity' }]
+    });
+  }
+  function removeSVNCheckoutPath(source: PipelineSourceConfig, pathIndex: number) {
+    const paths = normalizeEditorSVNCheckoutPaths(source.svnCheckoutPaths).filter((_, index) => index !== pathIndex);
+    updateSource(source.id, { svnCheckoutPaths: paths.length ? paths : [{ local: '.', path: '', depth: 'infinity' }] });
   }
 
   return (
@@ -4458,7 +4449,8 @@ function PipelineSourcesEditor({
                     updateSource(source.id, {
                       sourceType: nextType,
                       sourceRef: nextType === 'svn' ? (source.sourceRef || 'HEAD') : (source.sourceRef === 'HEAD' ? 'main' : source.sourceRef || source.branch || 'main'),
-                      branch: nextType === 'svn' ? (source.sourceRef || 'HEAD') : (source.sourceRef === 'HEAD' ? 'main' : source.sourceRef || source.branch || 'main')
+                      branch: nextType === 'svn' ? (source.sourceRef || 'HEAD') : (source.sourceRef === 'HEAD' ? 'main' : source.sourceRef || source.branch || 'main'),
+                      svnCheckoutPaths: nextType === 'svn' ? normalizeEditorSVNCheckoutPaths(source.svnCheckoutPaths) : source.svnCheckoutPaths
                     });
                   }}
                   className="h-10 w-full rounded-md border bg-card px-3 text-sm"
@@ -4468,48 +4460,72 @@ function PipelineSourcesEditor({
                 </select>
               </InlineField>
               <InlineField label={source.sourceType === 'svn' ? 'SVN 地址' : 'Git 仓库地址'}>
-                <div className="flex gap-2">
-                  <Input
-                    value={source.sourceUrl || source.repository}
-                    onChange={(event) => updateSource(source.id, { repository: event.target.value, sourceUrl: event.target.value })}
-                    placeholder={source.sourceType === 'svn' ? 'svn://repo.company.com/project/trunk/app' : 'https://gitlab.example/group/project.git'}
-                  />
-                  {(source.sourceType || 'git') === 'git' && (
-                    <Button variant="outline" type="button" onClick={() => void refreshBranches(source)} disabled={!!branchLoading[source.id]}>
-                      {branchLoading[source.id] ? '刷新中' : '刷新'}
-                    </Button>
-                  )}
-                </div>
-                {branchError[source.id] && <div className="mt-1 text-xs text-red-600">{branchError[source.id]}</div>}
+                <Input
+                  value={source.sourceUrl || source.repository}
+                  onChange={(event) => updateSource(source.id, { repository: event.target.value, sourceUrl: event.target.value })}
+                  placeholder={source.sourceType === 'svn' ? 'svn://repo.company.com/project/trunk/app' : 'https://gitlab.example/group/project.git'}
+                />
               </InlineField>
               {(source.sourceType || 'git') === 'git' ? (
                 <InlineField label="分支">
-                  <select
+                  <Input
                     value={source.sourceRef || source.branch}
                     onChange={(event) => updateSource(source.id, { sourceRef: event.target.value, branch: event.target.value })}
-                    className="h-10 w-full rounded-md border bg-card px-3 text-sm"
-                  >
-                    {Array.from(new Set([source.sourceRef || source.branch || 'main', ...(branchOptions[source.id] || []).map((branch) => branch.name)]))
-                      .filter(Boolean)
-                      .map((branch) => <option key={branch} value={branch}>{branch}</option>)}
-                  </select>
-                </InlineField>
-              ) : (
-                <InlineField label="SVN revision">
-                  <Input
-                    value={source.svnRevision || ''}
-                    onChange={(event) => updateSource(source.id, { svnRevision: event.target.value })}
-                    placeholder="可选，默认 HEAD"
+                    placeholder="例如：main、release/1.0"
                   />
                 </InlineField>
+              ) : (
+                <>
+                  <InlineField label="SVN revision">
+                    <Input
+                      value={source.svnRevision || ''}
+                      onChange={(event) => updateSource(source.id, { svnRevision: event.target.value })}
+                      placeholder="可选，默认 HEAD"
+                    />
+                  </InlineField>
+                  <div className="rounded-md border bg-card p-3">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold text-slate-700">SVN 检出目录</div>
+                        <div className="mt-1 text-[11px] text-muted-foreground">基于 SVN 地址拼接相对子路径，可用于只检出根文件和指定模块。</div>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={() => addSVNCheckoutPath(source)}>
+                        <Plus className="h-4 w-4" />
+                        添加目录
+                      </Button>
+                    </div>
+                    <div className="space-y-2">
+                      {normalizeEditorSVNCheckoutPaths(source.svnCheckoutPaths).map((item, pathIndex) => (
+                        <div key={`${source.id}-svn-path-${pathIndex}`} className="grid gap-2 md:grid-cols-[1fr_1fr_140px_72px]">
+                          <Input
+                            value={item.local}
+                            onChange={(event) => updateSVNCheckoutPath(source, pathIndex, { local: event.target.value })}
+                            placeholder="本地目录，如 . 或 web/server"
+                          />
+                          <Input
+                            value={item.path}
+                            onChange={(event) => updateSVNCheckoutPath(source, pathIndex, { path: event.target.value })}
+                            placeholder="SVN 子路径，根目录留空"
+                          />
+                          <select
+                            value={item.depth || 'infinity'}
+                            onChange={(event) => updateSVNCheckoutPath(source, pathIndex, { depth: event.target.value })}
+                            className="h-10 rounded-md border bg-card px-3 text-sm"
+                          >
+                            <option value="empty">empty</option>
+                            <option value="files">files</option>
+                            <option value="immediates">immediates</option>
+                            <option value="infinity">infinity</option>
+                          </select>
+                          <Button variant="ghost" size="sm" disabled={normalizeEditorSVNCheckoutPaths(source.svnCheckoutPaths).length <= 1} onClick={() => removeSVNCheckoutPath(source, pathIndex)}>
+                            删除
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </>
               )}
-              <InlineField label={source.sourceType === 'svn' ? 'SVN 引用' : '默认引用'}>
-                <Input
-                  value={source.sourceRef || source.branch}
-                  onChange={(event) => updateSource(source.id, { sourceRef: event.target.value, branch: event.target.value })}
-                  placeholder={source.sourceType === 'svn' ? 'HEAD / trunk / release-1.0' : 'main'}
-                />
-              </InlineField>
               <InlineField label="源码子目录 source_path">
                 <Input value={source.sourcePath} onChange={(event) => updateSource(source.id, { sourcePath: event.target.value })} />
               </InlineField>
@@ -4540,6 +4556,17 @@ function PipelineSourcesEditor({
       </div>
     </section>
   );
+}
+
+function normalizeEditorSVNCheckoutPaths(paths?: Array<{ local: string; path: string; depth: string }>) {
+  const cleaned = (paths || [])
+    .map((item) => ({
+      local: (item.local || '.').trim() || '.',
+      path: (item.path || '').trim(),
+      depth: (item.depth || 'infinity').trim() || 'infinity'
+    }))
+    .filter((item) => item.local || item.path);
+  return cleaned.length ? cleaned : [{ local: '.', path: '', depth: 'infinity' }];
 }
 
 function ConfigSection({

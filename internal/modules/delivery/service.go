@@ -1257,11 +1257,10 @@ func (s *Service) backfillMissingReleasesFromSucceededBuilds(ctx context.Context
 		}
 		return err
 	}
-	enabledWorkloads := map[shared.ID]struct{}{}
-	for _, workload := range workloads {
-		if !workload.ID.IsZero() {
-			enabledWorkloads[workload.ID] = struct{}{}
-		}
+	targetsByPipeline := workloadTargetsByPipeline(workloads)
+	singleWorkloadFallback := shared.ID("")
+	if len(workloads) == 1 && len(workloads[0].Containers) == 0 {
+		singleWorkloadFallback = workloads[0].ID
 	}
 	for _, run := range runs.Items {
 		if !strings.EqualFold(strings.TrimSpace(run.Status), "succeeded") {
@@ -1271,32 +1270,48 @@ func (s *Service) backfillMissingReleasesFromSucceededBuilds(ctx context.Context
 		if err != nil || len(artifacts) == 0 {
 			continue
 		}
-		workloadIDs := make([]shared.ID, 0, len(workloads))
-		for _, artifact := range artifacts {
-			if artifact.ApplicationID != applicationID {
-				continue
-			}
-			if !artifact.WorkloadID.IsZero() {
-				if _, ok := enabledWorkloads[artifact.WorkloadID]; ok {
-					workloadIDs = append(workloadIDs, artifact.WorkloadID)
-				}
-			}
+		targets := targetsByPipeline[run.PipelineID]
+		if len(targets) == 0 && !singleWorkloadFallback.IsZero() && !run.PipelineID.IsZero() {
+			targets = []WorkloadTarget{{WorkloadID: singleWorkloadFallback, ContainerName: "app"}}
 		}
-		if len(workloadIDs) == 0 && len(workloads) == 1 {
-			workloadIDs = append(workloadIDs, workloads[0].ID)
-		}
-		if len(workloadIDs) == 0 {
+		if len(targets) == 0 {
 			continue
 		}
 		artifactIDs := make([]shared.ID, 0, len(artifacts))
 		for _, artifact := range artifacts {
+			if artifact.ApplicationID != applicationID {
+				continue
+			}
 			artifactIDs = append(artifactIDs, artifact.ID)
 		}
-		if _, err := s.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: applicationID, WorkloadIDs: uniqueIDs(workloadIDs), BuildArtifactIDs: artifactIDs}); err != nil {
+		if len(artifactIDs) == 0 {
+			continue
+		}
+		if _, err := s.HandleBuildSucceeded(ctx, BuildSucceededPayload{BuildRunID: run.ID, ApplicationID: applicationID, WorkloadTargets: targets, BuildArtifactIDs: artifactIDs}); err != nil {
 			continue
 		}
 	}
 	return nil
+}
+
+func workloadTargetsByPipeline(workloads []WorkloadRef) map[shared.ID][]WorkloadTarget {
+	out := map[shared.ID][]WorkloadTarget{}
+	for _, workload := range workloads {
+		if workload.ID.IsZero() {
+			continue
+		}
+		for _, container := range workload.Containers {
+			if container.PipelineID.IsZero() {
+				continue
+			}
+			name := normalizeContainerName(container.Name)
+			out[container.PipelineID] = append(out[container.PipelineID], WorkloadTarget{WorkloadID: workload.ID, ContainerName: name})
+		}
+	}
+	for pipelineID, targets := range out {
+		out[pipelineID] = uniqueWorkloadTargets(targets)
+	}
+	return out
 }
 
 func (s *Service) ListEligibleFreights(ctx context.Context, applicationID shared.ID, stageID shared.ID) ([]Freight, error) {
@@ -1945,7 +1960,7 @@ func (s *Service) validateStagePromotionTarget(ctx context.Context, applicationI
 	}
 	namespace := strings.TrimSpace(namespaceOverride)
 	if namespace == "" {
-		namespace = firstNonEmpty(app.ProjectName, app.ProjectID.String())
+		namespace = defaultNamespaceForStage(app, stageKey)
 	}
 	namespace = normalizeKubernetesNamespace(namespace)
 	targets := make([]GitOpsPromotionTargetCluster, 0, len(clusterIDs))
@@ -2008,6 +2023,15 @@ func normalizeKubernetesNamespace(value string) string {
 		return "default"
 	}
 	return namespace
+}
+
+func defaultNamespaceForStage(app ApplicationRef, stageKey string) string {
+	base := firstNonEmpty(app.ProjectName, app.ProjectID.String())
+	stageKey = normalizeStageKey(stageKey)
+	if stageKey == "" {
+		return base
+	}
+	return base + "-" + stageKey
 }
 
 func (s *Service) requireDeploymentRecordForVerification(ctx context.Context, applicationID shared.ID, stageKey string, freightID shared.ID) error {

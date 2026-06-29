@@ -15,6 +15,7 @@ import (
 	"github.com/shareinto/paas/internal/modules/build"
 	"github.com/shareinto/paas/internal/modules/clusteragent"
 	"github.com/shareinto/paas/internal/modules/delivery"
+	"github.com/shareinto/paas/internal/modules/gitops"
 	"github.com/shareinto/paas/internal/modules/identityaccess"
 	"github.com/shareinto/paas/internal/modules/sourcerepository"
 	"github.com/shareinto/paas/internal/modules/tenantproject"
@@ -30,6 +31,35 @@ type serverTestFixture struct {
 	workload    appenv.Workload
 	pipeline    build.BuildPipeline
 	buildRun    build.BuildRun
+}
+
+func TestToGitOpsWorkloadStageConfigKeepsIngressTLSFields(t *testing.T) {
+	config := appenv.WorkloadStageConfig{
+		Replicas: 1,
+		IngressHosts: []appenv.WorkloadIngressHost{{
+			Host:        "cloud-ltt.rj.link",
+			Path:        "/",
+			ServerName:  "macc-frontend",
+			ServicePort: "http",
+			PathType:    "Prefix",
+			TLS:         true,
+			TLSRedirect: true,
+		}},
+	}
+
+	got := toGitOpsWorkloadStageConfig(config)
+	want := gitops.WorkloadIngressHostRef{
+		Host:        "cloud-ltt.rj.link",
+		Path:        "/",
+		ServerName:  "macc-frontend",
+		ServicePort: "http",
+		PathType:    "Prefix",
+		TLS:         true,
+		TLSRedirect: true,
+	}
+	if len(got.IngressHosts) != 1 || got.IngressHosts[0] != want {
+		t.Fatalf("unexpected ingress conversion: %#v", got.IngressHosts)
+	}
 }
 
 func TestApplicationStartsAndServesDevelopmentAPI(t *testing.T) {
@@ -751,5 +781,14 @@ func ensureDeploymentTemplate(t *testing.T, app *application, applicationID shar
 	app.handler.ServeHTTP(template, httptest.NewRequest(http.MethodPost, "/api/apps/"+applicationID.String()+"/deployment-template", appBody))
 	if template.Code != http.StatusCreated {
 		t.Fatalf("create application template status = %d body = %s", template.Code, template.Body.String())
+	}
+}
+
+func TestManifestHasChanges(t *testing.T) {
+	if manifestHasChanges("kind: ConfigMap\n", "kind: ConfigMap\n") {
+		t.Fatal("identical manifests should not be treated as changed")
+	}
+	if !manifestHasChanges("kind: ConfigMap\nmetadata:\n  name: old\n", "kind: ConfigMap\nmetadata:\n  name: new\n") {
+		t.Fatal("different manifests should be treated as changed")
 	}
 }

@@ -104,17 +104,18 @@ type BuildPipelineRef struct {
 }
 
 type BuildPipelineSourceInput struct {
-	Key                string    `json:"key"`
-	DisplayName        string    `json:"display_name"`
-	SourceType         string    `json:"source_type"`
-	SourceURL          string    `json:"source_url"`
-	SourceRef          string    `json:"source_ref"`
-	SVNRevision        string    `json:"svn_revision,omitempty"`
-	BuildEnvironmentID shared.ID `json:"build_environment_id"`
-	SourcePath         string    `json:"source_path"`
-	BuildSpec          BuildSpec `json:"build_spec"`
-	DefaultRef         string    `json:"default_ref"`
-	IsPrimary          bool      `json:"is_primary"`
+	Key                string            `json:"key"`
+	DisplayName        string            `json:"display_name"`
+	SourceType         string            `json:"source_type"`
+	SourceURL          string            `json:"source_url"`
+	SourceRef          string            `json:"source_ref"`
+	SVNRevision        string            `json:"svn_revision,omitempty"`
+	SVNCheckoutPaths   []SVNCheckoutPath `json:"svn_checkout_paths,omitempty"`
+	BuildEnvironmentID shared.ID         `json:"build_environment_id"`
+	SourcePath         string            `json:"source_path"`
+	BuildSpec          BuildSpec         `json:"build_spec"`
+	DefaultRef         string            `json:"default_ref"`
+	IsPrimary          bool              `json:"is_primary"`
 }
 
 type CreateBuildPipelineInput struct {
@@ -160,6 +161,13 @@ type AuditEvent struct {
 
 type EventPublisher interface {
 	Publish(ctx context.Context, event shared.DomainEvent) error
+}
+
+type RoleBindingManager interface {
+	ReplaceRoleBindingForSubjectScope(ctx context.Context, binding identityaccess.RoleBinding) (identityaccess.RoleBinding, error)
+	ListRoleBindingsForSubject(ctx context.Context, subject identityaccess.Subject) ([]identityaccess.RoleBinding, error)
+	ListRoleBindingsByScope(ctx context.Context, scopeKind identityaccess.ScopeKind, scopeID shared.ID) ([]identityaccess.RoleBinding, error)
+	DeleteRoleBindingsForSubjectScope(ctx context.Context, subject identityaccess.Subject, scopeKind identityaccess.ScopeKind, scopeID shared.ID) error
 }
 
 type ApplicationCommand interface {

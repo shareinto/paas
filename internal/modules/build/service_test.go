@@ -971,6 +971,58 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	}
 }
 
+func TestTriggerBuildUsesPipelineImageRepositoryOverride(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+
+	pipeline := createDefaultPipeline(t, env)
+	pipeline.ImageRepository = "registry.example/paas/macc-webbase"
+	if err := env.repo.UpdatePipeline(ctx, pipeline); err != nil {
+		t.Fatalf("UpdatePipeline() error = %v", err)
+	}
+	if _, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID, Version: "v0.0.1"}); err != nil {
+		t.Fatalf("TriggerBuild() error = %v", err)
+	}
+	xml := env.runner.jobs[0].TemplateXML
+	if !strings.Contains(xml, "registry.example/paas/macc-webbase:") {
+		t.Fatalf("pipeline image_repository override should be used, got %s", xml)
+	}
+	if strings.Contains(xml, "registry.example/paas/user-api:") {
+		t.Fatalf("pipeline image_repository override should not append application name, got %s", xml)
+	}
+}
+
+func TestTriggerBuildRendersUnicodeGitRefThroughBase64(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+
+	pipeline := createDefaultPipeline(t, env)
+	run, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID, SourceRef: "main_备份", CommitSHA: "abc123", Version: "v1.0.1"})
+	if err != nil {
+		t.Fatalf("TriggerBuild() error = %v", err)
+	}
+	if run.SourceRef != "main_备份" {
+		t.Fatalf("build run should keep unicode source ref, got %q", run.SourceRef)
+	}
+	if len(env.runner.jobs) != 1 {
+		t.Fatalf("expected one Jenkins job, got %+v", env.runner.jobs)
+	}
+	xml := env.runner.jobs[0].TemplateXML
+	if strings.Contains(xml, "main_备份") || strings.Contains(xml, "main_å¤ä»½") {
+		t.Fatalf("rendered Jenkinsfile should not inline unicode or mojibake branch names, got %s", xml)
+	}
+	for _, want := range []string{
+		"ref_b64=&#39;bWFpbl/lpIfku70=&#39;",
+		"base64 -d",
+		"base64 --decode",
+		"origin/$ref^{commit}",
+	} {
+		if !strings.Contains(xml, want) {
+			t.Fatalf("rendered Jenkinsfile missing %q for unicode branch checkout, got %s", want, xml)
+		}
+	}
+}
+
 func TestTriggerBuildDoesNotLeaveRunWhenRunSourceCreationFails(t *testing.T) {
 	env := newBuildTestEnv(t)
 	ctx := context.Background()
@@ -1158,6 +1210,102 @@ func TestTriggerBuildRendersAcceleratedDefaultJenkinsfile(t *testing.T) {
 	}
 }
 
+func TestTriggerBuildPreservesTopLevelHeredocDelimiters(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	seedRuntimeEnvironments(t, env)
+
+	spec := validBuildSpec()
+	spec.BuildCommand = `ci_vite_config="$WORKSPACE/vite.config.ts"
+cat > "$ci_vite_config" <<'EOF'
+export default {}
+EOF
+npm run build`
+
+	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "frontend",
+		DisplayName:           "前端流水线",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
+		Sources: []BuildPipelineSourceInput{{
+			Key:         "main",
+			DisplayName: "主代码源",
+			SourceType:  SourceTypeGit,
+			SourceURL:   "https://gitlab.example/payment/user-api.git",
+			SourceRef:   "main",
+			SourcePath:  spec.SourcePath,
+			BuildSpec:   spec,
+			IsPrimary:   true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateBuildPipeline() error = %v", err)
+	}
+	if _, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); err != nil {
+		t.Fatalf("TriggerBuild() error = %v", err)
+	}
+	if len(env.runner.jobs) != 1 {
+		t.Fatalf("expected one Jenkins job, got %+v", env.runner.jobs)
+	}
+	xml := env.runner.jobs[0].TemplateXML
+	if !strings.Contains(xml, "EOF&#xA;npm run build") {
+		t.Fatalf("heredoc closing delimiter should stay at column 1, got %s", xml)
+	}
+	if strings.Contains(xml, "&#xA;                EOF&#xA;") {
+		t.Fatalf("heredoc closing delimiter must not be indented, got %s", xml)
+	}
+}
+
+func TestTriggerBuildRendersSVNSparseCheckoutPaths(t *testing.T) {
+	env := newBuildTestEnv(t)
+	ctx := context.Background()
+	seedRuntimeEnvironments(t, env)
+
+	spec := validBuildSpec()
+	pipeline, err := env.svc.CreateBuildPipeline(ctx, CreateBuildPipelineInput{
+		Actor:                 buildActor(),
+		ApplicationID:         "app_user",
+		Name:                  "svn-sparse",
+		DisplayName:           "SVN 稀疏检出",
+		RuntimeEnvironmentIDs: []shared.ID{"runtime_env_java17"},
+		Sources: []BuildPipelineSourceInput{{
+			Key:         "main",
+			DisplayName: "主代码源",
+			SourceType:  SourceTypeSVN,
+			SourceURL:   "http://smbsvn.ruijie.net/svn3/macc/branches/cloud_stage",
+			SVNRevision: "HEAD",
+			SVNCheckoutPaths: []SVNCheckoutPath{
+				{Local: ".", Path: "", Depth: "files"},
+				{Local: "macc.adminx", Path: "macc.adminx", Depth: "infinity"},
+				{Local: "web/server", Path: "web/server", Depth: "infinity"},
+			},
+			SourcePath: spec.SourcePath,
+			BuildSpec:  spec,
+			IsPrimary:  true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateBuildPipeline() error = %v", err)
+	}
+	if _, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID}); err != nil {
+		t.Fatalf("TriggerBuild() error = %v", err)
+	}
+	xml := env.runner.jobs[0].TemplateXML
+	for _, want := range []string{
+		"svn_checkout_one &#39;.&#39; &#39;&#39; &#39;files&#39;",
+		"svn_checkout_one &#39;macc.adminx&#39; &#39;macc.adminx&#39; &#39;infinity&#39;",
+		"svn_checkout_one &#39;web/server&#39; &#39;web/server&#39; &#39;infinity&#39;",
+	} {
+		if !strings.Contains(xml, want) {
+			t.Fatalf("rendered Jenkinsfile missing %q: %s", want, xml)
+		}
+	}
+	if strings.Contains(xml, "$repo_url&#34; .") {
+		t.Fatalf("sparse checkout should not render single full checkout: %s", xml)
+	}
+}
+
 func TestTriggerBuildImageTagDoesNotUseBuildRunID(t *testing.T) {
 	env := newBuildTestEnv(t)
 	ctx := context.Background()
@@ -1186,6 +1334,27 @@ func TestBuildImageBaseTagUsesBranchName(t *testing.T) {
 
 	if got := buildImageBaseTag(runSources, run); got != "20260626-feature-log-receiver-v1.2.3" {
 		t.Fatalf("image tag should use branch name, got %q", got)
+	}
+}
+
+func TestBuildImageBaseTagUsesSVNCheckoutRef(t *testing.T) {
+	run := BuildRun{
+		SourceType: SourceTypeSVN,
+		SourceURL:  "http://smbsvn.ruijie.net/svn3/macc/branches/macc_release/logserver",
+		SourceRef:  "main",
+		Version:    "v0.0.1",
+		CreatedAt:  time.Date(2026, 6, 27, 7, 7, 32, 0, time.UTC),
+	}
+	runSources := []BuildRunSource{{
+		SourceKey:  "main",
+		SourceType: SourceTypeSVN,
+		SourceURL:  "http://smbsvn.ruijie.net/svn3/macc/branches/macc_release/logserver",
+		SourceRef:  "main",
+		IsPrimary:  true,
+	}}
+
+	if got := buildImageBaseTag(runSources, run); got != "20260627-macc_release-v0.0.1" {
+		t.Fatalf("svn image tag should use checkout ref, got %q", got)
 	}
 }
 
@@ -1398,7 +1567,7 @@ func TestEnsureBuildPipelineRendersFlatMultiSourceArtifactJenkinsfile(t *testing
 		t.Fatalf("Jenkins trigger should not pass parameters, got %+v", params)
 	}
 	renderedRunXML := env.runner.jobs[len(env.runner.jobs)-1].TemplateXML
-	if !strings.Contains(renderedRunXML, "release/a") || !strings.Contains(renderedRunXML, "release/b") {
+	if !strings.Contains(renderedRunXML, "ref_b64=&#39;cmVsZWFzZS9h&#39;") || !strings.Contains(renderedRunXML, "ref_b64=&#39;cmVsZWFzZS9i&#39;") {
 		t.Fatalf("source refs should be rendered into Jenkinsfile: %s", renderedRunXML)
 	}
 }
@@ -1965,6 +2134,9 @@ func TestHelpersAndNoopAdapters(t *testing.T) {
 	}
 	if got := svnTagRefFromURL("svn://repo.company.com/project/branches/release-1.0/log-receiver"); got != "release-1.0" {
 		t.Fatalf("svn branch tag ref = %q", got)
+	}
+	if got := svnTagRefFromURL("http://smbsvn.ruijie.net/svn3/macc/branches/macc_release/logserver"); got != "macc_release" {
+		t.Fatalf("svn macc branch tag ref = %q", got)
 	}
 	if got := svnTagRefFromURL("svn://repo.company.com/project/tags/v1.2.0/log-receiver"); got != "tag-v1.2.0" {
 		t.Fatalf("svn tag ref = %q", got)

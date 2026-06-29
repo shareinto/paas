@@ -175,11 +175,78 @@ type appenvTestEnv struct {
 	svc         *Service
 	repo        Repository
 	permission  *recordingPermission
+	roleBinding *recordingRoleBindingManager
 	pipelines   *recordingBuildPipelineProvisioner
 	pipelineCmd *recordingBuildPipelineCommand
 	cleaner     *recordingManifestCleaner
 	audit       *recordingAudit
 	events      *recordingPublisher
+}
+
+type recordingRoleBindingManager struct {
+	bindings []identityaccess.RoleBinding
+	err      error
+}
+
+func (m *recordingRoleBindingManager) ReplaceRoleBindingForSubjectScope(_ context.Context, binding identityaccess.RoleBinding) (identityaccess.RoleBinding, error) {
+	if m.err != nil {
+		return identityaccess.RoleBinding{}, m.err
+	}
+	next := m.bindings[:0]
+	for _, existing := range m.bindings {
+		if existing.SubjectType == binding.SubjectType &&
+			existing.SubjectID == binding.SubjectID &&
+			existing.ScopeKind == binding.ScopeKind &&
+			existing.ScopeID == binding.ScopeID {
+			continue
+		}
+		next = append(next, existing)
+	}
+	binding.ID = shared.ID("rb_" + binding.ScopeID.String() + "_" + binding.SubjectID.String())
+	binding.CreatedAt = time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)
+	m.bindings = append(next, binding)
+	return binding, nil
+}
+
+func (m *recordingRoleBindingManager) ListRoleBindingsForSubject(_ context.Context, subject identityaccess.Subject) ([]identityaccess.RoleBinding, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	items := []identityaccess.RoleBinding{}
+	for _, binding := range m.bindings {
+		if binding.SubjectType == subject.Type && binding.SubjectID == subject.ID {
+			items = append(items, binding)
+		}
+	}
+	return items, nil
+}
+
+func (m *recordingRoleBindingManager) ListRoleBindingsByScope(_ context.Context, scopeKind identityaccess.ScopeKind, scopeID shared.ID) ([]identityaccess.RoleBinding, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	items := []identityaccess.RoleBinding{}
+	for _, binding := range m.bindings {
+		if binding.ScopeKind == scopeKind && binding.ScopeID == scopeID {
+			items = append(items, binding)
+		}
+	}
+	return items, nil
+}
+
+func (m *recordingRoleBindingManager) DeleteRoleBindingsForSubjectScope(_ context.Context, subject identityaccess.Subject, scopeKind identityaccess.ScopeKind, scopeID shared.ID) error {
+	if m.err != nil {
+		return m.err
+	}
+	next := m.bindings[:0]
+	for _, binding := range m.bindings {
+		if binding.SubjectType == subject.Type && binding.SubjectID == subject.ID && binding.ScopeKind == scopeKind && binding.ScopeID == scopeID {
+			continue
+		}
+		next = append(next, binding)
+	}
+	m.bindings = next
+	return nil
 }
 
 type failingIDGenerator struct{}
@@ -212,6 +279,7 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 	audit := &recordingAudit{}
 	events := &recordingPublisher{}
 	cleaner := &recordingManifestCleaner{}
+	roleBindings := &recordingRoleBindingManager{}
 	svc := NewService(Options{
 		Repository: repo,
 		ProjectQuery: fakeProjectQuery{projects: map[shared.ID]tenantproject.Project{
@@ -221,13 +289,14 @@ func newAppenvTestEnv(t *testing.T, clusterAvailable bool) appenvTestEnv {
 		BuildPipelineCommand:     pipelineCmd,
 		BuildPipelineQuery:       pipelineQuery,
 		ManifestCleaner:          cleaner,
+		RoleBindings:             roleBindings,
 		PermissionChecker:        permission,
 		Audit:                    audit,
 		EventPublisher:           events,
 		IDGenerator:              testutil.NewFakeIDGenerator(1),
 		Clock:                    testutil.NewFakeClock(time.Date(2026, 5, 30, 5, 0, 0, 0, time.UTC)),
 	})
-	return appenvTestEnv{svc: svc, repo: repo, permission: permission, pipelines: pipelines, pipelineCmd: pipelineCmd, cleaner: cleaner, audit: audit, events: events}
+	return appenvTestEnv{svc: svc, repo: repo, permission: permission, roleBinding: roleBindings, pipelines: pipelines, pipelineCmd: pipelineCmd, cleaner: cleaner, audit: audit, events: events}
 }
 
 func TestNoopAuditAndEventPublisher(t *testing.T) {
@@ -329,6 +398,73 @@ func TestCreateApplicationDoesNotRequireSourceConfiguration(t *testing.T) {
 	}
 	if len(env.pipelines.applicationIDs) != 0 {
 		t.Fatalf("application creation must not provision Jenkins pipeline, got %+v", env.pipelines.applicationIDs)
+	}
+}
+
+func TestCreateApplicationAssignsCreatorApplicationRole(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+
+	app, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "joined-api", DisplayName: "已加入应用"})
+	if err != nil {
+		t.Fatalf("CreateApplication() error = %v", err)
+	}
+	bindings, err := env.roleBinding.ListRoleBindingsForSubject(ctx, appenvActor())
+	if err != nil {
+		t.Fatalf("ListRoleBindingsForSubject() error = %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("creator should receive one application role binding, got %+v", bindings)
+	}
+	binding := bindings[0]
+	if binding.ScopeKind != identityaccess.ScopeApplication || binding.ScopeID != app.ID || binding.RoleID != identityaccess.RoleApplicationAdmin {
+		t.Fatalf("unexpected creator binding: %+v", binding)
+	}
+}
+
+func TestListApplicationsForActorUsesApplicationRoleBindings(t *testing.T) {
+	env := newAppenvTestEnv(t, false)
+	ctx := context.Background()
+
+	joined, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: appenvActor(), ProjectID: "project_payment", Name: "joined-api"})
+	if err != nil {
+		t.Fatalf("CreateApplication(joined) error = %v", err)
+	}
+	accessible, err := env.svc.CreateApplication(ctx, CreateApplicationInput{Actor: identityaccess.Subject{Type: identityaccess.SubjectUser, ID: "usr_other"}, ProjectID: "project_payment", Name: "project-api"})
+	if err != nil {
+		t.Fatalf("CreateApplication(accessible) error = %v", err)
+	}
+	if _, err := env.roleBinding.ReplaceRoleBindingForSubjectScope(ctx, identityaccess.RoleBinding{
+		SubjectType: identityaccess.SubjectUser,
+		SubjectID:   appenvActor().ID,
+		RoleID:      identityaccess.RoleDeveloper,
+		ScopeKind:   identityaccess.ScopeProject,
+		ScopeID:     "project_payment",
+	}); err != nil {
+		t.Fatalf("project role binding: %v", err)
+	}
+
+	joinedPage, err := env.svc.ListApplicationsForActor(ctx, appenvActor(), ApplicationListScopeJoined, "", shared.PageRequest{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("ListApplicationsForActor(joined) error = %v", err)
+	}
+	if joinedPage.Total != 1 || joinedPage.Items[0].ID != joined.ID || joinedPage.Items[0].MyRoleID != string(identityaccess.RoleApplicationAdmin) {
+		t.Fatalf("joined applications should include only application role bindings, got %+v", joinedPage)
+	}
+
+	accessiblePage, err := env.svc.ListApplicationsForActor(ctx, appenvActor(), ApplicationListScopeAccessible, "project_payment", shared.PageRequest{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("ListApplicationsForActor(accessible) error = %v", err)
+	}
+	if accessiblePage.Total != 2 {
+		t.Fatalf("accessible applications should include project applications, got %+v", accessiblePage)
+	}
+	seen := map[shared.ID]bool{}
+	for _, item := range accessiblePage.Items {
+		seen[item.ID] = true
+	}
+	if !seen[joined.ID] || !seen[accessible.ID] {
+		t.Fatalf("accessible applications missing expected apps: %+v", accessiblePage)
 	}
 }
 

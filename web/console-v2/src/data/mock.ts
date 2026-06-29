@@ -379,6 +379,7 @@ export type VersionSourcePipeline = {
   id: string;
   name: string;
   description?: string;
+  imageRepository?: string;
   branch: string;
   runtime: string;
   runtimeEnvironmentIds?: string[];
@@ -394,6 +395,7 @@ export type VersionSourcePipeline = {
     sourceUrl?: string;
     sourceRef?: string;
     svnRevision?: string;
+    svnCheckoutPaths?: Array<{ local: string; path: string; depth: string }>;
     branch: string;
     sourcePath: string;
     buildEnvironment: string;

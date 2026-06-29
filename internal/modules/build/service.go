@@ -2,8 +2,10 @@ package build
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"text/template"
@@ -33,7 +35,7 @@ type Service struct {
 }
 
 const maxProgressiveLogDrainIterations = 50
-const currentDefaultBuildTemplateVersion = 7
+const currentDefaultBuildTemplateVersion = 9
 const defaultSVNCredentialsID = "aea4ebeb-2858-4850-b3e0-268e9aff9726"
 const defaultGitCredentialsID = "aea4ebeb-2858-4850-b3e0-268e9aff9726"
 
@@ -143,6 +145,7 @@ type CreateBuildPipelineInput struct {
 	Name                  string                     `json:"name"`
 	DisplayName           string                     `json:"display_name"`
 	Description           string                     `json:"description"`
+	ImageRepository       string                     `json:"image_repository"`
 	RuntimeEnvironmentIDs []shared.ID                `json:"runtime_environment_ids"`
 	Sources               []BuildPipelineSourceInput `json:"sources"`
 }
@@ -152,22 +155,24 @@ type UpdateBuildPipelineInput struct {
 	PipelineID            shared.ID                  `json:"pipeline_id"`
 	DisplayName           string                     `json:"display_name"`
 	Description           string                     `json:"description"`
+	ImageRepository       string                     `json:"image_repository"`
 	RuntimeEnvironmentIDs []shared.ID                `json:"runtime_environment_ids"`
 	Sources               []BuildPipelineSourceInput `json:"sources"`
 }
 
 type BuildPipelineSourceInput struct {
-	Key                string     `json:"key"`
-	DisplayName        string     `json:"display_name"`
-	SourceType         SourceType `json:"source_type"`
-	SourceURL          string     `json:"source_url"`
-	SourceRef          string     `json:"source_ref"`
-	SVNRevision        string     `json:"svn_revision,omitempty"`
-	BuildEnvironmentID shared.ID  `json:"build_environment_id"`
-	SourcePath         string     `json:"source_path"`
-	BuildSpec          BuildSpec  `json:"build_spec"`
-	DefaultRef         string     `json:"default_ref"`
-	IsPrimary          bool       `json:"is_primary"`
+	Key                string            `json:"key"`
+	DisplayName        string            `json:"display_name"`
+	SourceType         SourceType        `json:"source_type"`
+	SourceURL          string            `json:"source_url"`
+	SourceRef          string            `json:"source_ref"`
+	SVNRevision        string            `json:"svn_revision,omitempty"`
+	SVNCheckoutPaths   []SVNCheckoutPath `json:"svn_checkout_paths,omitempty"`
+	BuildEnvironmentID shared.ID         `json:"build_environment_id"`
+	SourcePath         string            `json:"source_path"`
+	BuildSpec          BuildSpec         `json:"build_spec"`
+	DefaultRef         string            `json:"default_ref"`
+	IsPrimary          bool              `json:"is_primary"`
 }
 
 type ListGitBranchesInput struct {
@@ -389,13 +394,32 @@ ASKPASS
               set -eu
               repo_url='{{ .RepoURL }}'
               svn_revision='{{ .SVNRevision }}'
-              find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-              if [ -n "$svn_revision" ] && [ "$svn_revision" != "HEAD" ]; then
-                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert -r "$svn_revision" "$repo_url" .
-              else
-                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert "$repo_url" .
+              if [ -z "$svn_revision" ]; then
+                svn_revision='HEAD'
               fi
-              actual_revision="$(svn info --show-item revision 2>/dev/null || true)"
+              find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+              actual_revision=''
+              svn_checkout_one() {
+                local_dir="$1"
+                relative_path="$2"
+                depth="$3"
+                remote_url="${repo_url%/}"
+                if [ -n "$relative_path" ]; then
+                  remote_url="${remote_url}/${relative_path}"
+                fi
+                remote_url="${remote_url}@${svn_revision}"
+                if [ "$local_dir" != "." ]; then
+                  rm -rf "$local_dir"
+                  mkdir -p "$(dirname "$local_dir")"
+                fi
+                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert --depth "$depth" "$remote_url" "$local_dir"
+                if [ -z "$actual_revision" ]; then
+                  actual_revision="$(svn info --show-item revision "$local_dir" 2>/dev/null || true)"
+                fi
+              }
+{{ range .SVNCheckoutPaths }}
+              svn_checkout_one '{{ .Local }}' '{{ .Path }}' '{{ .Depth }}'
+{{ end }}
               mkdir -p "$WORKSPACE/report"
               printf '%s\n' "$actual_revision" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
               printf '%s\n' "$actual_revision" > "$WORKSPACE/report/source-{{ .Key }}-svn-revision.txt"
@@ -417,7 +441,12 @@ ASKPASS
               export GIT_ASKPASS="$askpass"
               export GIT_TERMINAL_PROMPT=0
               repo_url='{{ .RepoURL }}'
-              ref='{{ .SourceRef }}'
+              ref_b64='{{ .SourceRefB64 }}'
+              if ref="$(printf '%s' "$ref_b64" | base64 -d 2>/dev/null)"; then
+                :
+              else
+                ref="$(printf '%s' "$ref_b64" | base64 --decode)"
+              fi
               if [ -d .git ]; then
                 git remote set-url origin "$repo_url"
                 git fetch --prune --tags origin
@@ -942,10 +971,16 @@ func shouldRefreshDefaultBuildTemplate(template BuildTemplate) bool {
 		strings.Contains(content, "ImageTagBranch") {
 		return true
 	}
-	return template.Version <= 6 &&
+	return (template.Version <= 6 &&
 		!strings.Contains(content, "PAAS_GIT_USER") &&
 		strings.Contains(content, "checkout {{ .Key }}") &&
-		strings.Contains(content, "git clone --no-checkout")
+		strings.Contains(content, "git clone --no-checkout")) ||
+		(template.Version <= 7 &&
+			!strings.Contains(content, "SourceRefB64") &&
+			strings.Contains(content, "ref='{{ .SourceRef }}'")) ||
+		(template.Version <= 8 &&
+			!strings.Contains(content, "SVNCheckoutPaths") &&
+			strings.Contains(content, "svn checkout"))
 }
 
 func (s *Service) EnsureDefaultJenkinsJobTemplate(ctx context.Context, actorID shared.ID) error {
@@ -1016,6 +1051,7 @@ func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipe
 		Name:                name,
 		DisplayName:         normalizeDisplayName(input.DisplayName, name),
 		Description:         strings.TrimSpace(input.Description),
+		ImageRepository:     normalizeImageRepository(input.ImageRepository),
 		Provider:            "jenkins",
 		ExternalJobName:     s.pipelineJobName(app, name),
 		TemplateID:          "global-build-template",
@@ -1134,6 +1170,7 @@ func (s *Service) UpdateBuildPipeline(ctx context.Context, input UpdateBuildPipe
 	}
 	pipeline.DisplayName = normalizeDisplayName(input.DisplayName, pipeline.Name)
 	pipeline.Description = strings.TrimSpace(input.Description)
+	pipeline.ImageRepository = normalizeImageRepository(input.ImageRepository)
 	pipeline.RuntimeEnvironments = runtimes
 	pipeline.UpdatedAt = s.clock.Now()
 	if err := s.repo.UpdatePipeline(ctx, pipeline); err != nil {
@@ -1736,19 +1773,27 @@ type buildTemplateDockerfileRepositoryView struct {
 }
 
 type buildTemplateSourceView struct {
-	Key            string
-	StageName      string
-	SourceType     string
-	RepoURL        string
-	SourceRef      string
-	GitCredentials string
-	SVNRevision    string
-	SVNCredentials string
-	CheckoutDir    string
-	WorkDir        string
-	BuildImage     string
-	BuildCommand   string
-	CollectCommand string
+	Key              string
+	StageName        string
+	SourceType       string
+	RepoURL          string
+	SourceRef        string
+	SourceRefB64     string
+	GitCredentials   string
+	SVNRevision      string
+	SVNCredentials   string
+	SVNCheckoutPaths []buildTemplateSVNCheckoutPathView
+	CheckoutDir      string
+	WorkDir          string
+	BuildImage       string
+	BuildCommand     string
+	CollectCommand   string
+}
+
+type buildTemplateSVNCheckoutPathView struct {
+	Local string
+	Path  string
+	Depth string
 }
 
 type buildTemplateImageTargetView struct {
@@ -1776,7 +1821,7 @@ func (s *Service) renderBuildTemplate(ctx context.Context, content string, app A
 		return "", shared.WrapError(shared.CodeInvalidArgument, "build template syntax is invalid", err)
 	}
 	runtimePayload := buildRuntimePayload(pipeline.RuntimeEnvironments, sources)
-	imageTargets := s.buildTemplateImageTargets(app, pipeline.RuntimeEnvironments, sources, runSources, run)
+	imageTargets := s.buildTemplateImageTargets(app, pipeline, pipeline.RuntimeEnvironments, sources, runSources, run)
 	imageTagDate, imageTagBranch := buildImageTagParts(runSources, run)
 	view := buildTemplateView{
 		AgentLabel:           "any",
@@ -1829,27 +1874,32 @@ func (s *Service) renderBuildTemplate(ctx context.Context, content string, app A
 		if spec.SourcePath != "." {
 			workDir += "/" + spec.SourcePath
 		}
-		collectCommand := strings.TrimSpace(spec.ArtifactCopyCommand)
-		collectCommand = indentShell(collectCommand, "                ")
+		collectCommand := normalizeShellBlock(spec.ArtifactCopyCommand)
 		sourceType := normalizeSourceType(source.SourceType)
 		sourceRef := firstNonEmpty(source.SourceRef, spec.DefaultRef, defaultSourceRef(sourceType, source.SourceURL))
 		if runSource, ok := runSourceByKey[source.Key]; ok && strings.TrimSpace(runSource.SourceRef) != "" {
 			sourceRef = runSource.SourceRef
 		}
+		svnCheckoutPaths := source.SVNCheckoutPaths
+		if runSource, ok := runSourceByKey[source.Key]; ok && len(runSource.SVNCheckoutPaths) > 0 {
+			svnCheckoutPaths = runSource.SVNCheckoutPaths
+		}
 		view.Sources = append(view.Sources, buildTemplateSourceView{
-			Key:            shellToken(source.Key),
-			StageName:      groovyStageName(firstNonEmpty(source.DisplayName, source.Key)),
-			SourceType:     string(sourceType),
-			RepoURL:        shellSingleQuoted(source.SourceURL),
-			SourceRef:      shellSingleQuoted(sourceRef),
-			GitCredentials: groovySingleQuoted(defaultGitCredentialsID),
-			SVNRevision:    shellSingleQuoted(firstNonEmpty(source.SVNRevision, "HEAD")),
-			SVNCredentials: groovySingleQuoted(defaultSVNCredentialsID),
-			CheckoutDir:    groovySingleQuoted(checkoutDir),
-			WorkDir:        groovySingleQuoted(workDir),
-			BuildImage:     groovySingleQuoted(buildImage),
-			BuildCommand:   indentShell(spec.BuildCommand, "                "),
-			CollectCommand: collectCommand,
+			Key:              shellToken(source.Key),
+			StageName:        groovyStageName(firstNonEmpty(source.DisplayName, source.Key)),
+			SourceType:       string(sourceType),
+			RepoURL:          shellSingleQuoted(source.SourceURL),
+			SourceRef:        shellSingleQuoted(sourceRef),
+			SourceRefB64:     base64.StdEncoding.EncodeToString([]byte(sourceRef)),
+			GitCredentials:   groovySingleQuoted(defaultGitCredentialsID),
+			SVNRevision:      shellSingleQuoted(firstNonEmpty(source.SVNRevision, "HEAD")),
+			SVNCredentials:   groovySingleQuoted(defaultSVNCredentialsID),
+			SVNCheckoutPaths: buildTemplateSVNCheckoutPaths(svnCheckoutPaths),
+			CheckoutDir:      groovySingleQuoted(checkoutDir),
+			WorkDir:          groovySingleQuoted(workDir),
+			BuildImage:       groovySingleQuoted(buildImage),
+			BuildCommand:     normalizeShellBlock(spec.BuildCommand),
+			CollectCommand:   collectCommand,
 		})
 	}
 	var b strings.Builder
@@ -1867,8 +1917,8 @@ func (s *Service) buildTemplateDockerfileRepositoryView() buildTemplateDockerfil
 	}
 }
 
-func (s *Service) buildTemplateImageTargets(app ApplicationRef, runtimes []RuntimeEnvironmentRef, sources []ApplicationSourceRef, runSources []BuildRunSource, run BuildRun) []buildTemplateImageTargetView {
-	imageRepo := strings.TrimRight(strings.TrimSpace(s.imageRepository), "/")
+func (s *Service) buildTemplateImageTargets(app ApplicationRef, pipeline BuildPipeline, runtimes []RuntimeEnvironmentRef, sources []ApplicationSourceRef, runSources []BuildRunSource, run BuildRun) []buildTemplateImageTargetView {
+	imageRepo := strings.TrimRight(strings.TrimSpace(firstNonEmpty(pipeline.ImageRepository, s.imageRepository)), "/")
 	if imageRepo == "" {
 		imageRepo = "registry.local/paas"
 	}
@@ -1914,7 +1964,7 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, runtimes []Runti
 				RuntimeBaseImage:   shellSingleQuoted(image.RuntimeBaseImage),
 				DockerfilePath:     shellSingleQuoted(dockerfilePath),
 				ArtifactDeployPath: shellSingleQuoted(strings.TrimRight(artifactDeployPath, "/")),
-				ImageRepository:    shellSingleQuoted(strings.TrimRight(imageRepo, "/") + "/" + app.Name),
+				ImageRepository:    shellSingleQuoted(buildTargetImageRepository(imageRepo, pipeline.ImageRepository, app.Name)),
 				EnvKey:             shellEnvName(key) + "_IMAGE",
 				SourceKey:          groovySingleQuoted(sourceKey),
 				ArtifactName:       groovySingleQuoted(name),
@@ -1926,6 +1976,18 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, runtimes []Runti
 		}
 	}
 	return targets
+}
+
+func normalizeImageRepository(value string) string {
+	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+func buildTargetImageRepository(baseOrFull string, explicit string, appName string) string {
+	baseOrFull = strings.TrimRight(strings.TrimSpace(baseOrFull), "/")
+	if strings.TrimSpace(explicit) != "" {
+		return baseOrFull
+	}
+	return strings.TrimRight(baseOrFull, "/") + "/" + appName
 }
 
 func primaryBuildSource(sources []ApplicationSourceRef, runSources []BuildRunSource) ApplicationSourceRef {
@@ -1975,7 +2037,7 @@ func buildImageTagParts(runSources []BuildRunSource, run BuildRun) (string, stri
 	source := primaryRunSource(runSources)
 	ref := firstNonEmpty(source.SourceRef, run.SourceRef)
 	if normalizeSourceType(firstNonEmptySourceType(source.SourceType, run.SourceType)) == SourceTypeSVN {
-		ref = firstNonEmpty(ref, svnTagRefFromURL(firstNonEmpty(source.SourceURL, run.SourceURL)))
+		ref = firstNonEmpty(svnTagRefFromURL(firstNonEmpty(source.SourceURL, run.SourceURL)), ref)
 	}
 	branch := imageTagToken(ref)
 	date := run.CreatedAt
@@ -2038,6 +2100,95 @@ func defaultSourceRef(sourceType SourceType, sourceURL string) string {
 		return svnTagRefFromURL(sourceURL)
 	}
 	return "main"
+}
+
+func normalizeSVNCheckoutPaths(sourceType SourceType, paths []SVNCheckoutPath) ([]SVNCheckoutPath, error) {
+	if normalizeSourceType(sourceType) != SourceTypeSVN {
+		return nil, nil
+	}
+	if len(paths) == 0 {
+		return []SVNCheckoutPath{{Local: ".", Path: "", Depth: "infinity"}}, nil
+	}
+	out := make([]SVNCheckoutPath, 0, len(paths))
+	seenLocal := map[string]struct{}{}
+	for _, item := range paths {
+		local, err := normalizeSVNRelativePath(item.Local, true)
+		if err != nil {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "svn checkout local path is invalid")
+		}
+		relativePath, err := normalizeSVNRelativePath(item.Path, false)
+		if err != nil {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "svn checkout path is invalid")
+		}
+		depth := strings.ToLower(strings.TrimSpace(item.Depth))
+		if depth == "" {
+			depth = "infinity"
+		}
+		if !allowedSVNCheckoutDepth(depth) {
+			return nil, shared.NewError(shared.CodeInvalidArgument, "svn checkout depth is invalid")
+		}
+		if _, exists := seenLocal[local]; exists {
+			return nil, shared.NewError(shared.CodeConflict, "svn checkout local path already exists")
+		}
+		seenLocal[local] = struct{}{}
+		out = append(out, SVNCheckoutPath{Local: local, Path: relativePath, Depth: depth})
+	}
+	if len(out) == 0 {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "svn checkout paths are required")
+	}
+	return out, nil
+}
+
+func normalizeSVNRelativePath(value string, allowRoot bool) (string, error) {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	if value == "" || value == "." {
+		if allowRoot {
+			return ".", nil
+		}
+		return "", nil
+	}
+	if strings.HasPrefix(value, "/") || strings.Contains(value, "\x00") {
+		return "", fmt.Errorf("absolute path")
+	}
+	cleaned := path.Clean(value)
+	if cleaned == "." {
+		if allowRoot {
+			return ".", nil
+		}
+		return "", nil
+	}
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") || strings.Contains(cleaned, "/../") {
+		return "", fmt.Errorf("path traversal")
+	}
+	return cleaned, nil
+}
+
+func allowedSVNCheckoutDepth(value string) bool {
+	switch value {
+	case "empty", "files", "immediates", "infinity":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildTemplateSVNCheckoutPaths(paths []SVNCheckoutPath) []buildTemplateSVNCheckoutPathView {
+	if len(paths) == 0 {
+		paths = []SVNCheckoutPath{{Local: ".", Path: "", Depth: "infinity"}}
+	}
+	out := make([]buildTemplateSVNCheckoutPathView, 0, len(paths))
+	for _, item := range paths {
+		depth := strings.TrimSpace(item.Depth)
+		if depth == "" {
+			depth = "infinity"
+		}
+		out = append(out, buildTemplateSVNCheckoutPathView{
+			Local: shellSingleQuoted(item.Local),
+			Path:  shellSingleQuoted(item.Path),
+			Depth: shellSingleQuoted(depth),
+		})
+	}
+	return out
 }
 
 func svnTagRefFromURL(sourceURL string) string {
@@ -2382,12 +2533,8 @@ func shellSingleQuoted(value string) string {
 	return strings.ReplaceAll(value, "'", "'\"'\"'")
 }
 
-func indentShell(script string, prefix string) string {
-	lines := strings.Split(strings.TrimSpace(script), "\n")
-	for i, line := range lines {
-		lines[i] = prefix + line
-	}
-	return strings.Join(lines, "\n")
+func normalizeShellBlock(script string) string {
+	return strings.TrimSpace(script)
 }
 
 func (s *Service) buildCallbackURL(run BuildRun) string {
@@ -2446,19 +2593,20 @@ func (s *Service) newBuildRunSources(ctx context.Context, runID shared.ID, app A
 			return nil, err
 		}
 		items = append(items, BuildRunSource{
-			ID:            id,
-			TenantID:      app.TenantID,
-			ProjectID:     app.ProjectID,
-			BuildRunID:    runID,
-			ApplicationID: app.ID,
-			SourceKey:     source.Key,
-			SourceType:    normalizeSourceType(source.SourceType),
-			SourceURL:     source.SourceURL,
-			SourceRef:     sourceRef,
-			CommitSHA:     strings.TrimSpace(override.CommitSHA),
-			SourcePath:    source.BuildSpec.SourcePath,
-			IsPrimary:     source.IsPrimary,
-			CreatedAt:     now,
+			ID:               id,
+			TenantID:         app.TenantID,
+			ProjectID:        app.ProjectID,
+			BuildRunID:       runID,
+			ApplicationID:    app.ID,
+			SourceKey:        source.Key,
+			SourceType:       normalizeSourceType(source.SourceType),
+			SourceURL:        source.SourceURL,
+			SourceRef:        sourceRef,
+			SVNCheckoutPaths: append([]SVNCheckoutPath(nil), source.SVNCheckoutPaths...),
+			CommitSHA:        strings.TrimSpace(override.CommitSHA),
+			SourcePath:       source.BuildSpec.SourcePath,
+			IsPrimary:        source.IsPrimary,
+			CreatedAt:        now,
 		})
 	}
 	return items, nil
@@ -2544,6 +2692,7 @@ func (s *Service) loadPipelineBuildContext(ctx context.Context, pipelineID share
 			SourceURL:          source.SourceURL,
 			SourceRef:          source.SourceRef,
 			SVNRevision:        source.SVNRevision,
+			SVNCheckoutPaths:   append([]SVNCheckoutPath(nil), source.SVNCheckoutPaths...),
 			SourcePath:         source.SourcePath,
 			BuildSpec:          spec,
 			IsPrimary:          source.IsPrimary,
@@ -2599,6 +2748,10 @@ func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef
 			return nil, err
 		}
 		svnRevision := strings.TrimSpace(input.SVNRevision)
+		svnCheckoutPaths, err := normalizeSVNCheckoutPaths(sourceType, input.SVNCheckoutPaths)
+		if err != nil {
+			return nil, err
+		}
 		sourceID, err := s.ids.NewID("build_pipeline_source")
 		if err != nil {
 			return nil, err
@@ -2623,6 +2776,7 @@ func (s *Service) preparePipelineSources(ctx context.Context, app ApplicationRef
 			SourceURL:          sourceURL,
 			SourceRef:          sourceRef,
 			SVNRevision:        svnRevision,
+			SVNCheckoutPaths:   svnCheckoutPaths,
 			BuildEnvironmentID: input.BuildEnvironmentID,
 			SourcePath:         sourcePath,
 			BuildSpec:          spec,
@@ -3117,18 +3271,20 @@ func sampleBuildTemplateView() buildTemplateView {
 		},
 		DockerfileRepository: buildTemplateDockerfileRepositoryView{URL: "git@example.com:platform/dockerfiles.git", Ref: "main"},
 		Sources: []buildTemplateSourceView{{
-			Key:            "main",
-			StageName:      "main",
-			SourceType:     "git",
-			RepoURL:        "git@example.com:sample/repo.git",
-			SourceRef:      "main",
-			SVNRevision:    "HEAD",
-			SVNCredentials: defaultSVNCredentialsID,
-			CheckoutDir:    "source/main",
-			WorkDir:        "source/main",
-			BuildImage:     "maven:3.9.9-eclipse-temurin-17",
-			BuildCommand:   "                mvn clean package -DskipTests",
-			CollectCommand: "                cp -ar target/app.jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"",
+			Key:              "main",
+			StageName:        "main",
+			SourceType:       "git",
+			RepoURL:          "git@example.com:sample/repo.git",
+			SourceRef:        "main",
+			SourceRefB64:     "bWFpbg==",
+			SVNRevision:      "HEAD",
+			SVNCredentials:   defaultSVNCredentialsID,
+			SVNCheckoutPaths: []buildTemplateSVNCheckoutPathView{{Local: ".", Path: "", Depth: "infinity"}},
+			CheckoutDir:      "source/main",
+			WorkDir:          "source/main",
+			BuildImage:       "maven:3.9.9-eclipse-temurin-17",
+			BuildCommand:     "mvn clean package -DskipTests",
+			CollectCommand:   "cp -ar target/app.jar \"$PAAS_ARTIFACT_OUTPUT/app.jar\"",
 		}},
 	}
 }

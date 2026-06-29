@@ -32,9 +32,15 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/users/{userId}", h.handleGetUser)
 	mux.HandleFunc("POST /api/users/{userId}/reset-password", h.handleResetPassword)
 	mux.HandleFunc("GET /api/roles", h.handleRoles)
+	mux.HandleFunc("POST /api/roles", h.handleCreateRole)
+	mux.HandleFunc("PUT /api/roles/{roleId}", h.handleUpdateRole)
+	mux.HandleFunc("DELETE /api/roles/{roleId}", h.handleDeleteRole)
 	mux.HandleFunc("PATCH /api/roles/{roleId}/permissions", h.handleUpdateRolePermissions)
 	mux.HandleFunc("GET /api/permissions", h.handlePermissions)
+	mux.HandleFunc("GET /api/role-bindings", h.handleRoleBindings)
 	mux.HandleFunc("POST /api/role-bindings", h.handleRoleBinding)
+	mux.HandleFunc("PUT /api/role-bindings", h.handleReplaceRoleBinding)
+	mux.HandleFunc("DELETE /api/role-bindings", h.handleDeleteRoleBinding)
 }
 
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -216,6 +222,44 @@ func (h *Handler) handleRoles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": roles})
 }
 
+func (h *Handler) handleCreateRole(w http.ResponseWriter, r *http.Request) {
+	var req CreateRoleInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	role, err := h.service.CreateRole(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, role)
+}
+
+func (h *Handler) handleUpdateRole(w http.ResponseWriter, r *http.Request) {
+	var req UpdateRoleInput
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	role, err := h.service.UpdateRole(r.Context(), RoleID(r.PathValue("roleId")), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, role)
+}
+
+func (h *Handler) handleDeleteRole(w http.ResponseWriter, r *http.Request) {
+	actorID := shared.ID(r.URL.Query().Get("actor_id"))
+	if actorID.IsZero() {
+		actorID = shared.ID(r.URL.Query().Get("actor"))
+	}
+	if err := h.service.DeleteRole(r.Context(), RoleID(r.PathValue("roleId")), Subject{Type: SubjectUser, ID: actorID}); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) handleUpdateRolePermissions(w http.ResponseWriter, r *http.Request) {
 	var req UpdateRolePermissionsInput
 	if !decodeJSON(w, r, &req) {
@@ -249,6 +293,68 @@ func (h *Handler) handleRoleBinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, binding)
+}
+
+func (h *Handler) handleRoleBindings(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	subjectType := SubjectType(query.Get("subject_type"))
+	subjectID := shared.ID(query.Get("subject_id"))
+	scopeKind := ScopeKind(query.Get("scope_kind"))
+	scopeID := shared.ID(query.Get("scope_id"))
+
+	var (
+		items []RoleBinding
+		err   error
+	)
+	if subjectType != "" || !subjectID.IsZero() {
+		items, err = h.service.ListRoleBindingsForSubject(r.Context(), Subject{Type: subjectType, ID: subjectID})
+		if err == nil && scopeKind != "" {
+			filtered := make([]RoleBinding, 0, len(items))
+			for _, item := range items {
+				if item.ScopeKind == scopeKind && item.ScopeID == scopeID {
+					filtered = append(filtered, item)
+				}
+			}
+			items = filtered
+		}
+	} else if scopeKind != "" {
+		items, err = h.service.ListRoleBindingsByScope(r.Context(), scopeKind, scopeID)
+	} else {
+		err = shared.NewError(shared.CodeInvalidArgument, "subject or scope filter is required")
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+}
+
+func (h *Handler) handleReplaceRoleBinding(w http.ResponseWriter, r *http.Request) {
+	var req RoleBinding
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	binding, err := h.service.ReplaceRoleBindingForSubjectScope(r.Context(), req)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, binding)
+}
+
+func (h *Handler) handleDeleteRoleBinding(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	err := h.service.DeleteRoleBindingsForSubjectScope(
+		r.Context(),
+		Subject{Type: SubjectType(query.Get("subject_type")), ID: shared.ID(query.Get("subject_id"))},
+		ScopeKind(query.Get("scope_kind")),
+		shared.ID(query.Get("scope_id")),
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {

@@ -116,30 +116,30 @@ type WorkloadRef struct {
 }
 
 type WorkloadResourceListRef struct {
-	CPU    string `yaml:"cpu,omitempty"`
-	Memory string `yaml:"memory,omitempty"`
+	CPU    string `json:"cpu,omitempty" yaml:"cpu,omitempty"`
+	Memory string `json:"memory,omitempty" yaml:"memory,omitempty"`
 }
 
 type WorkloadServicePortRef struct {
-	Name       string `yaml:"name"`
-	Port       int    `yaml:"port"`
-	TargetPort int    `yaml:"targetPort"`
-	Protocol   string `yaml:"protocol,omitempty"`
+	Name       string `json:"name" yaml:"name"`
+	Port       int    `json:"port" yaml:"port"`
+	TargetPort int    `json:"target_port" yaml:"targetPort"`
+	Protocol   string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
 }
 
 type WorkloadEnvVarRef struct {
-	Name  string `yaml:"name"`
-	Value string `yaml:"value"`
+	Name  string `json:"name" yaml:"name"`
+	Value string `json:"value" yaml:"value"`
 }
 
 type WorkloadProbeRef struct {
-	Name                string   `yaml:"name"`
-	Type                string   `yaml:"type"`
-	Path                string   `yaml:"path,omitempty"`
-	Port                int      `yaml:"port,omitempty"`
-	Command             []string `yaml:"command,omitempty"`
-	InitialDelaySeconds int      `yaml:"initialDelaySeconds,omitempty"`
-	PeriodSeconds       int      `yaml:"periodSeconds,omitempty"`
+	Name                string   `json:"name" yaml:"name"`
+	Type                string   `json:"type" yaml:"type"`
+	Path                string   `json:"path,omitempty" yaml:"path,omitempty"`
+	Port                int      `json:"port,omitempty" yaml:"port,omitempty"`
+	Command             []string `json:"command,omitempty" yaml:"command,omitempty"`
+	InitialDelaySeconds int      `json:"initial_delay_seconds,omitempty" yaml:"initialDelaySeconds,omitempty"`
+	PeriodSeconds       int      `json:"period_seconds,omitempty" yaml:"periodSeconds,omitempty"`
 }
 
 type WorkloadIngressHostRef struct {
@@ -155,32 +155,32 @@ type WorkloadIngressHostRef struct {
 }
 
 type WorkloadSecretRef struct {
-	Name      string `yaml:"name"`
-	SecretRef string `yaml:"secretRef"`
+	Name      string `json:"name" yaml:"name"`
+	SecretRef string `json:"secret_ref" yaml:"secretRef"`
 }
 
 type WorkloadConfigFileRef struct {
-	MountPath     string `yaml:"mountPath"`
-	Content       string `yaml:"content"`
-	Base64Encoded bool   `yaml:"base64Encoded,omitempty"`
+	MountPath     string `json:"mount_path" yaml:"mountPath"`
+	Content       string `json:"content" yaml:"content"`
+	Base64Encoded bool   `json:"base64_encoded,omitempty" yaml:"base64Encoded,omitempty"`
 }
 
 type WorkloadWritableDirRef struct {
-	MountPath  string `yaml:"mountPath"`
-	SizeLimit  string `yaml:"sizeLimit,omitempty"`
-	OwnerGroup string `yaml:"ownerGroup,omitempty"`
-	Mode       string `yaml:"mode,omitempty"`
+	MountPath  string `json:"mount_path" yaml:"mountPath"`
+	SizeLimit  string `json:"size_limit,omitempty" yaml:"sizeLimit,omitempty"`
+	OwnerGroup string `json:"owner_group,omitempty" yaml:"ownerGroup,omitempty"`
+	Mode       string `json:"mode,omitempty" yaml:"mode,omitempty"`
 }
 
 type WorkloadVolumeMountRef struct {
-	Name      string `yaml:"name"`
-	MountPath string `yaml:"mountPath"`
+	Name      string `json:"name" yaml:"name"`
+	MountPath string `json:"mount_path" yaml:"mountPath"`
 }
 
 type WorkloadInitContainerRef struct {
-	Name    string   `yaml:"name"`
-	Image   string   `yaml:"image"`
-	Command []string `yaml:"command,omitempty"`
+	Name    string   `json:"name" yaml:"name"`
+	Image   string   `json:"image" yaml:"image"`
+	Command []string `json:"command,omitempty" yaml:"command,omitempty"`
 }
 
 type WorkloadStageConfigRef struct {

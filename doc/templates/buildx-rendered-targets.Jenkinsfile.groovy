@@ -96,13 +96,32 @@ pipeline {
               set -eu
               repo_url='{{ .RepoURL }}'
               svn_revision='{{ .SVNRevision }}'
-              find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-              if [ -n "$svn_revision" ] && [ "$svn_revision" != "HEAD" ]; then
-                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert -r "$svn_revision" "$repo_url" .
-              else
-                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert "$repo_url" .
+              if [ -z "$svn_revision" ]; then
+                svn_revision='HEAD'
               fi
-              actual_revision="$(svn info --show-item revision 2>/dev/null || true)"
+              find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+              actual_revision=''
+              svn_checkout_one() {
+                local_dir="$1"
+                relative_path="$2"
+                depth="$3"
+                remote_url="${repo_url%/}"
+                if [ -n "$relative_path" ]; then
+                  remote_url="${remote_url}/${relative_path}"
+                fi
+                remote_url="${remote_url}@${svn_revision}"
+                if [ "$local_dir" != "." ]; then
+                  rm -rf "$local_dir"
+                  mkdir -p "$(dirname "$local_dir")"
+                fi
+                svn checkout --username "$PAAS_SVN_USER" --password "$PAAS_SVN_PASSWORD" --non-interactive --trust-server-cert --depth "$depth" "$remote_url" "$local_dir"
+                if [ -z "$actual_revision" ]; then
+                  actual_revision="$(svn info --show-item revision "$local_dir" 2>/dev/null || true)"
+                fi
+              }
+{{ range .SVNCheckoutPaths }}
+              svn_checkout_one '{{ .Local }}' '{{ .Path }}' '{{ .Depth }}'
+{{ end }}
               mkdir -p "$WORKSPACE/report"
               printf '%s\n' "$actual_revision" > "$WORKSPACE/report/source-{{ .Key }}-commit.txt"
               printf '%s\n' "$actual_revision" > "$WORKSPACE/report/source-{{ .Key }}-svn-revision.txt"
@@ -124,7 +143,12 @@ ASKPASS
               export GIT_ASKPASS="$askpass"
               export GIT_TERMINAL_PROMPT=0
               repo_url='{{ .RepoURL }}'
-              ref='{{ .SourceRef }}'
+              ref_b64='{{ .SourceRefB64 }}'
+              if ref="$(printf '%s' "$ref_b64" | base64 -d 2>/dev/null)"; then
+                :
+              else
+                ref="$(printf '%s' "$ref_b64" | base64 --decode)"
+              fi
               if [ -d .git ]; then
                 git remote set-url origin "$repo_url"
                 git fetch --prune --tags origin

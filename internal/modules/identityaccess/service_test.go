@@ -797,6 +797,16 @@ func TestScopedRoleBindingReplacementAndDeletion(t *testing.T) {
 	if len(bindings) != 1 || bindings[0].RoleID != RoleProjectAdmin || bindings[0].SubjectID != user.ID {
 		t.Fatalf("unexpected scoped bindings: %+v", bindings)
 	}
+	if _, err := svc.ReplaceRoleBindingForSubjectScope(ctx, RoleBinding{SubjectType: SubjectUser, SubjectID: user.ID, RoleID: "missing_role", ScopeKind: ScopeProject, ScopeID: "project_1"}); shared.CodeOf(err) != shared.CodeInvalidArgument {
+		t.Fatalf("bad replacement role should be invalid_argument, got %v", err)
+	}
+	bindings, err = svc.ListRoleBindingsByScope(ctx, ScopeProject, "project_1")
+	if err != nil {
+		t.Fatalf("ListRoleBindingsByScope after bad replacement error = %v", err)
+	}
+	if len(bindings) != 1 || bindings[0].RoleID != RoleProjectAdmin {
+		t.Fatalf("bad replacement should preserve existing binding, got %+v", bindings)
+	}
 	if err := svc.DeleteRoleBindingsForSubjectScope(ctx, Subject{Type: SubjectUser, ID: user.ID}, ScopeProject, "project_1"); err != nil {
 		t.Fatalf("DeleteRoleBindingsForSubjectScope() error = %v", err)
 	}
@@ -1051,6 +1061,60 @@ func TestHTTPHandlersCoverUserRoleTokenAndOIDCFlows(t *testing.T) {
 	updateRoleRec := doJSON(mux, http.MethodPatch, "/api/roles/developer/permissions", `{"actor":{"type":"user","id":"`+created.ID.String()+`"},"permissions":["application:read","build:read"]}`, "")
 	if updateRoleRec.Code != http.StatusOK || strings.Contains(updateRoleRec.Body.String(), "build:create") {
 		t.Fatalf("update role status = %d body = %s", updateRoleRec.Code, updateRoleRec.Body.String())
+	}
+	createRoleRec := doJSON(mux, http.MethodPost, "/api/roles", `{"actor":{"type":"user","id":"`+created.ID.String()+`"},"id":"qa_tester","name":"测试人员","description":"负责构建和测试 Stage 发布","permissions":["application:read","build:create","deployment:create"],"suggested_scopes":["application","stage"]}`, "")
+	if createRoleRec.Code != http.StatusCreated || !strings.Contains(createRoleRec.Body.String(), `"built_in":false`) {
+		t.Fatalf("create role status = %d body = %s", createRoleRec.Code, createRoleRec.Body.String())
+	}
+	customBindingBody := `{"subject_type":"user","subject_id":"` + created.ID.String() + `","role_id":"qa_tester","scope_kind":"application","scope_id":"app_1"}`
+	customBindingRec := doJSON(mux, http.MethodPut, "/api/role-bindings", customBindingBody, "")
+	if customBindingRec.Code != http.StatusOK {
+		t.Fatalf("custom role binding status = %d body = %s", customBindingRec.Code, customBindingRec.Body.String())
+	}
+	disableRoleRec := doJSON(mux, http.MethodPut, "/api/roles/qa_tester", `{"actor":{"type":"user","id":"`+created.ID.String()+`"},"name":"测试人员","description":"停用测试","disabled":true,"suggested_scopes":["application","stage"]}`, "")
+	if disableRoleRec.Code != http.StatusOK || !strings.Contains(disableRoleRec.Body.String(), `"disabled":true`) {
+		t.Fatalf("disable role status = %d body = %s", disableRoleRec.Code, disableRoleRec.Body.String())
+	}
+	disabledBindingRec := doJSON(mux, http.MethodPut, "/api/role-bindings", strings.Replace(customBindingBody, `"scope_id":"app_1"`, `"scope_id":"app_2"`, 1), "")
+	if disabledBindingRec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("disabled role binding status = %d body = %s", disabledBindingRec.Code, disabledBindingRec.Body.String())
+	}
+	deleteBoundRoleRec := doJSON(mux, http.MethodDelete, "/api/roles/qa_tester?actor_id="+created.ID.String(), ``, "")
+	if deleteBoundRoleRec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("delete bound role status = %d body = %s", deleteBoundRoleRec.Code, deleteBoundRoleRec.Body.String())
+	}
+	deleteCustomBindingRec := doJSON(mux, http.MethodDelete, "/api/role-bindings?subject_type=user&subject_id="+created.ID.String()+"&scope_kind=application&scope_id=app_1", ``, "")
+	if deleteCustomBindingRec.Code != http.StatusNoContent {
+		t.Fatalf("delete custom binding status = %d body = %s", deleteCustomBindingRec.Code, deleteCustomBindingRec.Body.String())
+	}
+	deleteRoleRec := doJSON(mux, http.MethodDelete, "/api/roles/qa_tester?actor_id="+created.ID.String(), ``, "")
+	if deleteRoleRec.Code != http.StatusNoContent {
+		t.Fatalf("delete role status = %d body = %s", deleteRoleRec.Code, deleteRoleRec.Body.String())
+	}
+	deleteBuiltInRoleRec := doJSON(mux, http.MethodDelete, "/api/roles/viewer?actor_id="+created.ID.String(), ``, "")
+	if deleteBuiltInRoleRec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("delete built-in role status = %d body = %s", deleteBuiltInRoleRec.Code, deleteBuiltInRoleRec.Body.String())
+	}
+	projectBindingBody := `{"subject_type":"user","subject_id":"` + created.ID.String() + `","role_id":"developer","scope_kind":"project","scope_id":"project_1"}`
+	replaceBindingRec := doJSON(mux, http.MethodPut, "/api/role-bindings", projectBindingBody, "")
+	if replaceBindingRec.Code != http.StatusOK || !strings.Contains(replaceBindingRec.Body.String(), `"role_id":"developer"`) {
+		t.Fatalf("replace role binding status = %d body = %s", replaceBindingRec.Code, replaceBindingRec.Body.String())
+	}
+	scopeBindingsRec := doJSON(mux, http.MethodGet, "/api/role-bindings?scope_kind=project&scope_id=project_1", ``, "")
+	if scopeBindingsRec.Code != http.StatusOK || !strings.Contains(scopeBindingsRec.Body.String(), `"scope_id":"project_1"`) {
+		t.Fatalf("list scope role bindings status = %d body = %s", scopeBindingsRec.Code, scopeBindingsRec.Body.String())
+	}
+	replaceProjectAdminRec := doJSON(mux, http.MethodPut, "/api/role-bindings", strings.Replace(projectBindingBody, `"developer"`, `"project_admin"`, 1), "")
+	if replaceProjectAdminRec.Code != http.StatusOK || !strings.Contains(replaceProjectAdminRec.Body.String(), `"role_id":"project_admin"`) {
+		t.Fatalf("replace project admin binding status = %d body = %s", replaceProjectAdminRec.Code, replaceProjectAdminRec.Body.String())
+	}
+	subjectBindingsRec := doJSON(mux, http.MethodGet, "/api/role-bindings?subject_type=user&subject_id="+created.ID.String()+"&scope_kind=project&scope_id=project_1", ``, "")
+	if subjectBindingsRec.Code != http.StatusOK || strings.Contains(subjectBindingsRec.Body.String(), `"role_id":"developer"`) || !strings.Contains(subjectBindingsRec.Body.String(), `"role_id":"project_admin"`) {
+		t.Fatalf("list subject role bindings status = %d body = %s", subjectBindingsRec.Code, subjectBindingsRec.Body.String())
+	}
+	deleteBindingRec := doJSON(mux, http.MethodDelete, "/api/role-bindings?subject_type=user&subject_id="+created.ID.String()+"&scope_kind=project&scope_id=project_1", ``, "")
+	if deleteBindingRec.Code != http.StatusNoContent {
+		t.Fatalf("delete role binding status = %d body = %s", deleteBindingRec.Code, deleteBindingRec.Body.String())
 	}
 
 	logoutRec := doJSON(mux, http.MethodPost, "/api/auth/logout", ``, loginResp.Token.AccessToken)

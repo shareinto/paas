@@ -34,6 +34,8 @@ type Repository interface {
 
 	ListRoles(ctx context.Context) ([]Role, error)
 	UpsertRole(ctx context.Context, role Role) error
+	DeleteRole(ctx context.Context, roleID RoleID) error
+	RoleBindingCountByRole(ctx context.Context, roleID RoleID) (int64, error)
 	ReplaceRolePermissions(ctx context.Context, roleID RoleID, permissions []Permission) error
 	CreateRoleBinding(ctx context.Context, binding RoleBinding) error
 	ListRoleBindingsForSubject(ctx context.Context, subject Subject) ([]RoleBinding, error)

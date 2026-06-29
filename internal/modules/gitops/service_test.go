@@ -374,6 +374,82 @@ func TestPreviewPromotionManifestRendersYamlDiffInputsWithoutCommitting(t *testi
 	}
 }
 
+func TestRenderExpectedManifestUsesProjectStageNamespace(t *testing.T) {
+	svc, manifest, _ := newTestService(t, []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform",
+		"deployment_1", "manifest_revision_1", "deployment_event_1",
+	})
+	svc.apps = appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", ProjectName: "macc", Name: "order-api"}}
+	svc.workloads = workloadQuery{
+		workloads: map[shared.ID]WorkloadRef{
+			"workload_api": {ID: "workload_api", ApplicationID: "app_1", Name: "user-api", WorkloadType: "Deployment"},
+		},
+		configs: map[string]WorkloadStageConfigRef{
+			"workload_api|dev": {
+				ServicePorts: []WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
+			},
+		},
+	}
+
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"),
+		Artifacts: []delivery.GitOpsArtifactSpec{{WorkloadID: "workload_api", URI: "registry/user-api:v1", Repository: "registry/user-api", Tag: "v1", Digest: "sha256:old", IsPrimary: true}},
+	}); err != nil {
+		t.Fatalf("ApplyPromotion() error = %v", err)
+	}
+	path := "apps/order-api/dev/manifests.yaml"
+	manifest.Files[path] = strings.ReplaceAll(manifest.Files[path], "namespace: order-dev", "namespace: macc")
+
+	expected, current, err := svc.RenderExpectedManifest(context.Background(), "app_1", "dev", []delivery.FreightItem{{
+		WorkloadID: "workload_api", ContainerName: "app", URI: "registry/user-api:v1", ImageRepository: "registry/user-api", ImageTag: "v1", Digest: "sha256:old",
+	}})
+	if err != nil {
+		t.Fatalf("RenderExpectedManifest() error = %v", err)
+	}
+	if !strings.Contains(current, "namespace: macc") {
+		t.Fatalf("test manifest should use macc namespace:\n%s", current)
+	}
+	if strings.Contains(expected, "namespace: default") || !strings.Contains(expected, "namespace: macc-dev") {
+		t.Fatalf("expected manifest should use project-stage namespace:\n%s", expected)
+	}
+}
+
+func TestRenderExpectedManifestFallsBackToProjectNamespace(t *testing.T) {
+	svc, manifest, _ := newTestService(t, []shared.ID{
+		"deployment_template_platform", "deployment_template_revision_platform",
+		"deployment_1", "manifest_revision_1", "deployment_event_1",
+	})
+	svc.apps = appQuery{"app_1": {ID: "app_1", TenantID: "tenant_1", ProjectID: "project_1", ProjectName: "macc", Name: "frontend"}}
+	svc.workloads = workloadQuery{
+		workloads: map[shared.ID]WorkloadRef{
+			"workload_frontend": {ID: "workload_frontend", ApplicationID: "app_1", Name: "macc-frontend", WorkloadType: "Deployment"},
+		},
+		configs: map[string]WorkloadStageConfigRef{
+			"workload_frontend|dev": {
+				ServicePorts: []WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
+			},
+		},
+	}
+
+	if _, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"),
+		Artifacts: []delivery.GitOpsArtifactSpec{{WorkloadID: "workload_frontend", URI: "registry/frontend:v1", Repository: "registry/frontend", Tag: "v1", Digest: "sha256:old", IsPrimary: true}},
+	}); err != nil {
+		t.Fatalf("ApplyPromotion() error = %v", err)
+	}
+	delete(manifest.Files, "apps/frontend/dev/manifests.yaml")
+
+	expected, _, err := svc.RenderExpectedManifest(context.Background(), "app_1", "dev", []delivery.FreightItem{{
+		WorkloadID: "workload_frontend", ContainerName: "app", URI: "registry/frontend:v1", ImageRepository: "registry/frontend", ImageTag: "v1", Digest: "sha256:old",
+	}})
+	if err != nil {
+		t.Fatalf("RenderExpectedManifest() error = %v", err)
+	}
+	if strings.Contains(expected, "namespace: default") || !strings.Contains(expected, "namespace: macc-dev") {
+		t.Fatalf("expected manifest should use project-stage namespace fallback:\n%s", expected)
+	}
+}
+
 func TestApplyPromotionCommitsAllStagesAndUpdatesDeploymentFromAgent(t *testing.T) {
 	ids := []shared.ID{
 		"deployment_template_platform", "deployment_template_revision_platform",
@@ -764,6 +840,253 @@ func TestApplyPromotionFallsBackToWorkloadDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestApplyPromotionMergesStageConfigAndRendersNamedContainers(t *testing.T) {
+	ids := []shared.ID{"deployment_template_platform", "deployment_template_revision_platform", "deployment_1", "manifest_revision_1", "deployment_event_1"}
+	svc, manifest, _ := newTestService(t, ids)
+	svc.workloads = workloadQuery{
+		workloads: map[shared.ID]WorkloadRef{
+			"workload_frontend": {ID: "workload_frontend", ApplicationID: "app_1", Name: "macc-frontend", WorkloadType: "Deployment"},
+		},
+		defaultConfigs: map[shared.ID]WorkloadStageConfigRef{
+			"workload_frontend": {
+				Replicas:     2,
+				ServicePorts: []WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 80, Protocol: "TCP"}},
+				IngressHosts: []WorkloadIngressHostRef{{Host: "cloud-ltt.rj.link", Path: "/", ServicePort: "80", TLS: true}},
+				InitContainers: []WorkloadInitContainerRef{{
+					Name:    "fix-log-permissions",
+					Image:   "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/busybox:1.34.1",
+					Command: []string{"sh", "-c", "mkdir -p /legacy-ignored"},
+				}},
+				ValuesOverride: map[string]any{
+					"containers": []any{
+						map[string]any{
+							"name": "frontend",
+							"config_files": []any{
+								map[string]any{"mount_path": "/etc/nginx/nginx.conf", "content": "worker_processes 4;"},
+							},
+						},
+						map[string]any{
+							"name": "backend",
+							"env_vars": []any{
+								map[string]any{"name": "CATALINA_OPTS", "value": "-Xms512m"},
+							},
+							"liveness_probe": map[string]any{
+								"name":                  "liveness",
+								"type":                  "http",
+								"path":                  "/bizprocessor/ruok",
+								"port":                  8080,
+								"initial_delay_seconds": 120,
+								"period_seconds":        10,
+								"failure_threshold":     3,
+							},
+							"readiness_probe": map[string]any{
+								"name":                  "readiness",
+								"type":                  "http",
+								"path":                  "/bizprocessor/ruok",
+								"port":                  8080,
+								"initial_delay_seconds": 60,
+								"period_seconds":        5,
+								"failure-threshold":     5,
+							},
+							"config_files": []any{
+								map[string]any{"mount_path": "/usr/local/tomcat/conf/catalina.properties", "content": "common.loader=/opt/app"},
+								map[string]any{"mount_path": "/usr/local/tomcat/macc_conf/logback.xml", "content": "<configuration/>"},
+							},
+							"writable_dirs": []any{
+								map[string]any{"mount_path": "/macc", "owner_group": "10001:0", "mode": "775", "size_limit": "2Gi"},
+							},
+						},
+					},
+				},
+			},
+		},
+		configs: map[string]WorkloadStageConfigRef{
+			"workload_frontend|dev": {
+				Replicas: 1,
+				ValuesOverride: map[string]any{
+					"containers": []any{
+						map[string]any{
+							"name": "backend",
+							"config_files": []any{
+								map[string]any{"mount_path": "/macc/macc_conf/app.properties", "content": "env=dev"},
+							},
+						},
+					},
+					"k8sCompat": map[string]any{
+						"volumes": []any{
+							map[string]any{
+								"name": "catalina-config",
+								"configMap": map[string]any{
+									"name":        "macc-frontend-config",
+									"defaultMode": 420,
+									"items": []any{
+										map[string]any{"key": "catalina.properties", "path": "catalina.properties"},
+									},
+								},
+							},
+							map[string]any{"name": "macc-conf", "configMap": map[string]any{"name": "macc-frontend-config"}},
+							map[string]any{"name": "app-logs", "emptyDir": map[string]any{}},
+							map[string]any{"name": "app-home", "emptyDir": map[string]any{}},
+						},
+						"containers": []any{
+							map[string]any{
+								"name": "backend",
+								"env": []any{
+									map[string]any{"name": "CATALINA_OPTS", "value": "-Xms512m"},
+									map[string]any{"name": "POD_NAME", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.name"}}},
+								},
+								"volumeMounts": []any{
+									map[string]any{"name": "catalina-config", "mountPath": "/usr/local/tomcat/conf/catalina.properties", "subPath": "catalina.properties", "readOnly": true},
+									map[string]any{"name": "macc-conf", "mountPath": "/usr/local/tomcat/macc_conf"},
+									map[string]any{"name": "macc-data", "mountPath": "/macc"},
+									map[string]any{"name": "app-logs", "mountPath": "/logs", "subPathExpr": "macc/$(APP_NAME)/$(POD_NAME)"},
+									map[string]any{"name": "app-home", "mountPath": "/etc/config"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	_, _ = svc.EnsurePlatformTemplate(context.Background(), "java", "containers:\n- name: app")
+	_, err := svc.ApplyPromotion(context.Background(), delivery.GitOpsPromotionSpec{
+		PromotionID: "promotion_dev", FreightID: "freight_1", ApplicationID: "app_1", StageKey: "dev", TargetClusters: targetClusters("dev"),
+		Artifacts: []delivery.GitOpsArtifactSpec{
+			{WorkloadID: "workload_frontend", ContainerName: "frontend", URI: "registry/frontend:v1", Repository: "registry/frontend", Tag: "v1", IsPrimary: true},
+			{WorkloadID: "workload_frontend", ContainerName: "backend", URI: "registry/macc-webbase:v1", Repository: "registry/macc-webbase", Tag: "v1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPromotion() error = %v", err)
+	}
+	values := manifest.Files["apps/order-api/dev/manifests.yaml"]
+	for _, expected := range []string{
+		"replicas: 1",
+		"kind: Service",
+		"kind: Ingress",
+		"name: macc-frontend",
+		"name: macc-frontend-config",
+		"secretName: macc-frontend-tls",
+		"name: macc-frontend\n            port:",
+		"cert-manager.io/cluster-issuer: \"letsencrypt-prod\"",
+		"- name: frontend",
+		"image: registry/frontend:v1",
+		"- name: backend",
+		"image: registry/macc-webbase:v1",
+		"name: CATALINA_OPTS",
+		"subPath: frontend-nginx.conf",
+		"subPath: backend-logback.xml",
+		"subPath: backend-app.properties",
+		"name: writable-backend-0",
+		"sizeLimit: 2Gi",
+		"name: app-logs",
+		"hostPath:",
+		"path: /cloud",
+		"type: DirectoryOrCreate",
+		"mountPath: /logs",
+		"subPathExpr: macc/$(APP_NAME)/$(POD_NAME)",
+		"name: \"app-home\"",
+		"mountPath: /etc/config",
+		"name: APP_NAME",
+		"metadata.labels['app']",
+		"name: POD_NAME",
+		"metadata.name",
+		"dnsConfig:",
+		"- name: ndots",
+		"value: \"1\"",
+		"initContainers:",
+		"- name: init",
+		"image: cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/busybox:1.34.1",
+		"mkdir -p '/etc/config' '/logs' '/logs/nginx' '/macc'",
+		"chown '10001:0' '/logs'",
+		"chmod '775' '/logs'",
+		"chown '10001:0' '/logs/nginx'",
+		"chmod '775' '/logs/nginx'",
+		"chown '10001:0' '/macc'",
+		"chmod '775' '/macc'",
+		"runAsUser: 0",
+		"livenessProbe:",
+		"readinessProbe:",
+		"failureThreshold: 3",
+		"failureThreshold: 5",
+		"path: /bizprocessor/ruok",
+		"initialDelaySeconds: 120",
+		"initialDelaySeconds: 60",
+	} {
+		if !strings.Contains(values, expected) {
+			t.Fatalf("manifest should contain %q:\n%s", expected, values)
+		}
+	}
+	if strings.Contains(values, "name: app\n") {
+		t.Fatalf("named multi-container workload should not render default app container:\n%s", values)
+	}
+	if strings.Contains(values, "fix-log-permissions") || strings.Contains(values, "/legacy-ignored") {
+		t.Fatalf("manifest should use template-managed init container, not user-provided initContainers:\n%s", values)
+	}
+	if strings.Contains(values, "failure-threshold") || strings.Contains(values, "livenessProbe:\n          name:") || strings.Contains(values, "readinessProbe:\n          name:") {
+		t.Fatalf("manifest should render Kubernetes probe fields, not platform probe metadata:\n%s", values)
+	}
+	if strings.Contains(values, "\n          mountPath: /usr/local/tomcat/macc_conf\n") {
+		t.Fatalf("manifest should not render raw macc_conf directory mount when platform config files mount individual files:\n%s", values)
+	}
+	if strings.Contains(values, "name: \"macc-conf\"") {
+		t.Fatalf("manifest should not render unused raw macc_conf volume after filtering its directory mount:\n%s", values)
+	}
+	if strings.Contains(values, "name: \"app-logs\"\n        emptyDir") || strings.Contains(values, "name: app-logs\n        emptyDir") {
+		t.Fatalf("manifest should render app-logs as hostPath, not emptyDir:\n%s", values)
+	}
+	if count := strings.Count(values, "mountPath: /logs"); count != 3 {
+		t.Fatalf("manifest should mount /logs for frontend, backend, and init container, got %d:\n%s", count, values)
+	}
+	if !strings.Contains(values, "mountPath: /usr/local/tomcat/macc_conf/logback.xml") || !strings.Contains(values, "mountPath: /macc/macc_conf/app.properties") {
+		t.Fatalf("manifest should keep platform single-file config mounts:\n%s", values)
+	}
+	if count := strings.Count(values, "name: CATALINA_OPTS"); count != 1 {
+		t.Fatalf("manifest should render CATALINA_OPTS once, got %d:\n%s", count, values)
+	}
+	if count := strings.Count(values, "mountPath: /usr/local/tomcat/conf/catalina.properties"); count != 1 {
+		t.Fatalf("manifest should render catalina.properties mount once, got %d:\n%s", count, values)
+	}
+	if strings.Contains(values, "\n      - configMap:\n        defaultMode:") {
+		t.Fatalf("raw configMap volume fields should be nested under configMap:\n%s", values)
+	}
+	if !strings.Contains(values, "\n      - configMap:\n          defaultMode:") {
+		t.Fatalf("raw configMap volume should render nested defaultMode:\n%s", values)
+	}
+	latestDeploy, err := svc.GetLatestDeploymentForStage(context.Background(), "app_1", "dev")
+	if err != nil {
+		t.Fatalf("GetLatestDeploymentForStage() error = %v", err)
+	}
+	_, templateRevision, err := svc.GetPlatformTemplateRevision(context.Background())
+	if err != nil {
+		t.Fatalf("GetPlatformTemplateRevision() error = %v", err)
+	}
+	currentHash := svc.ComputeStageConfigHashForFreightItems(context.Background(), templateRevision.ID, "dev", []delivery.FreightItem{
+		{WorkloadID: "workload_frontend", ContainerName: "frontend", URI: "registry/frontend:v1", ImageRepository: "registry/frontend", ImageTag: "v1"},
+		{WorkloadID: "workload_frontend", ContainerName: "backend", URI: "registry/macc-webbase:v1", ImageRepository: "registry/macc-webbase", ImageTag: "v1"},
+	})
+	if latestDeploy.ConfigHash != currentHash {
+		t.Fatalf("workspace config hash should match deployed hash when rendered manifests are unchanged, deployed=%s current=%s", latestDeploy.ConfigHash, currentHash)
+	}
+}
+
+func TestRenderConfigMapUsesExplicitBlockIndent(t *testing.T) {
+	content := "\n which cache used\naliyun.enabled=true\n"
+	values := renderConfigMap("macc-frontend-config", "macc", map[string]string{"app": "frontend"}, []WorkloadConfigFileRef{
+		{MountPath: "/macc/macc_conf/aliyun.properties", Content: content},
+	})
+	if !strings.Contains(values, "backend-aliyun.properties: |2") && !strings.Contains(values, "aliyun.properties: |2") {
+		t.Fatalf("configmap should render explicit block indent indicator:\n%s", values)
+	}
+	if strings.Contains(values, "\n  aliyun.properties: |\n") {
+		t.Fatalf("configmap should not use auto-detected block indentation:\n%s", values)
+	}
+	if !strings.Contains(values, "\n     which cache used\n    aliyun.enabled=true\n") {
+		t.Fatalf("configmap content indentation should preserve leading space without breaking following lines:\n%s", values)
+	}
+}
+
 func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing.T) {
 	ids := []shared.ID{
 		"deployment_template_platform", "deployment_template_revision_platform",
@@ -789,7 +1112,20 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 				ConfigFiles:      []WorkloadConfigFileRef{{MountPath: "/etc/app/config.yaml", Content: "feature: true"}},
 				WritableDirs:     []WorkloadWritableDirRef{{MountPath: "/data", SizeLimit: "1Gi"}},
 				VolumeMounts:     []WorkloadVolumeMountRef{{Name: "config", MountPath: "/etc/app"}},
-				InitContainers:   []WorkloadInitContainerRef{{Name: "init-permission", Image: "busybox:1.36", Command: []string{"sh", "-c", "mkdir -p /data"}}},
+				InitContainers:   []WorkloadInitContainerRef{{Name: "init-permission", Image: "cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/busybox:1.34.1", Command: []string{"sh", "-c", "mkdir -p /legacy-ignored"}}},
+				ValuesOverride: map[string]any{
+					"k8sCompat": map[string]any{
+						"ingress": map[string]any{
+							"annotations": map[string]any{
+								"cert-manager.io/cluster-issuer": "letsencrypt-prod",
+								"higress.io/session-cookie-name": "MACC_FRONTEND_ROUTE",
+								"higress.io/session-cookie-path": "/",
+								"higress.io/affinity":            "cookie",
+								"higress.io/affinity-mode":       "balanced",
+							},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -824,7 +1160,17 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 		"mountPath: /data",
 		"sizeLimit: 1Gi",
 		"name: config",
-		"name: init-permission",
+		"name: init",
+		"securityContext:",
+		"runAsUser: 0",
+		"mkdir -p '/data' '/logs' '/logs/nginx'",
+		"chown '10001:0' '/logs'",
+		"chmod '775' '/logs'",
+		"cert-manager.io/cluster-issuer: \"letsencrypt-prod\"",
+		"higress.io/affinity: \"cookie\"",
+		"higress.io/affinity-mode: \"balanced\"",
+		"higress.io/session-cookie-name: \"MACC_FRONTEND_ROUTE\"",
+		"higress.io/session-cookie-path: \"/\"",
 		"kind: StatefulSet",
 		"image: registry/order-worker:v5@sha256:worker",
 	} {
@@ -834,6 +1180,9 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 	}
 	if strings.Contains(values, "ingressClassName: nginx") {
 		t.Fatalf("values should not contain nginx ingress class:\n%s", values)
+	}
+	if strings.Contains(values, "init-permission") || strings.Contains(values, "/legacy-ignored") {
+		t.Fatalf("values should ignore configured initContainers and render template-managed init:\n%s", values)
 	}
 	deployment, err := svc.GetDeployment(context.Background(), "deployment_1")
 	if err != nil {
@@ -860,6 +1209,88 @@ func TestApplyPromotionUpdatesMultipleWorkloadValuesAndRollbackImages(t *testing
 	revision, err := svc.repo.GetManifestRevision(context.Background(), "manifest_revision_2")
 	if err != nil || revision.ChangeType != "rollback" {
 		t.Fatalf("rollback manifest revision = %#v err=%v", revision, err)
+	}
+}
+
+func TestRenderIngressAddsDefaultCertManagerAnnotationForTLS(t *testing.T) {
+	ingress := renderIngress(
+		"macc-frontend",
+		"macc",
+		map[string]string{"app.kubernetes.io/name": "macc-frontend"},
+		[]WorkloadIngressHostRef{{Host: "cloud-ltt.rj.link", Path: "/", TLS: true}},
+		[]WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 80, Protocol: "TCP"}},
+		nil,
+	)
+	for _, want := range []string{
+		"annotations:",
+		"cert-manager.io/cluster-issuer: \"letsencrypt-prod\"",
+		"ingressClassName: higress",
+		"tls:",
+		"secretName: macc-frontend-tls",
+	} {
+		if !strings.Contains(ingress, want) {
+			t.Fatalf("ingress missing %q:\n%s", want, ingress)
+		}
+	}
+
+	withoutTLS := renderIngress(
+		"macc-frontend",
+		"macc",
+		map[string]string{"app.kubernetes.io/name": "macc-frontend"},
+		[]WorkloadIngressHostRef{{Host: "cloud-ltt.rj.link", Path: "/"}},
+		[]WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 80, Protocol: "TCP"}},
+		nil,
+	)
+	if strings.Contains(withoutTLS, "cert-manager.io/cluster-issuer") {
+		t.Fatalf("non-TLS ingress should not include cert-manager annotation:\n%s", withoutTLS)
+	}
+
+	customIssuer := renderIngress(
+		"macc-frontend",
+		"macc",
+		map[string]string{"app.kubernetes.io/name": "macc-frontend"},
+		[]WorkloadIngressHostRef{{Host: "cloud-ltt.rj.link", Path: "/", TLS: true}},
+		[]WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 80, Protocol: "TCP"}},
+		map[string]any{"ingressAnnotations": map[string]any{"cert-manager.io/cluster-issuer": "corp-ca"}},
+	)
+	if !strings.Contains(customIssuer, "cert-manager.io/cluster-issuer: \"corp-ca\"") {
+		t.Fatalf("custom issuer should be preserved:\n%s", customIssuer)
+	}
+	if strings.Contains(customIssuer, "cert-manager.io/cluster-issuer: \"letsencrypt-prod\"") {
+		t.Fatalf("default issuer should not override custom issuer:\n%s", customIssuer)
+	}
+}
+
+func TestRenderWorkloadAddsLegacyAppLabel(t *testing.T) {
+	labels := buildLabels("macc-frontend", "macc-frontend", "frontend", "app_1", "dev", "deployment_1")
+	workload := renderWorkload(
+		WorkloadRef{Name: "macc-frontend", WorkloadType: "Deployment"},
+		WorkloadStageConfigRef{},
+		map[string]containerImage{"frontend": {Repository: "registry/frontend", Tag: "v1"}},
+		"macc-frontend",
+		"macc",
+		labels,
+	)
+	if count := strings.Count(workload, "app: \"macc-frontend\""); count != 2 {
+		t.Fatalf("workload should include legacy app label on resource and pod template, got %d:\n%s", count, workload)
+	}
+	if !strings.Contains(workload, "app.kubernetes.io/name: \"macc-frontend\"") {
+		t.Fatalf("workload should retain app.kubernetes labels:\n%s", workload)
+	}
+	for _, want := range []string{
+		"podAntiAffinity:",
+		"preferredDuringSchedulingIgnoredDuringExecution:",
+		"weight: 100",
+		"app.kubernetes.io/name: \"macc-frontend\"",
+		"app.kubernetes.io/instance: \"macc-frontend\"",
+		"topologyKey: \"kubernetes.io/hostname\"",
+	} {
+		if !strings.Contains(workload, want) {
+			t.Fatalf("workload should include soft pod anti-affinity %q:\n%s", want, workload)
+		}
+	}
+	if strings.Contains(workload, "requiredDuringSchedulingIgnoredDuringExecution") {
+		t.Fatalf("workload should use soft pod anti-affinity, not required anti-affinity:\n%s", workload)
 	}
 }
 

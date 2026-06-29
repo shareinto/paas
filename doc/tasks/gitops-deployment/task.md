@@ -14,7 +14,9 @@
 - [x] 实现 application 级 DeploymentTemplate 创建，从平台基础模板生成独立副本或 overlay。
 - [x] 实现 DeploymentTemplateRevision，每次用户修改模板生成新版本。
 - [x] 支持用户通过 PaaS 修改模板内容，不直接暴露 GitLab 部署清单仓库。
-- [x] 支持 initContainer、目录创建、目录权限、volumeMount、安全上下文等模板定制场景。
+- [x] Workload 模板固定渲染平台管理的 initContainer（名称 `init`），用于目录创建、目录权限等初始化工作；该能力不作为用户配置项暴露，渲染时固定 `securityContext.runAsUser: 0`。`/logs` 固定执行 `chown 10001:0` 与 `chmod 775`，其它可写目录按平台配置的 `owner_group/mode` 生成权限修复命令。
+- [x] Workload 模板默认渲染 `app-logs` hostPath 日志卷（`/cloud`），并将所有业务容器和 initContainer 的 `/logs` 挂载到 `macc/$(APP_NAME)/$(POD_NAME)` 子路径。
+- [x] Workload 模板固定渲染软 Pod 反亲和（`preferredDuringSchedulingIgnoredDuringExecution`，权重 `100`，`topologyKey=kubernetes.io/hostname`），通过当前 Workload 的 `app.kubernetes.io/name` 与 `app.kubernetes.io/instance` 匹配同组 Pod；业务 Workload 资源名保留原名，不追加 Stage 后缀。
 - [x] 实现模板语法校验和策略校验，校验通过后才能用于发布。
 - [x] 实现环境清单目录生成规则：`apps/{app}/{env}/values.yaml`。
 - [x] 实现 Argo CD Application 清单生成，按 StageClusterBinding 创建。
@@ -28,7 +30,7 @@
 - [x] 实现回滚清单修改，目标镜像 digest 来自历史 Freight。
 - [x] 提供 Deployment 查询 API。
 - [x] 编写测试：应用级模板副本不影响平台基础模板和其他应用模板。
-- [x] 编写测试：initContainer mkdir/chmod 场景可以通过模板校验并渲染到清单。
+- [x] 编写测试：initContainer `mkdir/chown/chmod` 场景和 `emptyDir.sizeLimit` 可以通过模板校验并渲染到清单。
 - [x] 编写测试：模板语法错误或策略违规时拒绝发布。
 - [x] 编写测试：values.yaml 更新、所有 Stage commit、ManifestRevision 记录、回滚 digest、Agent 状态映射。
 

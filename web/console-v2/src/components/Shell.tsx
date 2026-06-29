@@ -9,6 +9,7 @@ import {
   CircleHelp,
   Cloud,
   GitPullRequest,
+  Hammer,
   Home,
   Menu,
   Rocket,
@@ -16,6 +17,7 @@ import {
   Search,
   Settings,
   Shield,
+  ShieldCheck,
   Workflow
 } from 'lucide-react';
 import { Button } from './ui/button';
@@ -38,6 +40,8 @@ const navGroups = [
   {
     label: '平台管理',
     items: [
+      { label: '权限管理', to: '/rbac', icon: ShieldCheck },
+      { label: '构建管理', to: '/build-management', icon: Hammer },
       { label: '交付模板', to: '/delivery-template', icon: Route },
       { label: '集群管理', to: '/clusters', icon: Cloud },
       { label: '设置', to: '/settings', icon: Settings }

@@ -6,12 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/shareinto/paas/internal/modules/clusteragent"
 	"github.com/shareinto/paas/internal/modules/delivery"
 	"github.com/shareinto/paas/internal/shared"
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -655,19 +655,7 @@ func (s *Service) RenderExpectedManifest(ctx context.Context, appID shared.ID, s
 	path := manifestPath(app.Name, stageKey)
 	currentManifest, _ = s.manifest.ReadFile(ctx, path, "main")
 
-	// Extract namespace from current manifest for consistent rendering
-	namespace := "default"
-	if currentManifest != "" {
-		var parsed map[string]any
-		if yaml.Unmarshal([]byte(currentManifest), &parsed) == nil {
-			if meta, ok := parsed["metadata"].(map[string]any); ok {
-				if ns, ok := meta["namespace"].(string); ok && ns != "" {
-					namespace = ns
-				}
-			}
-		}
-	}
-	binding := ClusterBindingRef{ID: deploy.ClusterBindingID, StageKey: stageKey, Namespace: namespace}
+	binding := ClusterBindingRef{ID: deploy.ClusterBindingID, StageKey: stageKey, Namespace: defaultNamespaceForStage(app, stageKey)}
 	artifacts := make([]delivery.GitOpsArtifactSpec, 0, len(freightItems))
 	for i, item := range freightItems {
 		artifacts = append(artifacts, delivery.GitOpsArtifactSpec{
@@ -685,6 +673,47 @@ func (s *Service) RenderExpectedManifest(ctx context.Context, appID shared.ID, s
 		return "", "", err
 	}
 	return expected, currentManifest, nil
+}
+
+func defaultNamespaceForStage(app ApplicationRef, stageKey string) string {
+	base := firstNonEmpty(app.ProjectName, app.ProjectID.String())
+	stageKey = normalizeStageKey(stageKey)
+	if stageKey == "" {
+		return normalizeKubernetesNamespace(base)
+	}
+	return normalizeKubernetesNamespace(base + "-" + stageKey)
+}
+
+func normalizeKubernetesNamespace(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if r == '-' || r == '_' || r == '.' {
+			if b.Len() > 0 && !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+			continue
+		}
+		if b.Len() > 0 && !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	namespace := strings.Trim(b.String(), "-")
+	if len(namespace) > 63 {
+		namespace = strings.Trim(namespace[:63], "-")
+	}
+	if namespace == "" {
+		return "default"
+	}
+	return namespace
 }
 
 func (s *Service) PreviewPromotionManifest(ctx context.Context, spec delivery.GitOpsPromotionSpec) (expected string, currentManifest string, err error) {
@@ -753,16 +782,238 @@ func (s *Service) collectStageConfigs(ctx context.Context, appID shared.ID, arti
 		if artifact.WorkloadID.IsZero() {
 			continue
 		}
-		config, err := s.getWorkloadStageConfig(ctx, artifact.WorkloadID, stageKey)
+		config, err := s.resolveWorkloadConfig(ctx, artifact.WorkloadID, stageKey)
 		if err != nil {
-			config, err = s.getWorkloadDefaultConfig(ctx, artifact.WorkloadID)
-			if err != nil {
-				continue
-			}
+			continue
 		}
 		configs = append(configs, config)
 	}
 	return configs
+}
+
+func (s *Service) ComputeStageConfigHashForFreightItems(ctx context.Context, templateRevisionID shared.ID, stageKey string, items []delivery.FreightItem) string {
+	artifacts := make([]delivery.GitOpsArtifactSpec, 0, len(items))
+	for _, item := range items {
+		artifacts = append(artifacts, delivery.GitOpsArtifactSpec{
+			WorkloadID:    item.WorkloadID,
+			ContainerName: item.ContainerName,
+			URI:           item.URI,
+			Repository:    item.ImageRepository,
+			Tag:           item.ImageTag,
+			Digest:        item.Digest,
+		})
+	}
+	return ComputeStageConfigHash(templateRevisionID, s.collectStageConfigs(ctx, "", artifacts, stageKey))
+}
+
+func (s *Service) resolveWorkloadConfig(ctx context.Context, workloadID shared.ID, stageKey string) (WorkloadStageConfigRef, error) {
+	defaultConfig, defaultErr := s.getWorkloadDefaultConfig(ctx, workloadID)
+	stageConfig, stageErr := s.getWorkloadStageConfig(ctx, workloadID, stageKey)
+	switch {
+	case stageErr == nil && defaultErr == nil:
+		return mergeWorkloadConfig(defaultConfig, stageConfig), nil
+	case stageErr == nil:
+		return stageConfig, nil
+	case defaultErr == nil:
+		return defaultConfig, nil
+	case shared.CodeOf(stageErr) != shared.CodeNotFound:
+		return WorkloadStageConfigRef{}, stageErr
+	default:
+		return WorkloadStageConfigRef{}, defaultErr
+	}
+}
+
+func mergeWorkloadConfig(base WorkloadStageConfigRef, override WorkloadStageConfigRef) WorkloadStageConfigRef {
+	out := base
+	if override.Replicas > 0 {
+		out.Replicas = override.Replicas
+	}
+	if len(override.ServicePorts) > 0 {
+		out.ServicePorts = override.ServicePorts
+	}
+	if override.ResourceRequests.CPU != "" || override.ResourceRequests.Memory != "" {
+		out.ResourceRequests = override.ResourceRequests
+	}
+	if override.ResourceLimits.CPU != "" || override.ResourceLimits.Memory != "" {
+		out.ResourceLimits = override.ResourceLimits
+	}
+	if len(override.Probes) > 0 {
+		out.Probes = override.Probes
+	}
+	if len(override.EnvVars) > 0 {
+		out.EnvVars = override.EnvVars
+	}
+	if len(override.IngressHosts) > 0 {
+		out.IngressHosts = override.IngressHosts
+	}
+	if len(override.SecretRefs) > 0 {
+		out.SecretRefs = override.SecretRefs
+	}
+	if len(override.ConfigFiles) > 0 {
+		out.ConfigFiles = override.ConfigFiles
+	}
+	if len(override.WritableDirs) > 0 {
+		out.WritableDirs = override.WritableDirs
+	}
+	if len(override.VolumeMounts) > 0 {
+		out.VolumeMounts = override.VolumeMounts
+	}
+	if len(override.InitContainers) > 0 {
+		out.InitContainers = override.InitContainers
+	}
+	out.ValuesOverride = mergeValuesOverride(base.ValuesOverride, override.ValuesOverride)
+	return out
+}
+
+func mergeValuesOverride(base map[string]any, override map[string]any) map[string]any {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	out := deepCopyMap(base)
+	for key, value := range override {
+		if key == "containers" {
+			out[key] = mergeContainerOverrides(out[key], value)
+			continue
+		}
+		if baseMap, ok := out[key].(map[string]any); ok {
+			if overrideMap, ok := value.(map[string]any); ok {
+				out[key] = mergeValuesOverride(baseMap, overrideMap)
+				continue
+			}
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func mergeContainerOverrides(base any, override any) any {
+	baseItems := mapByContainerName(base)
+	for _, item := range mapSlice(override) {
+		name := strings.TrimSpace(fmt.Sprint(item["name"]))
+		if name == "" {
+			continue
+		}
+		if existing, ok := baseItems[name]; ok {
+			baseItems[name] = mergeContainerMap(existing, item)
+		} else {
+			baseItems[name] = deepCopyMap(item)
+		}
+	}
+	names := make([]string, 0, len(baseItems))
+	for name := range baseItems {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		out = append(out, baseItems[name])
+	}
+	return out
+}
+
+func mergeContainerMap(base map[string]any, override map[string]any) map[string]any {
+	out := mergeValuesOverride(base, override)
+	for _, spec := range []struct {
+		key      string
+		identity string
+	}{
+		{key: "config_files", identity: "mount_path"},
+		{key: "writable_dirs", identity: "mount_path"},
+		{key: "env_vars", identity: "name"},
+		{key: "secret_refs", identity: "name"},
+		{key: "volume_mounts", identity: "mount_path"},
+		{key: "probes", identity: "name"},
+	} {
+		if _, ok := override[spec.key]; ok {
+			out[spec.key] = mergeNamedItems(base[spec.key], override[spec.key], spec.identity)
+		}
+	}
+	return out
+}
+
+func mergeNamedItems(base any, override any, identity string) any {
+	items := map[string]map[string]any{}
+	for _, item := range mapSlice(base) {
+		key := strings.TrimSpace(fmt.Sprint(item[identity]))
+		if key == "" {
+			continue
+		}
+		items[key] = deepCopyMap(item)
+	}
+	for _, item := range mapSlice(override) {
+		key := strings.TrimSpace(fmt.Sprint(item[identity]))
+		if key == "" {
+			continue
+		}
+		if existing, ok := items[key]; ok {
+			items[key] = mergeValuesOverride(existing, item)
+		} else {
+			items[key] = deepCopyMap(item)
+		}
+	}
+	keys := make([]string, 0, len(items))
+	for key := range items {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]map[string]any, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, items[key])
+	}
+	return out
+}
+
+func mapByContainerName(raw any) map[string]map[string]any {
+	out := map[string]map[string]any{}
+	for _, item := range mapSlice(raw) {
+		name := strings.TrimSpace(fmt.Sprint(item["name"]))
+		if name == "" {
+			continue
+		}
+		out[name] = deepCopyMap(item)
+	}
+	return out
+}
+
+func mapSlice(raw any) []map[string]any {
+	var out []map[string]any
+	switch items := raw.(type) {
+	case []map[string]any:
+		for _, item := range items {
+			out = append(out, item)
+		}
+	case []any:
+		for _, item := range items {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
+func deepCopyMap(in map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range in {
+		if nested, ok := value.(map[string]any); ok {
+			out[key] = deepCopyMap(nested)
+			continue
+		}
+		if items, ok := value.([]any); ok {
+			copyItems := make([]any, 0, len(items))
+			for _, item := range items {
+				if m, ok := item.(map[string]any); ok {
+					copyItems = append(copyItems, deepCopyMap(m))
+				} else {
+					copyItems = append(copyItems, item)
+				}
+			}
+			out[key] = copyItems
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func renderArgoApplication(app ApplicationRef, stageKey string, binding ClusterBindingRef, deploymentID shared.ID, manifestRepoURL string, manifestDir string) string {

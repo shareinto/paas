@@ -18,6 +18,7 @@ type PlatformSelectionContextValue = {
   setTenant: (tenantId: string) => void;
   setProject: (projectId: string) => void;
   setApplication: (applicationId: string) => void;
+  refreshContexts: () => Promise<void>;
 };
 
 const STORAGE_KEY = 'paas-console-v2-context';
@@ -52,6 +53,15 @@ export function PlatformSelectionProvider({ children }: { children: ReactNode })
   const [source, setSource] = useState<PlatformContextSource>('mock');
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(true);
+
+  async function refreshContexts() {
+    setLoading(true);
+    const result = await loadPlatformContexts();
+    setTenants(hasUsableContext(result.tenants) ? result.tenants : platformContexts);
+    setSource(result.source);
+    setError(result.error);
+    setLoading(false);
+  }
 
   useEffect(() => {
     let alive = true;
@@ -128,7 +138,8 @@ export function PlatformSelectionProvider({ children }: { children: ReactNode })
         tenantId: resolved.currentTenant.id,
         projectId: resolved.currentProject.id,
         applicationId
-      })
+      }),
+    refreshContexts
   }), [tenants, resolved, loading, source, error, searchParams, setSearchParams]);
 
   return <PlatformSelectionContext.Provider value={value}>{children}</PlatformSelectionContext.Provider>;

@@ -141,6 +141,9 @@ type OIDCStartResult struct {
 type RoleDTO struct {
 	ID              RoleID       `json:"id"`
 	Name            string       `json:"name"`
+	Description     string       `json:"description"`
+	BuiltIn         bool         `json:"built_in"`
+	Disabled        bool         `json:"disabled"`
 	Permissions     []Permission `json:"permissions"`
 	SuggestedScopes []ScopeKind  `json:"suggestedScopes"`
 }
@@ -148,6 +151,23 @@ type RoleDTO struct {
 type UpdateRolePermissionsInput struct {
 	Actor       Subject      `json:"actor"`
 	Permissions []Permission `json:"permissions"`
+}
+
+type CreateRoleInput struct {
+	Actor           Subject      `json:"actor"`
+	ID              RoleID       `json:"id"`
+	Name            string       `json:"name"`
+	Description     string       `json:"description"`
+	Permissions     []Permission `json:"permissions"`
+	SuggestedScopes []ScopeKind  `json:"suggested_scopes"`
+}
+
+type UpdateRoleInput struct {
+	Actor           Subject     `json:"actor"`
+	Name            string      `json:"name"`
+	Description     string      `json:"description"`
+	Disabled        *bool       `json:"disabled"`
+	SuggestedScopes []ScopeKind `json:"suggested_scopes"`
 }
 
 func (s *Service) CreateLocalUser(ctx context.Context, input CreateLocalUserInput) (UserDTO, error) {
@@ -431,7 +451,7 @@ func (s *Service) Check(ctx context.Context, subject Subject, resource ResourceS
 				continue
 			}
 			role, ok := roles[binding.RoleID]
-			if !ok {
+			if !ok || role.Disabled {
 				continue
 			}
 			for _, permission := range role.Permissions {
@@ -445,8 +465,12 @@ func (s *Service) Check(ctx context.Context, subject Subject, resource ResourceS
 }
 
 func (s *Service) CreateRoleBinding(ctx context.Context, binding RoleBinding) (RoleBinding, error) {
-	if _, ok := s.roles[binding.RoleID]; !ok {
-		return RoleBinding{}, shared.NewError(shared.CodeInvalidArgument, "role is not supported")
+	role, err := s.roleForBinding(ctx, binding.RoleID)
+	if err != nil {
+		return RoleBinding{}, err
+	}
+	if role.Disabled {
+		return RoleBinding{}, shared.NewError(shared.CodeFailedPrecondition, "role is disabled")
 	}
 	if binding.SubjectID.IsZero() {
 		return RoleBinding{}, shared.NewError(shared.CodeInvalidArgument, "subject_id is required")
@@ -472,6 +496,16 @@ func (s *Service) ReplaceRoleBindingForSubjectScope(ctx context.Context, binding
 	if binding.ScopeKind == "" {
 		return RoleBinding{}, shared.NewError(shared.CodeInvalidArgument, "scope_kind is required")
 	}
+	role, err := s.roleForBinding(ctx, binding.RoleID)
+	if err != nil {
+		return RoleBinding{}, err
+	}
+	if role.Disabled {
+		return RoleBinding{}, shared.NewError(shared.CodeFailedPrecondition, "role is disabled")
+	}
+	if binding.SubjectID.IsZero() {
+		return RoleBinding{}, shared.NewError(shared.CodeInvalidArgument, "subject_id is required")
+	}
 	_ = s.repo.DeleteRoleBindingsForSubjectScope(ctx, Subject{Type: binding.SubjectType, ID: binding.SubjectID}, binding.ScopeKind, binding.ScopeID)
 	return s.CreateRoleBinding(ctx, binding)
 }
@@ -485,6 +519,13 @@ func (s *Service) DeleteRoleBindingsForSubjectScope(ctx context.Context, subject
 
 func (s *Service) ListRoleBindingsByScope(ctx context.Context, scopeKind ScopeKind, scopeID shared.ID) ([]RoleBinding, error) {
 	return s.repo.ListRoleBindingsByScope(ctx, scopeKind, scopeID)
+}
+
+func (s *Service) ListRoleBindingsForSubject(ctx context.Context, subject Subject) ([]RoleBinding, error) {
+	if subject.ID.IsZero() || subject.Type == "" {
+		return nil, shared.NewError(shared.CodeInvalidArgument, "subject is required")
+	}
+	return s.repo.ListRoleBindingsForSubject(ctx, subject)
 }
 
 func (s *Service) UpdateRolePermissions(ctx context.Context, roleID RoleID, input UpdateRolePermissionsInput) (RoleDTO, error) {
@@ -506,6 +547,9 @@ func (s *Service) UpdateRolePermissions(ctx context.Context, roleID RoleID, inpu
 	if err != nil {
 		return RoleDTO{}, err
 	}
+	if err := validateSystemPermissions(permissions); err != nil {
+		return RoleDTO{}, err
+	}
 	if roleID == RolePlatformAdmin && !hasPermission(permissions, "*:*") {
 		return RoleDTO{}, shared.NewError(shared.CodeInvalidArgument, "platform admin must keep full access")
 	}
@@ -521,6 +565,128 @@ func (s *Service) UpdateRolePermissions(ctx context.Context, roleID RoleID, inpu
 	return toRoleDTO(role), nil
 }
 
+func (s *Service) CreateRole(ctx context.Context, input CreateRoleInput) (RoleDTO, error) {
+	if input.Actor.ID.IsZero() {
+		return RoleDTO{}, shared.NewError(shared.CodeUnauthenticated, "actor is required")
+	}
+	if err := s.Check(ctx, input.Actor, ResourceScope{Kind: ScopePlatform}, "role:create"); err != nil {
+		return RoleDTO{}, err
+	}
+	roleID, err := normalizeRoleID(input.ID)
+	if err != nil {
+		return RoleDTO{}, err
+	}
+	if _, ok := BuiltInRoles()[roleID]; ok {
+		return RoleDTO{}, shared.NewError(shared.CodeInvalidArgument, "built-in role id cannot be reused")
+	}
+	roles, err := s.effectiveRoles(ctx)
+	if err != nil {
+		return RoleDTO{}, err
+	}
+	if _, exists := roles[roleID]; exists {
+		return RoleDTO{}, shared.NewError(shared.CodeConflict, "role already exists")
+	}
+	permissions, err := normalizeGrantedPermissions(input.Permissions)
+	if err != nil {
+		return RoleDTO{}, err
+	}
+	if err := validateSystemPermissions(permissions); err != nil {
+		return RoleDTO{}, err
+	}
+	role := Role{
+		ID:              roleID,
+		Name:            strings.TrimSpace(input.Name),
+		Description:     strings.TrimSpace(input.Description),
+		BuiltIn:         false,
+		Disabled:        false,
+		SuggestedScopes: normalizeScopeKinds(input.SuggestedScopes),
+		Permissions:     permissions,
+	}
+	if role.Name == "" {
+		return RoleDTO{}, shared.NewError(shared.CodeInvalidArgument, "name is required")
+	}
+	if err := s.repo.UpsertRole(ctx, role); err != nil {
+		return RoleDTO{}, err
+	}
+	if err := s.repo.ReplaceRolePermissions(ctx, role.ID, permissions); err != nil {
+		return RoleDTO{}, err
+	}
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "role.create", ResourceType: "role", ResourceID: shared.ID(role.ID), Result: "succeeded", Summary: "创建角色", OccurredAt: s.clock.Now()})
+	return toRoleDTO(role), nil
+}
+
+func (s *Service) UpdateRole(ctx context.Context, roleID RoleID, input UpdateRoleInput) (RoleDTO, error) {
+	if input.Actor.ID.IsZero() {
+		return RoleDTO{}, shared.NewError(shared.CodeUnauthenticated, "actor is required")
+	}
+	if err := s.Check(ctx, input.Actor, ResourceScope{Kind: ScopePlatform}, "role:update"); err != nil {
+		return RoleDTO{}, err
+	}
+	roles, err := s.effectiveRoles(ctx)
+	if err != nil {
+		return RoleDTO{}, err
+	}
+	role, ok := roles[roleID]
+	if !ok {
+		return RoleDTO{}, shared.NewError(shared.CodeNotFound, "role not found")
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return RoleDTO{}, shared.NewError(shared.CodeInvalidArgument, "name is required")
+	}
+	if role.BuiltIn && input.Disabled != nil && *input.Disabled {
+		return RoleDTO{}, shared.NewError(shared.CodeFailedPrecondition, "built-in role cannot be disabled")
+	}
+	role.Name = name
+	role.Description = strings.TrimSpace(input.Description)
+	role.SuggestedScopes = normalizeScopeKinds(input.SuggestedScopes)
+	if input.Disabled != nil {
+		role.Disabled = *input.Disabled
+	}
+	if role.BuiltIn {
+		role.Disabled = false
+	}
+	if err := s.repo.UpsertRole(ctx, role); err != nil {
+		return RoleDTO{}, err
+	}
+	s.roles[role.ID] = role
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: input.Actor.ID, Action: "role.update", ResourceType: "role", ResourceID: shared.ID(role.ID), Result: "succeeded", Summary: "修改角色", OccurredAt: s.clock.Now()})
+	return toRoleDTO(role), nil
+}
+
+func (s *Service) DeleteRole(ctx context.Context, roleID RoleID, actor Subject) error {
+	if actor.ID.IsZero() {
+		return shared.NewError(shared.CodeUnauthenticated, "actor is required")
+	}
+	if err := s.Check(ctx, actor, ResourceScope{Kind: ScopePlatform}, "role:delete"); err != nil {
+		return err
+	}
+	roles, err := s.effectiveRoles(ctx)
+	if err != nil {
+		return err
+	}
+	role, ok := roles[roleID]
+	if !ok {
+		return shared.NewError(shared.CodeNotFound, "role not found")
+	}
+	if role.BuiltIn {
+		return shared.NewError(shared.CodeFailedPrecondition, "built-in role cannot be deleted")
+	}
+	count, err := s.repo.RoleBindingCountByRole(ctx, roleID)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return shared.NewError(shared.CodeFailedPrecondition, "role is still bound to subjects")
+	}
+	if err := s.repo.DeleteRole(ctx, roleID); err != nil {
+		return err
+	}
+	delete(s.roles, roleID)
+	_ = s.audit.Log(ctx, AuditEvent{ActorID: actor.ID, Action: "role.delete", ResourceType: "role", ResourceID: shared.ID(roleID), Result: "succeeded", Summary: "删除角色", OccurredAt: s.clock.Now()})
+	return nil
+}
+
 func (s *Service) ListRoles(ctx context.Context) ([]RoleDTO, error) {
 	effective, err := s.effectiveRoles(ctx)
 	if err != nil {
@@ -534,17 +700,9 @@ func (s *Service) ListRoles(ctx context.Context) ([]RoleDTO, error) {
 }
 
 func (s *Service) ListPermissions(ctx context.Context) ([]Permission, error) {
-	effective, err := s.effectiveRoles(ctx)
-	if err != nil {
-		return nil, err
-	}
 	seen := map[Permission]bool{}
-	for _, roles := range []map[RoleID]Role{BuiltInRoles(), effective} {
-		for _, role := range roles {
-			for _, permission := range role.Permissions {
-				seen[permission] = true
-			}
-		}
+	for _, permission := range SystemPermissions() {
+		seen[permission] = true
 	}
 	items := make([]Permission, 0, len(seen))
 	for permission := range seen {
@@ -678,9 +836,19 @@ func (s *Service) effectiveRoles(ctx context.Context) (map[RoleID]Role, error) {
 		return nil, err
 	}
 	for _, role := range stored {
-		if role.Name == "" {
-			if existing, ok := roles[role.ID]; ok {
+		if existing, ok := roles[role.ID]; ok {
+			if role.Name == "" {
 				role.Name = existing.Name
+			}
+			if role.Description == "" {
+				role.Description = existing.Description
+			}
+			if len(role.SuggestedScopes) == 0 {
+				role.SuggestedScopes = append([]ScopeKind(nil), existing.SuggestedScopes...)
+			}
+			if existing.BuiltIn {
+				role.BuiltIn = true
+				role.Disabled = false
 			}
 		}
 		role.Permissions = append([]Permission(nil), role.Permissions...)
@@ -693,6 +861,7 @@ func cloneRoles(input map[RoleID]Role) map[RoleID]Role {
 	roles := make(map[RoleID]Role, len(input))
 	for id, role := range input {
 		role.Permissions = append([]Permission(nil), role.Permissions...)
+		role.SuggestedScopes = append([]ScopeKind(nil), role.SuggestedScopes...)
 		roles[id] = role
 	}
 	return roles
@@ -734,6 +903,55 @@ func orderedBuiltInPrefix(ids []RoleID) int {
 	return count
 }
 
+func (s *Service) roleForBinding(ctx context.Context, roleID RoleID) (Role, error) {
+	roles, err := s.effectiveRoles(ctx)
+	if err != nil {
+		return Role{}, err
+	}
+	role, ok := roles[roleID]
+	if !ok {
+		return Role{}, shared.NewError(shared.CodeInvalidArgument, "role is not supported")
+	}
+	return role, nil
+}
+
+func normalizeRoleID(roleID RoleID) (RoleID, error) {
+	value := strings.TrimSpace(string(roleID))
+	if value == "" {
+		return "", shared.NewError(shared.CodeInvalidArgument, "role id is required")
+	}
+	if len(value) > 64 {
+		return "", shared.NewError(shared.CodeInvalidArgument, "role id is too long")
+	}
+	for i, r := range value {
+		valid := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-'
+		if !valid || i == 0 && !(r >= 'a' && r <= 'z') {
+			return "", shared.NewError(shared.CodeInvalidArgument, "role id must use lowercase letters, numbers, underscore or dash")
+		}
+	}
+	return RoleID(value), nil
+}
+
+func normalizeScopeKinds(input []ScopeKind) []ScopeKind {
+	allowed := map[ScopeKind]bool{
+		ScopePlatform:    true,
+		ScopeTenant:      true,
+		ScopeProject:     true,
+		ScopeApplication: true,
+		ScopeStage:       true,
+	}
+	seen := map[ScopeKind]bool{}
+	result := make([]ScopeKind, 0, len(input))
+	for _, scope := range input {
+		if !allowed[scope] || seen[scope] {
+			continue
+		}
+		seen[scope] = true
+		result = append(result, scope)
+	}
+	return result
+}
+
 func normalizeGrantedPermissions(input []Permission) ([]Permission, error) {
 	seen := map[Permission]bool{}
 	permissions := make([]Permission, 0, len(input))
@@ -754,6 +972,48 @@ func normalizeGrantedPermissions(input []Permission) ([]Permission, error) {
 	return permissions, nil
 }
 
+func validateSystemPermissions(input []Permission) error {
+	allowed := map[Permission]bool{}
+	for _, permission := range SystemPermissions() {
+		allowed[permission] = true
+	}
+	for _, permission := range input {
+		if !allowed[permission] {
+			return shared.NewError(shared.CodeInvalidArgument, "permission is not supported")
+		}
+	}
+	return nil
+}
+
+func SystemPermissions() []Permission {
+	seen := map[Permission]bool{}
+	for _, role := range BuiltInRoles() {
+		for _, permission := range role.Permissions {
+			if permission != "*:*" {
+				seen[permission] = true
+			}
+		}
+	}
+	for _, permission := range []Permission{
+		"role:create", "role:read", "role:update", "role:delete",
+		"user:create", "user:read", "user:update",
+		"deployment:verify",
+		"runtime:logs", "runtime:terminal", "runtime:restart", "runtime:read",
+		"workload:read", "workload:update", "workload:configure",
+	} {
+		seen[permission] = true
+	}
+	items := make([]Permission, 0, len(seen)+1)
+	items = append(items, "*:*")
+	for permission := range seen {
+		items = append(items, permission)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i] < items[j]
+	})
+	return items
+}
+
 func hasPermission(permissions []Permission, required Permission) bool {
 	for _, permission := range permissions {
 		if permission == required {
@@ -764,19 +1024,14 @@ func hasPermission(permissions []Permission, required Permission) bool {
 }
 
 func toRoleDTO(role Role) RoleDTO {
-	return RoleDTO{ID: role.ID, Name: role.Name, Permissions: append([]Permission(nil), role.Permissions...), SuggestedScopes: suggestedScopesForRole(role.ID)}
-}
-
-func suggestedScopesForRole(roleID RoleID) []ScopeKind {
-	switch roleID {
-	case RolePlatformAdmin:
-		return []ScopeKind{ScopePlatform}
-	case RoleTenantOwner, RoleTenantAdmin:
-		return []ScopeKind{ScopeTenant}
-	case RoleProjectAdmin, RoleDeveloper, RoleViewer, RoleOperator, RoleProdApprover, RoleSecurityAuditor:
-		return []ScopeKind{ScopeTenant, ScopeProject}
-	default:
-		return nil
+	return RoleDTO{
+		ID:              role.ID,
+		Name:            role.Name,
+		Description:     role.Description,
+		BuiltIn:         role.BuiltIn,
+		Disabled:        role.Disabled,
+		Permissions:     append([]Permission(nil), role.Permissions...),
+		SuggestedScopes: append([]ScopeKind(nil), role.SuggestedScopes...),
 	}
 }
 

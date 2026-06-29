@@ -88,10 +88,11 @@ type ApplicationQuery interface {
 }
 
 type ApplicationRef struct {
-	ID        shared.ID
-	TenantID  shared.ID
-	ProjectID shared.ID
-	Name      string
+	ID          shared.ID
+	TenantID    shared.ID
+	ProjectID   shared.ID
+	ProjectName string
+	Name        string
 }
 
 type WorkloadQuery interface {

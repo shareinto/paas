@@ -32,6 +32,7 @@ CREATE TABLE application_sources (
   source_url VARCHAR(1024) NOT NULL,
   source_ref VARCHAR(256) NOT NULL,
   svn_revision VARCHAR(64) NOT NULL DEFAULT '',
+  svn_checkout_paths JSON NULL,
   jenkins_template_id VARCHAR(64) NOT NULL DEFAULT '',
   source_path VARCHAR(512) NOT NULL,
   build_command VARCHAR(1024) NOT NULL,
@@ -338,5 +339,18 @@ DEALLOCATE PREPARE add_workloads_application_active_name_stmt;
 		Down: `
 SELECT 1;
 `,
+	},
+	{
+		Version: 202606270902,
+		Name:    "add_application_source_svn_checkout_paths",
+		Up: `
+SELECT IF(COUNT(*) = 0, 'ALTER TABLE application_sources ADD COLUMN svn_checkout_paths JSON NULL AFTER svn_revision', 'SELECT 1') INTO @add_application_sources_svn_checkout_paths
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'application_sources' AND column_name = 'svn_checkout_paths';
+PREPARE add_application_sources_svn_checkout_paths_stmt FROM @add_application_sources_svn_checkout_paths;
+EXECUTE add_application_sources_svn_checkout_paths_stmt;
+DEALLOCATE PREPARE add_application_sources_svn_checkout_paths_stmt;
+`,
+		Down: `SELECT 1;`,
 	},
 }

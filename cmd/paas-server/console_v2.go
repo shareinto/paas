@@ -278,28 +278,26 @@ func (h *consoleV2Handler) handleDeploymentWorkspace(w http.ResponseWriter, r *h
 				}
 				detail = d
 			}
-			var configs []gitops.WorkloadStageConfigRef
-			for _, item := range detail.Items {
-				if item.WorkloadID.IsZero() {
-					continue
-				}
-				config, err := h.apps.GetWorkloadStageConfig(ctx, item.WorkloadID, stageKey)
-				if err != nil {
-					config, err = h.apps.GetWorkloadDefaultConfig(ctx, item.WorkloadID)
-					if err != nil {
-						continue
-					}
-				}
-				configs = append(configs, toGitOpsWorkloadStageConfig(config))
-			}
-			currentHash := gitops.ComputeStageConfigHash(templateRevision.ID, configs)
+			currentHash := h.gitops.ComputeStageConfigHashForFreightItems(ctx, templateRevision.ID, stageKey, detail.Items)
 			if latestDeploy.ConfigHash != currentHash {
-				out.ConfigOutdatedStages[stageKey] = true
+				expected, current, err := h.gitops.RenderExpectedManifest(ctx, appID, stageKey, detail.Items)
+				if err != nil || manifestHasChanges(current, expected) {
+					out.ConfigOutdatedStages[stageKey] = true
+				}
 			}
 		}
 	}
 
 	writeDevelopmentJSON(w, http.StatusOK, out)
+}
+
+func manifestHasChanges(current string, expected string) bool {
+	for _, line := range computeUnifiedDiff(current, expected) {
+		if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *consoleV2Handler) handleListApprovalTasks(w http.ResponseWriter, r *http.Request) {
