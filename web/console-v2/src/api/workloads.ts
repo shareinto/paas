@@ -61,6 +61,8 @@ export type BackendWorkloadStageConfig = {
     tlsRedirect?: boolean;
   }>;
   ingressHosts?: BackendWorkloadStageConfig['ingress_hosts'];
+  network_mode?: string;
+  networkMode?: string;
   env_vars?: Array<{ name?: string; value?: string }>;
   envVars?: Array<{ name?: string; value?: string }>;
   secret_refs?: Array<{ name?: string; secret_ref?: string; secretRef?: string }>;
@@ -72,12 +74,16 @@ export type BackendWorkloadStageConfig = {
   values_override?: {
     containers?: BackendContainerOverride[];
     serviceType?: string;
+    networkMode?: string;
+    network_mode?: string;
     terminationGracePeriodSeconds?: number;
     [key: string]: unknown;
   };
   valuesOverride?: {
     containers?: BackendContainerOverride[];
     serviceType?: string;
+    networkMode?: string;
+    network_mode?: string;
     terminationGracePeriodSeconds?: number;
     [key: string]: unknown;
   };
@@ -305,6 +311,7 @@ function mapWorkloadConfig(
     probePeriodSeconds: fallbackProbes.livenessProbe.periodSeconds,
     probeTimeoutSeconds: fallbackProbes.livenessProbe.timeoutSeconds,
     terminationGracePeriodSeconds: Number(valuesOverride.terminationGracePeriodSeconds ?? 30),
+    networkMode: normalizeNetworkMode(defaultConfig?.network_mode || defaultConfig?.networkMode || valuesOverride.networkMode || valuesOverride.network_mode),
     nodeType: (valuesOverride.nodeType as VersionSourceWorkloadConfig['nodeType']) || 'general',
     exclusive: !!valuesOverride.exclusive,
     envVars: [],
@@ -420,6 +427,7 @@ function workloadDefaultConfigPayload(workload: VersionSourceWorkloadConfig) {
   if (workload.serviceType && workload.serviceType !== 'ClusterIP') valuesOverride.serviceType = workload.serviceType;
   else delete valuesOverride.serviceType;
   if (workload.terminationGracePeriodSeconds !== undefined) valuesOverride.terminationGracePeriodSeconds = Number(workload.terminationGracePeriodSeconds);
+  const networkMode = normalizeNetworkMode(workload.networkMode);
   if (workload.nodeType && workload.nodeType !== 'general') valuesOverride.nodeType = workload.nodeType;
   else delete valuesOverride.nodeType;
   if (workload.exclusive) valuesOverride.exclusive = true;
@@ -428,6 +436,7 @@ function workloadDefaultConfigPayload(workload: VersionSourceWorkloadConfig) {
   return {
     actor: actorBody(),
     replicas: workload.replicas,
+    network_mode: networkMode,
     service_ports: exposesService ? [
       {
         name: 'http',
@@ -501,11 +510,18 @@ function workloadDefaultConfigPayload(workload: VersionSourceWorkloadConfig) {
   };
 }
 
+function normalizeNetworkMode(value: unknown): VersionSourceWorkloadConfig['networkMode'] {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'host' || normalized === 'host_network' || normalized === 'hostnetwork') return 'host';
+  return 'container';
+}
+
 function probePayload(
   probe: VersionSourceWorkloadConfig['containers'][number]['livenessProbe'],
   fallback: NonNullable<VersionSourceWorkloadConfig['containers'][number]['livenessProbe']>
 ) {
   const merged = { ...fallback, ...probe };
+  if (!merged.enabled) return undefined;
   const probeType = normalizeProbeType(merged.probeType);
   return {
     enabled: !!merged.enabled,

@@ -17,6 +17,7 @@ export type RuntimeImage = {
   id?: string;
   name: string;
   displayName: string;
+  architectures: string[];
   runtimeBaseImage: string;
   artifactDeployPath: string;
   dockerfilePath: string;
@@ -69,6 +70,7 @@ type BackendRuntimeImage = {
   name?: string;
   display_name?: string;
   displayName?: string;
+  architectures?: string[];
   runtime_base_image?: string;
   runtimeBaseImage?: string;
   artifact_deploy_path?: string;
@@ -189,6 +191,7 @@ function runtimeEnvironmentBody(input: Omit<RuntimeEnvironment, 'id' | 'status' 
       id: image.id,
       name: image.name,
       display_name: image.displayName,
+      architectures: image.architectures,
       runtime_base_image: image.runtimeBaseImage,
       artifact_deploy_path: image.artifactDeployPath,
       dockerfile_path: image.dockerfilePath,
@@ -232,12 +235,18 @@ function mapRuntimeImage(item: BackendRuntimeImage): RuntimeImage {
     id: item.id,
     name: item.name || '',
     displayName: item.display_name || item.displayName || item.name || '',
+    architectures: normalizeArchitectures(item.architectures),
     runtimeBaseImage: item.runtime_base_image || item.runtimeBaseImage || '',
     artifactDeployPath: item.artifact_deploy_path || item.artifactDeployPath || '',
     dockerfilePath: item.dockerfile_path || item.dockerfilePath || '',
     selectorLabels: item.selector_labels || item.selectorLabels || {},
     status: item.status || 'enabled'
   };
+}
+
+function normalizeArchitectures(values: string[] | undefined) {
+  const normalized = (values || []).map((item) => item === 'amd64' || item === 'linux/amd64' ? 'x86' : item === 'arm64' || item === 'linux/arm64' ? 'arm' : item).filter((item) => item === 'x86' || item === 'arm');
+  return normalized.length ? Array.from(new Set(normalized)) : ['x86', 'arm'];
 }
 
 function mapBuildTemplate(item: BackendBuildTemplate): BuildTemplate {

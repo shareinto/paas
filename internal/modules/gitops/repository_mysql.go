@@ -182,6 +182,48 @@ ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, applicationID, limit, offse
 	return shared.NewPageResult(items, total, page), nil
 }
 
+func (r *MySQLRepository) ListDeploymentsByStage(ctx context.Context, applicationID shared.ID, stageKey string, page shared.PageRequest) (shared.PageResult[Deployment], error) {
+	var total int64
+	if err := database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM deployments d
+WHERE d.application_id = ? AND d.stage_key = ? AND d.manifest_revision_id <> ''
+  AND EXISTS (
+    SELECT 1 FROM manifest_revisions mr
+    WHERE mr.id = d.manifest_revision_id AND mr.commit_sha <> ''
+  )`, applicationID, stageKey).Scan(&total); err != nil {
+		return shared.PageResult[Deployment]{}, database.WrapUnavailable(err, "count stage deployments failed")
+	}
+	page, limit, offset := database.LimitOffset(page)
+	rows, err := database.ExecutorFromContext(ctx, r.db).QueryContext(ctx, `
+SELECT d.id, d.tenant_id, d.project_id, d.application_id, d.stage_key, d.cluster_binding_id, d.promotion_id,
+       d.freight_id, d.manifest_revision_id, d.image_repository, d.image_tag, d.image_digest, d.workload_summary, d.config_hash, d.status, d.message,
+       d.created_at, d.updated_at, d.completed_at
+FROM deployments d
+WHERE d.application_id = ? AND d.stage_key = ? AND d.manifest_revision_id <> ''
+  AND EXISTS (
+    SELECT 1 FROM manifest_revisions mr
+    WHERE mr.id = d.manifest_revision_id AND mr.commit_sha <> ''
+  )
+ORDER BY d.created_at DESC, d.id DESC LIMIT ? OFFSET ?`, applicationID, stageKey, limit, offset)
+	if err != nil {
+		return shared.PageResult[Deployment]{}, database.WrapUnavailable(err, "list stage deployments failed")
+	}
+	defer rows.Close()
+	items := []Deployment{}
+	for rows.Next() {
+		deployment, err := scanDeployment(rows)
+		if err != nil {
+			return shared.PageResult[Deployment]{}, err
+		}
+		items = append(items, deployment)
+	}
+	if err := rows.Err(); err != nil {
+		return shared.PageResult[Deployment]{}, database.WrapUnavailable(err, "list stage deployments failed")
+	}
+	return shared.NewPageResult(items, total, page), nil
+}
+
 func (r *MySQLRepository) GetLatestDeploymentForStage(ctx context.Context, applicationID shared.ID, stageKey string) (Deployment, error) {
 	deployment, err := scanDeployment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
 SELECT id, tenant_id, project_id, application_id, stage_key, cluster_binding_id, promotion_id,
@@ -190,6 +232,25 @@ SELECT id, tenant_id, project_id, application_id, stage_key, cluster_binding_id,
 FROM deployments WHERE application_id = ? AND stage_key = ? ORDER BY created_at DESC LIMIT 1`, applicationID, stageKey))
 	if err != nil {
 		return Deployment{}, database.NotFound(err, "deployment not found")
+	}
+	return deployment, nil
+}
+
+func (r *MySQLRepository) GetPreviousCommittedDeploymentForStage(ctx context.Context, applicationID shared.ID, stageKey string, beforeCreatedAt time.Time, beforeID shared.ID) (Deployment, error) {
+	deployment, err := scanDeployment(database.ExecutorFromContext(ctx, r.db).QueryRowContext(ctx, `
+SELECT d.id, d.tenant_id, d.project_id, d.application_id, d.stage_key, d.cluster_binding_id, d.promotion_id,
+       d.freight_id, d.manifest_revision_id, d.image_repository, d.image_tag, d.image_digest, d.workload_summary, d.config_hash, d.status, d.message,
+       d.created_at, d.updated_at, d.completed_at
+FROM deployments d
+WHERE d.application_id = ? AND d.stage_key = ? AND d.manifest_revision_id <> ''
+  AND (d.created_at < ? OR (d.created_at = ? AND d.id < ?))
+  AND EXISTS (
+    SELECT 1 FROM manifest_revisions mr
+    WHERE mr.id = d.manifest_revision_id AND mr.commit_sha <> ''
+  )
+ORDER BY d.created_at DESC, d.id DESC LIMIT 1`, applicationID, stageKey, mysqlTime(beforeCreatedAt), mysqlTime(beforeCreatedAt), beforeID))
+	if err != nil {
+		return Deployment{}, database.NotFound(err, "previous deployment not found")
 	}
 	return deployment, nil
 }

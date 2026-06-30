@@ -310,6 +310,7 @@ func seedRuntimeEnvironments(t *testing.T, env buildTestEnv) {
 					ID:                 "runtime_image_java17_aliyun",
 					Name:               "aliyun",
 					DisplayName:        "阿里云 JDK 17",
+					Architectures:      []string{"x86"},
 					RuntimeBaseImage:   "registry.example/runtime/java17:1.0",
 					ArtifactDeployPath: "/app/",
 					DockerfilePath:     "java/jar/Dockerfile",
@@ -320,6 +321,7 @@ func seedRuntimeEnvironments(t *testing.T, env buildTestEnv) {
 					ID:                 "runtime_image_java17_aws",
 					Name:               "aws",
 					DisplayName:        "AWS JDK 17",
+					Architectures:      []string{"arm"},
 					RuntimeBaseImage:   "registry.example/runtime/java17-aws:1.0",
 					ArtifactDeployPath: "/app/",
 					DockerfilePath:     "java/jar/Dockerfile",
@@ -941,7 +943,7 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	if strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_BUILD_SOURCES") || strings.Contains(env.runner.jobs[0].TemplateXML, "SOURCE_REFS_JSON") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_RUNTIME") || strings.Contains(env.runner.jobs[0].TemplateXML, "PAAS_PACKAGE_SPEC") {
 		t.Fatalf("rendered Jenkinsfile should not depend on Jenkins parameters, got %s", env.runner.jobs[0].TemplateXML)
 	}
-	for _, want := range []string{"/api/builds/" + run.ID.String() + "/callback", "registry.example/paas/user-api:", "image_tag_branch", "v1.0.1", "java17-aliyun", "artifacts: artifacts", "report/image-uri-java17-aliyun.txt", "commit_sha"} {
+	for _, want := range []string{"/api/builds/" + run.ID.String() + "/callback", "registry.example/paas/user-api-aliyun:", "registry.example/paas/user-api-aws:", "--platform &#39;linux/amd64&#39;", "--platform &#39;linux/arm64&#39;", "image_tag_branch", "v1.0.1", "java17-aliyun", "artifacts: artifacts", "report/image-uri-java17-aliyun.txt", "commit_sha"} {
 		if !strings.Contains(env.runner.jobs[0].TemplateXML, want) {
 			t.Fatalf("rendered Jenkinsfile should contain %q for dynamic image callback, got %s", want, env.runner.jobs[0].TemplateXML)
 		}
@@ -971,24 +973,20 @@ func TestTriggerBuildCreatesPipelineAndRendersJenkinsfileWithoutParameters(t *te
 	}
 }
 
-func TestTriggerBuildUsesPipelineImageRepositoryOverride(t *testing.T) {
+func TestTriggerBuildUsesApplicationAndRuntimeImageNameForRepository(t *testing.T) {
 	env := newBuildTestEnv(t)
 	ctx := context.Background()
 
 	pipeline := createDefaultPipeline(t, env)
-	pipeline.ImageRepository = "registry.example/paas/macc-webbase"
-	if err := env.repo.UpdatePipeline(ctx, pipeline); err != nil {
-		t.Fatalf("UpdatePipeline() error = %v", err)
-	}
 	if _, err := env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID, Version: "v0.0.1"}); err != nil {
 		t.Fatalf("TriggerBuild() error = %v", err)
 	}
 	xml := env.runner.jobs[0].TemplateXML
-	if !strings.Contains(xml, "registry.example/paas/macc-webbase:") {
-		t.Fatalf("pipeline image_repository override should be used, got %s", xml)
+	if !strings.Contains(xml, "registry.example/paas/user-api-aliyun:") || !strings.Contains(xml, "registry.example/paas/user-api-aws:") {
+		t.Fatalf("repositories should use application and runtime image names, got %s", xml)
 	}
 	if strings.Contains(xml, "registry.example/paas/user-api:") {
-		t.Fatalf("pipeline image_repository override should not append application name, got %s", xml)
+		t.Fatalf("runtime image name should be part of repository, got %s", xml)
 	}
 }
 
@@ -1318,10 +1316,10 @@ func TestTriggerBuildImageTagDoesNotUseBuildRunID(t *testing.T) {
 		t.Fatalf("expected one Jenkins job, got %+v", env.runner.jobs)
 	}
 	xml := env.runner.jobs[0].TemplateXML
-	if strings.Contains(xml, "registry.example/paas/user-api:20260530-build_run_1-main") {
+	if strings.Contains(xml, "registry.example/paas/user-api-aliyun:20260530-build_run_1-main") || strings.Contains(xml, "registry.example/paas/user-api-aws:20260530-build_run_1-main") {
 		t.Fatalf("rendered image tag must not use build run id: %s", xml)
 	}
-	for _, want := range []string{"image_tag_branch=&#39;main&#39;", "registry.example/paas/user-api:", "java17-aliyun"} {
+	for _, want := range []string{"image_tag_branch=&#39;main&#39;", "registry.example/paas/user-api-aliyun:", "registry.example/paas/user-api-aws:", "java17-aliyun"} {
 		if !strings.Contains(xml, want) {
 			t.Fatalf("rendered image tag should use git ref, missing %q: %s", want, xml)
 		}
@@ -1721,7 +1719,7 @@ func TestTriggerBuildExpandsRuntimeEnvironmentImages(t *testing.T) {
 	if err != nil || len(artifacts) != 2 {
 		t.Fatalf("expected two runtime image artifacts, got %+v, %v", artifacts, err)
 	}
-	if artifacts[0].URI != "registry.example/paas/user-api:20260530-main-v0.0.0" || artifacts[1].URI != "registry.example/paas/user-api:20260530-main-v0.0.0" {
+	if artifacts[0].URI != "registry.example/paas/user-api-aliyun:20260530-main-v0.0.0" || artifacts[1].URI != "registry.example/paas/user-api-aws:20260530-main-v0.0.0" {
 		t.Fatalf("unexpected runtime image URIs: %+v", artifacts)
 	}
 	if !artifacts[0].IsPrimary || artifacts[1].IsPrimary {
@@ -2062,7 +2060,7 @@ func TestCallbackFailureAndPreconditions(t *testing.T) {
 		t.Fatalf("succeeded callback without image should synthesize artifact, got %+v, %v", succeeded, err)
 	}
 	artifact, _ := env.repo.GetArtifact(ctx, succeeded.PrimaryArtifactID)
-	if artifact.URI != "registry.example/paas/user-api:20260530-main-v0.0.0" {
+	if artifact.URI != "registry.example/paas/user-api-aliyun:20260530-main-v0.0.0" {
 		t.Fatalf("unexpected synthesized image URI: %+v", artifact)
 	}
 	run, _ = env.svc.TriggerBuild(ctx, TriggerBuildInput{Actor: buildActor(), PipelineID: pipeline.ID})

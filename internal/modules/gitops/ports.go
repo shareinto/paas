@@ -22,8 +22,10 @@ type Repository interface {
 	UpdateDeployment(ctx context.Context, deployment Deployment) error
 	GetDeployment(ctx context.Context, id shared.ID) (Deployment, error)
 	GetLatestDeploymentForStage(ctx context.Context, applicationID shared.ID, stageKey string) (Deployment, error)
+	GetPreviousCommittedDeploymentForStage(ctx context.Context, applicationID shared.ID, stageKey string, beforeCreatedAt time.Time, beforeID shared.ID) (Deployment, error)
 	FindDeploymentByPromotion(ctx context.Context, promotionID shared.ID) (Deployment, error)
 	ListDeployments(ctx context.Context, applicationID shared.ID, page shared.PageRequest) (shared.PageResult[Deployment], error)
+	ListDeploymentsByStage(ctx context.Context, applicationID shared.ID, stageKey string, page shared.PageRequest) (shared.PageResult[Deployment], error)
 	CreateDeploymentEvent(ctx context.Context, event DeploymentEvent) error
 }
 

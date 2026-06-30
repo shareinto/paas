@@ -554,6 +554,11 @@ func (s *Service) createFreight(ctx context.Context, input CreateFreightInput, c
 	if len(seen) != len(required) {
 		return Freight{}, shared.NewError(shared.CodeFailedPrecondition, "freight must include every enabled workload container")
 	}
+	if existing, ok, err := s.findFreightByItemSet(ctx, app.ID, items); err != nil {
+		return Freight{}, err
+	} else if ok {
+		return existing, nil
+	}
 	if err := s.repo.CreateFreight(ctx, freight); err != nil {
 		return Freight{}, err
 	}
@@ -572,6 +577,56 @@ func (s *Service) createFreight(ctx context.Context, input CreateFreightInput, c
 	}
 	_ = s.publish(ctx, "FreightCreated", now, map[string]any{"freight_id": freight.ID, "application_id": app.ID})
 	return freight, nil
+}
+
+func (s *Service) findFreightByItemSet(ctx context.Context, applicationID shared.ID, expectedItems []FreightItem) (Freight, bool, error) {
+	result, err := s.repo.ListFreightsByApplication(ctx, applicationID, shared.PageRequest{Page: 1, PageSize: 1000})
+	if err != nil {
+		return Freight{}, false, err
+	}
+	expected := map[string]string{}
+	for _, item := range expectedItems {
+		expected[freightTargetKey(item.WorkloadID, item.ContainerName)] = freightItemIdentity(item)
+	}
+	for _, freight := range result.Items {
+		if freight.Status != FreightAvailable {
+			continue
+		}
+		items, err := s.repo.ListFreightItems(ctx, freight.ID)
+		if err != nil {
+			return Freight{}, false, err
+		}
+		if len(items) != len(expected) {
+			continue
+		}
+		matched := true
+		for _, item := range items {
+			key := freightTargetKey(item.WorkloadID, item.ContainerName)
+			if expected[key] == "" || freightItemIdentity(item) != expected[key] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return freight, true, nil
+		}
+	}
+	return Freight{}, false, nil
+}
+
+func freightItemIdentity(item FreightItem) string {
+	sourceType := item.SourceType
+	if sourceType == "" {
+		sourceType = item.Type
+	}
+	switch sourceType {
+	case FreightItemPipelineArtifact, "":
+		return "pipeline:" + item.BuildArtifactID.String()
+	case FreightItemCustomImage:
+		return "custom:" + firstNonEmpty(item.ImageRef, item.URI)
+	default:
+		return string(sourceType) + ":" + firstNonEmpty(item.URI, item.ImageRef, item.BuildArtifactID.String())
+	}
 }
 
 func (s *Service) autoCreateFreightFromBuildSucceeded(ctx context.Context, applicationID shared.ID) (Freight, bool, error) {

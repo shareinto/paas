@@ -23,15 +23,22 @@ node22 cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/node:22.14
 
 ```text
 springboot-jdk11
-  aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis java/jar/Dockerfile cloud=aliyun
-  aws    cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023 java/jar/Dockerfile cloud=aws
+  aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/dragonwell:11-anolis java/jar/Dockerfile cloud=aliyun architectures=x86,arm
+  aws    cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/amazoncorretto:11-al2023 java/jar/Dockerfile cloud=aws architectures=x86,arm
 tomcat-jdk11
-  aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis java/tomcat/Dockerfile cloud=aliyun
-  aws    cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023 java/tomcat/Dockerfile cloud=aws
+  aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-dragonwell11-anolis java/tomcat/Dockerfile cloud=aliyun architectures=x86,arm
+  aws    cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/tomcat:8.5.87-corretto11-al2023 java/tomcat/Dockerfile cloud=aws architectures=x86,arm
 nginx1221
-  aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1 nginx/Dockerfile cloud=aliyun
-  aws    cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1 nginx/Dockerfile cloud=aws
+  aliyun cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1 nginx/Dockerfile cloud=aliyun architectures=x86,arm
+  aws    cloud-docker-register-registry.cn-hangzhou.cr.aliyuncs.com/sbg/nginx:1.22.1 nginx/Dockerfile cloud=aws architectures=x86,arm
 ```
+
+运行环境是逻辑环境，例如 `springboot-jdk11`。同一个逻辑运行环境下可以配置多个运行时镜像目标，用于表达不同公有云、基础镜像发行版或 CPU 架构组合。每个镜像目标独立维护：
+
+- 镜像目标名与显示名。
+- 运行时基础镜像、Dockerfile 路径和产物放置路径。
+- 集群匹配标签，例如 `cloud=aliyun`、`cloud=aws`。
+- CPU 架构 `architectures`，取值为 `x86`、`arm`，渲染 Jenkinsfile 时分别转换为 `linux/amd64`、`linux/arm64` 并传给该镜像目标的 `docker buildx build --platform`。
 
 当前测试可用版本暂不支持：
 
@@ -169,8 +176,9 @@ Jenkins Job 渲染：
 当前测试可用版本不向 Jenkins 传递构建参数。PaaS 每次触发构建前都会按本次 BuildRun 重新渲染 Jenkinsfile，并更新固定 Jenkins Job。
 ```
 
-运行时环境、源码 ref、commit、镜像仓库、应用名、Dockerfile 路径、产物放置路径和回调地址都由 PaaS 渲染进 Jenkinsfile。模板本身只遍历 PaaS 渲染出的镜像目标，不写死 ACK/AWS 名称。
+运行时环境、源码 ref、commit、应用名、镜像名、Dockerfile 路径、产物放置路径、CPU 架构和回调地址都由 PaaS 渲染进 Jenkinsfile。模板本身只遍历 PaaS 渲染出的镜像目标，不写死 ACK/AWS 名称。
 镜像 tag 由 Jenkins 统一模板生成。Git 源码格式为 `yyyyMMdd-分支名-semver`，其中分支名使用主代码源本次构建 ref 的镜像 tag 安全化结果（例如 `feature/log-receiver` 生成 `feature-log-receiver`）。SVN 源码格式为 `yyyyMMdd-svnRef-semver`，其中 `svnRef` 从基础 checkout 地址解析：`trunk` 使用 `trunk`，`branches/release-1.0` 使用 `release-1.0`，`tags/v1.2.0` 使用 `tag-v1.2.0`，非标准布局取最后一级路径；多目录稀疏检出时仍只使用基础地址解析 tag，不使用子目录。SemVer 使用构建弹窗提交的版本号。Git commit SHA 或 SVN revision 仍作为构建元数据上报和审计字段保存，但不参与镜像 tag 组成。
+同一条流水线一次构建产出的多个镜像目标使用相同 tag 表示同一批构建产物；仓库由 PaaS 按“基础仓库前缀/应用名-镜像名”统一生成，避免相同 `repository:tag` 覆盖。
 平台 Dockerfile 仓库应提供 `java/jar/Dockerfile` 和 `java/tomcat/Dockerfile`，参考样例见 `doc/dockerfiles/java/jar/Dockerfile` 和 `doc/dockerfiles/java/tomcat/Dockerfile`。
 
 Spring Boot jar 场景约定 `artifact_copy_command` 把主 jar 写为 `$PAAS_ARTIFACT_OUTPUT/app.jar`。Tomcat war 场景约定写为 `$PAAS_ARTIFACT_OUTPUT/app.war`，并使用运行时环境的 `artifact_deploy_path` 作为放置目录。镜像上下文准备阶段会把完整 `artifact/` 目录复制到每个 `image-context/{runtime_key}/`。
@@ -186,7 +194,7 @@ Spring Boot jar 场景约定 `artifact_copy_command` 把主 jar 写为 `$PAAS_AR
 6. 构建容器挂载 Jenkins 节点持久化缓存目录 `/backup_data/paas-cache/dependencies/{cache_key}/{source_key}`，并设置 Maven、Gradle、npm、Yarn、pnpm 的常用缓存路径。
 7. 对每个 ApplicationSource 渲染独立的“收集产物 {source_key}”阶段，把产物放入平台约定输出目录。
 8. 使用 PaaS 渲染出的运行时和镜像目标准备镜像上下文。
-9. 使用 `docker buildx build --platform` 按后台镜像目标生成并推送多架构镜像；用户侧仍看到同一个流水线产物。
+9. 使用 `docker buildx build --platform` 按每个镜像目标的 CPU 架构生成并推送镜像；用户侧仍看到同一个流水线产物。
 10. buildx 本地缓存读取 `/backup_data/buildx-cache/{job_name}/{target_key}`，写入临时目录 `{cache_dir}.next`，构建成功后再替换原缓存目录，避免失败构建破坏可用缓存。
 11. 通过 `curl` 回调 PaaS 控制面。
 ```
@@ -207,10 +215,10 @@ ApplicationSource[frontmacc5]
 全局收尾
   -> stage('准备镜像上下文')
   -> stage('初始化 buildx')
-  -> stage('生成并推送多架构镜像')
+  -> stage('按目标架构生成并推送镜像')
 ```
 
-编译由用户 BuildSpec 的受限命令执行；镜像生成由平台统一 Jenkins 模板执行。当前实现不依赖 `paas-ci-helper`，模板直接使用 `docker buildx` 构建多架构镜像，并使用 `curl` 回调 PaaS 控制面。源码、Dockerfile 仓库、依赖缓存和 buildx layer cache 都是 Jenkins 节点本地缓存；如果同一个 Job 在不同节点间调度，缓存命中率取决于节点亲和性和 `/backup_data` 的持久化方式。
+编译由用户 BuildSpec 的受限命令执行；镜像生成由平台统一 Jenkins 模板执行。当前实现不依赖 `paas-ci-helper`，模板直接使用 `docker buildx` 按镜像目标架构构建镜像，并使用 `curl` 回调 PaaS 控制面。源码、Dockerfile 仓库、依赖缓存和 buildx layer cache 都是 Jenkins 节点本地缓存；如果同一个 Job 在不同节点间调度，缓存命中率取决于节点亲和性和 `/backup_data` 的持久化方式。
 
 ## 7. 安全策略
 

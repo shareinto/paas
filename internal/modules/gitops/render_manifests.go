@@ -204,6 +204,9 @@ func renderWorkload(workload WorkloadRef, config WorkloadStageConfigRef, contain
 	fmt.Fprintf(&b, "      labels:\n")
 	b.WriteString(renderLabelsYAML(labels, "        "))
 	fmt.Fprintf(&b, "    spec:\n")
+	if workloadHostNetwork(config) {
+		fmt.Fprintf(&b, "      hostNetwork: true\n")
+	}
 	b.WriteString(renderDNSConfig())
 	b.WriteString(renderSoftPodAntiAffinity(labels))
 	if initContainersYAML != "" {
@@ -217,6 +220,32 @@ func renderWorkload(workload WorkloadRef, config WorkloadStageConfigRef, contain
 	}
 
 	return b.String()
+}
+
+func workloadHostNetwork(config WorkloadStageConfigRef) bool {
+	switch strings.ToLower(strings.TrimSpace(config.NetworkMode)) {
+	case "host", "host_network", "hostnetwork":
+		return true
+	}
+	if v, ok := config.ValuesOverride["hostNetwork"].(bool); ok && v {
+		return true
+	}
+	if v, ok := config.ValuesOverride["host_network"].(bool); ok && v {
+		return true
+	}
+	if v, ok := config.ValuesOverride["networkMode"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "host", "host_network", "hostnetwork":
+			return true
+		}
+	}
+	if v, ok := config.ValuesOverride["network_mode"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "host", "host_network", "hostnetwork":
+			return true
+		}
+	}
+	return false
 }
 
 func renderSoftPodAntiAffinity(labels map[string]string) string {
@@ -1363,6 +1392,9 @@ func rawContainerProbes(valuesOverride map[string]any, containerName string) map
 
 func normalizeRawProbe(raw map[string]any) map[string]any {
 	if len(raw) == 0 {
+		return nil
+	}
+	if enabled, ok := raw["enabled"].(bool); ok && !enabled {
 		return nil
 	}
 	out := map[string]any{}

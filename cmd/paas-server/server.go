@@ -28,6 +28,7 @@ import (
 	"github.com/shareinto/paas/internal/platform/database"
 	"github.com/shareinto/paas/internal/shared"
 	"github.com/shareinto/paas/internal/ws"
+
 )
 
 type application struct {
@@ -327,6 +328,8 @@ func newApplication(ctx context.Context) (*application, error) {
 	notification.NewHandler(notificationSvc).Register(mux)
 	clusteragent.NewHandler(clusterSvc).Register(mux)
 	newConsoleV2Handler(appSvc, buildSvc, deliverySvc, clusterSvc, gitopsSvc, deployCache, wsHub).Register(mux)
+
+
 
 	return &application{handler: withCORS(mux), identity: identitySvc, tenants: tenantSvc, sources: sourceSvc, apps: appSvc, builds: buildSvc, delivery: deliverySvc, audit: auditSvc, state: state, db: db}, nil
 }
@@ -663,7 +666,7 @@ func (api developmentAPI) localLogin(w http.ResponseWriter, r *http.Request) {
 		writeDevelopmentError(w, err)
 		return
 	}
-	writeDevelopmentJSON(w, http.StatusOK, map[string]string{"token": pair.AccessToken, "userName": firstNonEmpty(user.DisplayName, user.Username)})
+	writeDevelopmentJSON(w, http.StatusOK, map[string]any{"token": pair.AccessToken, "userName": firstNonEmpty(user.DisplayName, user.Username), "userId": string(user.ID)})
 }
 
 func (api developmentAPI) localRegister(w http.ResponseWriter, r *http.Request) {
@@ -688,7 +691,7 @@ func (api developmentAPI) localRegister(w http.ResponseWriter, r *http.Request) 
 		writeDevelopmentError(w, err)
 		return
 	}
-	writeDevelopmentJSON(w, http.StatusCreated, map[string]string{"token": pair.AccessToken, "userName": firstNonEmpty(user.DisplayName, user.Username)})
+	writeDevelopmentJSON(w, http.StatusCreated, map[string]any{"token": pair.AccessToken, "userName": firstNonEmpty(user.DisplayName, user.Username), "userId": string(user.ID)})
 }
 
 func (api developmentAPI) oidcStart(w http.ResponseWriter, _ *http.Request) {
@@ -1380,6 +1383,7 @@ func (q workloadForGitOps) GetWorkloadDefaultConfig(ctx context.Context, workloa
 func toGitOpsWorkloadStageConfig(config appenv.WorkloadStageConfig) gitops.WorkloadStageConfigRef {
 	out := gitops.WorkloadStageConfigRef{
 		Replicas:         config.Replicas,
+		NetworkMode:      config.NetworkMode,
 		ResourceRequests: gitops.WorkloadResourceListRef{CPU: config.ResourceRequests.CPU, Memory: config.ResourceRequests.Memory},
 		ResourceLimits:   gitops.WorkloadResourceListRef{CPU: config.ResourceLimits.CPU, Memory: config.ResourceLimits.Memory},
 		ValuesOverride:   config.ValuesOverride,
@@ -1504,7 +1508,16 @@ func buildStatusText(status build.BuildRunStatus) string {
 }
 
 func pageFromRequest(r *http.Request) shared.PageRequest {
-	return shared.PageRequest{Page: 1, PageSize: 100}.Normalize()
+	query := r.URL.Query()
+	page, _ := strconv.Atoi(query.Get("page"))
+	pageSize, _ := strconv.Atoi(query.Get("page_size"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 100
+	}
+	return shared.PageRequest{Page: page, PageSize: pageSize}.Normalize()
 }
 
 func formatLocal(t time.Time) string {

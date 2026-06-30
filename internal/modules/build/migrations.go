@@ -57,7 +57,6 @@ CREATE TABLE build_pipelines (
   external_job_name VARCHAR(255) NOT NULL,
   template_id VARCHAR(128) NOT NULL,
   config_hash VARCHAR(64) NOT NULL DEFAULT '',
-  image_repository VARCHAR(512) NOT NULL DEFAULT '',
   status VARCHAR(64) NOT NULL,
   managed_by_platform TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME(6) NOT NULL,
@@ -617,16 +616,16 @@ DEALLOCATE PREPARE build_run_sources_svn_paths_stmt;
 	},
 	{
 		Version: 202606281430,
-		Name:    "add_build_pipeline_image_repository",
+		Name:    "drop_build_pipeline_image_repository",
 		Up: `
-SET @build_pipelines_image_repository_missing := (
-  SELECT COUNT(*) = 0
+SET @build_pipelines_image_repository_exists := (
+  SELECT COUNT(*) > 0
   FROM information_schema.columns
   WHERE table_schema = DATABASE()
     AND table_name = 'build_pipelines'
     AND column_name = 'image_repository'
 );
-SET @build_pipelines_image_repository_ddl := IF(@build_pipelines_image_repository_missing, 'ALTER TABLE build_pipelines ADD COLUMN image_repository VARCHAR(512) NOT NULL DEFAULT '''' AFTER config_hash', 'SELECT 1');
+SET @build_pipelines_image_repository_ddl := IF(@build_pipelines_image_repository_exists, 'ALTER TABLE build_pipelines DROP COLUMN image_repository', 'SELECT 1');
 PREPARE build_pipelines_image_repository_stmt FROM @build_pipelines_image_repository_ddl;
 EXECUTE build_pipelines_image_repository_stmt;
 DEALLOCATE PREPARE build_pipelines_image_repository_stmt;

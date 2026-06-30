@@ -27,8 +27,6 @@ export type BackendBuildPipeline = {
   display_name?: string;
   displayName?: string;
   description?: string;
-  image_repository?: string;
-  imageRepository?: string;
   status?: string;
   runtime_environments?: BackendRuntimeEnvironment[];
   runtimeEnvironments?: BackendRuntimeEnvironment[];
@@ -302,7 +300,6 @@ async function pipelinePayload(projectId: string, pipeline: VersionSourcePipelin
     ...(includeName ? { name: slugOf(pipeline.name || pipeline.id) } : {}),
     display_name: pipeline.name,
     description: pipeline.description || '',
-    image_repository: pipeline.imageRepository || '',
     runtime_environment_ids: [runtimeId].filter(Boolean),
     sources: await Promise.all(pipeline.sources.map((source, index) => sourcePayload(projectId, source, index)))
   };
@@ -365,7 +362,6 @@ function mapPipeline(pipeline: BackendBuildPipeline, sources: BackendBuildPipeli
     id: pipeline.id,
     name: pipeline.display_name || pipeline.displayName || pipeline.name || pipeline.id,
     description: pipeline.description || '',
-    imageRepository: pipeline.image_repository || pipeline.imageRepository || '',
     branch: defaultRefOf(primarySource) || 'main',
     runtime,
     runtimeEnvironmentIds: runtimeEnvironments.map((item) => item.id || '').filter(Boolean),

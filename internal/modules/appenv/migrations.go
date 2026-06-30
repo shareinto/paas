@@ -258,6 +258,7 @@ CREATE TABLE workload_stage_configs (
   workload_id VARCHAR(64) NOT NULL,
   stage_key VARCHAR(64) NOT NULL,
   replicas INT NOT NULL DEFAULT 1,
+  network_mode VARCHAR(32) NOT NULL DEFAULT 'container',
   service_ports_json JSON NOT NULL,
   resource_requests_json JSON NOT NULL,
   resource_limits_json JSON NOT NULL,
@@ -286,6 +287,7 @@ CREATE TABLE workload_default_configs (
   application_id VARCHAR(64) NOT NULL,
   workload_id VARCHAR(64) NOT NULL,
   replicas INT NOT NULL DEFAULT 1,
+  network_mode VARCHAR(32) NOT NULL DEFAULT 'container',
   service_ports_json JSON NOT NULL,
   resource_requests_json JSON NOT NULL,
   resource_limits_json JSON NOT NULL,
@@ -350,6 +352,26 @@ SELECT IF(COUNT(*) = 0, 'ALTER TABLE application_sources ADD COLUMN svn_checkout
 PREPARE add_application_sources_svn_checkout_paths_stmt FROM @add_application_sources_svn_checkout_paths;
 EXECUTE add_application_sources_svn_checkout_paths_stmt;
 DEALLOCATE PREPARE add_application_sources_svn_checkout_paths_stmt;
+`,
+		Down: `SELECT 1;`,
+	},
+	{
+		Version: 202606290901,
+		Name:    "add_workload_network_mode",
+		Up: `
+SELECT IF(COUNT(*) = 0, 'ALTER TABLE workload_stage_configs ADD COLUMN network_mode VARCHAR(32) NOT NULL DEFAULT ''container'' AFTER replicas', 'SELECT 1') INTO @add_workload_stage_configs_network_mode
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'workload_stage_configs' AND column_name = 'network_mode';
+PREPARE add_workload_stage_configs_network_mode_stmt FROM @add_workload_stage_configs_network_mode;
+EXECUTE add_workload_stage_configs_network_mode_stmt;
+DEALLOCATE PREPARE add_workload_stage_configs_network_mode_stmt;
+
+SELECT IF(COUNT(*) = 0, 'ALTER TABLE workload_default_configs ADD COLUMN network_mode VARCHAR(32) NOT NULL DEFAULT ''container'' AFTER replicas', 'SELECT 1') INTO @add_workload_default_configs_network_mode
+  FROM information_schema.columns
+  WHERE table_schema = DATABASE() AND table_name = 'workload_default_configs' AND column_name = 'network_mode';
+PREPARE add_workload_default_configs_network_mode_stmt FROM @add_workload_default_configs_network_mode;
+EXECUTE add_workload_default_configs_network_mode_stmt;
+DEALLOCATE PREPARE add_workload_default_configs_network_mode_stmt;
 `,
 		Down: `SELECT 1;`,
 	},

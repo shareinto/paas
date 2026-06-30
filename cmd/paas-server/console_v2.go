@@ -98,6 +98,29 @@ type consoleV2ApprovalDetail struct {
 	DeployItems    []consoleV2DeploySnapshotItem `json:"deploy_items"`
 }
 
+type consoleV2DeploymentHistoryItem struct {
+	ID               shared.ID `json:"id"`
+	DeploymentID     shared.ID `json:"deployment_id"`
+	StageKey         string    `json:"stage_key"`
+	FreightID        shared.ID `json:"freight_id"`
+	FreightName      string    `json:"freight_name"`
+	FreightCreatedAt string    `json:"freight_created_at"`
+	PublishedBy      shared.ID `json:"published_by"`
+	PublishedAt      string    `json:"published_at"`
+	CommitSHA        string    `json:"commit_sha"`
+	CommitShort      string    `json:"commit_short"`
+	ManifestPath     string    `json:"manifest_path"`
+}
+
+type consoleV2DeploymentHistoryDetail struct {
+	Item                 consoleV2DeploymentHistoryItem `json:"item"`
+	DiffType             string                         `json:"diff_type"`
+	PreviousDeploymentID shared.ID                      `json:"previous_deployment_id,omitempty"`
+	DeployItems          []consoleV2DeploySnapshotItem  `json:"deploy_items"`
+	ManifestYAML         string                         `json:"manifest_yaml"`
+	ConfigDiff           string                         `json:"config_diff"`
+}
+
 type consoleV2FreightSummary struct {
 	ID        shared.ID `json:"id"`
 	Name      string    `json:"name"`
@@ -135,8 +158,10 @@ func (h *consoleV2Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/console-v2/apps/{appId}/deployment-workspace", h.handleDeploymentWorkspace)
 	mux.HandleFunc("GET /api/console-v2/apps/{appId}/stages/{stageKey}/approval-tasks", h.handleListApprovalTasks)
 	mux.HandleFunc("GET /api/console-v2/apps/{appId}/stages/{stageKey}/publish-tasks", h.handleListPublishTasks)
+	mux.HandleFunc("GET /api/console-v2/apps/{appId}/stages/{stageKey}/deployment-history", h.handleListDeploymentHistory)
 	mux.HandleFunc("GET /api/console-v2/approval-tasks/{taskId}", h.handleGetApprovalTask)
 	mux.HandleFunc("GET /api/console-v2/publish-tasks/{taskId}", h.handleGetPublishTask)
+	mux.HandleFunc("GET /api/console-v2/deployments/{deploymentId}/history-detail", h.handleGetDeploymentHistoryDetail)
 	mux.HandleFunc("POST /api/console-v2/approval-tasks/{taskId}/approve", h.handleApproveApprovalTask)
 	mux.HandleFunc("POST /api/console-v2/approval-tasks/{taskId}/reject", h.handleRejectApprovalTask)
 	mux.HandleFunc("POST /api/console-v2/publish-tasks/{taskId}/publish", h.handlePublishTask)
@@ -333,6 +358,41 @@ func (h *consoleV2Handler) handleGetApprovalTask(w http.ResponseWriter, r *http.
 
 func (h *consoleV2Handler) handleGetPublishTask(w http.ResponseWriter, r *http.Request) {
 	detail, err := h.approvalTaskDetail(r.Context(), shared.ID(r.PathValue("taskId")))
+	if err != nil {
+		writeDevelopmentError(w, err)
+		return
+	}
+	writeDevelopmentJSON(w, http.StatusOK, detail)
+}
+
+func (h *consoleV2Handler) handleListDeploymentHistory(w http.ResponseWriter, r *http.Request) {
+	appID := shared.ID(r.PathValue("appId"))
+	stageKey := r.PathValue("stageKey")
+	page := pageFromRequest(r)
+	result, err := h.gitops.ListDeploymentsByStage(r.Context(), appID, stageKey, page)
+	if err != nil {
+		writeDevelopmentError(w, err)
+		return
+	}
+	items := make([]consoleV2DeploymentHistoryItem, 0, len(result.Items))
+	for _, deployment := range result.Items {
+		item, err := h.deploymentHistoryItem(r.Context(), deployment)
+		if err != nil {
+			writeDevelopmentError(w, err)
+			return
+		}
+		items = append(items, item)
+	}
+	writeDevelopmentJSON(w, http.StatusOK, shared.PageResult[consoleV2DeploymentHistoryItem]{
+		Items:    items,
+		Total:    result.Total,
+		Page:     result.Page,
+		PageSize: result.PageSize,
+	})
+}
+
+func (h *consoleV2Handler) handleGetDeploymentHistoryDetail(w http.ResponseWriter, r *http.Request) {
+	detail, err := h.deploymentHistoryDetail(r.Context(), shared.ID(r.PathValue("deploymentId")))
 	if err != nil {
 		writeDevelopmentError(w, err)
 		return
@@ -642,6 +702,88 @@ func (h *consoleV2Handler) approvalTaskDetail(ctx context.Context, promotionID s
 	return detail, nil
 }
 
+func (h *consoleV2Handler) deploymentHistoryItem(ctx context.Context, deployment gitops.Deployment) (consoleV2DeploymentHistoryItem, error) {
+	revision, err := h.gitops.GetManifestRevision(ctx, deployment.ManifestRevisionID)
+	if err != nil {
+		return consoleV2DeploymentHistoryItem{}, err
+	}
+	freightName := deployment.FreightID.String()
+	freightCreatedAt := ""
+	if freight, err := h.delivery.GetFreight(ctx, deployment.FreightID); err == nil {
+		freightName = firstNonEmpty(freight.Name, freight.ID.String())
+		freightCreatedAt = formatConsoleTime(freight.CreatedAt)
+	}
+	publishedBy := shared.ID("")
+	if promotion, err := h.delivery.GetPromotion(ctx, deployment.PromotionID); err == nil {
+		publishedBy = promotion.CreatedBy
+	}
+	publishedAt := revision.CreatedAt
+	if publishedAt.IsZero() {
+		publishedAt = deployment.CreatedAt
+	}
+	return consoleV2DeploymentHistoryItem{
+		ID:               deployment.ID,
+		DeploymentID:     deployment.ID,
+		StageKey:         deployment.StageKey,
+		FreightID:        deployment.FreightID,
+		FreightName:      freightName,
+		FreightCreatedAt: freightCreatedAt,
+		PublishedBy:      publishedBy,
+		PublishedAt:      formatConsoleTime(publishedAt),
+		CommitSHA:        revision.CommitSHA,
+		CommitShort:      shortCommit(revision.CommitSHA),
+		ManifestPath:     revision.Path,
+	}, nil
+}
+
+func (h *consoleV2Handler) deploymentHistoryDetail(ctx context.Context, deploymentID shared.ID) (consoleV2DeploymentHistoryDetail, error) {
+	deployment, err := h.gitops.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return consoleV2DeploymentHistoryDetail{}, err
+	}
+	item, err := h.deploymentHistoryItem(ctx, deployment)
+	if err != nil {
+		return consoleV2DeploymentHistoryDetail{}, err
+	}
+	revision, err := h.gitops.GetManifestRevision(ctx, deployment.ManifestRevisionID)
+	if err != nil {
+		return consoleV2DeploymentHistoryDetail{}, err
+	}
+	manifestYAML, err := h.gitops.ReadManifestAtRevision(ctx, revision)
+	if err != nil {
+		return consoleV2DeploymentHistoryDetail{}, err
+	}
+	freightDetail, err := h.delivery.GetFreightDetail(ctx, deployment.FreightID)
+	if err != nil {
+		return consoleV2DeploymentHistoryDetail{}, err
+	}
+	detail := consoleV2DeploymentHistoryDetail{
+		Item:         item,
+		DiffType:     "first_deploy",
+		DeployItems:  deploySnapshotItems(freightDetail.Items),
+		ManifestYAML: manifestYAML,
+	}
+	previous, err := h.gitops.GetPreviousCommittedDeploymentForStage(ctx, deployment)
+	if err != nil {
+		if shared.CodeOf(err) == shared.CodeNotFound {
+			return detail, nil
+		}
+		return consoleV2DeploymentHistoryDetail{}, err
+	}
+	previousRevision, err := h.gitops.GetManifestRevision(ctx, previous.ManifestRevisionID)
+	if err != nil {
+		return consoleV2DeploymentHistoryDetail{}, err
+	}
+	previousManifestYAML, err := h.gitops.ReadManifestAtRevision(ctx, previousRevision)
+	if err != nil {
+		return consoleV2DeploymentHistoryDetail{}, err
+	}
+	detail.DiffType = "compare"
+	detail.PreviousDeploymentID = previous.ID
+	detail.ConfigDiff = manifestDiff(previousManifestYAML, manifestYAML)
+	return detail, nil
+}
+
 func stageDisplayName(stages []delivery.AppStage, stageKey string) string {
 	for _, stage := range stages {
 		if stageKeyForConsoleV2(stage) == stageKey {
@@ -669,6 +811,14 @@ func diffTypeFromCurrentFreight(id shared.ID) string {
 
 func freightSummary(freight delivery.Freight) consoleV2FreightSummary {
 	return consoleV2FreightSummary{ID: freight.ID, Name: firstNonEmpty(freight.Name, freight.ID.String()), CreatedAt: formatConsoleTime(freight.CreatedAt)}
+}
+
+func shortCommit(commit string) string {
+	commit = strings.TrimSpace(commit)
+	if len(commit) <= 8 {
+		return commit
+	}
+	return commit[:8]
 }
 
 func deploySnapshotItems(items []delivery.FreightItem) []consoleV2DeploySnapshotItem {

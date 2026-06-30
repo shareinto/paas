@@ -629,8 +629,30 @@ func (s *Service) ListDeployments(ctx context.Context, applicationID shared.ID, 
 	return s.repo.ListDeployments(ctx, applicationID, page)
 }
 
+func (s *Service) ListDeploymentsByStage(ctx context.Context, applicationID shared.ID, stageKey string, page shared.PageRequest) (shared.PageResult[Deployment], error) {
+	return s.repo.ListDeploymentsByStage(ctx, applicationID, normalizeStageKey(stageKey), page)
+}
+
 func (s *Service) GetLatestDeploymentForStage(ctx context.Context, appID shared.ID, stageKey string) (Deployment, error) {
 	return s.repo.GetLatestDeploymentForStage(ctx, appID, stageKey)
+}
+
+func (s *Service) GetPreviousCommittedDeploymentForStage(ctx context.Context, deployment Deployment) (Deployment, error) {
+	return s.repo.GetPreviousCommittedDeploymentForStage(ctx, deployment.ApplicationID, normalizeStageKey(deployment.StageKey), deployment.CreatedAt, deployment.ID)
+}
+
+func (s *Service) GetManifestRevision(ctx context.Context, id shared.ID) (ManifestRevision, error) {
+	return s.repo.GetManifestRevision(ctx, id)
+}
+
+func (s *Service) ReadManifestAtRevision(ctx context.Context, revision ManifestRevision) (string, error) {
+	if strings.TrimSpace(revision.Path) == "" || strings.TrimSpace(revision.CommitSHA) == "" {
+		return "", shared.NewError(shared.CodeInvalidArgument, "manifest revision is missing path or commit")
+	}
+	if s.manifest == nil {
+		return "", shared.NewError(shared.CodeUnavailable, "manifest repository is not configured")
+	}
+	return s.manifest.ReadFile(ctx, revision.Path, revision.CommitSHA)
 }
 
 func ComputeStageConfigHash(templateRevisionID shared.ID, workloadConfigs []WorkloadStageConfigRef) string {
@@ -827,6 +849,9 @@ func mergeWorkloadConfig(base WorkloadStageConfigRef, override WorkloadStageConf
 	out := base
 	if override.Replicas > 0 {
 		out.Replicas = override.Replicas
+	}
+	if strings.TrimSpace(override.NetworkMode) != "" {
+		out.NetworkMode = override.NetworkMode
 	}
 	if len(override.ServicePorts) > 0 {
 		out.ServicePorts = override.ServicePorts

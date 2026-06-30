@@ -850,6 +850,7 @@ func TestApplyPromotionMergesStageConfigAndRendersNamedContainers(t *testing.T) 
 		defaultConfigs: map[shared.ID]WorkloadStageConfigRef{
 			"workload_frontend": {
 				Replicas:     2,
+				NetworkMode:  "host",
 				ServicePorts: []WorkloadServicePortRef{{Name: "http", Port: 80, TargetPort: 80, Protocol: "TCP"}},
 				IngressHosts: []WorkloadIngressHostRef{{Host: "cloud-ltt.rj.link", Path: "/", ServicePort: "80", TLS: true}},
 				InitContainers: []WorkloadInitContainerRef{{
@@ -887,6 +888,13 @@ func TestApplyPromotionMergesStageConfigAndRendersNamedContainers(t *testing.T) 
 								"initial_delay_seconds": 60,
 								"period_seconds":        5,
 								"failure-threshold":     5,
+							},
+							"startup_probe": map[string]any{
+								"enabled":           false,
+								"type":              "http",
+								"path":              "/bizprocessor/ruok",
+								"port":              8080,
+								"failure_threshold": 30,
 							},
 							"config_files": []any{
 								map[string]any{"mount_path": "/usr/local/tomcat/conf/catalina.properties", "content": "common.loader=/opt/app"},
@@ -963,6 +971,7 @@ func TestApplyPromotionMergesStageConfigAndRendersNamedContainers(t *testing.T) 
 	values := manifest.Files["apps/order-api/dev/manifests.yaml"]
 	for _, expected := range []string{
 		"replicas: 1",
+		"hostNetwork: true",
 		"kind: Service",
 		"kind: Ingress",
 		"name: macc-frontend",
@@ -1026,6 +1035,9 @@ func TestApplyPromotionMergesStageConfigAndRendersNamedContainers(t *testing.T) 
 	}
 	if strings.Contains(values, "failure-threshold") || strings.Contains(values, "livenessProbe:\n          name:") || strings.Contains(values, "readinessProbe:\n          name:") {
 		t.Fatalf("manifest should render Kubernetes probe fields, not platform probe metadata:\n%s", values)
+	}
+	if strings.Contains(values, "startupProbe:") {
+		t.Fatalf("manifest should not render disabled startup probe:\n%s", values)
 	}
 	if strings.Contains(values, "\n          mountPath: /usr/local/tomcat/macc_conf\n") {
 		t.Fatalf("manifest should not render raw macc_conf directory mount when platform config files mount individual files:\n%s", values)
@@ -1548,6 +1560,38 @@ func TestGitOpsRepositoryConflictAndMissingBranches(t *testing.T) {
 	}
 	if _, err := repo.ListDeployments(ctx, "app_1", shared.PageRequest{Page: 2, PageSize: 10}); err != nil {
 		t.Fatalf("list deployments page: %v", err)
+	}
+	first := Deployment{ID: "deployment_history_1", ApplicationID: "app_1", StageKey: "dev", PromotionID: "promotion_history_1", FreightID: "freight_1", ManifestRevisionID: "manifest_history_1", CreatedAt: time.Date(2026, 5, 30, 13, 1, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 5, 30, 13, 1, 0, 0, time.UTC)}
+	second := Deployment{ID: "deployment_history_2", ApplicationID: "app_1", StageKey: "dev", PromotionID: "promotion_history_2", FreightID: "freight_2", ManifestRevisionID: "manifest_history_2", CreatedAt: time.Date(2026, 5, 30, 13, 2, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 5, 30, 13, 2, 0, 0, time.UTC)}
+	withoutCommit := Deployment{ID: "deployment_history_pending", ApplicationID: "app_1", StageKey: "dev", PromotionID: "promotion_history_pending", FreightID: "freight_pending", ManifestRevisionID: "manifest_history_pending", CreatedAt: time.Date(2026, 5, 30, 13, 3, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 5, 30, 13, 3, 0, 0, time.UTC)}
+	for _, item := range []Deployment{first, second, withoutCommit} {
+		if err := repo.CreateDeployment(ctx, item); err != nil {
+			t.Fatalf("create history deployment %s: %v", item.ID, err)
+		}
+	}
+	revisions := []ManifestRevision{
+		{ID: "manifest_history_1", DeploymentID: first.ID, PromotionID: first.PromotionID, ApplicationID: first.ApplicationID, StageKey: first.StageKey, Path: "apps/order/dev/manifests.yaml", CommitSHA: "commit_11111111", ChangeType: "commit", CreatedAt: first.CreatedAt},
+		{ID: "manifest_history_2", DeploymentID: second.ID, PromotionID: second.PromotionID, ApplicationID: second.ApplicationID, StageKey: second.StageKey, Path: "apps/order/dev/manifests.yaml", CommitSHA: "commit_22222222", ChangeType: "commit", CreatedAt: second.CreatedAt},
+		{ID: "manifest_history_pending", DeploymentID: withoutCommit.ID, PromotionID: withoutCommit.PromotionID, ApplicationID: withoutCommit.ApplicationID, StageKey: withoutCommit.StageKey, Path: "apps/order/dev/manifests.yaml", ChangeType: "commit", CreatedAt: withoutCommit.CreatedAt},
+	}
+	for _, revision := range revisions {
+		if err := repo.CreateManifestRevision(ctx, revision); err != nil {
+			t.Fatalf("create history revision %s: %v", revision.ID, err)
+		}
+	}
+	history, err := repo.ListDeploymentsByStage(ctx, "app_1", "dev", shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListDeploymentsByStage() error = %v", err)
+	}
+	if history.Total != 2 || len(history.Items) != 2 || history.Items[0].ID != second.ID || history.Items[1].ID != first.ID {
+		t.Fatalf("unexpected history page: total=%d items=%#v", history.Total, history.Items)
+	}
+	previous, err := repo.GetPreviousCommittedDeploymentForStage(ctx, "app_1", "dev", second.CreatedAt, second.ID)
+	if err != nil {
+		t.Fatalf("GetPreviousCommittedDeploymentForStage() error = %v", err)
+	}
+	if previous.ID != first.ID {
+		t.Fatalf("previous deployment = %s, want %s", previous.ID, first.ID)
 	}
 }
 

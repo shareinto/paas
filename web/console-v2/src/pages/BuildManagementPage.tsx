@@ -25,6 +25,10 @@ type LabelRow = { key: string; value: string };
 type BuildEnvironmentDraft = Pick<BuildEnvironment, 'id' | 'name' | 'description' | 'buildImage' | 'status' | 'isDefault'>;
 type RuntimeEnvironmentDraft = RuntimeEnvironment & { imageRows: RuntimeImageDraft[] };
 type RuntimeImageDraft = Omit<RuntimeImage, 'selectorLabels'> & { labelRows: LabelRow[] };
+const architectureOptions = [
+  { value: 'x86', label: 'x86' },
+  { value: 'arm', label: 'arm' }
+] as const;
 
 const emptyBuildEnvironment: BuildEnvironmentDraft = {
   id: '',
@@ -54,6 +58,7 @@ export function BuildManagementPage() {
   const [message, setMessage] = useState('');
   const [buildEditing, setBuildEditing] = useState<BuildEnvironmentDraft | null>(null);
   const [runtimeEditing, setRuntimeEditing] = useState<RuntimeEnvironmentDraft | null>(null);
+  const [runtimeDialogMessage, setRuntimeDialogMessage] = useState('');
   const [templateDraft, setTemplateDraft] = useState('');
   const [savingTemplate, setSavingTemplate] = useState(false);
 
@@ -98,6 +103,7 @@ export function BuildManagementPage() {
 
   function openRuntimeEnvironment(environment?: RuntimeEnvironment) {
     setRuntimeEditing(environment ? runtimeToDraft(environment) : { ...emptyRuntimeEnvironment, imageRows: [emptyRuntimeImage()] });
+    setRuntimeDialogMessage('');
     setMessage('');
   }
 
@@ -136,13 +142,18 @@ export function BuildManagementPage() {
     if (!runtimeEditing) return;
     const input = draftToRuntime(runtimeEditing);
     if (!input.name.trim() || input.images.some((image) => !image.name.trim() || !image.runtimeBaseImage.trim())) {
-      setMessage('运行环境名称、镜像名称和基础镜像不能为空');
+      setRuntimeDialogMessage('运行环境名称、镜像名称和基础镜像不能为空');
+      return;
+    }
+    if (input.images.some((image) => image.architectures.length === 0)) {
+      setRuntimeDialogMessage('每个运行时镜像至少选择一个 CPU 架构');
       return;
     }
     if (input.images.some((image) => Object.keys(image.selectorLabels).length === 0)) {
-      setMessage('每个运行时镜像至少需要一个匹配标签');
+      setRuntimeDialogMessage('每个运行时镜像至少需要一个匹配标签');
       return;
     }
+    setRuntimeDialogMessage('');
     try {
       if (input.id) {
         await updateRuntimeEnvironment(input);
@@ -153,7 +164,7 @@ export function BuildManagementPage() {
       await refreshData();
       setMessage(input.id ? '运行环境已保存' : '运行环境已创建');
     } catch (error) {
-      setMessage(`运行环境保存失败：${errorMessage(error)}`);
+      setRuntimeDialogMessage(`运行环境保存失败：${errorMessage(error)}`);
     }
   }
 
@@ -394,8 +405,15 @@ export function BuildManagementPage() {
       {runtimeEditing && (
         <RuntimeEnvironmentDialog
           draft={runtimeEditing}
-          onChange={setRuntimeEditing}
-          onClose={() => setRuntimeEditing(null)}
+          message={runtimeDialogMessage}
+          onChange={(draft) => {
+            setRuntimeEditing(draft);
+            if (runtimeDialogMessage) setRuntimeDialogMessage('');
+          }}
+          onClose={() => {
+            setRuntimeEditing(null);
+            setRuntimeDialogMessage('');
+          }}
           onSave={saveRuntimeEnvironmentDraft}
         />
       )}
@@ -432,7 +450,7 @@ function BuildEnvironmentDialog({ draft, onChange, onClose, onSave }: { draft: B
   );
 }
 
-function RuntimeEnvironmentDialog({ draft, onChange, onClose, onSave }: { draft: RuntimeEnvironmentDraft; onChange: (draft: RuntimeEnvironmentDraft) => void; onClose: () => void; onSave: () => void }) {
+function RuntimeEnvironmentDialog({ draft, message, onChange, onClose, onSave }: { draft: RuntimeEnvironmentDraft; message: string; onChange: (draft: RuntimeEnvironmentDraft) => void; onClose: () => void; onSave: () => void }) {
   function updateImage(index: number, patch: Partial<RuntimeImageDraft>) {
     onChange({ ...draft, imageRows: draft.imageRows.map((image, itemIndex) => itemIndex === index ? { ...image, ...patch } : image) });
   }
@@ -440,6 +458,11 @@ function RuntimeEnvironmentDialog({ draft, onChange, onClose, onSave }: { draft:
   return (
     <DialogShell title={draft.id ? '编辑运行环境' : '新建运行环境'} description="运行环境决定最终业务镜像使用的基础镜像、Dockerfile 和集群标签匹配规则。" wide>
       <div className="flex-1 space-y-5 overflow-y-auto p-5">
+        {message && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            {message}
+          </div>
+        )}
         <div className="grid gap-4 lg:grid-cols-2">
           <InlineField label="名称">
             <Input value={draft.name} disabled={!!draft.id} placeholder="springboot-jdk11" onChange={(event) => onChange({ ...draft, name: event.target.value })} />
@@ -475,9 +498,30 @@ function RuntimeEnvironmentDialog({ draft, onChange, onClose, onSave }: { draft:
                   <Input value={image.displayName} placeholder="阿里云 Dragonwell" onChange={(event) => updateImage(index, { displayName: event.target.value })} />
                 </InlineField>
               </div>
-              <InlineField label="基础镜像">
-                <Input value={image.runtimeBaseImage} placeholder="registry.example/runtime/java:11" onChange={(event) => updateImage(index, { runtimeBaseImage: event.target.value })} />
-              </InlineField>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <InlineField label="CPU 架构">
+                  <div className="flex min-h-10 flex-wrap items-center gap-3">
+                    {architectureOptions.map((option) => (
+                      <label key={option.value} className="inline-flex items-center gap-1.5 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={image.architectures.includes(option.value)}
+                          onChange={(event) => {
+                            const next = event.target.checked
+                              ? [...image.architectures, option.value]
+                              : image.architectures.filter((item) => item !== option.value);
+                            updateImage(index, { architectures: Array.from(new Set(next)) });
+                          }}
+                        />
+                        {option.label}
+                      </label>
+                    ))}
+                  </div>
+                </InlineField>
+                <InlineField label="基础镜像">
+                  <Input value={image.runtimeBaseImage} placeholder="registry.example/runtime/java:11" onChange={(event) => updateImage(index, { runtimeBaseImage: event.target.value })} />
+                </InlineField>
+              </div>
               <div className="grid gap-3 lg:grid-cols-2">
                 <InlineField label="Dockerfile">
                   <Input value={image.dockerfilePath} placeholder="java/jar/Dockerfile" onChange={(event) => updateImage(index, { dockerfilePath: event.target.value })} />
@@ -608,6 +652,7 @@ function emptyRuntimeImage(): RuntimeImageDraft {
     id: undefined,
     name: 'aliyun',
     displayName: '阿里云镜像',
+    architectures: ['x86', 'arm'],
     runtimeBaseImage: '',
     artifactDeployPath: '/app',
     dockerfilePath: 'java/jar/Dockerfile',
@@ -622,6 +667,7 @@ function runtimeToDraft(environment: RuntimeEnvironment): RuntimeEnvironmentDraf
     imageRows: (environment.images.length ? environment.images : [{
       name: environment.name,
       displayName: environment.name,
+      architectures: ['x86', 'arm'],
       runtimeBaseImage: environment.runtimeBaseImage,
       artifactDeployPath: environment.artifactDeployPath,
       dockerfilePath: environment.dockerfilePath,
@@ -636,6 +682,7 @@ function draftToRuntime(draft: RuntimeEnvironmentDraft): RuntimeEnvironment {
     id: image.id,
     name: image.name.trim(),
     displayName: image.displayName.trim() || image.name.trim(),
+    architectures: image.architectures.filter((item) => item === 'x86' || item === 'arm'),
     runtimeBaseImage: image.runtimeBaseImage.trim(),
     artifactDeployPath: image.artifactDeployPath.trim(),
     dockerfilePath: image.dockerfilePath.trim(),

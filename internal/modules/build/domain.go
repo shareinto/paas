@@ -66,6 +66,7 @@ type RuntimeEnvironmentImage struct {
 	ID                 shared.ID         `json:"id"`
 	Name               string            `json:"name"`
 	DisplayName        string            `json:"display_name"`
+	Architectures      []string          `json:"architectures"`
 	RuntimeBaseImage   string            `json:"runtime_base_image"`
 	ArtifactDeployPath string            `json:"artifact_deploy_path"`
 	DockerfilePath     string            `json:"dockerfile_path"`
@@ -137,7 +138,6 @@ type BuildPipeline struct {
 	ExternalJobName     string                  `json:"external_job_name"`
 	TemplateID          string                  `json:"template_id"`
 	ConfigHash          string                  `json:"config_hash"`
-	ImageRepository     string                  `json:"image_repository,omitempty"`
 	Status              BuildPipelineStatus     `json:"status"`
 	ManagedByPlatform   bool                    `json:"managed_by_platform"`
 	RuntimeEnvironments []RuntimeEnvironmentRef `json:"runtime_environments"`

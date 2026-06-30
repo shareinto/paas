@@ -321,12 +321,14 @@ func (r *MySQLRepository) SaveWorkloadStageConfig(ctx context.Context, config Wo
 	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO workload_stage_configs (
   id, tenant_id, project_id, application_id, workload_id, stage_key, replicas,
+  network_mode,
   service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
   env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
   init_containers_json, values_override_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), ?, ?)
 ON DUPLICATE KEY UPDATE
   replicas = VALUES(replicas),
+  network_mode = VALUES(network_mode),
   service_ports_json = VALUES(service_ports_json),
   resource_requests_json = VALUES(resource_requests_json),
   resource_limits_json = VALUES(resource_limits_json),
@@ -340,7 +342,7 @@ ON DUPLICATE KEY UPDATE
   init_containers_json = VALUES(init_containers_json),
   values_override_json = VALUES(values_override_json),
   updated_at = VALUES(updated_at)`,
-		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.WorkloadID, strings.TrimSpace(config.StageKey), config.Replicas,
+		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.WorkloadID, strings.TrimSpace(config.StageKey), config.Replicas, normalizeWorkloadNetworkMode(config.NetworkMode),
 		encoded.servicePorts, encoded.resourceRequests, encoded.resourceLimits, encoded.probes, encoded.ingressHosts, encoded.envVars, encoded.secretRefs, encoded.configFiles, encoded.writableDirs, encoded.volumeMounts, encoded.initContainers, encoded.valuesOverride,
 		mysqlTime(config.CreatedAt), mysqlTime(config.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "workload stage config already exists", "save workload stage config failed")
@@ -386,12 +388,14 @@ func (r *MySQLRepository) SaveWorkloadDefaultConfig(ctx context.Context, config 
 	_, err = database.ExecutorFromContext(ctx, r.db).ExecContext(ctx, `
 INSERT INTO workload_default_configs (
   id, tenant_id, project_id, application_id, workload_id, replicas,
+  network_mode,
   service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
   env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
   init_containers_json, values_override_json, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), CAST(? AS JSON), ?, ?)
 ON DUPLICATE KEY UPDATE
   replicas = VALUES(replicas),
+  network_mode = VALUES(network_mode),
   service_ports_json = VALUES(service_ports_json),
   resource_requests_json = VALUES(resource_requests_json),
   resource_limits_json = VALUES(resource_limits_json),
@@ -405,7 +409,7 @@ ON DUPLICATE KEY UPDATE
   init_containers_json = VALUES(init_containers_json),
   values_override_json = VALUES(values_override_json),
   updated_at = VALUES(updated_at)`,
-		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.WorkloadID, config.Replicas,
+		config.ID, config.TenantID, config.ProjectID, config.ApplicationID, config.WorkloadID, config.Replicas, normalizeWorkloadNetworkMode(config.NetworkMode),
 		encoded.servicePorts, encoded.resourceRequests, encoded.resourceLimits, encoded.probes, encoded.ingressHosts, encoded.envVars, encoded.secretRefs, encoded.configFiles, encoded.writableDirs, encoded.volumeMounts, encoded.initContainers, encoded.valuesOverride,
 		mysqlTime(config.CreatedAt), mysqlTime(config.UpdatedAt))
 	return database.ConflictOrUnavailable(err, "workload default config already exists", "save workload default config failed")
@@ -629,12 +633,14 @@ func workloadSelect() string {
 }
 func workloadStageConfigSelect() string {
 	return `SELECT id, tenant_id, project_id, application_id, workload_id, stage_key, replicas,
+network_mode,
 service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
 env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
 init_containers_json, values_override_json, created_at, updated_at FROM workload_stage_configs`
 }
 func workloadDefaultConfigSelect() string {
 	return `SELECT id, tenant_id, project_id, application_id, workload_id, '' AS stage_key, replicas,
+network_mode,
 service_ports_json, resource_requests_json, resource_limits_json, probes_json, ingress_hosts_json,
 env_vars_json, secret_refs_json, config_files_json, writable_dirs_json, volume_mounts_json,
 init_containers_json, values_override_json, created_at, updated_at FROM workload_default_configs`
@@ -673,12 +679,14 @@ func scanWorkloadStageConfig(scanner appenvScanner) (WorkloadStageConfig, error)
 	var servicePorts, resourceRequests, resourceLimits, probes, ingressHosts, envVars, secretRefs, configFiles, writableDirs, volumeMounts, initContainers, valuesOverride []byte
 	err := scanner.Scan(
 		&config.ID, &config.TenantID, &config.ProjectID, &config.ApplicationID, &config.WorkloadID, &config.StageKey, &config.Replicas,
+		&config.NetworkMode,
 		&servicePorts, &resourceRequests, &resourceLimits, &probes, &ingressHosts, &envVars, &secretRefs, &configFiles, &writableDirs, &volumeMounts, &initContainers, &valuesOverride,
 		&config.CreatedAt, &config.UpdatedAt,
 	)
 	if err != nil {
 		return WorkloadStageConfig{}, err
 	}
+	config.NetworkMode = normalizeWorkloadNetworkMode(config.NetworkMode)
 	if err := json.Unmarshal(servicePorts, &config.ServicePorts); err != nil {
 		return WorkloadStageConfig{}, err
 	}

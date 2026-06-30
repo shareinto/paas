@@ -145,7 +145,6 @@ type CreateBuildPipelineInput struct {
 	Name                  string                     `json:"name"`
 	DisplayName           string                     `json:"display_name"`
 	Description           string                     `json:"description"`
-	ImageRepository       string                     `json:"image_repository"`
 	RuntimeEnvironmentIDs []shared.ID                `json:"runtime_environment_ids"`
 	Sources               []BuildPipelineSourceInput `json:"sources"`
 }
@@ -155,7 +154,6 @@ type UpdateBuildPipelineInput struct {
 	PipelineID            shared.ID                  `json:"pipeline_id"`
 	DisplayName           string                     `json:"display_name"`
 	Description           string                     `json:"description"`
-	ImageRepository       string                     `json:"image_repository"`
 	RuntimeEnvironmentIDs []shared.ID                `json:"runtime_environment_ids"`
 	Sources               []BuildPipelineSourceInput `json:"sources"`
 }
@@ -1051,7 +1049,6 @@ func (s *Service) CreateBuildPipeline(ctx context.Context, input CreateBuildPipe
 		Name:                name,
 		DisplayName:         normalizeDisplayName(input.DisplayName, name),
 		Description:         strings.TrimSpace(input.Description),
-		ImageRepository:     normalizeImageRepository(input.ImageRepository),
 		Provider:            "jenkins",
 		ExternalJobName:     s.pipelineJobName(app, name),
 		TemplateID:          "global-build-template",
@@ -1170,7 +1167,6 @@ func (s *Service) UpdateBuildPipeline(ctx context.Context, input UpdateBuildPipe
 	}
 	pipeline.DisplayName = normalizeDisplayName(input.DisplayName, pipeline.Name)
 	pipeline.Description = strings.TrimSpace(input.Description)
-	pipeline.ImageRepository = normalizeImageRepository(input.ImageRepository)
 	pipeline.RuntimeEnvironments = runtimes
 	pipeline.UpdatedAt = s.clock.Now()
 	if err := s.repo.UpdatePipeline(ctx, pipeline); err != nil {
@@ -1918,7 +1914,7 @@ func (s *Service) buildTemplateDockerfileRepositoryView() buildTemplateDockerfil
 }
 
 func (s *Service) buildTemplateImageTargets(app ApplicationRef, pipeline BuildPipeline, runtimes []RuntimeEnvironmentRef, sources []ApplicationSourceRef, runSources []BuildRunSource, run BuildRun) []buildTemplateImageTargetView {
-	imageRepo := strings.TrimRight(strings.TrimSpace(firstNonEmpty(pipeline.ImageRepository, s.imageRepository)), "/")
+	imageRepo := strings.TrimRight(strings.TrimSpace(s.imageRepository), "/")
 	if imageRepo == "" {
 		imageRepo = "registry.local/paas"
 	}
@@ -1942,13 +1938,16 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, pipeline BuildPi
 			if key == "" {
 				key = fmt.Sprintf("runtime%d", targetIndex+1)
 			}
-			platforms := runtimeTargetPlatforms(name)
+			platforms := runtimeTargetPlatforms(image.Architectures)
+			imageRepository := buildTargetImageRepository(imageRepo, app.Name, image.Name)
 			metadata := map[string]string{
 				"runtime_environment_id":         runtime.ID.String(),
 				"runtime_environment_name":       runtime.Name,
 				"runtime_environment_image_id":   image.ID.String(),
 				"runtime_environment_image_name": image.Name,
 				"runtime_base_image":             image.RuntimeBaseImage,
+				"image_repository":               imageRepository,
+				"architectures":                  strings.Join(normalizeImageArchitectures(image.Architectures), ","),
 			}
 			dockerfilePath := "java/jar/Dockerfile"
 			artifactDeployPath := "/app"
@@ -1964,7 +1963,7 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, pipeline BuildPi
 				RuntimeBaseImage:   shellSingleQuoted(image.RuntimeBaseImage),
 				DockerfilePath:     shellSingleQuoted(dockerfilePath),
 				ArtifactDeployPath: shellSingleQuoted(strings.TrimRight(artifactDeployPath, "/")),
-				ImageRepository:    shellSingleQuoted(buildTargetImageRepository(imageRepo, pipeline.ImageRepository, app.Name)),
+				ImageRepository:    shellSingleQuoted(imageRepository),
 				EnvKey:             shellEnvName(key) + "_IMAGE",
 				SourceKey:          groovySingleQuoted(sourceKey),
 				ArtifactName:       groovySingleQuoted(name),
@@ -1978,16 +1977,49 @@ func (s *Service) buildTemplateImageTargets(app ApplicationRef, pipeline BuildPi
 	return targets
 }
 
-func normalizeImageRepository(value string) string {
-	return strings.TrimRight(strings.TrimSpace(value), "/")
+func defaultImageArchitectures() []string {
+	return []string{"x86", "arm"}
 }
 
-func buildTargetImageRepository(baseOrFull string, explicit string, appName string) string {
-	baseOrFull = strings.TrimRight(strings.TrimSpace(baseOrFull), "/")
-	if strings.TrimSpace(explicit) != "" {
-		return baseOrFull
+func normalizeImageArchitectures(values []string) []string {
+	if len(values) == 0 {
+		return defaultImageArchitectures()
 	}
-	return strings.TrimRight(baseOrFull, "/") + "/" + appName
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		switch normalized {
+		case "amd64", "linux/amd64":
+			normalized = "x86"
+		case "arm64", "linux/arm64":
+			normalized = "arm"
+		}
+		if normalized != "x86" && normalized != "arm" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	if len(out) == 0 {
+		return defaultImageArchitectures()
+	}
+	return out
+}
+
+func buildTargetImageRepository(basePrefix string, appName string, imageName string) string {
+	basePrefix = strings.TrimRight(strings.TrimSpace(basePrefix), "/")
+	name := imageTagToken(appName)
+	if name == "" {
+		name = "app"
+	}
+	if imageSuffix := imageTagToken(imageName); imageSuffix != "" {
+		name += "-" + imageSuffix
+	}
+	return basePrefix + "/" + name
 }
 
 func primaryBuildSource(sources []ApplicationSourceRef, runSources []BuildRunSource) ApplicationSourceRef {
@@ -2017,15 +2049,21 @@ func buildTargetImageURI(imageRepo, appName, baseTag string) string {
 	return fmt.Sprintf("%s/%s:%s", imageRepo, appName, baseTag)
 }
 
-func runtimeTargetPlatforms(name string) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "ack":
-		return "linux/amd64,linux/arm64"
-	case "aws":
-		return "linux/arm64"
-	default:
-		return "linux/amd64,linux/arm64"
+func runtimeTargetPlatforms(architectures []string) string {
+	architectures = normalizeImageArchitectures(architectures)
+	platforms := make([]string, 0, len(architectures))
+	for _, architecture := range architectures {
+		switch architecture {
+		case "x86":
+			platforms = append(platforms, "linux/amd64")
+		case "arm":
+			platforms = append(platforms, "linux/arm64")
+		}
 	}
+	if len(platforms) == 0 {
+		platforms = []string{"linux/amd64", "linux/arm64"}
+	}
+	return strings.Join(platforms, ",")
 }
 
 func buildImageBaseTag(runSources []BuildRunSource, run BuildRun) string {
@@ -2420,7 +2458,7 @@ func (s *Service) synthesizedArtifactInputs(ctx context.Context, run BuildRun, r
 	}
 	imageRepo := strings.TrimRight(strings.TrimSpace(s.imageRepository), "/")
 	if imageRepo == "" {
-		return nil, shared.NewError(shared.CodeInvalidArgument, "artifacts is required for succeeded build")
+		imageRepo = "registry.local/paas"
 	}
 	runtimes := nonEmptyRuntimeEnvironments(pipeline.RuntimeEnvironments)
 	if len(runtimes) > 0 {
@@ -2439,12 +2477,13 @@ func (s *Service) synthesizedArtifactInputs(ctx context.Context, run BuildRun, r
 				if key == "" {
 					key = fmt.Sprintf("runtime%d", targetIndex+1)
 				}
+				imageRepository := buildTargetImageRepository(imageRepo, app.Name, image.Name)
 				out = append(out, BuildCallbackArtifactInput{
 					SourceKey:      source.SourceKey,
 					ContainerName:  firstBoundContainerName(ctx, s, run.ApplicationID, run.PipelineID),
 					Type:           BuildArtifactImage,
 					Name:           name,
-					URI:            buildTargetImageURI(imageRepo, app.Name, baseTag),
+					URI:            imageRepository + ":" + baseTag,
 					IsPrimary:      targetIndex == 0,
 					SelectorLabels: image.SelectorLabels,
 					Metadata: map[string]string{
@@ -2453,6 +2492,8 @@ func (s *Service) synthesizedArtifactInputs(ctx context.Context, run BuildRun, r
 						"runtime_environment_image_id":   image.ID.String(),
 						"runtime_environment_image_name": image.Name,
 						"runtime_base_image":             image.RuntimeBaseImage,
+						"image_repository":               imageRepository,
+						"architectures":                  strings.Join(normalizeImageArchitectures(image.Architectures), ","),
 					},
 				})
 				targetIndex++
@@ -2463,7 +2504,8 @@ func (s *Service) synthesizedArtifactInputs(ctx context.Context, run BuildRun, r
 	out := make([]BuildCallbackArtifactInput, 0, len(runSources))
 	baseTag := buildImageBaseTag(runSources, run)
 	for i, source := range runSources {
-		out = append(out, BuildCallbackArtifactInput{SourceKey: source.SourceKey, ContainerName: firstBoundContainerName(ctx, s, run.ApplicationID, run.PipelineID), Type: BuildArtifactImage, Name: source.SourceKey, URI: fmt.Sprintf("%s/%s-%s:%s", imageRepo, app.Name, source.SourceKey, baseTag), IsPrimary: i == 0})
+		imageRepository := buildTargetImageRepository(imageRepo, app.Name, source.SourceKey)
+		out = append(out, BuildCallbackArtifactInput{SourceKey: source.SourceKey, ContainerName: firstBoundContainerName(ctx, s, run.ApplicationID, run.PipelineID), Type: BuildArtifactImage, Name: source.SourceKey, URI: fmt.Sprintf("%s:%s", imageRepository, baseTag), IsPrimary: i == 0})
 	}
 	return out, nil
 }
@@ -3145,6 +3187,9 @@ func validateRuntimeEnvironment(environment RuntimeEnvironment) error {
 		if len(image.SelectorLabels) == 0 {
 			return shared.NewError(shared.CodeInvalidArgument, "运行时镜像匹配标签不能为空")
 		}
+		if len(image.Architectures) == 0 {
+			return shared.NewError(shared.CodeInvalidArgument, "运行时镜像至少选择一个 CPU 架构")
+		}
 		labelKey := selectorLabelKey(image.SelectorLabels)
 		if _, ok := seenLabels[labelKey]; ok {
 			return shared.NewError(shared.CodeConflict, "运行时镜像匹配标签重复")
@@ -3185,6 +3230,7 @@ func normalizeRuntimeEnvironmentImages(images []RuntimeEnvironmentImage) []Runti
 			ID:                 image.ID,
 			Name:               name,
 			DisplayName:        normalizeDisplayName(image.DisplayName, name),
+			Architectures:      normalizeImageArchitectures(image.Architectures),
 			RuntimeBaseImage:   strings.TrimSpace(image.RuntimeBaseImage),
 			ArtifactDeployPath: strings.TrimSpace(image.ArtifactDeployPath),
 			DockerfilePath:     normalizeDockerfilePath(image.DockerfilePath),
@@ -3407,6 +3453,7 @@ func runtimeEnvironmentImageDefault(id, name, displayName, baseImage, dockerfile
 		ID:               shared.ID(id),
 		Name:             name,
 		DisplayName:      displayName,
+		Architectures:    defaultImageArchitectures(),
 		RuntimeBaseImage: baseImage,
 		DockerfilePath:   dockerfilePath,
 		SelectorLabels:   labels,

@@ -378,6 +378,41 @@ func TestCreateFreightDefaultsNameToTimestamp(t *testing.T) {
 	}
 }
 
+func TestCreateFreightReusesExistingFreightForSameItemSet(t *testing.T) {
+	env := newDeliveryEnv(t)
+	release, err := env.svc.HandleBuildSucceeded(context.Background(), BuildSucceededPayload{BuildRunID: "build_1", ApplicationID: "app_user", WorkloadID: "workload_api", BuildArtifactID: "artifact_1"})
+	if err != nil {
+		t.Fatalf("HandleBuildSucceeded() error = %v", err)
+	}
+	freights, err := env.repo.ListFreightsByApplication(context.Background(), "app_user", shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil || len(freights.Items) != 1 {
+		t.Fatalf("BuildSucceeded should create one freight, got %+v, %v", freights.Items, err)
+	}
+	existing := freights.Items[0]
+	manual, err := env.svc.CreateFreight(context.Background(), CreateFreightInput{
+		Actor:             actor("usr_dev"),
+		ApplicationID:     "app_user",
+		Name:              "manual-refresh",
+		SourceFingerprint: "frontend-refresh-fingerprint",
+		Items: []CreateFreightItemInput{{
+			WorkloadID:    "workload_api",
+			ContainerName: "app",
+			SourceType:    FreightItemPipelineArtifact,
+			ReleaseID:     release.ID,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("CreateFreight() error = %v", err)
+	}
+	if manual.ID != existing.ID {
+		t.Fatalf("manual refresh should reuse existing freight %s, got %s", existing.ID, manual.ID)
+	}
+	after, err := env.repo.ListFreightsByApplication(context.Background(), "app_user", shared.PageRequest{Page: 1, PageSize: 10})
+	if err != nil || len(after.Items) != 1 {
+		t.Fatalf("manual refresh should not duplicate freight, got %+v, %v", after.Items, err)
+	}
+}
+
 func promoteFreightThrough(t *testing.T, env deliveryEnv, freight Freight, stageKeys ...string) {
 	t.Helper()
 	for _, stageKey := range stageKeys {

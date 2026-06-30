@@ -186,6 +186,7 @@ type SaveWorkloadStageConfigInput struct {
 	WorkloadID       shared.ID               `json:"workload_id"`
 	StageKey         string                  `json:"stage_key"`
 	Replicas         int                     `json:"replicas"`
+	NetworkMode      string                  `json:"network_mode,omitempty"`
 	ServicePorts     []WorkloadServicePort   `json:"service_ports"`
 	ResourceRequests WorkloadResourceList    `json:"resource_requests"`
 	ResourceLimits   WorkloadResourceList    `json:"resource_limits"`
@@ -205,6 +206,7 @@ type SaveWorkloadDefaultConfigInput struct {
 	ApplicationID    shared.ID               `json:"application_id"`
 	WorkloadID       shared.ID               `json:"workload_id"`
 	Replicas         int                     `json:"replicas"`
+	NetworkMode      string                  `json:"network_mode,omitempty"`
 	ServicePorts     []WorkloadServicePort   `json:"service_ports"`
 	ResourceRequests WorkloadResourceList    `json:"resource_requests"`
 	ResourceLimits   WorkloadResourceList    `json:"resource_limits"`
@@ -927,6 +929,7 @@ func (s *Service) SaveWorkloadStageConfig(ctx context.Context, input SaveWorkloa
 		WorkloadID:       workload.ID,
 		StageKey:         stageKey,
 		Replicas:         input.Replicas,
+		NetworkMode:      normalizeWorkloadNetworkMode(input.NetworkMode),
 		ServicePorts:     input.ServicePorts,
 		ResourceRequests: input.ResourceRequests,
 		ResourceLimits:   input.ResourceLimits,
@@ -988,6 +991,7 @@ func (s *Service) SaveWorkloadDefaultConfig(ctx context.Context, input SaveWorkl
 		ApplicationID:    workload.ApplicationID,
 		WorkloadID:       workload.ID,
 		Replicas:         input.Replicas,
+		NetworkMode:      normalizeWorkloadNetworkMode(input.NetworkMode),
 		ServicePorts:     input.ServicePorts,
 		ResourceRequests: input.ResourceRequests,
 		ResourceLimits:   input.ResourceLimits,
@@ -1340,6 +1344,7 @@ func workloadConfigEqual(existing WorkloadStageConfig, input SaveWorkloadDefault
 		return false
 	}
 	type configSnapshot struct {
+		NM string                  `json:"nm"`
 		SP []WorkloadServicePort   `json:"sp"`
 		RQ WorkloadResourceList    `json:"rq"`
 		RL WorkloadResourceList    `json:"rl"`
@@ -1353,8 +1358,8 @@ func workloadConfigEqual(existing WorkloadStageConfig, input SaveWorkloadDefault
 		IC []WorkloadInitContainer `json:"ic"`
 		VO map[string]any          `json:"vo"`
 	}
-	a, _ := json.Marshal(configSnapshot{existing.ServicePorts, existing.ResourceRequests, existing.ResourceLimits, existing.Probes, existing.IngressHosts, existing.EnvVars, existing.SecretRefs, existing.ConfigFiles, existing.WritableDirs, existing.VolumeMounts, existing.InitContainers, existing.ValuesOverride})
-	b, _ := json.Marshal(configSnapshot{input.ServicePorts, input.ResourceRequests, input.ResourceLimits, input.Probes, input.IngressHosts, input.EnvVars, input.SecretRefs, input.ConfigFiles, input.WritableDirs, input.VolumeMounts, input.InitContainers, input.ValuesOverride})
+	a, _ := json.Marshal(configSnapshot{existing.NetworkMode, existing.ServicePorts, existing.ResourceRequests, existing.ResourceLimits, existing.Probes, existing.IngressHosts, existing.EnvVars, existing.SecretRefs, existing.ConfigFiles, existing.WritableDirs, existing.VolumeMounts, existing.InitContainers, existing.ValuesOverride})
+	b, _ := json.Marshal(configSnapshot{normalizeWorkloadNetworkMode(input.NetworkMode), input.ServicePorts, input.ResourceRequests, input.ResourceLimits, input.Probes, input.IngressHosts, input.EnvVars, input.SecretRefs, input.ConfigFiles, input.WritableDirs, input.VolumeMounts, input.InitContainers, input.ValuesOverride})
 	return string(a) == string(b)
 }
 
@@ -1363,6 +1368,7 @@ func workloadStageConfigEqual(existing WorkloadStageConfig, input SaveWorkloadSt
 		return false
 	}
 	type configSnapshot struct {
+		NM string                  `json:"nm"`
 		SP []WorkloadServicePort   `json:"sp"`
 		RQ WorkloadResourceList    `json:"rq"`
 		RL WorkloadResourceList    `json:"rl"`
@@ -1376,8 +1382,8 @@ func workloadStageConfigEqual(existing WorkloadStageConfig, input SaveWorkloadSt
 		IC []WorkloadInitContainer `json:"ic"`
 		VO map[string]any          `json:"vo"`
 	}
-	a, _ := json.Marshal(configSnapshot{existing.ServicePorts, existing.ResourceRequests, existing.ResourceLimits, existing.Probes, existing.IngressHosts, existing.EnvVars, existing.SecretRefs, existing.ConfigFiles, existing.WritableDirs, existing.VolumeMounts, existing.InitContainers, existing.ValuesOverride})
-	b, _ := json.Marshal(configSnapshot{input.ServicePorts, input.ResourceRequests, input.ResourceLimits, input.Probes, input.IngressHosts, input.EnvVars, input.SecretRefs, input.ConfigFiles, input.WritableDirs, input.VolumeMounts, input.InitContainers, input.ValuesOverride})
+	a, _ := json.Marshal(configSnapshot{existing.NetworkMode, existing.ServicePorts, existing.ResourceRequests, existing.ResourceLimits, existing.Probes, existing.IngressHosts, existing.EnvVars, existing.SecretRefs, existing.ConfigFiles, existing.WritableDirs, existing.VolumeMounts, existing.InitContainers, existing.ValuesOverride})
+	b, _ := json.Marshal(configSnapshot{normalizeWorkloadNetworkMode(input.NetworkMode), input.ServicePorts, input.ResourceRequests, input.ResourceLimits, input.Probes, input.IngressHosts, input.EnvVars, input.SecretRefs, input.ConfigFiles, input.WritableDirs, input.VolumeMounts, input.InitContainers, input.ValuesOverride})
 	return string(a) == string(b)
 }
 

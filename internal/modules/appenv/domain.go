@@ -197,6 +197,7 @@ type WorkloadStageConfig struct {
 	WorkloadID       shared.ID               `json:"workload_id"`
 	StageKey         string                  `json:"stage_key"`
 	Replicas         int                     `json:"replicas"`
+	NetworkMode      string                  `json:"network_mode,omitempty"`
 	ServicePorts     []WorkloadServicePort   `json:"service_ports"`
 	ResourceRequests WorkloadResourceList    `json:"resource_requests"`
 	ResourceLimits   WorkloadResourceList    `json:"resource_limits"`
@@ -315,6 +316,17 @@ func normalizeWorkloadType(workloadType WorkloadType) WorkloadType {
 
 func validateWorkloadType(workloadType WorkloadType) error {
 	return shared.ValidateStatus(string(workloadType), AllowedWorkloadTypes)
+}
+
+func normalizeWorkloadNetworkMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "host", "host_network", "hostnetwork":
+		return "host"
+	case "container", "pod", "":
+		return "container"
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
 }
 
 func normalizeWorkloadImageSourceMode(mode string) (string, error) {

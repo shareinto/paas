@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react';
 import {
   Background,
   BaseEdge,
@@ -64,10 +64,12 @@ import {
   completeStageVerification,
   createFreightFromVersionSource,
   createStagePromotion,
+  getDeploymentHistoryDetail,
   getApprovalTask,
   getConfigDiff,
   getPublishTask,
   loadDeploymentPageBundle,
+  listDeploymentHistory,
   listApprovalTasks,
   listPublishTasks,
   publishTask,
@@ -80,6 +82,8 @@ import {
   type DeploymentEdge,
   type DeploymentFreight,
   type DeploymentFreightContainer,
+  type DeploymentHistoryDetail,
+  type DeploymentHistoryItem,
   type DeploymentStage,
   type DeploymentTopology,
   type PublishGateSummary
@@ -126,6 +130,7 @@ type StageNodeData = {
   onDropFreight: (stage: Stage, freightId: string) => void;
   onOpenRuntime: (stage: Stage) => void;
   onOpenConfig: (stage: Stage) => void;
+  onOpenHistory: (stage: Stage) => void;
   onOpenVerification: (stage: Stage) => void;
   canVerify: boolean;
   publishPendingCount: number;
@@ -432,6 +437,7 @@ export function DeploymentPage() {
   const [pipelineBuildId, setPipelineBuildId] = useState<string | null>(null);
   const [approvalStageId, setApprovalStageId] = useState<string | null>(null);
   const [publishStageId, setPublishStageId] = useState<string | null>(null);
+  const [historyStageId, setHistoryStageId] = useState<string | null>(null);
   const [publishGates, setPublishGates] = useState<PublishGateSummary[]>([]);
   const [verificationStageId, setVerificationStageId] = useState<string | null>(null);
   const [showPipelines, setShowPipelines] = useState(true);
@@ -522,6 +528,7 @@ export function DeploymentPage() {
     setPipelineBuildId(null);
     setApprovalStageId(null);
     setPublishStageId(null);
+    setHistoryStageId(null);
     setVerificationStageId(null);
     return () => {
       cancelled = true;
@@ -588,6 +595,7 @@ export function DeploymentPage() {
   const configStage = topology.stages.find((stage) => stage.id === configStageId);
   const approvalStage = topology.stages.find((stage) => stage.id === approvalStageId);
   const publishStage = topology.stages.find((stage) => stage.id === publishStageId);
+  const historyStage = topology.stages.find((stage) => stage.id === historyStageId);
   const verificationStage = topology.stages.find((stage) => stage.id === verificationStageId);
   const configPipeline = sourcePipelines.find((pipeline) => pipeline.id === pipelineConfigId);
   const buildPipeline = sourcePipelines.find((pipeline) => pipeline.id === pipelineBuildId);
@@ -1087,6 +1095,7 @@ function beginDrag(freight: Freight, event: DragEvent<HTMLElement>) {
               onOpenPipelineBuild={(pipeline) => setPipelineBuildId(pipeline.id)}
               onDeletePipeline={deletePipeline}
               onOpenPublish={setPublishStageId}
+              onOpenHistory={(stage) => setHistoryStageId(stage.id)}
               onOpenConfigDiff={(stage) => setConfigDiffStage(stage)}
               onOpenVerification={(stage) => setVerificationStageId(stage.id)}
               verifiedStageKeys={verifiedStageKeys}
@@ -1188,6 +1197,13 @@ function beginDrag(freight: Freight, event: DragEvent<HTMLElement>) {
           }}
           onError={(message) => setDeploymentError(message)}
           onClose={() => setPublishStageId(null)}
+        />
+      )}
+      {historyStage && (
+        <StageDeploymentHistoryDialog
+          applicationId={currentApplication.id}
+          stage={historyStage}
+          onClose={() => setHistoryStageId(null)}
         />
       )}
       {verificationStage && (
@@ -1410,6 +1426,7 @@ function TopologyBoard({
   onOpenPipelineBuild,
   onDeletePipeline,
   onOpenPublish,
+  onOpenHistory,
   onOpenConfigDiff,
   onOpenVerification,
   verifiedStageKeys,
@@ -1436,6 +1453,7 @@ function TopologyBoard({
   onOpenPipelineBuild: (pipeline: VersionSourcePipeline) => void;
   onDeletePipeline: (pipeline: VersionSourcePipeline) => void;
   onOpenPublish: (stageId: string) => void;
+  onOpenHistory: (stage: Stage) => void;
   onOpenConfigDiff: (stage: Stage) => void;
   onOpenVerification: (stage: Stage) => void;
   verifiedStageKeys: Set<string>;
@@ -1512,6 +1530,7 @@ function TopologyBoard({
           onDropFreight,
           onOpenRuntime,
           onOpenConfig,
+          onOpenHistory,
           onOpenVerification,
           onOpenPublish,
           onOpenConfigDiff
@@ -1542,6 +1561,7 @@ function TopologyBoard({
     onDropFreight,
     onOpenRuntime,
     onOpenConfig,
+    onOpenHistory,
     onOpenVerification,
     onOpenPublish,
     onOpenConfigDiff,
@@ -1911,6 +1931,7 @@ function StageFlowNodeCard({ data }: NodeProps<StageFlowNode>) {
         onDropFreight={(freightId) => data.onDropFreight(data.stage, freightId)}
         onOpenRuntime={() => data.onOpenRuntime(data.stage)}
         onOpenConfig={() => data.onOpenConfig(data.stage)}
+        onOpenHistory={() => data.onOpenHistory(data.stage)}
         onOpenVerification={() => data.onOpenVerification(data.stage)}
         canVerify={data.canVerify}
         publishPendingCount={data.publishPendingCount}
@@ -2039,6 +2060,7 @@ function StageCard({
   onDropFreight,
   onOpenRuntime,
   onOpenConfig,
+  onOpenHistory,
   onOpenVerification,
   canVerify,
   publishPendingCount,
@@ -2059,6 +2081,7 @@ function StageCard({
   onDropFreight: (freightId: string) => void;
   onOpenRuntime: () => void;
   onOpenConfig: () => void;
+  onOpenHistory: () => void;
   onOpenVerification: () => void;
   canVerify: boolean;
   publishPendingCount: number;
@@ -2214,7 +2237,7 @@ function StageCard({
       <div className="mb-3 mt-3 flex flex-nowrap gap-2 px-3">
         <button
           type="button"
-          className="nodrag nopan nowheel inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border bg-card px-2.5 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+          className="nodrag nopan nowheel inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border bg-card px-2 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
           onPointerDownCapture={(event) => event.stopPropagation()}
           onMouseDownCapture={(event) => event.stopPropagation()}
           onPointerDown={(event) => event.stopPropagation()}
@@ -2230,7 +2253,23 @@ function StageCard({
         </button>
         <button
           type="button"
-          className="nodrag nopan nowheel inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border bg-card px-2.5 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+          className="nodrag nopan nowheel inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border bg-card px-2 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+          onPointerDownCapture={(event) => event.stopPropagation()}
+          onMouseDownCapture={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onOpenHistory();
+          }}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          历史
+        </button>
+        <button
+          type="button"
+          className="nodrag nopan nowheel inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md border bg-card px-2 text-xs font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
           onPointerDownCapture={(event) => event.stopPropagation()}
           onMouseDownCapture={(event) => event.stopPropagation()}
           onPointerDown={(event) => event.stopPropagation()}
@@ -2590,18 +2629,20 @@ function ApprovalReviewDialog({
               ))}
             </div>
           </aside>
-          <div className="min-h-0 overflow-y-auto p-5">
+          <div className="flex min-h-0 flex-col overflow-hidden p-5">
             {error && <div className="mb-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
             {detailLoading && <div className="text-sm text-muted-foreground">加载审核详情...</div>}
             {!detailLoading && detail && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-3">
+              <div className="flex min-h-0 flex-1 flex-col gap-4">
+                <div className="grid grid-cols-2 gap-3">
                   <Metric label="目标 Stage" value={stage.name} />
-                  <Metric label="待发布包" value={detail.pendingFreight.name} />
                   <Metric label="发布类型" value={detail.diffType === 'first_deploy' ? '首次部署' : '对比发布'} />
                 </div>
+                <DeployFreightVersionCard detail={detail} />
                 {detail.diffType === 'first_deploy' ? (
-                  <FirstDeployReview detail={detail} />
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    <FirstDeployReview detail={detail} />
+                  </div>
                 ) : (
                   <CompareDeployReview detail={detail} />
                 )}
@@ -2761,18 +2802,20 @@ function PublishReviewDialog({
               ))}
             </div>
           </aside>
-          <div className="min-h-0 overflow-y-auto p-5">
+          <div className="flex min-h-0 flex-col overflow-hidden p-5">
             {error && <div className="mb-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
             {detailLoading && <div className="text-sm text-muted-foreground">加载发布详情...</div>}
             {!detailLoading && detail && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-3">
+              <div className="flex min-h-0 flex-1 flex-col gap-4">
+                <div className="grid grid-cols-2 gap-3">
                   <Metric label="目标 Stage" value={stage.name} />
-                  <Metric label="待发布包" value={detail.pendingFreight.name} />
                   <Metric label="发布类型" value={detail.diffType === 'first_deploy' ? '首次部署' : '对比发布'} />
                 </div>
+                <DeployFreightVersionCard detail={detail} />
                 {detail.diffType === 'first_deploy' ? (
-                  <FirstDeployReview detail={detail} />
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    <FirstDeployReview detail={detail} />
+                  </div>
                 ) : (
                   <CompareDeployReview detail={detail} />
                 )}
@@ -2804,21 +2847,411 @@ function PublishReviewDialog({
   );
 }
 
+function StageDeploymentHistoryDialog({
+  applicationId,
+  stage,
+  onClose
+}: {
+  applicationId: string;
+  stage: Stage;
+  onClose: () => void;
+}) {
+  const pageSize = 10;
+  const [items, setItems] = useState<DeploymentHistoryItem[]>([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [detail, setDetail] = useState<DeploymentHistoryDetail | null>(null);
+  const [viewMode, setViewMode] = useState<'diff' | 'yaml'>('diff');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [error, setError] = useState('');
+  const historyRequestRef = useRef(0);
+
+  const loadHistoryPage = useCallback((nextPage: number, mode: 'replace' | 'append') => {
+    const requestId = historyRequestRef.current + 1;
+    historyRequestRef.current = requestId;
+    const isAppend = mode === 'append';
+    if (isAppend) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
+    setError('');
+    return listDeploymentHistory(applicationId, stage.key, nextPage, pageSize)
+      .then((result) => {
+        if (historyRequestRef.current !== requestId) return;
+        setTotal(result.total || 0);
+        setPage(result.page || nextPage);
+        if (isAppend) {
+          setItems((current) => {
+            const seen = new Set(current.map((item) => item.deploymentId));
+            const additions = result.items.filter((item) => !seen.has(item.deploymentId));
+            return [...current, ...additions];
+          });
+        } else {
+          setItems(result.items);
+          setSelectedId((current) =>
+            result.items.some((item) => item.deploymentId === current) ? current : result.items[0]?.deploymentId || ''
+          );
+        }
+      })
+      .catch((err) => {
+        if (historyRequestRef.current !== requestId) return;
+        setError(err instanceof Error ? err.message : '历史发布记录加载失败');
+      })
+      .finally(() => {
+        if (historyRequestRef.current !== requestId) return;
+        if (isAppend) {
+          setLoadingMore(false);
+        } else {
+          setLoading(false);
+        }
+      });
+  }, [applicationId, stage.key]);
+
+  useEffect(() => {
+    setItems([]);
+    setSelectedId('');
+    setDetail(null);
+    setPage(1);
+    setTotal(0);
+    void loadHistoryPage(1, 'replace');
+    return () => {
+      historyRequestRef.current += 1;
+    };
+  }, [loadHistoryPage]);
+
+  const handleLoadMoreHistory = () => {
+    if (loadingMore || loading || items.length >= total) return;
+    void loadHistoryPage(page + 1, 'append');
+  };
+
+  useEffect(() => {
+    if (!selectedId) {
+      setDetail(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setDetailLoading(true);
+    setError('');
+    setViewMode('diff');
+    getDeploymentHistoryDetail(selectedId)
+      .then((next) => {
+        if (!cancelled) setDetail(next);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : '历史详情加载失败');
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
+  const code = detail
+    ? viewMode === 'yaml'
+      ? detail.manifestYaml
+      : detail.diffType === 'compare'
+        ? detail.configDiff
+        : detail.manifestYaml
+    : '';
+  const emptyDiff = detail && viewMode === 'diff' && detail.diffType === 'compare' && !detail.configDiff;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/40 p-4">
+      <div className={DEPLOYMENT_DIALOG_CLASS}>
+        <div className="flex items-start justify-between gap-4 border-b px-5 py-4">
+          <div>
+            <div className="dense-label">发布历史</div>
+            <h2 className="mt-1 text-lg font-semibold">{stage.name} 的历史发布记录</h2>
+            <p className="mt-1 text-xs text-muted-foreground">按 GitOps 提交记录展示；YAML 差异默认对比该 Stage 的上一条成功发布。</p>
+          </div>
+          <Button variant="ghost" size="icon" onClick={onClose} aria-label="关闭发布历史弹窗">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)] overflow-hidden">
+          <aside className="flex min-h-0 flex-col border-r bg-slate-50 p-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-slate-900">历史记录</div>
+              <Badge variant="outline">{total > 0 ? `${items.length}/${total} 条` : '0 条'}</Badge>
+            </div>
+            {loading && <div className="text-sm text-muted-foreground">加载中...</div>}
+            {!loading && items.length === 0 && (
+              <div className="rounded-md border bg-white p-3 text-sm text-muted-foreground">暂无历史发布记录</div>
+            )}
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+              {items.map((item) => (
+                <button
+                  key={item.deploymentId}
+                  type="button"
+                  className={cn(
+                    'block w-full rounded-md border bg-white p-3 text-left text-sm transition-colors hover:border-blue-300 hover:bg-blue-50',
+                    selectedId === item.deploymentId && 'border-blue-500 bg-blue-50'
+                  )}
+                  onClick={() => setSelectedId(item.deploymentId)}
+                >
+                  <div className="mono truncate font-semibold text-slate-900" title={item.freightName}>{item.freightName}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">{item.publishedAt || '发布时间未知'}</div>
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                    <span className="truncate">发布人：{item.publishedBy || '未知'}</span>
+                    <span className="mono shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-slate-700">{item.commitShort || '无提交'}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+            {!loading && items.length < total && (
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-3 w-full"
+                onClick={handleLoadMoreHistory}
+                disabled={loadingMore}
+              >
+                {loadingMore ? '加载中...' : '加载更多'}
+              </Button>
+            )}
+          </aside>
+          <div className="flex min-h-0 flex-col overflow-hidden p-5">
+            {error && <div className="mb-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+            {detailLoading && <div className="text-sm text-muted-foreground">加载历史详情...</div>}
+            {!detailLoading && detail && (
+              <div className="flex min-h-0 flex-1 flex-col gap-4">
+                <div className="grid grid-cols-3 gap-3">
+                  <Metric label="发布时间" value={detail.item.publishedAt || '未知'} />
+                  <Metric label="发布人" value={detail.item.publishedBy || '未知'} />
+                  <Metric label="Git 提交" value={detail.item.commitShort || '无'} mono />
+                </div>
+                <DeploymentHistoryVersionCard detail={detail} />
+                <div className="rounded-md border bg-slate-50 px-4 py-3 text-xs text-muted-foreground">
+                  <div className="grid gap-2 md:grid-cols-[120px_minmax(0,1fr)]">
+                    <span className="font-medium text-slate-600">Manifest 路径</span>
+                    <span className="mono truncate" title={detail.item.manifestPath}>{detail.item.manifestPath || '无'}</span>
+                    <span className="font-medium text-slate-600">完整 Commit</span>
+                    <span className="mono truncate" title={detail.item.commitSha}>{detail.item.commitSha || '无'}</span>
+                  </div>
+                </div>
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border">
+                  <div className="flex items-center justify-between gap-3 border-b bg-slate-50 px-4 py-3">
+                    <div>
+                      <div className="text-sm font-semibold">YAML 记录</div>
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        {detail.diffType === 'compare' ? '当前记录对比上一条成功发布' : '首次发布，暂无上一版可对比'}
+                      </div>
+                    </div>
+                    <div className="inline-flex rounded-md border bg-white p-0.5">
+                      <button
+                        type="button"
+                        className={cn('rounded px-2.5 py-1 text-xs font-medium', viewMode === 'diff' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100')}
+                        onClick={() => setViewMode('diff')}
+                      >
+                        对比上一版
+                      </button>
+                      <button
+                        type="button"
+                        className={cn('rounded px-2.5 py-1 text-xs font-medium', viewMode === 'yaml' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100')}
+                        onClick={() => setViewMode('yaml')}
+                      >
+                        完整 YAML
+                      </button>
+                    </div>
+                  </div>
+                  {emptyDiff ? (
+                    <div className="flex flex-1 items-start p-4 text-sm text-muted-foreground">本次发布与上一版 YAML 无变化</div>
+                  ) : (
+                    <pre className="min-h-[360px] flex-1 overflow-auto bg-slate-950 p-4 text-xs leading-5 text-slate-100">
+                      {code.split('\n').map((line, index) => (
+                        <div key={`${index}-${line}`} className={cn(line.startsWith('+') && 'text-green-300', line.startsWith('-') && 'text-red-300')}>
+                          {line || ' '}
+                        </div>
+                      ))}
+                    </pre>
+                  )}
+                </div>
+              </div>
+            )}
+            {!loading && !detailLoading && !detail && !error && (
+              <div className="rounded-md border bg-slate-50 p-4 text-sm text-muted-foreground">请选择一条历史记录</div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FirstDeployReview({ detail }: { detail: ApprovalTaskDetail }) {
   return (
     <div className="space-y-4">
       <div className="rounded-md border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
         该 Stage 当前暂无已部署发布包。审核通过后，将首次部署以下发布包到当前 Stage。
       </div>
-      <DeployItemsTable items={detail.deployItems} />
     </div>
   );
 }
 
+function DeploymentHistoryVersionCard({ detail }: { detail: DeploymentHistoryDetail }) {
+  const groups = deployItemVersionGroups(detail.deployItems);
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3 text-left text-xs text-slate-700 shadow-sm">
+      <div className="mb-2 border-b border-slate-100 pb-2">
+        <div className="text-[11px] font-medium text-slate-500">发布版本</div>
+        <div className="mono mt-0.5 truncate font-semibold text-slate-800" title={detail.item.freightName}>
+          {detail.item.freightName || detail.item.freightId || '无版本'}
+        </div>
+      </div>
+      {groups.length === 0 ? (
+        <div className="rounded-md border border-slate-100 bg-slate-50/70 px-2 py-2 text-slate-500">暂无版本明细</div>
+      ) : (
+        <div className="max-h-48 space-y-2 overflow-auto pr-1">
+          {groups.map((group) => (
+            <div key={group.workloadKey} className="rounded-md border border-slate-100 bg-slate-50/70 p-2">
+              <div className="mb-1.5 truncate font-medium text-slate-800" title={group.workloadName}>
+                {group.workloadName}
+              </div>
+              <div className="space-y-1.5">
+                {group.containers.map((container) => (
+                  <div key={`${group.workloadKey}-${container.name}`} className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-slate-600" title={container.name}>{container.name}</span>
+                      <span className="mono shrink-0 font-semibold text-slate-800" title={container.version}>{container.version}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function deployItemVersionGroups(items: ApprovalTaskDetail['deployItems']) {
+  const groups = new Map<string, {
+    workloadKey: string;
+    workloadName: string;
+    containers: Array<{ name: string; version: string }>;
+  }>();
+  items.forEach((item) => {
+    const key = item.workloadId || item.workloadName || 'workload';
+    const container = {
+      name: item.containerName || 'app',
+      version: compactVersion(versionFromDeployItem(item))
+    };
+    const existing = groups.get(key);
+    if (existing) {
+      existing.containers.push(container);
+      return;
+    }
+    groups.set(key, {
+      workloadKey: key,
+      workloadName: item.workloadName || key,
+      containers: [container]
+    });
+  });
+  return [...groups.values()];
+}
+
+function DeployFreightVersionCard({ detail }: { detail: ApprovalTaskDetail }) {
+  const groups = deployVersionGroups(detail);
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3 text-left text-xs text-slate-700 shadow-sm">
+      <div className="mb-2 border-b border-slate-100 pb-2">
+        <div className="text-[11px] font-medium text-slate-500">待发布版本</div>
+        <div className="mono mt-0.5 truncate font-semibold text-slate-800" title={detail.pendingFreight.name}>
+          {detail.pendingFreight.name || detail.pendingFreight.id || '无版本'}
+        </div>
+      </div>
+      {groups.length === 0 ? (
+        <div className="rounded-md border border-slate-100 bg-slate-50/70 px-2 py-2 text-slate-500">暂无版本明细</div>
+      ) : (
+        <div className="max-h-48 space-y-2 overflow-auto pr-1">
+          {groups.map((group) => (
+            <div key={group.workloadKey} className="rounded-md border border-slate-100 bg-slate-50/70 p-2">
+              <div className="mb-1.5 truncate font-medium text-slate-800" title={group.workloadName}>
+                {group.workloadName}
+              </div>
+              <div className="space-y-1.5">
+                {group.containers.map((container) => (
+                  <div key={`${group.workloadKey}-${container.name}`} className="rounded border border-slate-200 bg-white px-2 py-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-slate-600" title={container.name}>{container.name}</span>
+                      <span className="mono shrink-0 font-semibold text-slate-800" title={container.version}>{container.version}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function deployVersionGroups(detail: ApprovalTaskDetail) {
+  const groups = new Map<string, {
+    workloadKey: string;
+    workloadName: string;
+    containers: Array<{ name: string; version: string }>;
+  }>();
+
+  const add = (workloadKey: string, workloadName: string, containerName: string, version: string) => {
+    const key = workloadKey || workloadName || 'workload';
+    const existing = groups.get(key);
+    const container = {
+      name: containerName || 'app',
+      version: compactVersion(version)
+    };
+    if (existing) {
+      existing.containers.push(container);
+      return;
+    }
+    groups.set(key, {
+      workloadKey: key,
+      workloadName: workloadName || key,
+      containers: [container]
+    });
+  };
+
+  if (detail.deployItems.length > 0) {
+    detail.deployItems.forEach((item) => {
+      add(item.workloadId, item.workloadName, item.containerName, versionFromDeployItem(item));
+    });
+    return [...groups.values()];
+  }
+
+  detail.imageChanges.forEach((change) => {
+    add(change.workloadId, change.workloadName, change.containerName, change.pendingVersion);
+  });
+  return [...groups.values()];
+}
+
+function versionFromDeployItem(item: ApprovalTaskDetail['deployItems'][number]) {
+  if (item.version && item.version !== '-') return item.version;
+  return tagFromImage(item.image);
+}
+
+function compactVersion(value: string) {
+  const trimmed = String(value || '').trim();
+  return trimmed && trimmed !== '-' ? trimmed : '无';
+}
+
+function tagFromImage(image: string) {
+  const withoutDigest = String(image || '').split('@')[0];
+  const tag = withoutDigest.includes(':') ? withoutDigest.split(':').pop() : '';
+  return tag || '无';
+}
+
 function CompareDeployReview({ detail }: { detail: ApprovalTaskDetail }) {
   return (
-    <div className="space-y-4">
-      <div className="rounded-md border">
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="flex-none rounded-md border">
         <div className="border-b bg-slate-50 px-4 py-3 text-sm font-semibold">镜像版本变化</div>
         {detail.imageChanges.length === 0 ? (
           <div className="p-4 text-sm text-muted-foreground">镜像版本无变化</div>
@@ -2827,7 +3260,6 @@ function CompareDeployReview({ detail }: { detail: ApprovalTaskDetail }) {
             <table className="w-full text-left text-sm">
               <thead className="bg-slate-50 text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-4 py-2">Workload / 容器</th>
                   <th className="px-4 py-2">当前版本</th>
                   <th className="px-4 py-2">待发布版本</th>
                 </tr>
@@ -2835,9 +3267,8 @@ function CompareDeployReview({ detail }: { detail: ApprovalTaskDetail }) {
               <tbody>
                 {detail.imageChanges.map((change) => (
                   <tr key={`${change.workloadId}-${change.containerName}`} className="border-t">
-                    <td className="px-4 py-2 font-medium">{change.workloadName} / {change.containerName}</td>
-                    <td className="px-4 py-2 text-muted-foreground">{change.currentVersion}<div className="mt-1 truncate text-xs">{change.currentImage}</div></td>
-                    <td className="px-4 py-2 text-slate-900">{change.pendingVersion}<div className="mt-1 truncate text-xs text-muted-foreground">{change.pendingImage}</div></td>
+                    <td className="px-4 py-2 font-mono text-muted-foreground">{change.currentVersion || '无'}</td>
+                    <td className="px-4 py-2 font-mono text-slate-900">{change.pendingVersion || '无'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2845,10 +3276,10 @@ function CompareDeployReview({ detail }: { detail: ApprovalTaskDetail }) {
           </div>
         )}
       </div>
-      <div className="rounded-md border">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border">
         <div className="border-b bg-slate-50 px-4 py-3 text-sm font-semibold">渲染 YAML 差异</div>
         {detail.configDiff ? (
-          <pre className="max-h-[260px] overflow-auto bg-slate-950 p-4 text-xs leading-5 text-slate-100">
+          <pre className="min-h-[360px] flex-1 overflow-auto bg-slate-950 p-4 text-xs leading-5 text-slate-100">
             {detail.configDiff.split('\n').map((line, index) => (
               <div key={`${index}-${line}`} className={cn(line.startsWith('+') && 'text-green-300', line.startsWith('-') && 'text-red-300')}>
                 {line}
@@ -2856,34 +3287,9 @@ function CompareDeployReview({ detail }: { detail: ApprovalTaskDetail }) {
             ))}
           </pre>
         ) : (
-          <div className="p-4 text-sm text-muted-foreground">渲染 YAML 无变化</div>
+          <div className="flex flex-1 items-start p-4 text-sm text-muted-foreground">渲染 YAML 无变化</div>
         )}
       </div>
-    </div>
-  );
-}
-
-function DeployItemsTable({ items }: { items: ApprovalTaskDetail['deployItems'] }) {
-  return (
-    <div className="overflow-hidden rounded-md border">
-      <table className="w-full text-left text-sm">
-        <thead className="bg-slate-50 text-xs text-muted-foreground">
-          <tr>
-            <th className="px-4 py-2">Workload / 容器</th>
-            <th className="px-4 py-2">版本</th>
-            <th className="px-4 py-2">镜像</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => (
-            <tr key={`${item.workloadId}-${item.containerName}`} className="border-t">
-              <td className="px-4 py-2 font-medium">{item.workloadName} / {item.containerName}</td>
-              <td className="px-4 py-2">{item.version}</td>
-              <td className="px-4 py-2 text-muted-foreground">{item.image}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }
@@ -3033,6 +3439,7 @@ function VersionSourceConfigDialog({
       servicePort: 8080,
       serverName: workloadName,
       terminationGracePeriodSeconds: 30,
+      networkMode: 'container',
       envVars: [],
       secretRefs: [],
       configFiles: [],
@@ -3726,6 +4133,16 @@ function VersionSourceConfigDialog({
                     <CompactField label="终止等待">
                       <NumberTextInput value={activeWorkload.terminationGracePeriodSeconds ?? 30} min={0} defaultValue={30} onValueChange={(value) => updateWorkload(activeWorkload.id, { terminationGracePeriodSeconds: value })} />
                     </CompactField>
+                    <CompactField label="网络模式">
+                      <select
+                        value={activeWorkload.networkMode || 'container'}
+                        onChange={(event) => updateWorkload(activeWorkload.id, { networkMode: event.target.value as VersionSourceWorkloadConfig['networkMode'] })}
+                        className="h-9 rounded-md border border-border bg-background px-3 text-sm"
+                      >
+                        <option value="container">容器网络</option>
+                        <option value="host">Host 网络</option>
+                      </select>
+                    </CompactField>
                   </div>
                 </ConfigSection>
               </div>
@@ -3776,7 +4193,6 @@ function nextPipelineSource(index: number, buildOptions: PipelineEnvironmentOpti
 
 function pipelineFromForm(pipeline: VersionSourcePipeline | null, input: {
   name: string;
-  imageRepository: string;
   runtime: string;
   runtimeEnvironmentId: string;
   sources: PipelineSourceConfig[];
@@ -3785,7 +4201,6 @@ function pipelineFromForm(pipeline: VersionSourcePipeline | null, input: {
   return {
     id: pipeline?.id || `pipe-custom-${Date.now().toString(36)}`,
     name: input.name,
-    imageRepository: input.imageRepository.trim(),
     branch: primarySource.sourceRef || primarySource.branch,
     runtime: input.runtime,
     runtimeEnvironmentIds: input.runtimeEnvironmentId ? [input.runtimeEnvironmentId] : [],
@@ -3824,7 +4239,6 @@ function PipelineCreateDialog({
 }) {
   const index = pipelines.length + 1;
   const [name, setName] = useState(`新增流水线 ${index}`);
-  const [imageRepository, setImageRepository] = useState('');
   const [runtimeId, setRuntimeId] = useState(runtimeOptions[0]?.id || '');
   const [sources, setSources] = useState<PipelineSourceConfig[]>([nextPipelineSource(0, buildEnvironmentOptions)]);
   const selectedRuntime = optionById(runtimeOptions, runtimeId) || runtimeOptions[0] || fallbackRuntimeEnvironmentOptions[0];
@@ -3832,7 +4246,6 @@ function PipelineCreateDialog({
   function submit() {
     onCreate(pipelineFromForm(null, {
       name,
-      imageRepository,
       runtime: selectedRuntime.name,
       runtimeEnvironmentId: selectedRuntime.id,
       sources
@@ -3855,9 +4268,6 @@ function PipelineCreateDialog({
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
           <InlineField label="显示名称">
             <Input value={name} onChange={(event) => setName(event.target.value)} />
-          </InlineField>
-          <InlineField label="镜像仓库">
-            <Input value={imageRepository} onChange={(event) => setImageRepository(event.target.value)} placeholder="可选，例如 registry.example/sbg/macc-webbase；为空时使用默认应用仓库" />
           </InlineField>
           <InlineField label="运行时环境">
             <select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)} className="h-10 w-full rounded-md border bg-card px-3 text-sm">
@@ -3892,7 +4302,6 @@ function PipelineConfigDialog({
   onSave: (pipeline: VersionSourcePipeline) => void;
 }) {
   const [name, setName] = useState(pipeline.name);
-  const [imageRepository, setImageRepository] = useState(pipeline.imageRepository || '');
   const [runtimeId, setRuntimeId] = useState(pipeline.runtimeEnvironmentIds?.[0] || optionByName(runtimeOptions, pipeline.runtime)?.id || runtimeOptions[0]?.id || '');
   const [sources, setSources] = useState<PipelineSourceConfig[]>(
     pipeline.sources?.length ? pipeline.sources : [nextPipelineSource(0, buildEnvironmentOptions)]
@@ -3902,7 +4311,6 @@ function PipelineConfigDialog({
   function submit() {
     onSave(pipelineFromForm(pipeline, {
       name,
-      imageRepository,
       runtime: selectedRuntime.name,
       runtimeEnvironmentId: selectedRuntime.id,
       sources
@@ -3925,9 +4333,6 @@ function PipelineConfigDialog({
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
           <InlineField label="显示名称">
             <Input value={name} onChange={(event) => setName(event.target.value)} />
-          </InlineField>
-          <InlineField label="镜像仓库">
-            <Input value={imageRepository} onChange={(event) => setImageRepository(event.target.value)} placeholder="可选，例如 registry.example/sbg/macc-webbase；为空时使用默认应用仓库" />
           </InlineField>
           <InlineField label="运行时环境">
             <select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value)} className="h-10 w-full rounded-md border bg-card px-3 text-sm">

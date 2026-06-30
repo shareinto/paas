@@ -185,6 +185,7 @@ type WorkloadInitContainerRef struct {
 
 type WorkloadStageConfigRef struct {
 	Replicas         int
+	NetworkMode      string
 	ServicePorts     []WorkloadServicePortRef
 	ResourceRequests WorkloadResourceListRef
 	ResourceLimits   WorkloadResourceListRef

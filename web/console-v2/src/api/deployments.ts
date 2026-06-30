@@ -337,6 +337,29 @@ export type ApprovalTaskDetail = {
   }>;
 };
 
+export type DeploymentHistoryItem = {
+  id: string;
+  deploymentId: string;
+  stageKey: string;
+  freightId: string;
+  freightName: string;
+  freightCreatedAt: string;
+  publishedBy: string;
+  publishedAt: string;
+  commitSha: string;
+  commitShort: string;
+  manifestPath: string;
+};
+
+export type DeploymentHistoryDetail = {
+  item: DeploymentHistoryItem;
+  diffType: 'first_deploy' | 'compare';
+  previousDeploymentId: string;
+  deployItems: ApprovalTaskDetail['deployItems'];
+  manifestYaml: string;
+  configDiff: string;
+};
+
 export async function loadDeploymentWorkspace(applicationId: string): Promise<DeploymentWorkspace> {
   if (!hasAPIBaseURL()) {
     return { source: 'mock', topology: mockTopology, freights: mockFreights };
@@ -474,6 +497,31 @@ export async function listPublishTasks(applicationId: string, stageKey: string):
 export async function getPublishTask(taskId: string): Promise<ApprovalTaskDetail> {
   const data = await request<Record<string, unknown>>(`/api/console-v2/publish-tasks/${encodeURIComponent(taskId)}?${actorQuery()}`);
   return mapApprovalTaskDetail(data);
+}
+
+export async function listDeploymentHistory(
+  applicationId: string,
+  stageKey: string,
+  page = 1,
+  pageSize = 10
+): Promise<PageResult<DeploymentHistoryItem>> {
+  if (!hasAPIBaseURL()) return { items: [], total: 0, page, page_size: pageSize };
+  const data = await request<PageResult<unknown>>(
+    `/api/console-v2/apps/${encodeURIComponent(applicationId)}/stages/${encodeURIComponent(stageKey)}/deployment-history?${actorQuery()}&page=${page}&page_size=${pageSize}`
+  );
+  return {
+    items: (data.items || []).map(mapDeploymentHistoryItem),
+    total: data.total || 0,
+    page: data.page || page,
+    page_size: data.page_size || pageSize
+  };
+}
+
+export async function getDeploymentHistoryDetail(deploymentId: string): Promise<DeploymentHistoryDetail> {
+  const data = await request<Record<string, unknown>>(
+    `/api/console-v2/deployments/${encodeURIComponent(deploymentId)}/history-detail?${actorQuery()}`
+  );
+  return mapDeploymentHistoryDetail(data);
 }
 
 export async function publishTask(taskId: string, comment: string) {
@@ -894,6 +942,46 @@ function mapApprovalTaskDetail(data: Record<string, any>): ApprovalTaskDetail {
       image: item.image || '-'
     }))
   };
+}
+
+function mapDeploymentHistoryItem(input: unknown): DeploymentHistoryItem {
+  const data = input as Record<string, any>;
+  return {
+    id: data.id || data.deployment_id || data.deploymentId || '',
+    deploymentId: data.deployment_id || data.deploymentId || data.id || '',
+    stageKey: data.stage_key || data.stageKey || '',
+    freightId: data.freight_id || data.freightId || '',
+    freightName: data.freight_name || data.freightName || data.freight_id || data.freightId || '',
+    freightCreatedAt: data.freight_created_at || data.freightCreatedAt || '',
+    publishedBy: data.published_by || data.publishedBy || '',
+    publishedAt: data.published_at || data.publishedAt || '',
+    commitSha: data.commit_sha || data.commitSha || '',
+    commitShort: data.commit_short || data.commitShort || shortCommit(data.commit_sha || data.commitSha || ''),
+    manifestPath: data.manifest_path || data.manifestPath || ''
+  };
+}
+
+function mapDeploymentHistoryDetail(data: Record<string, any>): DeploymentHistoryDetail {
+  const diffType = data.diff_type || data.diffType || 'first_deploy';
+  return {
+    item: mapDeploymentHistoryItem(data.item || {}),
+    diffType: diffType === 'compare' ? 'compare' : 'first_deploy',
+    previousDeploymentId: data.previous_deployment_id || data.previousDeploymentId || '',
+    deployItems: (data.deploy_items || data.deployItems || []).map((item: Record<string, any>) => ({
+      workloadId: item.workload_id || item.workloadId || '',
+      workloadName: item.workload_name || item.workloadName || '',
+      containerName: item.container_name || item.containerName || '',
+      version: item.version || '-',
+      image: item.image || '-'
+    })),
+    manifestYaml: data.manifest_yaml || data.manifestYaml || '',
+    configDiff: data.config_diff || data.configDiff || ''
+  };
+}
+
+function shortCommit(commit: string) {
+  const trimmed = String(commit || '').trim();
+  return trimmed.length > 8 ? trimmed.slice(0, 8) : trimmed;
 }
 
 function mapApprovalFreightSummary(input: unknown): { id: string; name: string; createdAt: string } | undefined {

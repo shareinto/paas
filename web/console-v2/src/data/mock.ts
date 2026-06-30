@@ -366,6 +366,7 @@ export type VersionSourceWorkloadConfig = {
   probePeriodSeconds?: number;
   probeTimeoutSeconds?: number;
   terminationGracePeriodSeconds?: number;
+  networkMode?: 'container' | 'host';
   nodeType?: 'general' | 'network' | 'memory' | 'compute';
   exclusive?: boolean;
   envVars?: WorkloadKeyValueConfig[];
@@ -379,7 +380,6 @@ export type VersionSourcePipeline = {
   id: string;
   name: string;
   description?: string;
-  imageRepository?: string;
   branch: string;
   runtime: string;
   runtimeEnvironmentIds?: string[];

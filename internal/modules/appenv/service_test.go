@@ -980,6 +980,7 @@ func TestWorkloadDefaultConfigSaveQueryAndAudit(t *testing.T) {
 		ApplicationID: app.ID,
 		WorkloadID:    workload.ID,
 		Replicas:      2,
+		NetworkMode:   "host",
 		ServicePorts:  []WorkloadServicePort{{Name: "http", Port: 80, TargetPort: 8080, Protocol: "TCP"}},
 		EnvVars:       []WorkloadEnvVar{{Name: "SPRING_PROFILES_ACTIVE", Value: "default"}},
 		ConfigFiles:   []WorkloadConfigFile{{MountPath: "/etc/app/application.yaml", Content: "spring.profiles.active: default", Base64Encoded: true}},
@@ -992,7 +993,7 @@ func TestWorkloadDefaultConfigSaveQueryAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorkloadDefaultConfig() error = %v", err)
 	}
-	if got.ID != config.ID || got.ConfigFiles[0].Base64Encoded != true || got.WritableDirs[0].OwnerGroup != "app:app" || got.WritableDirs[0].Mode != "0775" {
+	if got.ID != config.ID || got.NetworkMode != "host" || got.ConfigFiles[0].Base64Encoded != true || got.WritableDirs[0].OwnerGroup != "app:app" || got.WritableDirs[0].Mode != "0775" {
 		t.Fatalf("unexpected default config: %+v", got)
 	}
 	var audited bool

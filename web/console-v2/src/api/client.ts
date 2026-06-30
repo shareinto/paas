@@ -19,8 +19,12 @@ export class APIError extends Error {
   }
 }
 
+/**
+ * Returns true when the app should use real backend APIs instead of mock data.
+ * True when either VITE_API_BASE_URL is set (direct backend) or VITE_USE_REAL_API is set (proxy mode).
+ */
 export function hasAPIBaseURL() {
-  return API_BASE_URL.trim() !== '';
+  return API_BASE_URL.trim() !== '' || import.meta.env.VITE_USE_REAL_API === 'true';
 }
 
 export function actorId() {

@@ -1,0 +1,1093 @@
+
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 — CloudDeliver</title>
+<style>
+:root {
+  --bg:      oklch(98% 0.005 250);
+  --surface: oklch(100% 0 0);
+  --fg:      oklch(22% 0.02 240);
+  --muted:   oklch(50% 0.018 240);
+  --border:  oklch(90% 0.008 240);
+  --accent:  oklch(58% 0.16 220);
+  --accent-hover: oklch(52% 0.16 220);
+  --danger:  oklch(55% 0.18 25);
+  --success: oklch(58% 0.16 155);
+
+  --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+  --font-body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+
+  --radius: 6px;
+  --radius-lg: 8px;
+  --shadow-sm: 0 1px 2px oklch(20% 0.02 240 / 0.05);
+  --shadow-md: 0 4px 12px oklch(20% 0.02 240 / 0.08);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-body);
+  color: var(--fg);
+  background: var(--bg);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Layout: centered single column */
+.login-layout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  width: 100%;
+  padding: 48px 24px;
+}
+
+
+/* Form card */
+.form-panel {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  padding: 40px;
+  box-shadow: var(--shadow-md);
+}
+
+.form-container {
+  width: 100%;
+}
+
+.form-header {
+  margin-bottom: 32px;
+}
+
+.form-header h1 {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+}
+
+.form-header p {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* Tabs */
+.login-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+  gap: 0;
+}
+
+.login-tab {
+  flex: 1;
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  font-family: var(--font-body);
+  text-align: center;
+}
+
+.login-tab:hover {
+  color: var(--fg);
+}
+
+.login-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Form fields */
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+  margin-bottom: 6px;
+}
+
+.form-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  font-size: 14px;
+  font-family: var(--font-body);
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.form-input::placeholder {
+  color: oklch(65% 0.01 240);
+}
+
+.form-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px oklch(58% 0.16 220 / 0.1);
+}
+
+.form-input.error {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px oklch(55% 0.18 25 / 0.08);
+}
+
+/* Captcha row */
+.captcha-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.captcha-row .form-input {
+  flex: 1;
+}
+
+.captcha-img {
+  height: 40px;
+  width: 120px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: oklch(95% 0.005 240);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+  user-select: none;
+  position: relative;
+}
+
+.captcha-img canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.captcha-img:hover::after {
+  content: '刷新';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: oklch(20% 0.02 240 / 0.6);
+  color: white;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Submit */
+.btn-primary {
+  width: 100%;
+  height: 40px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--font-body);
+  color: white;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-primary:active {
+  transform: scale(0.985);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* OIDC button */
+.btn-oidc {
+  width: 100%;
+  height: 40px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--font-body);
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-oidc:hover {
+  background: var(--bg);
+  border-color: oklch(80% 0.01 240);
+}
+
+.btn-oidc svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* Links row */
+.form-links {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.form-link {
+  font-size: 13px;
+  color: var(--accent);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.form-link:hover {
+  text-decoration: underline;
+}
+
+/* Divider */
+.form-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 24px 0;
+}
+
+.form-divider::before,
+.form-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.form-divider span {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Error message */
+.field-error {
+  font-size: 12px;
+  color: var(--danger);
+  margin-top: 4px;
+  display: none;
+}
+
+.field-error.visible {
+  display: block;
+}
+
+/* Footer */
+.form-footer {
+  text-align: center;
+  margin-top: 24px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Tab panels */
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+/* Password toggle */
+.password-wrapper {
+  position: relative;
+}
+
+.password-wrapper .form-input {
+  padding-right: 40px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 1px;
+  top: 1px;
+  bottom: 1px;
+  width: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.password-toggle:hover {
+  color: var(--fg);
+}
+
+.password-toggle svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Loading spinner */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.btn-loading {
+  position: relative;
+  color: transparent !important;
+}
+
+.btn-loading::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border: 2px solid white;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* OIDC panel content */
+.oidc-info {
+  padding: 24px 0;
+  text-align: center;
+}
+
+.oidc-info p {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 24px;
+  line-height: 1.6;
+}
+
+.oidc-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Register dialog (overlay) */
+.dialog-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: oklch(20% 0.02 240 / 0.5);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+}
+
+.dialog-overlay.visible {
+  display: flex;
+}
+
+.dialog {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 32px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: var(--shadow-md);
+}
+
+.dialog h2 {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+}
+
+.dialog p {
+  font-size: 14px;
+  color: var(--muted);
+  margin-bottom: 24px;
+}
+
+.dialog-close {
+  float: right;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 4px;
+}
+
+.dialog-close:hover {
+  color: var(--fg);
+}
+
+.dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 16px;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+</style>
+</head>
+<body>
+<div class="login-layout">
+  <div class="form-panel">
+    <div class="form-container">
+      <div class="form-header">
+        <h1>登录 CloudDeliver</h1>
+        <p>登录您的账号以访问控制台</p>
+      </div>
+
+      <div class="login-tabs">
+        <button class="login-tab active" data-tab="local">账号密码登录</button>
+        <button class="login-tab" data-tab="oidc">企业 SSO 登录</button>
+      </div>
+
+      <!-- Local login panel -->
+      <div class="tab-panel active" id="panel-local">
+        <form id="login-form" novalidate>
+          <div class="form-group">
+            <label class="form-label" for="username">用户名 / 邮箱</label>
+            <input class="form-input" type="text" id="username" placeholder="请输入用户名或邮箱" autocomplete="username" required>
+            <div class="field-error" id="err-username">请输入用户名</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="password">密码</label>
+            <div class="password-wrapper">
+              <input class="form-input" type="password" id="password" placeholder="请输入密码" autocomplete="current-password" required>
+              <button type="button" class="password-toggle" id="toggle-password" aria-label="显示密码">
+                <svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+            <div class="field-error" id="err-password">请输入密码</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="captcha">验证码</label>
+            <div class="captcha-row">
+              <input class="form-input" type="text" id="captcha" placeholder="请输入验证码" maxlength="6" autocomplete="off" required>
+              <div class="captcha-img" id="captcha-box" title="点击刷新验证码">
+                <canvas id="captcha-canvas" width="120" height="40"></canvas>
+              </div>
+            </div>
+            <div class="field-error" id="err-captcha">请输入验证码</div>
+          </div>
+
+          <div class="form-links">
+            <a class="form-link" id="link-forgot">忘记密码？</a>
+            <a class="form-link" id="link-register">注册账号</a>
+          </div>
+
+          <button type="submit" class="btn-primary" id="btn-login">登录</button>
+        </form>
+      </div>
+
+      <!-- OIDC login panel -->
+      <div class="tab-panel" id="panel-oidc">
+        <div class="oidc-info">
+          <p>通过企业单点登录（SSO）认证快速访问平台，无需单独的平台账号密码。</p>
+          <div class="oidc-providers">
+            <button class="btn-oidc" id="btn-oidc-login">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              通过企业 SSO 登录
+            </button>
+          </div>
+        </div>
+
+        <div class="form-divider"><span>或使用账号密码</span></div>
+        <button class="btn-oidc" id="btn-switch-local">切换到账号密码登录</button>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="form-footer">
+    © 2026 CloudDeliver · 企业内部系统
+  </div>
+</div>
+
+<!-- Register dialog -->
+<div class="dialog-overlay" id="register-dialog">
+  <div class="dialog">
+    <button class="dialog-close" id="close-register">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+    <h2>注册账号</h2>
+    <p>创建本地平台账号</p>
+    <form id="register-form" novalidate>
+      <div class="form-group">
+        <label class="form-label" for="reg-username">用户名</label>
+        <input class="form-input" type="text" id="reg-username" placeholder="请输入用户名" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="reg-email">邮箱</label>
+        <input class="form-input" type="email" id="reg-email" placeholder="请输入邮箱地址" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="reg-password">密码</label>
+        <input class="form-input" type="password" id="reg-password" placeholder="至少 8 位，含字母和数字" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="reg-confirm">确认密码</label>
+        <input class="form-input" type="password" id="reg-confirm" placeholder="请再次输入密码" required>
+      </div>
+      <button type="submit" class="btn-primary">注册</button>
+      <div class="dialog-footer">
+        <span>已有账号？</span>
+        <a class="form-link" id="link-to-login">立即登录</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Forgot password dialog -->
+<div class="dialog-overlay" id="forgot-dialog">
+  <div class="dialog">
+    <button class="dialog-close" id="close-forgot">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+    <h2>忘记密码</h2>
+    <p>输入注册邮箱，我们将发送重置密码链接</p>
+    <form id="forgot-form" novalidate>
+      <div class="form-group">
+        <label class="form-label" for="forgot-email">邮箱</label>
+        <input class="form-input" type="email" id="forgot-email" placeholder="请输入注册邮箱" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="forgot-captcha">验证码</label>
+        <div class="captcha-row">
+          <input class="form-input" type="text" id="forgot-captcha" placeholder="请输入验证码" maxlength="6" autocomplete="off" required>
+          <div class="captcha-img" id="forgot-captcha-box" title="点击刷新验证码">
+            <canvas id="forgot-captcha-canvas" width="120" height="40"></canvas>
+          </div>
+        </div>
+      </div>
+      <button type="submit" class="btn-primary">发送重置链接</button>
+      <div class="dialog-footer">
+        <span>想起密码了？</span>
+        <a class="form-link" id="link-back-login">返回登录</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+// ====== Configuration ======
+// API base URL: reads from localStorage or defaults to same-origin
+const API_BASE = localStorage.getItem('paas_api_base') || '';
+
+// After login, redirect to this URL
+const REDIRECT_URL = '/';
+
+// ====== API Helper ======
+async function apiRequest(path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers
+    }
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = null; }
+  if (!res.ok) {
+    const msg = data?.error?.message || `请求失败 (HTTP ${res.status})`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+// ====== Token Storage ======
+function saveAuth(token, userName) {
+  if (typeof token === 'string') {
+    // Development route returns flat token string
+    localStorage.setItem('paas_token', token);
+  } else if (token && token.access_token) {
+    // Production route returns TokenPair object
+    localStorage.setItem('paas_token', token.access_token);
+    if (token.refresh_token) localStorage.setItem('paas_refresh_token', token.refresh_token);
+    if (token.expires_at) localStorage.setItem('paas_token_expires', token.expires_at);
+  }
+  if (userName) localStorage.setItem('paas_user_name', userName);
+}
+
+// ====== Tab Switching ======
+const tabs = document.querySelectorAll('.login-tab');
+const panels = document.querySelectorAll('.tab-panel');
+
+tabs.forEach(tab => {
+  tab.addEventListener('click', () => {
+    tabs.forEach(t => t.classList.remove('active'));
+    panels.forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+document.getElementById('btn-switch-local').addEventListener('click', () => {
+  tabs[0].click();
+});
+
+// ====== Password Toggle ======
+const toggleBtn = document.getElementById('toggle-password');
+const passwordInput = document.getElementById('password');
+toggleBtn.addEventListener('click', () => {
+  const isPass = passwordInput.type === 'password';
+  passwordInput.type = isPass ? 'text' : 'password';
+  toggleBtn.innerHTML = isPass
+    ? '<svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+    : '<svg viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+});
+
+// ====== Captcha Generation (client-side, purely visual) ======
+let captchaCode = '';
+let forgotCaptchaCode = '';
+
+function generateCaptcha(canvas) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  ctx.fillStyle = '#f3f4f6';
+  ctx.fillRect(0, 0, w, h);
+
+  // Noise lines
+  for (let i = 0; i < 4; i++) {
+    ctx.strokeStyle = `hsl(${Math.random()*360}, 40%, 70%)`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(Math.random()*w, Math.random()*h);
+    ctx.lineTo(Math.random()*w, Math.random()*h);
+    ctx.stroke();
+  }
+
+  // Noise dots
+  for (let i = 0; i < 30; i++) {
+    ctx.fillStyle = `hsl(${Math.random()*360}, 40%, 60%)`;
+    ctx.fillRect(Math.random()*w, Math.random()*h, 2, 2);
+  }
+
+  // Generate 4-character code
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  let code = '';
+  ctx.font = 'bold 22px monospace';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < 4; i++) {
+    const c = chars[Math.floor(Math.random() * chars.length)];
+    code += c;
+    ctx.save();
+    ctx.translate(20 + i * 25, h/2 + (Math.random()*10 - 5));
+    ctx.rotate((Math.random() - 0.5) * 0.4);
+    ctx.fillStyle = `hsl(${Math.random()*360}, 60%, 35%)`;
+    ctx.fillText(c, 0, 0);
+    ctx.restore();
+  }
+  return code;
+}
+
+function refreshLoginCaptcha() {
+  captchaCode = generateCaptcha(document.getElementById('captcha-canvas'));
+}
+
+function refreshForgotCaptcha() {
+  forgotCaptchaCode = generateCaptcha(document.getElementById('forgot-captcha-canvas'));
+}
+
+// Init captchas
+refreshLoginCaptcha();
+refreshForgotCaptcha();
+
+document.getElementById('captcha-box').addEventListener('click', refreshLoginCaptcha);
+document.getElementById('forgot-captcha-box').addEventListener('click', refreshForgotCaptcha);
+
+// ====== Toast Notification ======
+function showToast(message, type = 'error') {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.style.cssText = `
+    position: fixed; top: 24px; right: 24px; z-index: 200;
+    padding: 12px 20px; border-radius: 6px; font-size: 14px;
+    max-width: 360px; word-break: break-word;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    animation: slideIn 0.2s ease-out;
+    ${type === 'error'
+      ? 'background: #fef2f2; color: #991b1b; border: 1px solid #fecaca;'
+      : 'background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0;'}
+  `;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transition = 'opacity 0.3s';
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
+// Add toast animation
+const toastStyle = document.createElement('style');
+toastStyle.textContent = `@keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }`;
+document.head.appendChild(toastStyle);
+
+// ====== Login Form Submit ======
+const loginForm = document.getElementById('login-form');
+const btnLogin = document.getElementById('btn-login');
+
+loginForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  // Clear errors
+  document.querySelectorAll('.field-error').forEach(el => el.classList.remove('visible'));
+  document.querySelectorAll('.form-input').forEach(el => el.classList.remove('error'));
+
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  const captchaInput = document.getElementById('captcha').value.trim();
+
+  // Validate
+  let hasError = false;
+  if (!username) {
+    document.getElementById('err-username').classList.add('visible');
+    document.getElementById('username').classList.add('error');
+    hasError = true;
+  }
+  if (!password) {
+    document.getElementById('err-password').classList.add('visible');
+    document.getElementById('password').classList.add('error');
+    hasError = true;
+  }
+  if (!captchaInput) {
+    document.getElementById('err-captcha').classList.add('visible');
+    document.getElementById('captcha').classList.add('error');
+    hasError = true;
+  }
+  if (hasError) return;
+
+  // Verify captcha (client-side check)
+  if (captchaInput.toLowerCase() !== captchaCode.toLowerCase()) {
+    document.getElementById('err-captcha').textContent = '验证码错误';
+    document.getElementById('err-captcha').classList.add('visible');
+    document.getElementById('captcha').classList.add('error');
+    refreshLoginCaptcha();
+    document.getElementById('captcha').value = '';
+    return;
+  }
+
+  // Submit to backend
+  btnLogin.disabled = true;
+  btnLogin.classList.add('btn-loading');
+
+  try {
+    // Try development route first, fall back to production route
+    let data;
+    try {
+      data = await apiRequest('/api/auth/local/login', {
+        method: 'POST',
+        body: JSON.stringify({ account: username, password })
+      });
+      // Dev route returns { token: "...", userName: "..." }
+      saveAuth(data.token, data.userName);
+    } catch (devErr) {
+      // Fall back to production route
+      data = await apiRequest('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password })
+      });
+      // Production route returns { token: { access_token, refresh_token, expires_at }, user: { ... } }
+      saveAuth(data.token, data.user?.display_name || data.user?.username);
+    }
+
+    showToast('登录成功，正在跳转...', 'success');
+    setTimeout(() => { window.location.href = REDIRECT_URL; }, 600);
+  } catch (err) {
+    showToast(err.message || '登录失败，请检查用户名和密码');
+    refreshLoginCaptcha();
+    document.getElementById('captcha').value = '';
+  } finally {
+    btnLogin.disabled = false;
+    btnLogin.classList.remove('btn-loading');
+  }
+});
+
+// ====== Register Form Submit ======
+const registerForm = document.getElementById('register-form');
+
+registerForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const username = document.getElementById('reg-username').value.trim();
+  const email = document.getElementById('reg-email').value.trim();
+  const password = document.getElementById('reg-password').value;
+  const confirm = document.getElementById('reg-confirm').value;
+
+  if (!username || !password) {
+    showToast('请填写用户名和密码');
+    return;
+  }
+  if (password.length < 8) {
+    showToast('密码至少 8 位');
+    return;
+  }
+  if (password !== confirm) {
+    showToast('两次输入的密码不一致');
+    return;
+  }
+
+  const btn = registerForm.querySelector('.btn-primary');
+  btn.disabled = true;
+  btn.classList.add('btn-loading');
+
+  try {
+    let data;
+    try {
+      data = await apiRequest('/api/auth/local/register', {
+        method: 'POST',
+        body: JSON.stringify({ username, password, displayName: username, email })
+      });
+      saveAuth(data.token, data.userName);
+    } catch (devErr) {
+      data = await apiRequest('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ username, password, display_name: username, email })
+      });
+      saveAuth(data.token, data.user?.display_name || data.user?.username);
+    }
+
+    showToast('注册成功，正在跳转...', 'success');
+    setTimeout(() => { window.location.href = REDIRECT_URL; }, 600);
+  } catch (err) {
+    showToast(err.message || '注册失败，请稍后重试');
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('btn-loading');
+  }
+});
+
+// ====== OIDC Login ======
+const oidcProvidersContainer = document.querySelector('.oidc-providers');
+
+// Load OIDC providers from backend
+async function loadOIDCProviders() {
+  try {
+    const data = await apiRequest('/api/auth/oidc/providers');
+    const providers = (data.items || []).filter(p => p.enabled);
+    if (providers.length === 0) return; // Keep the default button
+
+    // Replace default button with real provider buttons
+    oidcProvidersContainer.innerHTML = '';
+    providers.forEach(provider => {
+      const btn = document.createElement('button');
+      btn.className = 'btn-oidc';
+      btn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        通过 ${provider.name} 登录
+      `;
+      btn.addEventListener('click', () => startOIDCLogin(provider.id));
+      oidcProvidersContainer.appendChild(btn);
+    });
+  } catch {
+    // If fetching providers fails, keep the default mock button
+  }
+}
+
+async function startOIDCLogin(providerId) {
+  try {
+    let data;
+    if (providerId) {
+      data = await apiRequest(`/api/auth/oidc/${providerId}/start`);
+    } else {
+      // Fallback to development mock route
+      data = await apiRequest('/api/auth/oidc/start', { method: 'POST' });
+    }
+    if (data.redirect_url) {
+      window.location.href = data.redirect_url;
+    }
+  } catch (err) {
+    showToast(err.message || 'SSO 登录启动失败');
+  }
+}
+
+// Default OIDC button (before providers load)
+document.getElementById('btn-oidc-login').addEventListener('click', () => {
+  startOIDCLogin(null);
+});
+
+// Handle OIDC callback (if page loaded with ?code= and ?state= params)
+function handleOIDCCallback() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  const state = params.get('state');
+  const providerId = params.get('provider') || localStorage.getItem('paas_oidc_provider');
+
+  if (code && providerId) {
+    apiRequest(`/api/auth/oidc/${providerId}/callback?state=${encodeURIComponent(state || '')}&code=${encodeURIComponent(code)}`)
+      .then(data => {
+        saveAuth(data.token, data.user?.display_name || data.user?.username);
+        localStorage.removeItem('paas_oidc_provider');
+        showToast('SSO 登录成功，正在跳转...', 'success');
+        // Clean URL
+        window.history.replaceState({}, '', window.location.pathname);
+        setTimeout(() => { window.location.href = REDIRECT_URL; }, 600);
+      })
+      .catch(err => {
+        showToast(err.message || 'SSO 登录失败');
+        window.history.replaceState({}, '', window.location.pathname);
+      });
+  }
+}
+
+// ====== Forgot Password ======
+const forgotForm = document.getElementById('forgot-form');
+
+forgotForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const email = document.getElementById('forgot-email').value.trim();
+  const captchaInput = document.getElementById('forgot-captcha').value.trim();
+
+  if (!email) {
+    showToast('请输入注册邮箱');
+    return;
+  }
+  if (!captchaInput) {
+    showToast('请输入验证码');
+    return;
+  }
+  if (captchaInput.toLowerCase() !== forgotCaptchaCode.toLowerCase()) {
+    showToast('验证码错误');
+    refreshForgotCaptcha();
+    document.getElementById('forgot-captcha').value = '';
+    return;
+  }
+
+  const btn = forgotForm.querySelector('.btn-primary');
+  btn.disabled = true;
+  btn.classList.add('btn-loading');
+
+  try {
+    await apiRequest('/api/auth/reset-password-request', {
+      method: 'POST',
+      body: JSON.stringify({ email })
+    });
+    showToast('重置链接已发送到您的邮箱', 'success');
+    document.getElementById('forgot-dialog').classList.remove('visible');
+  } catch (err) {
+    showToast(err.message || '发送失败，请稍后重试');
+    refreshForgotCaptcha();
+    document.getElementById('forgot-captcha').value = '';
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('btn-loading');
+  }
+});
+
+// ====== Dialog Controls ======
+document.getElementById('link-register').addEventListener('click', () => {
+  document.getElementById('register-dialog').classList.add('visible');
+});
+document.getElementById('close-register').addEventListener('click', () => {
+  document.getElementById('register-dialog').classList.remove('visible');
+});
+document.getElementById('link-to-login').addEventListener('click', () => {
+  document.getElementById('register-dialog').classList.remove('visible');
+});
+
+document.getElementById('link-forgot').addEventListener('click', () => {
+  document.getElementById('forgot-dialog').classList.add('visible');
+  refreshForgotCaptcha();
+});
+document.getElementById('close-forgot').addEventListener('click', () => {
+  document.getElementById('forgot-dialog').classList.remove('visible');
+});
+document.getElementById('link-back-login').addEventListener('click', () => {
+  document.getElementById('forgot-dialog').classList.remove('visible');
+});
+
+// Close dialogs on overlay click
+document.querySelectorAll('.dialog-overlay').forEach(overlay => {
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.classList.remove('visible');
+  });
+});
+
+// Close dialogs on Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.dialog-overlay.visible').forEach(d => d.classList.remove('visible'));
+  }
+});
+
+// ====== Init ======
+// If already logged in, redirect
+if (localStorage.getItem('paas_token')) {
+  const expires = localStorage.getItem('paas_token_expires');
+  if (!expires || new Date(expires) > new Date()) {
+    window.location.href = REDIRECT_URL;
+  } else {
+    // Token expired, clear it
+    localStorage.removeItem('paas_token');
+    localStorage.removeItem('paas_refresh_token');
+    localStorage.removeItem('paas_token_expires');
+  }
+}
+
+// Load OIDC providers
+loadOIDCProviders();
+
+// Handle OIDC callback if present
+handleOIDCCallback();
+
+// Focus username field
+document.getElementById('username').focus();
+</script>
+</body>
+</html>

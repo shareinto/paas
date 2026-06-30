@@ -37,3 +37,4 @@
 - 2026-06-04 更新：触发 Jenkins 时不再传递构建参数；PaaS 每次构建前按本次源码 ref、commit、运行时和回调地址重新渲染并更新固定 Job。
 - 2026-06-26 更新：Jenkins 镜像 tag 格式改为 `yyyyMMdd-分支名-semver`，分支名使用本次主代码源 ref 的镜像 tag 安全化结果；commit SHA 仅作为构建元数据保留，不再参与 tag 组成。
 - 2026-06-26 更新：流水线源码配置去掉 SourceRepository 前置依赖，BuildPipelineSource 直接保存 `source_type/source_url/source_ref/svn_revision/svn_checkout_paths`。Git 模式由用户手动填写仓库地址和分支；Git/SVN checkout 均使用固定 Jenkins 凭据 `aea4ebeb-2858-4850-b3e0-268e9aff9726`。SVN 模式使用基础 checkout 地址、可选 revision 和相对目录检出列表，SVN 镜像 tag 使用 `yyyyMMdd-svnRef-semver`。
+- 2026-06-29 更新：运行环境的 CPU 架构下沉到每个运行时镜像目标。Jenkins buildx 按目标架构渲染 `--platform`；同一批构建的多个目标共享 tag，仓库由 PaaS 按“基础仓库前缀/应用名-镜像名”统一生成。
